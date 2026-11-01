@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="210" height="28" role="img" aria-label="Latest Release: Download">
+  <title>Latest Release: Download</title>
+  <linearGradient id="s" x2="0" y2="100%">
+    <stop offset="0" stop-color="#fff" stop-opacity=".12"/>
+    <stop offset="1" stop-opacity=".12"/>
+  </linearGradient>
+  <clipPath id="r">
+    <rect width="210" height="28" rx="6" fill="#fff"/>
+  </clipPath>
+  <g clip-path="url(#r)">
+    <rect width="108" height="28" fill="#2b231d"/>
+    <rect x="108" width="102" height="28" fill="#8b5a2b"/>
+    <rect width="210" height="28" fill="url(#s)"/>
+  </g>
+  <g fill="#faf6eb" text-anchor="middle" font-family="Inter,Segoe UI,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="12" font-weight="600">
+    <text x="54" y="18">Latest Release</text>
+    <text x="159" y="18">Windows &amp; APK</text>
+  </g>
+</svg>
