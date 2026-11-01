@@ -7,6 +7,7 @@ import android.content.pm.PackageInstaller
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -30,6 +31,8 @@ actual object PlatformBridge {
     private var mainActivityRef: WeakReference<MainActivity>? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
     private val imageCache = LinkedHashMap<String, ImageBitmap>()
+    @Volatile
+    private var stateFlushCallback: (() -> Unit)? = null
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -54,14 +57,55 @@ actual object PlatformBridge {
 
     actual fun loadAppStateJson(): String? = runCatching {
         val f = stateFile()
-        if (f.exists() && f.isFile) f.readText(Charsets.UTF_8) else null
+        val tmp = File(resolveStorageDir(), "parchment-state.json.tmp")
+        when {
+            f.exists() && f.isFile && f.length() > 10L -> f.readText(Charsets.UTF_8)
+            tmp.exists() && tmp.isFile && tmp.length() > 10L -> tmp.readText(Charsets.UTF_8)
+            else -> null
+        }
     }.getOrNull()
 
+    @Synchronized
     actual fun saveAppStateJson(json: String) {
         runCatching {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
-            stateFile().writeText(json, Charsets.UTF_8)
+            val tmp = File(dir, "parchment-state.json.tmp")
+            val target = stateFile()
+            tmp.writeText(json, Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.writeText(json, Charsets.UTF_8)
+                tmp.delete()
+            }
+        }
+    }
+
+    actual fun registerStateFlushCallback(callback: () -> Unit) {
+        stateFlushCallback = callback
+    }
+
+    actual fun flushPendingStateNow() {
+        runCatching { stateFlushCallback?.invoke() }
+    }
+
+    actual fun isIgnoringBatteryOptimizations(): Boolean = runCatching {
+        val ctx = appContext ?: return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            pm?.isIgnoringBatteryOptimizations(ctx.packageName) ?: true
+        } else true
+    }.getOrDefault(true)
+
+    actual fun requestUnrestrictedBackgroundBattery() {
+        val ctx = appContext ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val intent = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:${ctx.packageName}")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(intent)
+            }
         }
     }
 

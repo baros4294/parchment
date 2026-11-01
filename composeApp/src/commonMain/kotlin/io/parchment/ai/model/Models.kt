@@ -20,7 +20,7 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
         defaultEndpointPath = "/v1/messages"
     ),
     BYTEDANCE_ARK(
-        displayName = "ByteDance Seedream (Image) & Seedance (Video) Ark API",
+        displayName = "ByteDance Seedream / Seedance / Doubao Ark",
         defaultBaseUrl = "https://ark.ap-southeast.bytepluses.com",
         defaultEndpointPath = "/api/v3/images/generations"
     )
@@ -61,7 +61,7 @@ data class ModelPricingSpec(
     val cacheWritePricePerM: Double = 0.0,
     val reasoningPricePerM: Double = 0.0,
     val contextWindowTokens: Int = 128000,
-    val maxOutputTokens: Int = 32768
+    val maxOutputTokens: Int? = null
 )
 
 @Serializable
@@ -69,6 +69,7 @@ data class ProviderProfile(
     val id: String,
     val name: String,
     val protocol: ProviderProtocol,
+    val enabled: Boolean = true,
     val baseUrl: String = protocol.defaultBaseUrl,
     val endpointPathOverride: String = "",
     val apiKey: String = "",
@@ -79,7 +80,7 @@ data class ProviderProfile(
     val autoFetchModels: Boolean = true,
     val timeoutMinutes: Int = 60,
     val useStatefulChaining: Boolean = true,
-    val useBackgroundLongDecode: Boolean = false,
+    val useBackgroundLongDecode: Boolean = true,
     val useLegacyFallbackEndpoint: Boolean = false,
     val enableWebSearch: Boolean = false,
     val enableCodeExecution: Boolean = false,
@@ -87,15 +88,16 @@ data class ProviderProfile(
     val enableImageGeneration: Boolean = false,
     val enableVideoGeneration: Boolean = false,
     val allowShellExecution: Boolean = false,
-    val mediaAspectRatio: String = "1:1", // 1:1, 16:9, 9:16, 4:3, 3:4, 21:9
-    val mediaResolution: String = "1K", // 1K, 2K, 4K, 1024x1024, 1536x1024, 1024x1536, 720p, 1080p
+    val mediaAspectRatio: String = "1:1",
+    val mediaResolution: String = "1K",
     val videoDurationSeconds: Int = 5,
     val videoGenerateAudio: Boolean = true,
-    val thinkingEffort: String = "high", // none, low, medium, high, max
-    val thinkingBudgetTokens: Int = 16384,
-    val temperature: Double = 0.85,
-    val topP: Double = 0.95,
-    val maxOutputTokens: Int = 32768,
+    val thinkingEffort: String = "high",
+    // Nullable numeric parameters: null = omitted/stripped from outgoing JSON; 0 = unlimited where applicable
+    val thinkingBudgetTokens: Int? = null,
+    val temperature: Double? = null,
+    val topP: Double? = null,
+    val maxOutputTokens: Int? = null,
     val contextWindowTokens: Int = 128000,
     val inputPricePerM: Double = 0.0,
     val outputPricePerM: Double = 0.0,
@@ -164,10 +166,13 @@ data class MessageVariant(
     val content: String,
     val thinkingSummary: String = "",
     val thinkingSignature: String = "",
+    val thinkingDurationMs: Long = 0L,
     val toolCalls: List<ToolCallRecord> = emptyList(),
     val mediaItems: List<GeneratedMediaItem> = emptyList(),
     val attachments: List<PromptAttachment> = emptyList(),
     val providerInteractionId: String = "",
+    val pendingBackgroundInteractionId: String = "",
+    val isStreaming: Boolean = false,
     val providerProtocol: ProviderProtocol? = null,
     val modelUsed: String = "",
     val createdAt: Long = 0L,
@@ -192,8 +197,8 @@ data class MessageNode(
 
 @Serializable
 enum class ViewMode(val label: String) {
-    MANUSCRIPT("Manuscript (Continuous Book Flow)"),
-    EDITORIAL_TURNS("Editorial Turns (Structured)")
+    MANUSCRIPT("Manuscript"),
+    EDITORIAL_TURNS("Turns")
 }
 
 @Serializable
@@ -278,9 +283,139 @@ data class SystemPromptPreset(
     val description: String = "",
     val systemPrompt: String,
     val authorsNoteDefault: String = "",
-    val suggestedTemperature: Double = 0.85,
-    val suggestedTopP: Double = 0.95,
+    val suggestedTemperature: Double? = null,
+    val suggestedTopP: Double? = null,
     val suggestedThinkingEffort: String = "high"
+)
+
+/**
+ * Kelivo-Style Persistent Assistant / Agent Profile.
+ * Lives independently of Topics (ChatSessions), so deleting a Topic never deletes your System Prompt or Agent setup.
+ */
+@Serializable
+data class AssistantAgent(
+    val id: String,
+    val name: String,
+    val iconEmoji: String = "💬",
+    val systemPrompt: String = "",
+    val authorsNote: String = "",
+    val authorsNoteDepth: Int = 2,
+    val defaultProfileId: String = "", // Blank = follow Global Model
+    val defaultModelId: String = "",   // Blank = follow Global Model
+    val thinkingEffort: String = "",   // Blank = follow Profile/Global
+    val temperature: Double? = null,   // null = omit from API request
+    val topP: Double? = null,          // null = omit from API request
+    val maxOutputTokens: Int? = null,  // null = omit; 0 = unlimited
+    val contextMessageLimit: Int = 0,  // 0 = unlimited history messages
+    val activeCard: CharacterOrScenarioCard? = null,
+    val fragments: List<ContextFragment> = emptyList(),
+    val workspacePath: String = "",
+    val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
+    val enableWebSearch: Boolean = false
+)
+
+/**
+ * Kelivo-Style Global & Task-Specific Default Models Configuration.
+ */
+@Serializable
+data class DefaultModelConfig(
+    val globalProfileId: String = "",
+    val globalModelId: String = "",
+    val titleFollowGlobal: Boolean = true,
+    val titleProfileId: String = "",
+    val titleModelId: String = "",
+    val titlePromptTemplate: String = "Generate a concise, natural 3 to 6 word title summarizing this conversation. Return ONLY the title text without quotes or trailing punctuation.",
+    val summaryFollowGlobal: Boolean = true,
+    val summaryProfileId: String = "",
+    val summaryModelId: String = "",
+    val translationFollowGlobal: Boolean = true,
+    val translationProfileId: String = "",
+    val translationModelId: String = "",
+    val translationTargetLanguage: String = "English"
+)
+
+@Serializable
+enum class MessageNavVisibility(val label: String) {
+    ALWAYS("Always show"),
+    WHILE_SCROLLING("Show while scrolling"),
+    HIDDEN("Hidden")
+}
+
+@Serializable
+enum class SendShortcutMode(val label: String) {
+    ENTER("Enter"),
+    CTRL_ENTER("Ctrl + Enter"),
+    SHIFT_ENTER("Shift + Enter")
+}
+
+/**
+ * Kelivo-Style Granular Display, Rendering, and Behavior Preferences.
+ */
+@Serializable
+data class PreferencesConfig(
+    // Chat item display
+    val showProviderInModelCapsule: Boolean = true,
+    val showUserAvatar: Boolean = true,
+    val showUserName: Boolean = true,
+    val showUserTimestamp: Boolean = true,
+    val showUserMessageActions: Boolean = true,
+    val showModelIcon: Boolean = true,
+    val showAssistantAvatarInTitleBar: Boolean = true,
+    val showModelName: Boolean = true,
+    val showModelTimestamp: Boolean = true,
+    val showProviderAfterModelName: Boolean = true,
+    val showTokenAndContextStats: Boolean = true,
+    val showTokensForEntireTurn: Boolean = true,
+    val showThinkingCards: Boolean = true,
+    val showToolCards: Boolean = true,
+    val showFilesBelowReplies: Boolean = true,
+    val showReasoningLevelOnButton: Boolean = true,
+    // Rendering settings
+    val inlineDollarMathRendering: Boolean = true,
+    val mathFormulaRendering: Boolean = true,
+    val renderUserMessagesWithMarkdown: Boolean = true,
+    val renderReasoningWithMarkdown: Boolean = true,
+    val renderAssistantMessagesWithMarkdown: Boolean = true,
+    val autoCollapseCodeBlocks: Boolean = false,
+    // Behavior & startup
+    val autoSwitchToTopics: Boolean = true,
+    val autoCollapseThinking: Boolean = true,
+    val collapseThinkingSteps: Boolean = false,
+    val showToolResultSummary: Boolean = true,
+    val collapseLongMessages: Boolean = false,
+    val deleteMessagesBelowWhenRegenerating: Boolean = false,
+    val deletePreviousMessageWhenRegenerating: Boolean = false,
+    val confirmBeforeRegenerating: Boolean = false,
+    val keepMessageVersionsWhenForking: Boolean = true,
+    val showChatListDates: Boolean = true,
+    val newChatWhenSwitchingAssistants: Boolean = false,
+    val newChatAfterDeletingTopic: Boolean = true,
+    val newChatOnLaunch: Boolean = false,
+    val messageNavButtons: MessageNavVisibility = MessageNavVisibility.ALWAYS,
+    val sendShortcut: SendShortcutMode = SendShortcutMode.ENTER,
+    val pasteLongTextAsFile: Boolean = false,
+    val pasteConversionThresholdChars: Int = 5000,
+    val autoFollowBottom: Boolean = true,
+    val chatBackgroundOverlayOpacityPercent: Int = 100,
+    val inputBoxBackgroundOpacityPercent: Int = 95
+)
+
+@Serializable
+data class DesktopWindowConfig(
+    val isMaximized: Boolean = true,
+    val widthDp: Int = 1400,
+    val heightDp: Int = 900,
+    val xDp: Int = -1,
+    val yDp: Int = -1
+)
+
+@Serializable
+data class QueuedPromptItem(
+    val id: String,
+    val text: String,
+    val prefill: String = "",
+    val isGuidedDirection: Boolean = false,
+    val attachments: List<PromptAttachment> = emptyList()
 )
 
 @Serializable
@@ -291,6 +426,11 @@ data class ChatSession(
     val updatedAt: Long,
     val profileId: String,
     val modelOverride: String = "",
+    val assistantId: String = "",
+    val isPinned: Boolean = false,
+    val isTitleManuallySet: Boolean = false,
+    val draftInput: String = "",
+    val draftPrefill: String = "",
     val userName: String = "User",
     val systemPrompt: String = "",
     val activeCard: CharacterOrScenarioCard? = null,
@@ -307,6 +447,7 @@ data class ChatSession(
 @Serializable
 data class ThemeConfig(
     val name: String = "Parchment & Espresso Ink (Sepia)",
+    val colorMode: String = "Sepia", // Sepia, Light, Dark
     val canvasBgHex: String = "#F4ECD8",
     val sheetBgHex: String = "#EBE0C5",
     val cardBgHex: String = "#FAF6EB",
@@ -316,26 +457,42 @@ data class ThemeConfig(
     val dialogueInkHex: String = "#4A2511",
     val narrationInkHex: String = "#5C4938",
     val mutedInkHex: String = "#826F5C",
-    val accentHex: String = "#9E4730",
+    val accentHex: String = "#8B5A2B",
     val accentSecondaryHex: String = "#B57C2E",
     val dangerHex: String = "#A62B2B",
-    val proseFontFamily: String = "Inter", // Inter, Serif, Sans, Monospace, LaTeX, Custom
+    val proseFontFamily: String = "Inter",
     val customProseFontPath: String = "",
-    val codeFontFamily: String = "JetBrainsMono Nerd", // JetBrainsMono Nerd, Monospace, Inter, Serif, Custom
+    val codeFontFamily: String = "JetBrainsMono Nerd",
     val customCodeFontPath: String = "",
-    val proseFontSizeSp: Float = 17.5f,
+    val proseFontSizeSp: Float = 16.5f,
     val codeFontSizeSp: Float = 12.5f,
-    val proseLineHeightMultiplier: Float = 1.62f,
-    val paragraphSpacingDp: Float = 12f,
+    val proseLineHeightMultiplier: Float = 1.54f,
+    val paragraphSpacingDp: Float = 18f,
     val firstLineIndentChars: Int = 0,
-    val maxReadingWidthDp: Float = 760f,
+    val maxReadingWidthDp: Float = 820f,
     val highlightDialogueAndNarration: Boolean = true
 ) {
     companion object {
         val PRESETS: List<ThemeConfig> = listOf(
             ThemeConfig(),
             ThemeConfig(
+                name = "Kelivo Warm Ivory (Light)",
+                colorMode = "Light",
+                canvasBgHex = "#F8F7F4",
+                sheetBgHex = "#EFECE6",
+                cardBgHex = "#FFFFFF",
+                elevatedBgHex = "#F3F0EA",
+                borderHex = "#E2DDD5",
+                primaryInkHex = "#1E1B18",
+                dialogueInkHex = "#4A2E1B",
+                narrationInkHex = "#5A524C",
+                mutedInkHex = "#8A8178",
+                accentHex = "#7A5216",
+                accentSecondaryHex = "#9E6B24"
+            ),
+            ThemeConfig(
                 name = "Aged Oxford Manuscript (Warm Deep Sepia)",
+                colorMode = "Sepia",
                 canvasBgHex = "#EADBC0",
                 sheetBgHex = "#DECBA8",
                 cardBgHex = "#F3E7D0",
@@ -350,6 +507,7 @@ data class ThemeConfig(
             ),
             ThemeConfig(
                 name = "Candlelight Study (Dark Warm Sepia)",
+                colorMode = "Dark",
                 canvasBgHex = "#1C1612",
                 sheetBgHex = "#15100D",
                 cardBgHex = "#251E18",
@@ -363,17 +521,18 @@ data class ThemeConfig(
                 accentSecondaryHex = "#D9A14E"
             ),
             ThemeConfig(
-                name = "Midnight OLED Ink (OnePlus 15T AMOLED)",
-                canvasBgHex = "#080706",
-                sheetBgHex = "#120F0C",
-                cardBgHex = "#171310",
-                elevatedBgHex = "#211C17",
-                borderHex = "#2E261F",
-                primaryInkHex = "#DFD3BD",
+                name = "Midnight OLED Ink (AMOLED Dark)",
+                colorMode = "Dark",
+                canvasBgHex = "#0A0908",
+                sheetBgHex = "#12100E",
+                cardBgHex = "#181512",
+                elevatedBgHex = "#221E1A",
+                borderHex = "#2E2822",
+                primaryInkHex = "#E5DDD0",
                 dialogueInkHex = "#EABFA0",
                 narrationInkHex = "#B3A48E",
                 mutedInkHex = "#7A6D5B",
-                accentHex = "#C96A47",
+                accentHex = "#C97A3E",
                 accentSecondaryHex = "#C49142"
             )
         )
@@ -384,10 +543,16 @@ data class ThemeConfig(
 data class AppStateSnapshot(
     val profiles: List<ProviderProfile> = emptyList(),
     val activeProfileId: String = "",
+    val assistants: List<AssistantAgent> = emptyList(),
+    val activeAssistantId: String = "",
+    val defaultModels: DefaultModelConfig = DefaultModelConfig(),
+    val preferences: PreferencesConfig = PreferencesConfig(),
+    val desktopWindow: DesktopWindowConfig = DesktopWindowConfig(),
     val sessions: List<ChatSession> = emptyList(),
     val activeSessionId: String = "",
     val systemPromptPresets: List<SystemPromptPreset> = emptyList(),
     val savedCards: List<CharacterOrScenarioCard> = emptyList(),
+    val globalWorldBook: List<ContextFragment> = emptyList(),
     val theme: ThemeConfig = ThemeConfig(),
     val otaGithubRepo: String = "baros4294/parchment",
     val autoCheckOtaOnStartup: Boolean = true

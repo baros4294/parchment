@@ -18,6 +18,10 @@ expect object PlatformBridge {
     fun getAppStorageDirectoryPath(): String
     fun loadAppStateJson(): String?
     fun saveAppStateJson(json: String)
+    fun registerStateFlushCallback(callback: () -> Unit)
+    fun flushPendingStateNow()
+    fun isIgnoringBatteryOptimizations(): Boolean
+    fun requestUnrestrictedBackgroundBattery()
     fun wipeAllLocalData(): Boolean
 
     // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts

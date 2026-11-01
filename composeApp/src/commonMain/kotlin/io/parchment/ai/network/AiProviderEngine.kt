@@ -31,9 +31,11 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.platform.PlatformBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -571,6 +573,57 @@ object AiProviderEngine {
         } finally {
             PlatformBridge.notifyLongDecodeComplete()
         }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Lightweight one-shot utility text generation (Kelivo-style) for Auto-Title Generation,
+     * Title Regeneration (`✦`), Context Summarization, and Translation.
+     */
+    suspend fun generateUtilityText(
+        profile: ProviderProfile,
+        model: String,
+        prompt: String
+    ): Result<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanModel = model.trim().ifBlank { profile.defaultModel.trim() }
+            require(cleanModel.isNotBlank()) { "No model selected for utility generation." }
+            val tempSession = ChatSession(
+                id = "util-temp",
+                title = "Utility",
+                createdAt = 0L,
+                updatedAt = 0L,
+                profileId = profile.id,
+                modelOverride = cleanModel
+            )
+            val userNode = MessageNode(
+                id = "util-node",
+                role = MessageRole.USER,
+                variants = listOf(MessageVariant(id = "util-var", content = prompt))
+            )
+            val fastProfile = profile.copy(
+                thinkingEffort = "none",
+                enableWebSearch = false,
+                enableCodeExecution = false,
+                enableUrlContext = false,
+                enableImageGeneration = false,
+                enableVideoGeneration = false,
+                useBackgroundLongDecode = false
+            )
+            val sb = StringBuilder()
+            streamGeneration(
+                profile = fastProfile,
+                session = tempSession,
+                historyNodes = listOf(userNode)
+            ).collect { upd ->
+                when (upd) {
+                    is StreamUpdate.ContentDelta -> sb.append(upd.delta)
+                    is StreamUpdate.Completed -> if (sb.isEmpty()) sb.append(upd.fullContent)
+                    is StreamUpdate.Error -> error(upd.message)
+                    else -> {}
+                }
+            }
+            sb.toString().trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        }
     }
 
     /**
@@ -747,12 +800,9 @@ object AiProviderEngine {
                     put("store", false)
                 }
 
-                if (profile.useBackgroundLongDecode) {
-                    put("background", true)
-                    put("stream", false)
-                } else {
-                    put("stream", true)
-                }
+                // Always stream SSE in real time so tokens & reasoning flow smoothly at 60/120fps;
+                // if `useBackgroundLongDecode` is enabled and the stream drops, we seamlessly poll `/interactions/{id}`!
+                put("stream", true)
 
                 if (currentPrevInteractionId.isNotBlank()) {
                     put("previous_interaction_id", currentPrevInteractionId)
@@ -784,15 +834,15 @@ object AiProviderEngine {
                     }
                 }
 
-                // Generation config (including long decode, thinking & image configuration)
+                // Generation config (nullable parameters are stripped when null or <= 0)
                 putJsonObject("generation_config") {
                     if (!isGemini4) {
-                        put("temperature", profile.temperature)
-                        put("top_p", profile.topP)
+                        profile.temperature?.let { put("temperature", it) }
+                        profile.topP?.let { put("top_p", it) }
                     }
-                    val resolvedMaxOut = if (isGemini4 && profile.maxOutputTokens == 32768) 65536 else profile.maxOutputTokens
-                    if (resolvedMaxOut > 0) {
-                        put("max_output_tokens", resolvedMaxOut)
+                    val maxOut = profile.maxOutputTokens
+                    if (maxOut != null && maxOut > 0) {
+                        put("max_output_tokens", maxOut)
                     }
                     val rawEffort = profile.thinkingEffort.trim()
                     val lowerEffort = rawEffort.lowercase()
@@ -852,40 +902,25 @@ object AiProviderEngine {
             val base = profile.baseUrl.trimEnd('/')
             val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
             val path = profile.endpointPathOverride.ifBlank { defaultPath }
-            val rawUrl = "$base$path"
+            val ssePath = if (path.contains("alt=sse")) path else if (path.contains("?")) "$path&alt=sse" else "$path?alt=sse"
+            val rawUrl = "$base$ssePath"
             val finalUrl = buildUrlWithAuthQuery(profile, rawUrl)
 
             onRawWire(requestJsonStr, "Dispatching to $finalUrl ...")
 
             val turnToolCalls = mutableListOf< Pair<String, Pair<String, String>> >() // callId -> (name, argsJson)
             val roundThoughtSig = StringBuilder()
+            var receivedAnyStreamContent = false
 
-            if (profile.useBackgroundLongDecode) {
-                // Background Long Decode Polling Mode (`background = true`)
-                val createResp = httpClient.post(finalUrl) {
-                    applyAuthAndCustomHeaders(profile)
-                    contentType(ContentType.Application.Json)
-                    setBody(requestJsonStr)
-                }
-                val createBody = createResp.bodyAsText()
-                onRawWire(requestJsonStr, createBody)
-                if (!createResp.status.isSuccess()) {
-                    error("Gemini Interactions HTTP ${createResp.status.value}: $createBody")
-                }
-
-                var interactionObj = json.parseToJsonElement(createBody).jsonObject
-                var interactionId = interactionObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                var status = interactionObj["status"]?.jsonPrimitive?.contentOrNull ?: "in_progress"
-                if (interactionId.isNotBlank()) {
-                    currentPrevInteractionId = interactionId
-                }
-
+            suspend fun pollInteractionUntilComplete(interactionIdToPoll: String) {
                 var pollCount = 0
-                while ((status == "in_progress" || status == "queued" || status == "processing") && interactionId.isNotBlank()) {
+                var status = "in_progress"
+                var interactionObj = JsonObject(emptyMap())
+                while ((status == "in_progress" || status == "queued" || status == "processing") && interactionIdToPoll.isNotBlank()) {
                     pollCount++
-                    onStatus("Gemini Interactions Background Decode ($status • poll #$pollCount)...", interactionId)
+                    onStatus("Background Poll Recovery ($status • poll #$pollCount)…", interactionIdToPoll)
                     delay(2000L)
-                    val pollUrl = buildUrlWithAuthQuery(profile, "$base${path.substringBefore("?")}/$interactionId")
+                    val pollUrl = buildUrlWithAuthQuery(profile, "$base${path.substringBefore("?")}/$interactionIdToPoll")
                     val pollResp = httpClient.get(pollUrl) {
                         applyAuthAndCustomHeaders(profile)
                     }
@@ -897,26 +932,32 @@ object AiProviderEngine {
                     interactionObj = json.parseToJsonElement(pollText).jsonObject
                     status = interactionObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
                 }
+                if (!receivedAnyStreamContent && interactionObj.isNotEmpty()) {
+                    parseCompletedGeminiInteractionObject(
+                        interactionObj = interactionObj,
+                        onFirstToken = onFirstToken,
+                        onThinking = { th, sig ->
+                            if (sig.isNotEmpty()) roundThoughtSig.append(sig)
+                            onThinking(th, sig)
+                        },
+                        onContent = { txt ->
+                            receivedAnyStreamContent = true
+                            onContent(txt)
+                        },
+                        onMedia = onMedia,
+                        onFunctionCall = { callId, fnName, argsStr ->
+                            turnToolCalls.add(callId to (fnName to argsStr))
+                        },
+                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                            if (id.isNotBlank()) currentPrevInteractionId = id
+                            onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                        }
+                    )
+                }
+            }
 
-                parseCompletedGeminiInteractionObject(
-                    interactionObj = interactionObj,
-                    onFirstToken = onFirstToken,
-                    onThinking = { th, sig ->
-                        if (sig.isNotEmpty()) roundThoughtSig.append(sig)
-                        onThinking(th, sig)
-                    },
-                    onContent = onContent,
-                    onMedia = onMedia,
-                    onFunctionCall = { callId, fnName, argsStr ->
-                        turnToolCalls.add(callId to (fnName to argsStr))
-                    },
-                    onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                        if (id.isNotBlank()) currentPrevInteractionId = id
-                        onUsage(id, inTok, cacheTok, thinkTok, outTok)
-                    }
-                )
-            } else {
-                // Live SSE Streaming Mode (`stream = true`)
+            try {
+                // Live SSE Streaming Mode (`stream = true`) with automatic Background Poll Recovery
                 httpClient.preparePost(finalUrl) {
                     applyAuthAndCustomHeaders(profile)
                     header("Accept", "text/event-stream")
@@ -995,6 +1036,7 @@ object AiProviderEngine {
                                             val txt = (cEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
                                             if (txt.isNotEmpty()) {
                                                 onFirstToken()
+                                                receivedAnyStreamContent = true
                                                 onContent(txt)
                                             }
                                         }
@@ -1022,6 +1064,7 @@ object AiProviderEngine {
                                                         if (currentStreamStepType == "thought") {
                                                             onThinking(txt, "")
                                                         } else {
+                                                            receivedAnyStreamContent = true
                                                             onContent(txt)
                                                         }
                                                     }
@@ -1044,6 +1087,7 @@ object AiProviderEngine {
                                                     if (currentStreamStepType == "thought") {
                                                         onThinking(txt, "")
                                                     } else {
+                                                        receivedAnyStreamContent = true
                                                         onContent(txt)
                                                     }
                                                 }
@@ -1148,23 +1192,33 @@ object AiProviderEngine {
                         onPlainJsonFallback = { fullBody ->
                             onRawWire(requestJsonStr, fullBody)
                             val rootObj = json.parseToJsonElement(fullBody).jsonObject
-                            parseCompletedGeminiInteractionObject(
-                                interactionObj = rootObj,
-                                onFirstToken = onFirstToken,
-                                onThinking = { th, sig ->
-                                    if (sig.isNotEmpty()) roundThoughtSig.append(sig)
-                                    onThinking(th, sig)
-                                },
-                                onContent = onContent,
-                                onMedia = onMedia,
-                                onFunctionCall = { callId, fnName, argsStr ->
-                                    turnToolCalls.add(callId to (fnName to argsStr))
-                                },
-                                onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                    if (id.isNotBlank()) currentPrevInteractionId = id
-                                    onUsage(id, inTok, cacheTok, thinkTok, outTok)
-                                }
-                            )
+                            val id = rootObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                            if (id.isNotBlank()) currentPrevInteractionId = id
+                            val st = rootObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
+                            if ((st == "in_progress" || st == "queued" || st == "processing") && currentPrevInteractionId.isNotBlank()) {
+                                pollInteractionUntilComplete(currentPrevInteractionId)
+                            } else {
+                                parseCompletedGeminiInteractionObject(
+                                    interactionObj = rootObj,
+                                    onFirstToken = onFirstToken,
+                                    onThinking = { th, sig ->
+                                        if (sig.isNotEmpty()) roundThoughtSig.append(sig)
+                                        onThinking(th, sig)
+                                    },
+                                    onContent = { txt ->
+                                        receivedAnyStreamContent = true
+                                        onContent(txt)
+                                    },
+                                    onMedia = onMedia,
+                                    onFunctionCall = { callId, fnName, argsStr ->
+                                        turnToolCalls.add(callId to (fnName to argsStr))
+                                    },
+                                    onUsage = { uId, inTok, cacheTok, thinkTok, outTok ->
+                                        if (uId.isNotBlank()) currentPrevInteractionId = uId
+                                        onUsage(uId, inTok, cacheTok, thinkTok, outTok)
+                                    }
+                                )
+                            }
                         }
                     )
 
@@ -1176,6 +1230,14 @@ object AiProviderEngine {
                             turnToolCalls.add(callId to (fnName to argsStr))
                         }
                     }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (profile.useBackgroundLongDecode && currentPrevInteractionId.isNotBlank() && isTransientOrProxyTimeoutError(e)) {
+                    pollInteractionUntilComplete(currentPrevInteractionId)
+                } else {
+                    throw e
                 }
             }
 
@@ -1526,16 +1588,12 @@ object AiProviderEngine {
                 putJsonObject("generationConfig") {
                     // Gemini 4 Argon enforces SamplingPolicy.never (rejects or ignores temperature/topP)
                     if (!isGemini4) {
-                        put("temperature", profile.temperature)
-                        put("topP", profile.topP)
+                        profile.temperature?.let { put("temperature", it) }
+                        profile.topP?.let { put("topP", it) }
                     }
-                    val resolvedMaxOut = if ((isGemini4 || isGemini3) && profile.maxOutputTokens == 32768) {
-                        65536
-                    } else {
-                        profile.maxOutputTokens
-                    }
-                    if (resolvedMaxOut > 0) {
-                        put("maxOutputTokens", resolvedMaxOut)
+                    val maxOut = profile.maxOutputTokens
+                    if (maxOut != null && maxOut > 0) {
+                        put("maxOutputTokens", maxOut)
                     }
                     if (profile.enableImageGeneration) {
                         putJsonArray("responseModalities") {
@@ -1548,6 +1606,7 @@ object AiProviderEngine {
                     if (!profile.enableImageGeneration || !lowerModel.contains("pro-image")) {
                         val rawEffort = profile.thinkingEffort.trim()
                         val lowerEffort = rawEffort.lowercase()
+                        val thinkBudget = profile.thinkingBudgetTokens
                         if (isThinkingLevelDialect) {
                             val hideThoughts = lowerEffort == "none" || lowerEffort == "off"
                             val resolvedLevel = when {
@@ -1576,13 +1635,13 @@ object AiProviderEngine {
                                 put("includeThoughts", !hideThoughts)
                                 put("thinkingLevel", resolvedLevel)
                             }
-                        } else if (profile.thinkingBudgetTokens > 0) {
+                        } else if (thinkBudget != null && thinkBudget > 0) {
                             // Gemini 2.5 budget dialect
                             val hideThoughts = lowerEffort == "none" || lowerEffort == "off"
                             putJsonObject("thinkingConfig") {
                                 put("includeThoughts", !hideThoughts)
                                 if (!hideThoughts) {
-                                    put("thinkingBudget", profile.thinkingBudgetTokens)
+                                    put("thinkingBudget", thinkBudget)
                                 }
                             }
                         }
@@ -1831,8 +1890,9 @@ object AiProviderEngine {
                     }
                 }
 
-                if (profile.maxOutputTokens > 0) {
-                    put("max_output_tokens", profile.maxOutputTokens)
+                val maxOut = profile.maxOutputTokens
+                if (maxOut != null && maxOut > 0) {
+                    put("max_output_tokens", maxOut)
                 }
 
                 val effort = profile.thinkingEffort.trim()
@@ -1842,8 +1902,8 @@ object AiProviderEngine {
                         put("summary", "auto")
                     }
                 } else {
-                    put("temperature", profile.temperature)
-                    put("top_p", profile.topP)
+                    profile.temperature?.let { put("temperature", it) }
+                    profile.topP?.let { put("top_p", it) }
                 }
 
                 val toolsArr = buildJsonArray {
@@ -2144,10 +2204,11 @@ object AiProviderEngine {
                 putJsonObject("stream_options") {
                     put("include_usage", true)
                 }
-                put("temperature", profile.temperature)
-                put("top_p", profile.topP)
-                if (profile.maxOutputTokens > 0) {
-                    put("max_tokens", profile.maxOutputTokens)
+                profile.temperature?.let { put("temperature", it) }
+                profile.topP?.let { put("top_p", it) }
+                val maxOut = profile.maxOutputTokens
+                if (maxOut != null && maxOut > 0) {
+                    put("max_tokens", maxOut)
                 }
                 val effort = profile.thinkingEffort.trim()
                 if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
@@ -2399,6 +2460,7 @@ object AiProviderEngine {
             loopStep++
             val effort = profile.thinkingEffort.trim()
             val lowerModel = model.lowercase()
+            val thinkBudget = profile.thinkingBudgetTokens ?: 0
             val isAdaptiveEffortModel = lowerModel.contains("5-5") ||
                 lowerModel.contains("5.5") ||
                 lowerModel.contains("5-1") ||
@@ -2411,21 +2473,23 @@ object AiProviderEngine {
                 lowerModel.contains("4.8") ||
                 lowerModel.contains("fable") ||
                 lowerModel.contains("mythos") ||
-                profile.thinkingBudgetTokens <= 0
+                thinkBudget <= 0
 
             val enableBudgetThinking = !isAdaptiveEffortModel &&
                 effort.isNotEmpty() &&
                 !effort.equals("none", ignoreCase = true) &&
-                profile.thinkingBudgetTokens >= 1024 &&
+                thinkBudget >= 1024 &&
                 continuePrefix.isBlank()
 
             val payloadObj = buildJsonObject {
                 put("model", model)
                 put("stream", true)
+                val userMaxOut = profile.maxOutputTokens
+                val resolvedMaxOut = if (userMaxOut != null && userMaxOut > 0) userMaxOut else 64000
                 val maxTok = if (enableBudgetThinking) {
-                    maxOf(profile.maxOutputTokens, profile.thinkingBudgetTokens + 4096)
+                    maxOf(resolvedMaxOut, thinkBudget + 4096)
                 } else {
-                    profile.maxOutputTokens.coerceAtLeast(4096)
+                    resolvedMaxOut
                 }
                 put("max_tokens", maxTok)
 
@@ -2450,11 +2514,11 @@ object AiProviderEngine {
                     put("temperature", 1.0) // Required by Anthropic when budget_tokens thinking is active
                     putJsonObject("thinking") {
                         put("type", "enabled")
-                        put("budget_tokens", profile.thinkingBudgetTokens)
+                        put("budget_tokens", thinkBudget)
                     }
                 } else {
-                    put("temperature", profile.temperature)
-                    put("top_p", profile.topP)
+                    profile.temperature?.let { put("temperature", it) }
+                    profile.topP?.let { put("top_p", it) }
                 }
 
                 // System prompt with automatic ephemeral prompt caching breakpoint
@@ -3305,11 +3369,31 @@ object AiProviderEngine {
             when {
                 line.startsWith("event:") -> {
                     sawSseLine = true
+                    if (dataLines.isNotEmpty()) {
+                        val combined = dataLines.joinToString("\n")
+                        dataLines.clear()
+                        onSseEvent(currentEvent, combined)
+                    }
                     currentEvent = line.removePrefix("event:").trim()
                 }
                 line.startsWith("data:") -> {
                     sawSseLine = true
-                    dataLines.add(line.removePrefix("data:").trim())
+                    val dataVal = line.removePrefix("data:").trim()
+                    if (dataVal == "[DONE]") {
+                        if (dataLines.isNotEmpty()) {
+                            onSseEvent(currentEvent, dataLines.joinToString("\n"))
+                            dataLines.clear()
+                        }
+                        onSseEvent(currentEvent, "[DONE]")
+                        currentEvent = ""
+                    } else if (dataLines.isEmpty() && dataVal.startsWith("{") && dataVal.endsWith("}")) {
+                        // Fast path: complete standalone JSON object on a single data: line — emit immediately
+                        // without waiting for a trailing blank line (prevents proxy buffering & adjacent-record drops!)
+                        onSseEvent(currentEvent, dataVal)
+                        currentEvent = ""
+                    } else {
+                        dataLines.add(dataVal)
+                    }
                 }
                 line.isBlank() -> {
                     if (dataLines.isNotEmpty()) {

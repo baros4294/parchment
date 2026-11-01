@@ -172,8 +172,8 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
             lineHeight = codeLineHeight.sp,
             color = primaryInk
         ),
-        paragraphSpacing = config.paragraphSpacingDp.coerceIn(2f, 36f).dp,
-        maxReadingWidth = config.maxReadingWidthDp.coerceIn(420f, 1800f).dp
+        paragraphSpacing = config.paragraphSpacingDp.coerceIn(6f, 48f).dp,
+        maxReadingWidth = config.maxReadingWidthDp.coerceIn(320f, 3840f).dp
     )
 }
 

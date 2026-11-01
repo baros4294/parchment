@@ -421,6 +421,121 @@ fun SepiaDivider(modifier: Modifier = Modifier) {
 }
 
 /**
+ * Kelivo-style Soft Circular Avatar / Icon Badge (for Assistants, Providers, and Models).
+ */
+@Composable
+fun SepiaAvatarCircle(
+    symbol: String,
+    selected: Boolean = false,
+    sizeDp: Dp = 32.dp,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    val bg by animateColorAsState(
+        targetValue = if (selected) p.accent.copy(alpha = 0.18f) else p.sheetBg.copy(alpha = 0.85f),
+        animationSpec = tween(150)
+    )
+    Box(
+        modifier = modifier
+            .size(sizeDp)
+            .clip(CircleShape)
+            .background(bg)
+            .border(0.8.dp, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            text = symbol.take(2).ifBlank { "✦" },
+            style = p.uiBodyStyle.copy(
+                fontSize = (sizeDp.value * 0.44f).sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (selected) p.accent else p.primaryInk
+            )
+        )
+    }
+}
+
+/**
+ * Kelivo-style Animated Pill Toggle Switch (Pure Compose Foundation).
+ */
+@Composable
+fun SepiaToggleSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) p.accent else p.border.copy(alpha = 0.7f),
+        animationSpec = tween(160)
+    )
+    val thumbBias by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
+        )
+    )
+
+    Box(
+        modifier = modifier
+            .width(42.dp)
+            .height(24.dp)
+            .kissClickable(pressScale = 0.94f) { onCheckedChange(!checked) }
+            .clip(RoundedCornerShape(999.dp))
+            .background(trackColor)
+            .padding(3.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            modifier = Modifier
+                .graphicsLayer {
+                    translationX = thumbBias * 18.dp.toPx()
+                }
+                .size(18.dp)
+                .clip(CircleShape)
+                .background(Color(0xFFFAF6EB))
+        )
+    }
+}
+
+/**
+ * Kelivo-style Settings Preference Toggle Row (Title + Subtitle on left, Switch on right).
+ */
+@Composable
+fun SepiaToggleRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    subtitle: String = "",
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            BasicText(
+                text = title,
+                style = p.uiBodyStyle.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+            )
+            if (subtitle.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                BasicText(
+                    text = subtitle,
+                    style = p.uiLabelStyle.copy(fontSize = 11.sp)
+                )
+            }
+        }
+        SepiaToggleSwitch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
  * Breathing pulse dot for active streaming & long-horizon deep thinking.
  */
 @Composable
@@ -471,8 +586,9 @@ fun SepiaContextGaugeRing(
     modifier: Modifier = Modifier
 ) {
     val p = LocalParchmentPalette.current
-    val safeLimit = contextLimitTokens.coerceAtLeast(1000)
-    val targetFraction = (usedTokens.toFloat() / safeLimit.toFloat()).coerceIn(0f, 1f)
+    val isUnlimited = contextLimitTokens <= 0
+    val safeLimit = if (isUnlimited) 1_000_000 else contextLimitTokens
+    val targetFraction = if (isUnlimited) 0.08f else (usedTokens.toFloat() / safeLimit.toFloat()).coerceIn(0f, 1f)
     val animatedFraction by animateFloatAsState(
         targetValue = targetFraction,
         animationSpec = spring(stiffness = Spring.StiffnessLow)
@@ -481,8 +597,8 @@ fun SepiaContextGaugeRing(
 
     val ringColor by animateColorAsState(
         targetValue = when {
-            targetFraction >= 0.85f -> p.danger
-            targetFraction >= 0.60f -> p.accentSecondary
+            !isUnlimited && targetFraction >= 0.85f -> p.danger
+            !isUnlimited && targetFraction >= 0.60f -> p.accentSecondary
             else -> p.accent
         },
         animationSpec = tween(250)
@@ -495,16 +611,16 @@ fun SepiaContextGaugeRing(
             .clip(shape)
             .background(p.elevatedBg.copy(alpha = 0.6f))
             .border(0.85.dp, p.border.copy(alpha = 0.65f), shape)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 7.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Box(
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
             contentAlignment = Alignment.Center
         ) {
-            Canvas(modifier = Modifier.size(16.dp)) {
-                val strokeWidth = 2.2.dp.toPx()
+            Canvas(modifier = Modifier.size(14.dp)) {
+                val strokeWidth = 2.0.dp.toPx()
                 drawArc(
                     color = p.border.copy(alpha = 0.6f),
                     startAngle = 0f,
@@ -523,14 +639,19 @@ fun SepiaContextGaugeRing(
         }
 
         val costTag = if (sessionCostUsd > 0.0) " • ${formatUsdCost(sessionCostUsd)}" else ""
+        val labelStr = if (isUnlimited) {
+            "${formatCompactTokens(usedTokens)}/∞$costTag"
+        } else {
+            "${formatCompactTokens(usedTokens)}/${formatCompactTokens(safeLimit)} ($percent%)$costTag"
+        }
         BasicText(
-            text = "${formatCompactTokens(usedTokens)}/${formatCompactTokens(safeLimit)} ($percent%)$costTag",
+            text = labelStr,
             maxLines = 1,
             softWrap = false,
             overflow = TextOverflow.Ellipsis,
             style = p.uiLabelStyle.copy(
                 fontFamily = p.codeFontFamily,
-                fontSize = 10.5.sp,
+                fontSize = 10.sp,
                 color = p.narrationInk,
                 fontWeight = FontWeight.Medium
             )

@@ -29,6 +29,16 @@ actual object PlatformBridge {
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
+    @Volatile
+    private var stateFlushCallback: (() -> Unit)? = null
+
+    init {
+        runCatching {
+            Runtime.getRuntime().addShutdownHook(Thread {
+                flushPendingStateNow()
+            })
+        }
+    }
 
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
@@ -57,16 +67,40 @@ actual object PlatformBridge {
 
     actual fun loadAppStateJson(): String? = runCatching {
         val f = stateFile()
-        if (f.exists() && f.isFile) f.readText(Charsets.UTF_8) else null
+        val tmp = File(resolveStorageDir(), "parchment-state.json.tmp")
+        when {
+            f.exists() && f.isFile && f.length() > 10L -> f.readText(Charsets.UTF_8)
+            tmp.exists() && tmp.isFile && tmp.length() > 10L -> tmp.readText(Charsets.UTF_8)
+            else -> null
+        }
     }.getOrNull()
 
+    @Synchronized
     actual fun saveAppStateJson(json: String) {
         runCatching {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
-            stateFile().writeText(json, Charsets.UTF_8)
+            val tmp = File(dir, "parchment-state.json.tmp")
+            val target = stateFile()
+            tmp.writeText(json, Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.writeText(json, Charsets.UTF_8)
+                tmp.delete()
+            }
         }
     }
+
+    actual fun registerStateFlushCallback(callback: () -> Unit) {
+        stateFlushCallback = callback
+    }
+
+    actual fun flushPendingStateNow() {
+        runCatching { stateFlushCallback?.invoke() }
+    }
+
+    actual fun isIgnoringBatteryOptimizations(): Boolean = true
+
+    actual fun requestUnrestrictedBackgroundBattery() {}
 
     actual fun wipeAllLocalData(): Boolean = runCatching {
         val dir = resolveStorageDir()

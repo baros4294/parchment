@@ -66,6 +66,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        PlatformBridge.flushPendingStateNow()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        PlatformBridge.flushPendingStateNow()
+        super.onStop()
+    }
+
     suspend fun requestImportFile(mimeTypes: Array<String>): PickedBinaryFile? {
         val deferred = CompletableDeferred<PickedBinaryFile?>()
         pendingImportDeferred = deferred

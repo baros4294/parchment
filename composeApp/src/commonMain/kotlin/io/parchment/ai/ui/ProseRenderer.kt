@@ -1,5 +1,6 @@
 package io.parchment.ai.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -14,7 +15,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,7 +26,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,15 +41,59 @@ private sealed class ProseBlock {
     data class Paragraph(val text: String) : ProseBlock()
 }
 
+/**
+ * Strips Markdown syntax (`**bold**`, `*italic*`, `# Heading`, `` `code` ``) to clean plain text
+ * for the 1-tap `📋 Copy (Text)` button.
+ */
+fun stripMarkdownToPlainText(raw: String): String {
+    if (raw.isEmpty()) return ""
+    return raw
+        .replace(Regex("```[a-zA-Z0-9_-]*\\n?"), "")
+        .replace("```", "")
+        .replace(Regex("(?m)^#{1,6}\\s+"), "")
+        .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+        .replace(Regex("__([^_]+)__"), "$1")
+        .replace(Regex("(?<!\\*)\\*([^*\n]+)\\*(?!\\*)"), "$1")
+        .replace(Regex("`([^`]+)`"), "$1")
+        .trim()
+}
+
 @Composable
 fun LiteraryProseRenderer(
     text: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compactReasoningMode: Boolean = false,
+    enableMarkdown: Boolean = true,
+    enableMath: Boolean = true,
+    enableInlineDollarMath: Boolean = true,
+    autoCollapseCodeBlocks: Boolean = false
 ) {
     val p = LocalParchmentPalette.current
     val clipboard = LocalClipboardManager.current
 
-    val blocks = remember(text) { parseProseBlocks(text) }
+    val baseTextStyle = if (compactReasoningMode) {
+        p.uiBodyStyle.copy(
+            fontFamily = p.proseFontFamily,
+            fontSize = (p.config.proseFontSizeSp * 0.86f).coerceAtLeast(13f).sp,
+            lineHeight = (p.config.proseFontSizeSp * 1.36f).coerceAtLeast(19f).sp,
+            color = p.narrationInk
+        )
+    } else {
+        p.proseStyle
+    }
+
+    if (!enableMarkdown) {
+        SelectionContainer {
+            BasicText(
+                text = text,
+                style = baseTextStyle,
+                modifier = modifier.fillMaxWidth()
+            )
+        }
+        return
+    }
+
+    val blocks = remember(text, enableMath) { parseProseBlocks(text, enableMath) }
 
     SelectionContainer {
         Column(modifier = modifier.fillMaxWidth()) {
@@ -56,48 +103,77 @@ fun LiteraryProseRenderer(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 10.dp),
+                                .padding(vertical = if (compactReasoningMode) 4.dp else 10.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             BasicText(
                                 text = "—  ✦  —",
-                                style = p.proseStyle.copy(
+                                style = baseTextStyle.copy(
                                     color = p.accentSecondary,
-                                    fontSize = (p.config.proseFontSizeSp * 0.9f).sp
+                                    fontSize = (p.config.proseFontSizeSp * 0.88f).sp
                                 )
                             )
                         }
                     }
 
                     is ProseBlock.Heading -> {
-                        val scale = when (block.level) {
-                            1 -> 1.38f
-                            2 -> 1.22f
-                            else -> 1.1f
+                        val scale = if (compactReasoningMode) {
+                            when (block.level) {
+                                1 -> 1.12f
+                                2 -> 1.06f
+                                else -> 1.02f
+                            }
+                        } else {
+                            when (block.level) {
+                                1 -> 1.34f
+                                2 -> 1.20f
+                                else -> 1.08f
+                            }
+                        }
+                        val styledHeading = remember(block.text, p, enableMath, enableInlineDollarMath) {
+                            styleLiteraryParagraph(
+                                raw = block.text,
+                                palette = p,
+                                indentChars = 0,
+                                enableMath = enableMath,
+                                enableInlineDollarMath = enableInlineDollarMath
+                            )
                         }
                         BasicText(
-                            text = block.text,
-                            style = p.proseStyle.copy(
-                                fontSize = (p.config.proseFontSizeSp * scale).sp,
+                            text = styledHeading,
+                            style = baseTextStyle.copy(
+                                fontSize = (baseTextStyle.fontSize.value * scale).sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = p.primaryInk
                             ),
-                            modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
+                            modifier = Modifier.padding(
+                                top = if (compactReasoningMode) 3.dp else 6.dp,
+                                bottom = if (compactReasoningMode) 2.dp else 4.dp
+                            )
                         )
                     }
 
                     is ProseBlock.BlockQuote -> {
+                        val styledQuote = remember(block.text, p, enableMath, enableInlineDollarMath) {
+                            styleLiteraryParagraph(
+                                raw = block.text,
+                                palette = p,
+                                indentChars = 0,
+                                enableMath = enableMath,
+                                enableInlineDollarMath = enableInlineDollarMath
+                            )
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .background(p.elevatedBg.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                                .border(1.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                                .padding(vertical = 3.dp)
+                                .background(p.elevatedBg.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                .border(0.85.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             BasicText(
-                                text = styleLiteraryParagraph(block.text, p, indentChars = 0),
-                                style = p.proseStyle.copy(
+                                text = styledQuote,
+                                style = baseTextStyle.copy(
                                     fontStyle = FontStyle.Italic,
                                     color = p.narrationInk
                                 )
@@ -106,14 +182,17 @@ fun LiteraryProseRenderer(
                     }
 
                     is ProseBlock.CodeFence -> {
-                        val shape = RoundedCornerShape(6.dp)
+                        var isCollapsed by remember(block.code, autoCollapseCodeBlocks) {
+                            mutableStateOf(autoCollapseCodeBlocks)
+                        }
+                        val shape = RoundedCornerShape(8.dp)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp)
+                                .padding(vertical = 4.dp)
                                 .clip(shape)
                                 .background(p.elevatedBg)
-                                .border(1.dp, p.border, shape)
+                                .border(0.85.dp, p.border, shape)
                         ) {
                             Row(
                                 modifier = Modifier
@@ -124,38 +203,54 @@ fun LiteraryProseRenderer(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 BasicText(
-                                    text = block.language.ifBlank { "code" },
+                                    text = "${block.language.ifBlank { "code" }} (${block.code.lines().size} lines)",
                                     style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                 )
-                                SepiaButton(
-                                    text = "Copy",
-                                    compact = true,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { clipboard.setText(AnnotatedString(block.code)) }
-                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    SepiaButton(
+                                        text = if (isCollapsed) "▸ Expand" else "▾ Collapse",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        onClick = { isCollapsed = !isCollapsed }
+                                    )
+                                    SepiaButton(
+                                        text = "Copy",
+                                        compact = true,
+                                        style = SepiaButtonStyle.OUTLINE,
+                                        onClick = { clipboard.setText(AnnotatedString(block.code)) }
+                                    )
+                                }
                             }
-                            SepiaDivider()
-                            BasicText(
-                                text = block.code,
-                                style = p.monoStyle,
-                                modifier = Modifier.padding(12.dp)
-                            )
+                            AnimatedVisibility(visible = !isCollapsed) {
+                                Column {
+                                    SepiaDivider()
+                                    BasicText(
+                                        text = block.code,
+                                        style = p.monoStyle,
+                                        modifier = Modifier.padding(11.dp)
+                                    )
+                                }
+                            }
                         }
                     }
 
                     is ProseBlock.MathBlock -> {
-                        LatexMathRenderer.DisplayLatexBlock(rawLatex = block.rawLatex)
+                        if (enableMath) {
+                            LatexMathRenderer.DisplayLatexBlock(rawLatex = block.rawLatex)
+                        } else {
+                            BasicText(text = block.rawLatex, style = p.monoStyle)
+                        }
                     }
 
                     is ProseBlock.TableBlock -> {
-                        val shape = RoundedCornerShape(6.dp)
+                        val shape = RoundedCornerShape(7.dp)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp)
+                                .padding(vertical = 5.dp)
                                 .clip(shape)
                                 .background(p.cardBg)
-                                .border(1.dp, p.border, shape)
+                                .border(0.85.dp, p.border, shape)
                         ) {
                             if (block.headers.isNotEmpty()) {
                                 Row(
@@ -168,7 +263,7 @@ fun LiteraryProseRenderer(
                                     block.headers.forEach { h ->
                                         Box(modifier = Modifier.weight(1f)) {
                                             BasicText(
-                                                text = styleLiteraryParagraph(h, p, indentChars = 0),
+                                                text = styleLiteraryParagraph(h, p, 0, enableMath, enableInlineDollarMath),
                                                 style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
                                             )
                                         }
@@ -189,7 +284,7 @@ fun LiteraryProseRenderer(
                                         Box(modifier = Modifier.weight(1f)) {
                                             val cellText = rowCells.getOrElse(cIdx) { "" }
                                             BasicText(
-                                                text = styleLiteraryParagraph(cellText, p, indentChars = 0),
+                                                text = styleLiteraryParagraph(cellText, p, 0, enableMath, enableInlineDollarMath),
                                                 style = p.uiBodyStyle
                                             )
                                         }
@@ -203,29 +298,31 @@ fun LiteraryProseRenderer(
                     }
 
                     is ProseBlock.Paragraph -> {
-                        val styled = remember(block.text, p) {
+                        val styled = remember(block.text, p, compactReasoningMode, enableMath, enableInlineDollarMath) {
                             styleLiteraryParagraph(
                                 raw = block.text,
                                 palette = p,
-                                indentChars = p.config.firstLineIndentChars
+                                indentChars = if (compactReasoningMode) 0 else p.config.firstLineIndentChars,
+                                enableMath = enableMath,
+                                enableInlineDollarMath = enableInlineDollarMath
                             )
                         }
                         BasicText(
                             text = styled,
-                            style = p.proseStyle
+                            style = baseTextStyle
                         )
                     }
                 }
 
                 if (index < blocks.lastIndex) {
-                    Spacer(Modifier.height(p.paragraphSpacing))
+                    Spacer(Modifier.height(if (compactReasoningMode) 10.dp else p.paragraphSpacing.coerceAtLeast(16.dp)))
                 }
             }
         }
     }
 }
 
-private fun parseProseBlocks(raw: String): List<ProseBlock> {
+private fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<ProseBlock> {
     if (raw.isBlank()) return emptyList()
     val lines = raw.lines()
     val blocks = mutableListOf<ProseBlock>()
@@ -255,14 +352,14 @@ private fun parseProseBlocks(raw: String): List<ProseBlock> {
                     codeBuf.append(lines[i])
                     i++
                 }
-                if (lang.equals("math", ignoreCase = true) || lang.equals("latex", ignoreCase = true) || lang.equals("tex", ignoreCase = true)) {
+                if (enableMath && (lang.equals("math", ignoreCase = true) || lang.equals("latex", ignoreCase = true) || lang.equals("tex", ignoreCase = true))) {
                     blocks.add(ProseBlock.MathBlock(codeBuf.toString()))
                 } else {
                     blocks.add(ProseBlock.CodeFence(lang, codeBuf.toString()))
                 }
             }
 
-            trimmed.startsWith("$$") -> {
+            enableMath && trimmed.startsWith("$$") -> {
                 flushPara()
                 if (trimmed.length > 4 && trimmed.endsWith("$$")) {
                     blocks.add(ProseBlock.MathBlock(trimmed.removeSurrounding("$$")))
@@ -287,7 +384,7 @@ private fun parseProseBlocks(raw: String): List<ProseBlock> {
                 }
             }
 
-            trimmed.startsWith("\\[") -> {
+            enableMath && trimmed.startsWith("\\[") -> {
                 flushPara()
                 if (trimmed.endsWith("\\]")) {
                     blocks.add(ProseBlock.MathBlock(trimmed.removePrefix("\\[").removeSuffix("\\]")))
@@ -361,8 +458,18 @@ private fun parseProseBlocks(raw: String): List<ProseBlock> {
             }
 
             else -> {
-                if (currentPara.isNotEmpty()) currentPara.append('\n')
-                currentPara.append(line)
+                // Treat each non-empty newline in AI output as its own distinct paragraph block
+                // (or group consecutive bullet items nicely with 8.dp spacing) so single-\n and double-\n
+                // paragraphs never look like a single wrapped wall of text on mobile or desktop!
+                flushPara()
+                val leadingSpaces = line.takeWhile { it == ' ' || it == '\t' }
+                val afterSpaces = line.drop(leadingSpaces.length)
+                val normalizedLine = when {
+                    afterSpaces.startsWith("* ") -> "$leadingSpaces• ${afterSpaces.removePrefix("* ")}"
+                    afterSpaces.startsWith("- ") -> "$leadingSpaces• ${afterSpaces.removePrefix("- ")}"
+                    else -> line
+                }
+                blocks.add(ProseBlock.Paragraph(normalizedLine.trim()))
             }
         }
         i++
@@ -374,7 +481,9 @@ private fun parseProseBlocks(raw: String): List<ProseBlock> {
 private fun styleLiteraryParagraph(
     raw: String,
     palette: ParchmentPalette,
-    indentChars: Int
+    indentChars: Int,
+    enableMath: Boolean = true,
+    enableInlineDollarMath: Boolean = true
 ): AnnotatedString = buildAnnotatedString {
     val indentPrefix = if (indentChars > 0) " ".repeat(indentChars * 2) else ""
     val text = indentPrefix + raw
@@ -385,7 +494,7 @@ private fun styleLiteraryParagraph(
         val ch = text[i]
         when {
             // Inline Display Math: $$...$$
-            i + 1 < n && ch == '$' && text[i + 1] == '$' -> {
+            enableMath && i + 1 < n && ch == '$' && text[i + 1] == '$' -> {
                 val endIdx = text.indexOf("$$", startIndex = i + 2)
                 if (endIdx != -1) {
                     val innerLatex = text.substring(i + 2, endIdx)
@@ -398,7 +507,7 @@ private fun styleLiteraryParagraph(
             }
 
             // Inline LaTeX Math: \( ... \)
-            i + 1 < n && ch == '\\' && text[i + 1] == '(' -> {
+            enableMath && i + 1 < n && ch == '\\' && text[i + 1] == '(' -> {
                 val endIdx = text.indexOf("\\)", startIndex = i + 2)
                 if (endIdx != -1) {
                     val innerLatex = text.substring(i + 2, endIdx)
@@ -411,9 +520,9 @@ private fun styleLiteraryParagraph(
             }
 
             // Inline LaTeX Math: $...$ (avoid matching currency like "$10 and $20")
-            ch == '$' && (i + 1 < n && !text[i + 1].isWhitespace()) -> {
+            enableMath && enableInlineDollarMath && ch == '$' && (i + 1 < n && !text[i + 1].isWhitespace()) -> {
                 val endIdx = text.indexOf('$', startIndex = i + 1)
-                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace()) {
+                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace() && !text.substring(i + 1, endIdx).contains('\n')) {
                     val innerLatex = text.substring(i + 1, endIdx)
                     val looksLikeCurrencyOnly = innerLatex.all { it.isDigit() || it == '.' || it == ',' }
                     if (!looksLikeCurrencyOnly) {
@@ -423,6 +532,67 @@ private fun styleLiteraryParagraph(
                         append(ch)
                         i++
                     }
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Bold + Italic: ***...***
+            i + 2 < n && ch == '*' && text[i + 1] == '*' && text[i + 2] == '*' -> {
+                val endIdx = text.indexOf("***", startIndex = i + 3)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 3, endIdx)
+                    pushStyle(
+                        SpanStyle(
+                            color = palette.primaryInk,
+                            fontWeight = FontWeight.Bold,
+                            fontStyle = FontStyle.Italic
+                        )
+                    )
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 3
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Bold: **...**
+            i + 1 < n && ch == '*' && text[i + 1] == '*' -> {
+                val endIdx = text.indexOf("**", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 2, endIdx)
+                    pushStyle(
+                        SpanStyle(
+                            color = palette.primaryInk,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Italic Narration / Action: *...* (only when not followed by whitespace)
+            ch == '*' && i + 1 < n && !text[i + 1].isWhitespace() -> {
+                val endIdx = text.indexOf('*', startIndex = i + 1)
+                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace() && !text.substring(i + 1, endIdx).contains('\n')) {
+                    val inner = text.substring(i + 1, endIdx)
+                    pushStyle(
+                        SpanStyle(
+                            color = palette.narrationInk,
+                            fontStyle = FontStyle.Italic
+                        )
+                    )
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 1
                 } else {
                     append(ch)
                     i++
@@ -442,46 +612,6 @@ private fun styleLiteraryParagraph(
                         )
                     )
                     append(segment)
-                    pop()
-                    i = endIdx + 1
-                } else {
-                    append(ch)
-                    i++
-                }
-            }
-
-            // Bold: **...**
-            i + 1 < n && ch == '*' && text[i + 1] == '*' -> {
-                val endIdx = text.indexOf("**", startIndex = i + 2)
-                if (endIdx != -1) {
-                    val inner = text.substring(i + 2, endIdx)
-                    pushStyle(
-                        SpanStyle(
-                            color = palette.primaryInk,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    )
-                    append(inner)
-                    pop()
-                    i = endIdx + 2
-                } else {
-                    append(ch)
-                    i++
-                }
-            }
-
-            // Italic Narration / Action: *...*
-            ch == '*' -> {
-                val endIdx = text.indexOf('*', startIndex = i + 1)
-                if (endIdx != -1 && endIdx > i + 1) {
-                    val inner = text.substring(i + 1, endIdx)
-                    pushStyle(
-                        SpanStyle(
-                            color = palette.narrationInk,
-                            fontStyle = FontStyle.Italic
-                        )
-                    )
-                    append(inner)
                     pop()
                     i = endIdx + 1
                 } else {
