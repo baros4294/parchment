@@ -50,9 +50,9 @@ Type: filesandordirs; Name: "{userappdata}\ParchmentAI"
 Type: filesandordirs; Name: "{%USERPROFILE}\.parchment-ai"
 
 [Code]
-procedure CurStepChanged(CurStep: TUninstallStep);
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurStep = usPostUninstall then
+  if CurUninstallStep = usPostUninstall then
   begin
     DelTree(ExpandConstant('{localappdata}\ParchmentAI'), True, True, True);
     DelTree(ExpandConstant('{userappdata}\ParchmentAI'), True, True, True);

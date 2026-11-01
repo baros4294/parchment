@@ -31,8 +31,12 @@ jobs:
           java-version: "21"
           cache: "gradle"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK Licenses
+        run: |
+          SDKMGR=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses > /dev/null || true
+          fi
 
       - name: Generate Self-Signed Release Keystore (if not provided via secrets)
         run: |
