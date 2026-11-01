@@ -38,31 +38,10 @@ data class ProviderProfile(
     val apiKey: String = "",
     val authHeaderMode: AuthHeaderMode = AuthHeaderMode.NATIVE,
     val customHeadersRaw: String = "",
-    val defaultModel: String = when (protocol) {
-        ProviderProtocol.GEMINI_INTERACTIONS -> "gemini-4-argon"
-        ProviderProtocol.OPENAI_RESPONSES -> "gpt-5"
-        ProviderProtocol.ANTHROPIC_MESSAGES -> "claude-opus-4-6"
-    },
-    val savedModels: List<String> = when (protocol) {
-        ProviderProtocol.GEMINI_INTERACTIONS -> listOf(
-            "gemini-4-argon",
-            "gemini-4-argon-long-decode",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash"
-        )
-        ProviderProtocol.OPENAI_RESPONSES -> listOf(
-            "gpt-5",
-            "o3",
-            "o4-mini",
-            "gpt-4.1"
-        )
-        ProviderProtocol.ANTHROPIC_MESSAGES -> listOf(
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-3-7-sonnet-latest"
-        )
-    },
-    val timeoutMinutes: Int = 60, // 60 min default for Gemini 4 Argon long decode
+    val defaultModel: String = "",
+    val savedModels: List<String> = emptyList(),
+    val autoFetchModels: Boolean = true,
+    val timeoutMinutes: Int = 60,
     val useStatefulChaining: Boolean = true,
     val useBackgroundLongDecode: Boolean = false,
     val useLegacyFallbackEndpoint: Boolean = false,
@@ -250,8 +229,12 @@ data class ThemeConfig(
     val accentHex: String = "#9E4730",
     val accentSecondaryHex: String = "#B57C2E",
     val dangerHex: String = "#A62B2B",
-    val proseFontFamily: String = "Serif", // Serif, Sans, Monospace
+    val proseFontFamily: String = "Serif", // Serif, Sans, Monospace, Custom
+    val customProseFontPath: String = "",
+    val codeFontFamily: String = "Monospace", // Monospace, Sans, Serif, Custom
+    val customCodeFontPath: String = "",
     val proseFontSizeSp: Float = 17.5f,
+    val codeFontSizeSp: Float = 12.5f,
     val proseLineHeightMultiplier: Float = 1.62f,
     val paragraphSpacingDp: Float = 12f,
     val firstLineIndentChars: Int = 0,

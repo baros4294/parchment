@@ -1,5 +1,7 @@
 package io.parchment.ai.platform
 
+import androidx.compose.ui.text.font.FontFamily
+
 data class PickedBinaryFile(
     val fileName: String,
     val bytes: ByteArray
@@ -17,10 +19,12 @@ expect object PlatformBridge {
     fun saveAppStateJson(json: String)
     fun wipeAllLocalData(): Boolean
 
-    // Native File Pickers for PNG / JSON Card & System Prompt Import/Export
+    // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?
     suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String?
     suspend fun pickWorkspaceDirectory(currentPath: String): String?
+    suspend fun pickFontFile(dialogTitle: String = "Select .TTF or .OTF Font"): String?
+    fun loadCustomFontFamily(fontPath: String): FontFamily?
 
     // Built-in Local File System Agent Harness (Sandboxed to workspaceRoot)
     fun workspaceList(workspaceRoot: String, relativePath: String = "", recursive: Boolean = false): Result<String>

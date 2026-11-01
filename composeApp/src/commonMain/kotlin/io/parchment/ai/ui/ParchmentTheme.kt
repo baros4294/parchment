@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.ThemeConfig
+import io.parchment.ai.platform.PlatformBridge
 
 @Immutable
 data class ParchmentPalette(
@@ -29,6 +30,7 @@ data class ParchmentPalette(
     val accentSecondary: Color,
     val danger: Color,
     val proseFontFamily: FontFamily,
+    val codeFontFamily: FontFamily,
     val proseStyle: TextStyle,
     val uiBodyStyle: TextStyle,
     val uiLabelStyle: TextStyle,
@@ -73,14 +75,30 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     val accentSecondary = parseHexColor(config.accentSecondaryHex, Color(0xFFB57C2E))
     val danger = parseHexColor(config.dangerHex, Color(0xFFA62B2B))
 
-    val proseFont = when (config.proseFontFamily.lowercase()) {
+    val customProseLoaded = if (config.customProseFontPath.isNotBlank()) {
+        PlatformBridge.loadCustomFontFamily(config.customProseFontPath)
+    } else null
+
+    val proseFont = customProseLoaded ?: when (config.proseFontFamily.lowercase()) {
         "sans", "sans-serif" -> FontFamily.SansSerif
         "mono", "monospace" -> FontFamily.Monospace
         else -> FontFamily.Serif
     }
 
+    val customCodeLoaded = if (config.customCodeFontPath.isNotBlank()) {
+        PlatformBridge.loadCustomFontFamily(config.customCodeFontPath)
+    } else null
+
+    val codeFont = customCodeLoaded ?: when (config.codeFontFamily.lowercase()) {
+        "sans", "sans-serif" -> FontFamily.SansSerif
+        "serif" -> FontFamily.Serif
+        else -> FontFamily.Monospace
+    }
+
     val fontSize = config.proseFontSizeSp.coerceIn(12f, 32f)
     val lineHeight = (fontSize * config.proseLineHeightMultiplier.coerceIn(1.1f, 2.5f))
+    val codeSize = config.codeFontSizeSp.coerceIn(10f, 28f)
+    val codeLineHeight = (codeSize * 1.42f)
 
     return ParchmentPalette(
         config = config,
@@ -97,6 +115,7 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
         accentSecondary = accentSecondary,
         danger = danger,
         proseFontFamily = proseFont,
+        codeFontFamily = codeFont,
         proseStyle = TextStyle(
             fontFamily = proseFont,
             fontSize = fontSize.sp,
@@ -105,29 +124,29 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
             fontWeight = FontWeight.Normal
         ),
         uiBodyStyle = TextStyle(
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = customProseLoaded ?: FontFamily.SansSerif,
             fontSize = 13.5.sp,
             lineHeight = 19.sp,
             color = primaryInk
         ),
         uiLabelStyle = TextStyle(
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = customProseLoaded ?: FontFamily.SansSerif,
             fontSize = 11.5.sp,
             lineHeight = 15.sp,
             color = mutedInk,
             fontWeight = FontWeight.Medium
         ),
         uiHeaderStyle = TextStyle(
-            fontFamily = FontFamily.Serif,
+            fontFamily = proseFont,
             fontSize = 17.sp,
             lineHeight = 23.sp,
             color = primaryInk,
             fontWeight = FontWeight.SemiBold
         ),
         monoStyle = TextStyle(
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
+            fontFamily = codeFont,
+            fontSize = codeSize.sp,
+            lineHeight = codeLineHeight.sp,
             color = primaryInk
         ),
         paragraphSpacing = config.paragraphSpacingDp.coerceIn(2f, 36f).dp,

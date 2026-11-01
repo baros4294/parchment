@@ -123,7 +123,7 @@ fun LiteraryProseRenderer(
                             ) {
                                 BasicText(
                                     text = block.language.ifBlank { "code" },
-                                    style = p.uiLabelStyle.copy(fontFamily = FontFamily.Monospace)
+                                    style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                 )
                                 SepiaButton(
                                     text = "Copy",
@@ -324,7 +324,8 @@ private fun styleLiteraryParagraph(
                     val inner = text.substring(i + 1, endIdx)
                     pushStyle(
                         SpanStyle(
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = palette.codeFontFamily,
+                            fontSize = palette.config.codeFontSizeSp.sp,
                             background = palette.elevatedBg,
                             color = palette.accent
                         )

@@ -6,9 +6,10 @@
 
 ## Core Architecture & Highlights
 
-### 1. First-Class Native Bleeding-Edge Wire Protocols
+### 1. First-Class Native Bleeding-Edge Wire Protocols (Zero Hardcoded Models)
+* **Automatic & Manual Model Fetching:** Automatically fetches available models from `/v1beta/models` or `/v1/models` when an API key or custom proxy URL is provided, or lets you type and save any Model ID manually.
 * **Google Gemini Interactions API (`/v1beta/interactions` & `/v1/interactions`):**
-  * Defaults to **`gemini-4-argon`** with **Long Decode** support (60-minute socket timeouts, live SSE streaming via `?alt=sse`, AND optional **`background: true` server-side async polling** + server-side `/cancel` so long chapter decodes survive network drops or phone screen locks).
+  * Full **Long Decode** support (60-minute socket timeouts, live SSE streaming via `?alt=sse`, AND optional **`background: true` server-side async polling** + server-side `/cancel` so long chapter decodes survive network drops or phone screen locks).
   * Stateful multi-turn chaining via `previous_interaction_id` (plus 1-click toggle for stateless `store: false` proxy mode).
   * Built-in grounding toggles (`google_search`, `code_execution`, `url_context`) and optional `:streamGenerateContent` fallback for older Gemini proxies.
 * **OpenAI Responses API (`/v1/responses`):**
@@ -29,7 +30,7 @@
 * **Manuscript View vs. Editorial Turns View:** Read and co-write like a continuous book manuscript or structured turns.
 * **Branching & Swipe Variants (`← 2 / 4 →`):** In-place prose editing, mid-sentence **`Continue →`**, and non-destructive story branching.
 * **Cache-Friendly Author's Note:** Dynamic scene direction injected at a configurable depth from the bottom of history so your top prompt cache stays intact.
-* **100% Customizable Theme Studio:** Edit any hex color, font family (`Serif`, `Sans`, `Monospace`), font size, line height, paragraph spacing, or page width, and import/export `.theme.json`.
+* **100% Customizable Theme Studio & Custom `.TTF` / `.OTF` Fonts:** Load any custom `.ttf` or `.otf` font from your machine independently for **Prose / UI** and **Code / Inspector blocks**, edit any hex color, font size, line height, paragraph spacing, or page width, and import/export `.theme.json`.
 
 ### 4. `.png` & `.json` Card & System Prompt Protocol
 * Pure-Kotlin binary PNG chunk parser and injector (`tEXt` & `iTXt` chunks with CRC32 verification and uncompressed zlib image synthesis).

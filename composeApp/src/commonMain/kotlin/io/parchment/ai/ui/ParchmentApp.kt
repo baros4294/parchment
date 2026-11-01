@@ -115,6 +115,28 @@ fun ParchmentApp() {
         persist(appState.copy(profiles = newProfiles))
     }
 
+    // Automatically fetch models when API key or custom proxy Base URL is configured and savedModels is empty
+    LaunchedEffect(activeProfile.id, activeProfile.baseUrl, activeProfile.apiKey, activeProfile.autoFetchModels) {
+        val hasCredentialsOrCustomProxy = activeProfile.apiKey.isNotBlank() ||
+            activeProfile.baseUrl.trimEnd('/') != activeProfile.protocol.defaultBaseUrl.trimEnd('/')
+        if (activeProfile.autoFetchModels && hasCredentialsOrCustomProxy && activeProfile.savedModels.isEmpty()) {
+            AiProviderEngine.fetchAvailableModels(activeProfile).onSuccess { fetched ->
+                if (fetched.isNotEmpty()) {
+                    val chosenDefault = activeProfile.defaultModel.ifBlank { fetched.first() }
+                    updateActiveProfile {
+                        it.copy(
+                            savedModels = fetched,
+                            defaultModel = chosenDefault
+                        )
+                    }
+                    if (activeSession.modelOverride.isBlank()) {
+                        updateActiveSession { it.copy(modelOverride = chosenDefault) }
+                    }
+                }
+            }
+        }
+    }
+
     fun triggerGeneration(
         historyForCall: List<MessageNode>,
         targetAssistantNodeId: String,
@@ -500,6 +522,7 @@ fun ParchmentApp() {
                                             )
                                         )
                                     },
+                                    onNotify = { bannerNotification = it },
                                     onClose = { activeModal = ActiveModalTab.NONE }
                                 )
                             }
@@ -630,13 +653,18 @@ private fun TopEditorialBar(
                 onClick = onToggleSidebar
             )
 
-            Column(modifier = Modifier.padding(horizontal = 4.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 4.dp)
+                    .clickable { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
+            ) {
                 BasicText(
                     text = activeSession.title,
                     style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                 )
+                val modelLabel = activeModel.ifBlank { "No model selected (click to fetch or enter)" }
                 BasicText(
-                    text = "${activeProfile.name} • $activeModel",
+                    text = "${activeProfile.name} • $modelLabel",
                     style = p.uiLabelStyle.copy(color = p.accent)
                 )
             }
@@ -748,7 +776,7 @@ private fun SessionSidebar(
                             )
                         )
                         BasicText(
-                            text = "${prof.defaultModel} • ${prof.protocol.defaultEndpointPath}",
+                            text = "${prof.defaultModel.ifBlank { "no model set" }} • ${prof.protocol.defaultEndpointPath}",
                             style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
                         )
                     }
@@ -944,7 +972,7 @@ private fun ManuscriptViewport(
                             } else {
                                 "Workspace Root: ${activeSession.workspacePath}"
                             },
-                            style = p.uiLabelStyle.copy(fontFamily = FontFamily.Monospace)
+                            style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             SepiaButton(
@@ -1102,7 +1130,7 @@ private fun ManuscriptViewport(
                     if (streamingInteractionId.isNotBlank()) {
                         BasicText(
                             text = "Stateful ID: $streamingInteractionId",
-                            style = p.uiLabelStyle.copy(fontFamily = FontFamily.Monospace, fontSize = 10.5.sp)
+                            style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily, fontSize = 10.5.sp)
                         )
                     }
                 }
@@ -1402,7 +1430,7 @@ private fun MessageTurnItem(
                     if (activeVar.thinkingSignature.isNotBlank()) {
                         BasicText(
                             text = "Cryptographic Signature Preserved (${activeVar.thinkingSignature.length} chars)",
-                            style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
                         )
                     }
                 }
@@ -1891,7 +1919,7 @@ private fun PromptsAndCardsPanel(
 }
 
 // ============================================================================================
-// PANEL 2: BLEEDING-EDGE PROVIDERS, CUSTOM BASE URL PROXY & GEMINI 4 ARGON CONFIG
+// PANEL 2: BLEEDING-EDGE PROVIDERS, CUSTOM BASE URL PROXY & MODEL FETCHER
 // ============================================================================================
 @Composable
 private fun ProvidersAndProxyPanel(
@@ -1902,9 +1930,43 @@ private fun ProvidersAndProxyPanel(
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onAddProfile: (ProviderProtocol) -> Unit,
+    onNotify: (String) -> Unit,
     onClose: () -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val scope = rememberCoroutineScope()
+    var isFetchingModels by remember { mutableStateOf(false) }
+    var fetchStatusMessage by remember(activeProfile.id) { mutableStateOf("") }
+    var manualModelToAdd by remember(activeProfile.id) { mutableStateOf("") }
+
+    fun triggerFetchModels() {
+        if (isFetchingModels) return
+        isFetchingModels = true
+        fetchStatusMessage = "Fetching models from ${activeProfile.baseUrl}..."
+        scope.launch {
+            AiProviderEngine.fetchAvailableModels(activeProfile).fold(
+                onSuccess = { fetched ->
+                    val merged = (fetched + activeProfile.savedModels).distinct()
+                    val chosen = activeProfile.defaultModel.ifBlank { merged.firstOrNull().orEmpty() }
+                    onUpdateProfile {
+                        it.copy(
+                            savedModels = merged,
+                            defaultModel = chosen
+                        )
+                    }
+                    if (activeSession.modelOverride.isBlank() && chosen.isNotBlank()) {
+                        onUpdateSession { it.copy(modelOverride = chosen) }
+                    }
+                    fetchStatusMessage = "Fetched ${fetched.size} models from endpoint."
+                    onNotify("Fetched ${fetched.size} models from ${activeProfile.name}.")
+                },
+                onFailure = { err ->
+                    fetchStatusMessage = "Fetch failed: ${err.message}"
+                }
+            )
+            isFetchingModels = false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1920,11 +1982,11 @@ private fun ProvidersAndProxyPanel(
         ) {
             Column {
                 BasicText(
-                    text = "Bleeding-Edge Providers & Custom Base URL Proxy",
+                    text = "Bleeding-Edge Providers, Model Fetcher & Custom Proxy",
                     style = p.uiHeaderStyle
                 )
                 BasicText(
-                    text = "First-class native drivers for Google Gemini Interactions API (Gemini 4 Argon Long Decode), OpenAI Responses API, and Anthropic Messages API.",
+                    text = "Native drivers for Google Gemini Interactions API, OpenAI Responses API, and Anthropic Messages API. Zero hardcoded models.",
                     style = p.uiLabelStyle
                 )
             }
@@ -1941,8 +2003,9 @@ private fun ProvidersAndProxyPanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 appState.profiles.forEach { prof ->
+                    val modelTag = prof.defaultModel.ifBlank { "unset" }
                     SepiaChip(
-                        label = "${prof.name} (${prof.defaultModel})",
+                        label = "${prof.name} ($modelTag)",
                         selected = prof.id == activeProfile.id,
                         onClick = { onSelectProfile(prof.id) }
                     )
@@ -1974,9 +2037,9 @@ private fun ProvidersAndProxyPanel(
             }
         }
 
-        // Endpoint, Proxy & Auth Configuration
+        // Endpoint, Proxy, Auth & Dynamic Model Management
         SepiaSectionCard(
-            title = "Endpoint, Custom Proxy & Authentication (${activeProfile.protocol.displayName})",
+            title = "Endpoint, Custom Proxy & Model Selection (${activeProfile.protocol.displayName})",
             subtitle = "Default Endpoint: ${activeProfile.protocol.defaultBaseUrl}${activeProfile.protocol.defaultEndpointPath}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1993,29 +2056,122 @@ private fun ProvidersAndProxyPanel(
                             onUpdateProfile { it.copy(defaultModel = v) }
                             onUpdateSession { it.copy(modelOverride = v) }
                         },
-                        label = "Model ID (Free-text — e.g. gemini-4-argon)",
+                        label = "Active Model ID (Fetch automatically or type manually)",
+                        placeholder = "Type any model ID or click Fetch Models below...",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1.3f)
                     )
                 }
 
-                // Quick Model Presets
+                // Automatic & Manual Model Fetcher Row
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BasicText(text = "Quick Models:", style = p.uiLabelStyle)
-                    activeProfile.savedModels.forEach { m ->
-                        SepiaChip(
-                            label = m,
-                            selected = activeProfile.defaultModel == m,
-                            onClick = {
-                                onUpdateProfile { it.copy(defaultModel = m) }
-                                onUpdateSession { it.copy(modelOverride = m) }
-                            }
+                    SepiaButton(
+                        text = if (isFetchingModels) "Fetching Models…" else "↻ Fetch Models from Endpoint",
+                        compact = true,
+                        enabled = !isFetchingModels,
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = ::triggerFetchModels
+                    )
+
+                    SepiaChip(
+                        label = if (activeProfile.autoFetchModels) "Auto-Fetch on Key/URL: ON" else "Auto-Fetch: OFF",
+                        selected = activeProfile.autoFetchModels,
+                        onClick = { onUpdateProfile { it.copy(autoFetchModels = !it.autoFetchModels) } }
+                    )
+
+                    if (activeProfile.savedModels.isNotEmpty()) {
+                        SepiaButton(
+                            text = "Clear Model List (${activeProfile.savedModels.size})",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onUpdateProfile { it.copy(savedModels = emptyList()) } }
                         )
                     }
+
+                    if (fetchStatusMessage.isNotBlank()) {
+                        BasicText(
+                            text = fetchStatusMessage,
+                            style = p.uiLabelStyle.copy(color = p.accent)
+                        )
+                    }
+                }
+
+                // Manual Model Addition Input
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    SepiaTextField(
+                        value = manualModelToAdd,
+                        onValueChange = { manualModelToAdd = it },
+                        label = "Add Model ID Manually to Saved List",
+                        placeholder = "Enter a model ID to save for 1-click switching...",
+                        monospace = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    SepiaButton(
+                        text = "+ Save & Select Model",
+                        style = SepiaButtonStyle.SECONDARY,
+                        enabled = manualModelToAdd.isNotBlank(),
+                        onClick = {
+                            val clean = manualModelToAdd.trim()
+                            if (clean.isNotEmpty()) {
+                                val updatedList = (listOf(clean) + activeProfile.savedModels).distinct()
+                                onUpdateProfile { it.copy(defaultModel = clean, savedModels = updatedList) }
+                                onUpdateSession { it.copy(modelOverride = clean) }
+                                manualModelToAdd = ""
+                            }
+                        }
+                    )
+                }
+
+                // Fetched & Manually Saved Model Chips
+                if (activeProfile.savedModels.isNotEmpty()) {
+                    BasicText(
+                        text = "Available / Saved Models (${activeProfile.savedModels.size} — click to select):",
+                        style = p.uiLabelStyle
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        activeProfile.savedModels.forEach { m ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                SepiaChip(
+                                    label = m,
+                                    selected = activeProfile.defaultModel == m,
+                                    onClick = {
+                                        onUpdateProfile { it.copy(defaultModel = m) }
+                                        onUpdateSession { it.copy(modelOverride = m) }
+                                    }
+                                )
+                                SepiaButton(
+                                    text = "×",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = {
+                                        onUpdateProfile {
+                                            it.copy(savedModels = it.savedModels.filterNot { item -> item == m })
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    BasicText(
+                        text = "No models saved yet. Enter your API Key / Base URL and click '↻ Fetch Models from Endpoint', or type a Model ID manually above.",
+                        style = p.uiLabelStyle.copy(color = p.mutedInk)
+                    )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2064,7 +2220,7 @@ private fun ProvidersAndProxyPanel(
                     value = activeProfile.customHeadersRaw,
                     onValueChange = { v -> onUpdateProfile { it.copy(customHeadersRaw = v) } },
                     label = "Custom HTTP Headers (One 'Header-Name: value' per line)",
-                    placeholder = "CF-Access-Client-Id: ...\nX-Custom-Proxy-Route: gemini-4-argon",
+                    placeholder = "CF-Access-Client-Id: ...\nX-Custom-Proxy-Route: ...",
                     singleLine = false,
                     monospace = true
                 )
@@ -2073,7 +2229,7 @@ private fun ProvidersAndProxyPanel(
 
         // Long Decode, Thinking & Wire Behavior
         SepiaSectionCard(
-            title = "Gemini 4 Argon Long Decode, Reasoning & Wire Parameters",
+            title = "Long Decode, Reasoning & Wire Parameters",
             subtitle = "Fine-tune extended socket timeouts, background polling, prompt caching, and raw JSON body overrides"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2242,22 +2398,24 @@ private fun ThemeAndStoragePanel(
             }
         }
 
-        // Typography & Book Layout Controls
+        // Typography, Custom .TTF/.OTF Fonts & Book Layout Controls
         SepiaSectionCard(
-            title = "Literary Typography & Page Geometry",
-            subtitle = "Tailor prose reading comfort for Windows 11 and OnePlus 15T"
+            title = "Literary Typography, Custom .TTF Fonts & Page Geometry",
+            subtitle = "Load any custom .ttf / .otf font from your machine for Prose/UI and Code blocks"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // 1. Prose Font Family & Custom .TTF Picker
                 Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BasicText(text = "Prose Font Family:", style = p.uiLabelStyle)
+                    BasicText(text = "Prose Font:", style = p.uiLabelStyle)
                     listOf("Serif", "Sans", "Monospace").forEach { fam ->
                         SepiaChip(
                             label = fam,
-                            selected = theme.proseFontFamily.equals(fam, ignoreCase = true),
-                            onClick = { onUpdateTheme(theme.copy(proseFontFamily = fam)) }
+                            selected = theme.customProseFontPath.isBlank() && theme.proseFontFamily.equals(fam, ignoreCase = true),
+                            onClick = { onUpdateTheme(theme.copy(proseFontFamily = fam, customProseFontPath = "")) }
                         )
                     }
                     SepiaChip(
@@ -2267,11 +2425,112 @@ private fun ThemeAndStoragePanel(
                     )
                 }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    SepiaTextField(
+                        value = theme.customProseFontPath,
+                        onValueChange = { path ->
+                            onUpdateTheme(theme.copy(customProseFontPath = path, proseFontFamily = if (path.isNotBlank()) "Custom" else "Serif"))
+                        },
+                        label = "Custom Prose / UI .TTF or .OTF Font File Path on Machine",
+                        placeholder = "e.g. C:\\Windows\\Fonts\\georgia.ttf or click Browse .TTF…",
+                        monospace = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    SepiaButton(
+                        text = "📂 Browse Prose .TTF…",
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = {
+                            scope.launch {
+                                val picked = PlatformBridge.pickFontFile("Select Custom Prose .TTF or .OTF Font")
+                                if (!picked.isNullOrBlank()) {
+                                    onUpdateTheme(theme.copy(customProseFontPath = picked, proseFontFamily = "Custom"))
+                                    onNotify("Loaded custom Prose font: $picked")
+                                }
+                            }
+                        }
+                    )
+                    if (theme.customProseFontPath.isNotBlank()) {
+                        SepiaButton(
+                            text = "Reset",
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onUpdateTheme(theme.copy(customProseFontPath = "", proseFontFamily = "Serif")) }
+                        )
+                    }
+                }
+
+                SepiaDivider()
+
+                // 2. Code Font Family & Custom Code .TTF Picker
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(text = "Code Font:", style = p.uiLabelStyle)
+                    listOf("Monospace", "Sans", "Serif").forEach { fam ->
+                        SepiaChip(
+                            label = fam,
+                            selected = theme.customCodeFontPath.isBlank() && theme.codeFontFamily.equals(fam, ignoreCase = true),
+                            onClick = { onUpdateTheme(theme.copy(codeFontFamily = fam, customCodeFontPath = "")) }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    SepiaTextField(
+                        value = theme.customCodeFontPath,
+                        onValueChange = { path ->
+                            onUpdateTheme(theme.copy(customCodeFontPath = path, codeFontFamily = if (path.isNotBlank()) "Custom" else "Monospace"))
+                        },
+                        label = "Custom Code / Inspector .TTF or .OTF Font File Path on Machine",
+                        placeholder = "e.g. C:\\Windows\\Fonts\\consola.ttf or click Browse Code .TTF…",
+                        monospace = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    SepiaButton(
+                        text = "📂 Browse Code .TTF…",
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = {
+                            scope.launch {
+                                val picked = PlatformBridge.pickFontFile("Select Custom Code .TTF or .OTF Font")
+                                if (!picked.isNullOrBlank()) {
+                                    onUpdateTheme(theme.copy(customCodeFontPath = picked, codeFontFamily = "Custom"))
+                                    onNotify("Loaded custom Code font: $picked")
+                                }
+                            }
+                        }
+                    )
+                    if (theme.customCodeFontPath.isNotBlank()) {
+                        SepiaButton(
+                            text = "Reset",
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onUpdateTheme(theme.copy(customCodeFontPath = "", codeFontFamily = "Monospace")) }
+                        )
+                    }
+                }
+
+                SepiaDivider()
+
+                // 3. Size, Line Height & Page Geometry
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = theme.proseFontSizeSp.toString(),
                         onValueChange = { v -> v.toFloatOrNull()?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) } },
-                        label = "Font Size (sp)",
+                        label = "Prose Size (sp)",
+                        modifier = Modifier.weight(1f)
+                    )
+                    SepiaTextField(
+                        value = theme.codeFontSizeSp.toString(),
+                        onValueChange = { v -> v.toFloatOrNull()?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) } },
+                        label = "Code Size (sp)",
                         modifier = Modifier.weight(1f)
                     )
                     SepiaTextField(
@@ -2385,13 +2644,40 @@ private fun ThemeAndStoragePanel(
     }
 }
 
+private val LEGACY_HARDCODED_MODELS = setOf(
+    "gemini-4-argon",
+    "gemini-4-argon-long-decode",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gpt-5",
+    "o3",
+    "o4-mini",
+    "gpt-4.1",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-3-7-sonnet-latest"
+)
+
 private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     val raw = PlatformBridge.loadAppStateJson()
     if (!raw.isNullOrBlank()) {
         runCatching {
             val loaded = CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(raw)
             if (loaded.profiles.isNotEmpty() && loaded.sessions.isNotEmpty()) {
-                return loaded
+                // Strip any legacy hardcoded starter model lists if present from an older build
+                val cleanedProfiles = loaded.profiles.map { prof ->
+                    val strippedSaved = if (prof.savedModels.isNotEmpty() && prof.savedModels.all { it in LEGACY_HARDCODED_MODELS }) {
+                        emptyList()
+                    } else prof.savedModels
+                    val strippedDefault = if (strippedSaved.isEmpty() && prof.defaultModel in LEGACY_HARDCODED_MODELS) {
+                        ""
+                    } else prof.defaultModel
+                    prof.copy(defaultModel = strippedDefault, savedModels = strippedSaved)
+                }
+                val cleanedSessions = loaded.sessions.map { sess ->
+                    if (sess.modelOverride in LEGACY_HARDCODED_MODELS) sess.copy(modelOverride = "") else sess
+                }
+                return loaded.copy(profiles = cleanedProfiles, sessions = cleanedSessions)
             }
         }
     }
@@ -2403,20 +2689,17 @@ private fun createDefaultAppState(): AppStateSnapshot {
     val geminiProfile = ProviderProfile(
         id = "prof-gemini-interactions",
         name = "Google Gemini Interactions",
-        protocol = ProviderProtocol.GEMINI_INTERACTIONS,
-        defaultModel = "gemini-4-argon"
+        protocol = ProviderProtocol.GEMINI_INTERACTIONS
     )
     val openAiProfile = ProviderProfile(
         id = "prof-openai-responses",
         name = "OpenAI Responses",
-        protocol = ProviderProtocol.OPENAI_RESPONSES,
-        defaultModel = "gpt-5"
+        protocol = ProviderProtocol.OPENAI_RESPONSES
     )
     val anthropicProfile = ProviderProfile(
         id = "prof-anthropic-messages",
         name = "Anthropic Messages",
-        protocol = ProviderProtocol.ANTHROPIC_MESSAGES,
-        defaultModel = "claude-opus-4-6"
+        protocol = ProviderProtocol.ANTHROPIC_MESSAGES
     )
 
     val defaultPrompts = listOf(

@@ -1,19 +1,25 @@
 package io.parchment.ai.platform
 
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.platform.Font
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
 import java.io.FilenameFilter
-import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JFileChooser
 
 actual object PlatformBridge {
     actual val platformName: String =
         "${System.getProperty("os.name") ?: "Desktop"} (${System.getProperty("os.arch") ?: "universal"})"
     actual val isAndroid: Boolean = false
+
+    private val fontCache = ConcurrentHashMap<String, FontFamily>()
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
@@ -121,6 +127,49 @@ actual object PlatformBridge {
                 } else null
             }.getOrNull()
         }
+
+    actual suspend fun pickFontFile(dialogTitle: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val dialog = FileDialog(null as Frame?, dialogTitle, FileDialog.LOAD)
+                dialog.file = "*.ttf;*.otf;*.ttc"
+                dialog.filenameFilter = FilenameFilter { _, name ->
+                    name.endsWith(".ttf", ignoreCase = true) ||
+                        name.endsWith(".otf", ignoreCase = true) ||
+                        name.endsWith(".ttc", ignoreCase = true)
+                }
+                dialog.isVisible = true
+                val dir = dialog.directory
+                val file = dialog.file
+                if (dir != null && file != null) {
+                    val selected = File(dir, file)
+                    if (selected.exists() && selected.isFile) {
+                        selected.absolutePath
+                    } else null
+                } else null
+            }.getOrNull()
+        }
+
+    actual fun loadCustomFontFamily(fontPath: String): FontFamily? {
+        val cleaned = fontPath.trim().removeSurrounding("\"")
+        if (cleaned.isEmpty()) return null
+        fontCache[cleaned]?.let { return it }
+
+        return runCatching {
+            val file = File(cleaned)
+            if (!file.exists() || !file.isFile) return null
+            val family = FontFamily(
+                Font(file = file, weight = FontWeight.Normal, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Medium, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Bold, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Normal, style = FontStyle.Italic),
+                Font(file = file, weight = FontWeight.Bold, style = FontStyle.Italic)
+            )
+            fontCache[cleaned] = family
+            family
+        }.getOrNull()
+    }
 
     // ========================================================================================
     // Sandboxed Local File System Agent Harness Operations

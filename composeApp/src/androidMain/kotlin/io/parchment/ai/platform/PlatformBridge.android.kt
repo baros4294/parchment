@@ -3,11 +3,16 @@ package io.parchment.ai.platform
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import io.parchment.ai.LongDecodeForegroundService
 import io.parchment.ai.MainActivity
 import java.io.File
 import java.lang.ref.WeakReference
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 
 actual object PlatformBridge {
     actual val platformName: String = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
@@ -15,6 +20,7 @@ actual object PlatformBridge {
 
     private var appContext: Context? = null
     private var mainActivityRef: WeakReference<MainActivity>? = null
+    private val fontCache = ConcurrentHashMap<String, FontFamily>()
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -70,6 +76,42 @@ actual object PlatformBridge {
         val wsDir = File(resolveStorageDir(), "workspace")
         if (!wsDir.exists()) wsDir.mkdirs()
         return wsDir.absolutePath
+    }
+
+    actual suspend fun pickFontFile(dialogTitle: String): String? {
+        val act = mainActivityRef?.get() ?: return null
+        val picked = act.requestImportFile(arrayOf("font/ttf", "font/otf", "application/x-font-ttf", "application/octet-stream", "*/*"))
+            ?: return null
+        return runCatching {
+            val fontsDir = File(resolveStorageDir(), "fonts")
+            if (!fontsDir.exists()) fontsDir.mkdirs()
+            val safeName = picked.fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "custom-font.ttf" }
+            val outFile = File(fontsDir, safeName)
+            outFile.writeBytes(picked.bytes)
+            fontCache.remove(outFile.absolutePath)
+            outFile.absolutePath
+        }.getOrNull()
+    }
+
+    actual fun loadCustomFontFamily(fontPath: String): FontFamily? {
+        val cleaned = fontPath.trim().removeSurrounding("\"")
+        if (cleaned.isEmpty()) return null
+        fontCache[cleaned]?.let { return it }
+
+        return runCatching {
+            val file = File(cleaned)
+            if (!file.exists() || !file.isFile) return null
+            val family = FontFamily(
+                Font(file = file, weight = FontWeight.Normal, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Medium, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Bold, style = FontStyle.Normal),
+                Font(file = file, weight = FontWeight.Normal, style = FontStyle.Italic),
+                Font(file = file, weight = FontWeight.Bold, style = FontStyle.Italic)
+            )
+            fontCache[cleaned] = family
+            family
+        }.getOrNull()
     }
 
     private fun resolveSandboxedPath(workspaceRoot: String, relativePath: String): Path {

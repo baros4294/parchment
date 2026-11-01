@@ -104,6 +104,14 @@ object AiProviderEngine {
         continueFromAssistantPrefix: String = ""
     ): Flow<StreamUpdate> = flow {
         val model = session.modelOverride.ifBlank { profile.defaultModel }.trim()
+        if (model.isBlank()) {
+            emit(
+                StreamUpdate.Error(
+                    message = "No Model ID is selected. Fetch models automatically from the endpoint or enter a Model ID manually in Providers & Proxy."
+                )
+            )
+            return@flow
+        }
         val startTime = PlatformBridge.currentTimeMillis()
         var firstTokenTime = 0L
 
@@ -351,6 +359,98 @@ object AiProviderEngine {
         } finally {
             PlatformBridge.notifyLongDecodeComplete()
         }
+    }
+
+    /**
+     * Dynamically fetches the available model IDs from the active provider or custom proxy endpoint.
+     * Supports Google `/v1beta/models`, OpenAI `/v1/models`, and Anthropic `/v1/models` formats.
+     */
+    suspend fun fetchAvailableModels(profile: ProviderProfile): Result<List<String>> = runCatching {
+        val base = profile.baseUrl.trimEnd('/')
+        val candidateUrls = when (profile.protocol) {
+            ProviderProtocol.GEMINI_INTERACTIONS -> listOf(
+                "$base/v1beta/models?pageSize=200",
+                "$base/v1/models"
+            )
+            ProviderProtocol.OPENAI_RESPONSES -> listOf(
+                "$base/v1/models"
+            )
+            ProviderProtocol.ANTHROPIC_MESSAGES -> listOf(
+                "$base/v1/models?limit=100"
+            )
+        }
+
+        var lastError = ""
+        for (rawUrl in candidateUrls) {
+            val url = buildUrlWithAuthQuery(profile, rawUrl)
+            val respResult = runCatching {
+                httpClient.get(url) {
+                    applyAuthAndCustomHeaders(profile)
+                    if (profile.protocol == ProviderProtocol.ANTHROPIC_MESSAGES) {
+                        header("anthropic-version", "2023-06-01")
+                    }
+                }
+            }
+            val resp = respResult.getOrNull()
+            if (resp == null) {
+                val err = respResult.exceptionOrNull()
+                lastError = err?.message ?: err?.let { it::class.simpleName } ?: "Connection failed"
+                continue
+            }
+
+            val bodyText = resp.bodyAsText()
+            if (!resp.status.isSuccess()) {
+                lastError = "HTTP ${resp.status.value}: ${bodyText.take(240)}"
+                continue
+            }
+
+            val parsed = parseModelsListJson(bodyText)
+            if (parsed.isNotEmpty()) {
+                return@runCatching parsed
+            }
+        }
+
+        if (lastError.isNotBlank()) {
+            error(lastError)
+        } else {
+            error("Endpoint returned an empty model list.")
+        }
+    }
+
+    private fun parseModelsListJson(bodyText: String): List<String> {
+        val rootEl = runCatching { json.parseToJsonElement(bodyText) }.getOrNull() ?: return emptyList()
+        val results = LinkedHashSet<String>()
+
+        fun extractFromArray(arr: JsonArray) {
+            for (item in arr) {
+                when (item) {
+                    is JsonPrimitive -> {
+                        val s = item.contentOrNull?.trim().orEmpty()
+                        if (s.isNotEmpty()) results.add(s.removePrefix("models/"))
+                    }
+                    is JsonObject -> {
+                        val idCandidate = item["id"]?.jsonPrimitive?.contentOrNull
+                            ?: item["name"]?.jsonPrimitive?.contentOrNull
+                            ?: item["model"]?.jsonPrimitive?.contentOrNull
+                        if (!idCandidate.isNullOrBlank()) {
+                            results.add(idCandidate.trim().removePrefix("models/"))
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+
+        when (rootEl) {
+            is JsonArray -> extractFromArray(rootEl)
+            is JsonObject -> {
+                (rootEl["models"] as? JsonArray)?.let { extractFromArray(it) }
+                (rootEl["data"] as? JsonArray)?.let { extractFromArray(it) }
+            }
+            else -> {}
+        }
+
+        return results.toList()
     }
 
     /**
