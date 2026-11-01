@@ -129,6 +129,8 @@ fun SepiaButton(
     val textColor by animateColorAsState(targetText, tween(140))
     val borderColor by animateColorAsState(targetBorder, tween(140))
 
+    val parsed = remember(text) { parseKissLabelIcons(text) }
+
     Box(
         modifier = modifier
             .kissClickable(enabled = enabled, onClick = onClick)
@@ -145,21 +147,42 @@ fun SepiaButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(
-            text = text,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            style = p.uiBodyStyle.copy(
-                color = textColor,
-                fontSize = if (compact) 12.sp else 13.sp,
-                fontWeight = if (style == SepiaButtonStyle.PRIMARY || style == SepiaButtonStyle.SECONDARY) {
-                    FontWeight.SemiBold
-                } else {
-                    FontWeight.Medium
-                }
-            )
-        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (parsed.leadingIcon != null) {
+                KissVectorIcon(
+                    icon = parsed.leadingIcon,
+                    tint = textColor,
+                    size = if (compact) 13.dp else 14.5.dp
+                )
+            }
+            if (parsed.cleanText.isNotEmpty()) {
+                BasicText(
+                    text = parsed.cleanText,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    style = p.uiBodyStyle.copy(
+                        color = textColor,
+                        fontSize = if (compact) 12.sp else 13.sp,
+                        fontWeight = if (style == SepiaButtonStyle.PRIMARY || style == SepiaButtonStyle.SECONDARY) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Medium
+                        }
+                    )
+                )
+            }
+            if (parsed.trailingIcon != null) {
+                KissVectorIcon(
+                    icon = parsed.trailingIcon,
+                    tint = textColor,
+                    size = if (compact) 11.5.dp else 13.dp
+                )
+            }
+        }
     }
 }
 
@@ -185,6 +208,8 @@ fun SepiaChip(
         animationSpec = tween(150)
     )
 
+    val parsed = remember(label) { parseKissLabelIcons(label) }
+
     Box(
         modifier = modifier
             .kissClickable(onClick = onClick)
@@ -194,16 +219,37 @@ fun SepiaChip(
             .padding(horizontal = 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(
-            text = label,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            style = p.uiLabelStyle.copy(
-                color = txtCol,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-            )
-        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (parsed.leadingIcon != null) {
+                KissVectorIcon(
+                    icon = parsed.leadingIcon,
+                    tint = txtCol,
+                    size = 13.dp
+                )
+            }
+            if (parsed.cleanText.isNotEmpty()) {
+                BasicText(
+                    text = parsed.cleanText,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    style = p.uiLabelStyle.copy(
+                        color = txtCol,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                )
+            }
+            if (parsed.trailingIcon != null) {
+                KissVectorIcon(
+                    icon = parsed.trailingIcon,
+                    tint = txtCol,
+                    size = if (parsed.trailingIcon == KissIcon.CIRCLE_DOT) 8.dp else 11.5.dp
+                )
+            }
+        }
     }
 }
 
@@ -337,15 +383,31 @@ fun SepiaTextField(
                         ),
                     contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
                 ) {
-                    if (value.isEmpty() && placeholder.isNotEmpty()) {
-                        BasicText(
-                            text = placeholder,
-                            maxLines = if (singleLine) 1 else 2,
-                            overflow = TextOverflow.Ellipsis,
-                            style = textStyle.copy(color = p.mutedInk.copy(alpha = 0.6f))
-                        )
+                    val parsedPlaceholder = remember(placeholder) { parseKissLabelIcons(placeholder) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top
+                    ) {
+                        if (parsedPlaceholder.leadingIcon != null) {
+                            KissVectorIcon(
+                                icon = parsedPlaceholder.leadingIcon,
+                                tint = if (isFocused) p.accent else p.mutedInk.copy(alpha = 0.75f),
+                                size = 14.dp
+                            )
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (value.isEmpty() && parsedPlaceholder.cleanText.isNotEmpty()) {
+                                BasicText(
+                                    text = parsedPlaceholder.cleanText,
+                                    maxLines = if (singleLine) 1 else 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = textStyle.copy(color = p.mutedInk.copy(alpha = 0.6f))
+                                )
+                            }
+                            innerTextField()
+                        }
                     }
-                    innerTextField()
                 }
             }
         )
@@ -435,6 +497,9 @@ fun SepiaAvatarCircle(
         targetValue = if (selected) p.accent.copy(alpha = 0.18f) else p.sheetBg.copy(alpha = 0.85f),
         animationSpec = tween(150)
     )
+    val fgColor = if (selected) p.accent else p.primaryInk
+    val parsedIcon = remember(symbol) { parseKissLabelIcons(symbol).leadingIcon }
+
     Box(
         modifier = modifier
             .size(sizeDp)
@@ -443,14 +508,31 @@ fun SepiaAvatarCircle(
             .border(0.8.dp, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(
-            text = symbol.take(2).ifBlank { "✦" },
-            style = p.uiBodyStyle.copy(
-                fontSize = (sizeDp.value * 0.44f).sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (selected) p.accent else p.primaryInk
+        if (parsedIcon != null) {
+            KissVectorIcon(
+                icon = parsedIcon,
+                tint = fgColor,
+                size = (sizeDp.value * 0.50f).dp
             )
-        )
+        } else {
+            val cleanChars = symbol.filter { it.isLetterOrDigit() }.take(2).uppercase()
+            if (cleanChars.isNotEmpty()) {
+                BasicText(
+                    text = cleanChars,
+                    style = p.uiBodyStyle.copy(
+                        fontSize = (sizeDp.value * 0.42f).sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = fgColor
+                    )
+                )
+            } else {
+                KissVectorIcon(
+                    icon = KissIcon.SPARKLES,
+                    tint = fgColor,
+                    size = (sizeDp.value * 0.48f).dp
+                )
+            }
+        }
     }
 }
 

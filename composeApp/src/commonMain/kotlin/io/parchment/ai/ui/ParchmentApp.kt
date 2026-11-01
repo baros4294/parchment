@@ -514,38 +514,37 @@ fun ParchmentApp() {
                 }
             }
 
-            // 60fps / 120fps Hardware VSYNC Character Pacer Coroutine (`withFrameNanos`)
+            // 120fps (8ms tick) Smooth Character Pacer Coroutine (works in background & foreground without MonotonicFrameClock crash!)
             val pacerJob = launch {
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
-                    withFrameNanos { _ ->
-                        var changed = false
-                        val targetThinkLen = networkThinkingTarget.length
-                        if (displayedThinkingLen < targetThinkLen) {
-                            val diff = targetThinkLen - displayedThinkingLen
-                            val step = maxOf(2, diff / 4)
-                            displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
-                            changed = true
-                        }
-                        val targetContLen = networkContentTarget.length
-                        if (displayedContentLen < targetContLen) {
-                            val diff = targetContLen - displayedContentLen
-                            val step = maxOf(2, diff / 4)
-                            displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
-                            changed = true
-                        }
-                        if (changed) {
-                            val visibleCont = networkContentTarget.substring(0, displayedContentLen)
-                            val visibleThink = networkThinkingTarget.substring(0, displayedThinkingLen)
-                            val curSig = signatureSb.toString()
-                            patchVariantMemory { v ->
-                                v.copy(
-                                    content = visibleCont,
-                                    thinkingSummary = visibleThink,
-                                    thinkingSignature = curSig,
-                                    thinkingDurationMs = thinkingDurationMs,
-                                    isStreaming = true
-                                )
-                            }
+                    delay(8L)
+                    var changed = false
+                    val targetThinkLen = networkThinkingTarget.length
+                    if (displayedThinkingLen < targetThinkLen) {
+                        val diff = targetThinkLen - displayedThinkingLen
+                        val step = maxOf(2, diff / 4)
+                        displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
+                        changed = true
+                    }
+                    val targetContLen = networkContentTarget.length
+                    if (displayedContentLen < targetContLen) {
+                        val diff = targetContLen - displayedContentLen
+                        val step = maxOf(2, diff / 4)
+                        displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
+                        changed = true
+                    }
+                    if (changed) {
+                        val visibleCont = networkContentTarget.substring(0, displayedContentLen)
+                        val visibleThink = networkThinkingTarget.substring(0, displayedThinkingLen)
+                        val curSig = signatureSb.toString()
+                        patchVariantMemory { v ->
+                            v.copy(
+                                content = visibleCont,
+                                thinkingSummary = visibleThink,
+                                thinkingSignature = curSig,
+                                thinkingDurationMs = thinkingDurationMs,
+                                isStreaming = true
+                            )
                         }
                     }
                     // Atomic background disk checkpoint every 1.5 seconds so switching apps / OnePlus battery kill NEVER loses progress
@@ -667,6 +666,16 @@ fun ParchmentApp() {
                 pacerJob.cancel()
                 flushCheckpointToDisk(isFinal = true)
                 throw c
+            } catch (t: Throwable) {
+                networkDone = true
+                pacerJob.cancel()
+                val partialProse = networkContentTarget.toString()
+                flushCheckpointToDisk(isFinal = true) { v ->
+                    v.copy(
+                        content = if (partialProse.isBlank()) "**[Stream Error: ${t.message ?: t::class.simpleName}]**" else "$partialProse\n\n*[Interrupted: ${t.message}]*",
+                        isStreaming = false
+                    )
+                }
             } finally {
                 networkDone = true
                 isStreaming = false
@@ -674,9 +683,9 @@ fun ParchmentApp() {
                 streamingStatus = ""
                 streamingTargetNodeId = ""
 
-                // Auto-generate Topic Title after the first assistant turn completes
+                // Auto-generate Topic Title after the first assistant turn completes with non-empty content
                 val updatedSess = appState.sessions.find { it.id == sessionId }
-                if (updatedSess != null && !updatedSess.isTitleManuallySet && updatedSess.title == "New Chat" && updatedSess.messages.size in 2..3) {
+                if (networkContentTarget.isNotBlank() && updatedSess != null && !updatedSess.isTitleManuallySet && updatedSess.title == "New Chat" && updatedSess.messages.size in 2..3) {
                     generateTopicTitle(sessionId, forceRegenerate = false)
                 }
 
@@ -1691,25 +1700,28 @@ private fun TopEditorialBar(
                                 style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
                                 modifier = Modifier.weight(1f, fill = false).clickable { isEditingTitle = true }
                             )
-                            BasicText(
-                                text = "✎",
-                                style = p.uiLabelStyle.copy(fontSize = 11.sp),
+                            KissVectorIcon(
+                                icon = KissIcon.EDIT,
+                                tint = p.mutedInk,
+                                size = 12.dp,
                                 modifier = Modifier.clickable { isEditingTitle = true }
                             )
                             if (activeSession.messages.isNotEmpty()) {
-                                BasicText(
-                                    text = "✦",
-                                    style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.5.sp),
+                                KissVectorIcon(
+                                    icon = KissIcon.SPARKLES,
+                                    tint = p.accent,
+                                    size = 13.dp,
                                     modifier = Modifier.clickable { onRegenerateTitleAi() }
                                 )
                             }
                         }
                     }
 
+                    val asstPrefix = if (activeAssistant.id.isNotBlank()) "${activeAssistant.name} • " else ""
                     val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
-                        "${activeAssistant.name} • ${activeProfile.name} • $modelLabel ▾"
+                        "$asstPrefix${activeProfile.name} • $modelLabel ▾"
                     } else {
-                        "${activeAssistant.name} • $modelLabel ▾"
+                        "$asstPrefix$modelLabel ▾"
                     }
                     BasicText(
                         text = capsuleText,
@@ -1963,10 +1975,19 @@ private fun KelivoSidebar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicText(
-                    text = "${activeAssistant.iconEmoji} ${activeAssistant.name} (${assistantTopics.size})",
-                    style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val hdrIcon = remember(activeAssistant.iconEmoji) {
+                        parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
+                    }
+                    KissVectorIcon(icon = hdrIcon, tint = p.accent, size = 13.dp)
+                    BasicText(
+                        text = "${activeAssistant.name} (${assistantTopics.size})",
+                        style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     SepiaButton(
                         text = "+ New",
@@ -2009,7 +2030,7 @@ private fun KelivoSidebar(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 if (sess.isPinned) {
-                                    BasicText(text = "📌", style = p.uiLabelStyle.copy(fontSize = 10.sp))
+                                    KissVectorIcon(icon = KissIcon.PIN, tint = p.accent, size = 11.dp)
                                 }
                                 BasicText(
                                     text = sess.title,
@@ -2192,17 +2213,28 @@ private fun ManuscriptViewport(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val cardName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() } ?: activeAssistant.name
+                val cardName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
+                    ?: activeAssistant.name.takeIf { activeAssistant.id.isNotBlank() }
+                    ?: activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { activeProfile.name }
                 val statsStr = if (sessionTotalTokens > 0 && preferences.showTokenAndContextStats) {
                     " • ${formatCompactTokens(sessionTotalTokens)} tok (${formatUsdCost(sessionTotalCostUsd)})"
                 } else ""
-                BasicText(
-                    text = "${activeAssistant.iconEmoji} $cardName$statsStr",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Row(
                     modifier = Modifier.weight(1f).clickable { onToggleSessionInspector() },
-                    style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    val ribIcon = remember(activeAssistant.iconEmoji) {
+                        parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
+                    }
+                    KissVectorIcon(icon = ribIcon, tint = p.accent, size = 12.dp)
+                    BasicText(
+                        text = "$cardName$statsStr",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (activeSession.messages.isNotEmpty()) {
                         SepiaButton(
@@ -2313,10 +2345,19 @@ private fun ManuscriptViewport(
                                 .padding(20.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            BasicText(
-                                text = "${activeAssistant.iconEmoji} ${card?.name?.takeIf { it.isNotBlank() } ?: activeAssistant.name}",
-                                style = p.uiHeaderStyle.copy(fontSize = 18.sp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val welcomeIcon = remember(activeAssistant.iconEmoji) {
+                                    parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
+                                }
+                                KissVectorIcon(icon = welcomeIcon, tint = p.accent, size = 18.dp)
+                                BasicText(
+                                    text = card?.name?.takeIf { it.isNotBlank() } ?: activeAssistant.name,
+                                    style = p.uiHeaderStyle.copy(fontSize = 18.sp)
+                                )
+                            }
                             BasicText(
                                 text = "${activeProfile.name} • ${activeModel.ifBlank { "No model selected" }} • Stateful Chain: ${if (activeProfile.useStatefulChaining) "ON" else "OFF"} • Background Poll: ${if (activeProfile.useBackgroundLongDecode) "ON" else "OFF"}",
                                 style = p.uiLabelStyle.copy(color = p.accent)
@@ -2367,7 +2408,8 @@ private fun ManuscriptViewport(
                         viewMode = activeSession.viewMode,
                         preferences = preferences,
                         userName = activeSession.userName,
-                        characterName = activeSession.activeCard?.name?.ifBlank { activeAssistant.name } ?: activeAssistant.name,
+                        characterName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
+                            ?: activeAssistant.name.takeIf { activeAssistant.id.isNotBlank() }.orEmpty(),
                         providerName = activeProfile.name,
                         isActivelyThinkingThisNode = isStreaming && isCurrentlyThinkingPhase && streamingTargetNodeId == node.id,
                         onSelectVariant = { newIdx ->
@@ -2459,10 +2501,16 @@ private fun ManuscriptViewport(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                BasicText(
-                                    text = "🗺 Message & Swipe Tree (${activeSession.messages.size})",
-                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = 13.5.dp)
+                                    BasicText(
+                                        text = "Message & Swipe Tree (${activeSession.messages.size})",
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
+                                    )
+                                }
                                 SepiaButton(
                                     text = "×",
                                     compact = true,
@@ -3172,26 +3220,49 @@ private fun MessageTurnItem(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if ((isAssistant && preferences.showModelName) || (!isAssistant && preferences.showUserName)) {
+                if (isAssistant && preferences.showModelName) {
+                    val provSuffix = if (preferences.showProviderAfterModelName) " ($providerName)" else ""
+                    if (characterName.isNotBlank()) {
+                        BasicText(
+                            text = characterName.uppercase(),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiLabelStyle.copy(
+                                color = p.accent,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.7.sp
+                            )
+                        )
+                        if (activeVar.modelUsed.isNotBlank()) {
+                            BasicText(
+                                text = "• ${activeVar.modelUsed}$provSuffix",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiLabelStyle.copy(fontSize = 11.sp)
+                            )
+                        }
+                    } else {
+                        BasicText(
+                            text = "${activeVar.modelUsed.ifBlank { "Assistant" }}$provSuffix",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiLabelStyle.copy(
+                                color = p.accent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.5.sp
+                            )
+                        )
+                    }
+                } else if (!isAssistant && preferences.showUserName) {
                     BasicText(
                         text = speakerTitle.uppercase(),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(
-                            color = if (isAssistant) p.accent else p.narrationInk,
+                            color = p.narrationInk,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.7.sp
                         )
-                    )
-                }
-
-                if (isAssistant && preferences.showModelName && activeVar.modelUsed.isNotBlank()) {
-                    val provSuffix = if (preferences.showProviderAfterModelName) " ($providerName)" else ""
-                    BasicText(
-                        text = "• ${activeVar.modelUsed}$provSuffix",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(fontSize = 11.sp)
                     )
                 }
 
@@ -3637,28 +3708,17 @@ private fun MessageTurnItem(
 }
 
 // ============================================================================================
-// CLEAN STATE LOADER — ZERO HARDCODED ASSISTANTS, ZERO MODEL WIPING, ZERO PROFILE RESURRECTION!
+// CLEAN STATE LOADER — LOADS SAVED STATE 1:1 WITHOUT STRIPPING ANY USER DATA!
 // ============================================================================================
-private val HARDCODED_EXAMPLE_ASSISTANT_IDS = setOf(
-    "asst-general",
-    "asst-test",
-    "asst-prompt-writer"
-)
-
 private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     val raw = PlatformBridge.loadAppStateJson()
     if (!raw.isNullOrBlank()) {
         runCatching {
             val loaded = compactStateJson.decodeFromString<AppStateSnapshot>(raw)
             if (loaded.profiles.isNotEmpty() && loaded.sessions.isNotEmpty()) {
-                val cleanedAssistants = loaded.assistants.filterNot { it.id in HARDCODED_EXAMPLE_ASSISTANT_IDS }
-                val cleanedActiveAsstId = if (loaded.activeAssistantId in HARDCODED_EXAMPLE_ASSISTANT_IDS) {
-                    cleanedAssistants.firstOrNull()?.id.orEmpty()
-                } else loaded.activeAssistantId
                 // Reset any stale isStreaming flags left over if the OS killed the process mid-stream
                 val recoveredSessions = loaded.sessions.map { sess ->
                     sess.copy(
-                        assistantId = if (sess.assistantId in HARDCODED_EXAMPLE_ASSISTANT_IDS) "" else sess.assistantId,
                         messages = sess.messages.map { node ->
                             node.copy(
                                 variants = node.variants.map { v ->
@@ -3668,11 +3728,7 @@ private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
                         }
                     )
                 }
-                return loaded.copy(
-                    assistants = cleanedAssistants,
-                    activeAssistantId = cleanedActiveAsstId,
-                    sessions = recoveredSessions
-                )
+                return loaded.copy(sessions = recoveredSessions)
             }
         }
     }

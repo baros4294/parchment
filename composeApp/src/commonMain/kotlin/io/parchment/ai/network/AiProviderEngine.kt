@@ -902,8 +902,7 @@ object AiProviderEngine {
             val base = profile.baseUrl.trimEnd('/')
             val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
             val path = profile.endpointPathOverride.ifBlank { defaultPath }
-            val ssePath = if (path.contains("alt=sse")) path else if (path.contains("?")) "$path&alt=sse" else "$path?alt=sse"
-            val rawUrl = "$base$ssePath"
+            val rawUrl = "$base$path"
             val finalUrl = buildUrlWithAuthQuery(profile, rawUrl)
 
             onRawWire(requestJsonStr, "Dispatching to $finalUrl ...")

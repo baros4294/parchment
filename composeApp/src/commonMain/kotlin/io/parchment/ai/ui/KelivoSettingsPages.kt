@@ -157,6 +157,7 @@ fun KelivoSettingsScreen(
                     SettingsCategory.entries.forEach { cat ->
                         val isSelected = selectedCategory == cat
                         val shape = RoundedCornerShape(10.dp)
+                        val catIcon = remember(cat.icon) { parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -167,12 +168,10 @@ fun KelivoSettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            BasicText(
-                                text = cat.icon,
-                                style = p.uiBodyStyle.copy(
-                                    color = if (isSelected) p.accent else p.narrationInk,
-                                    fontSize = 14.sp
-                                )
+                            KissVectorIcon(
+                                icon = catIcon,
+                                tint = if (isSelected) p.accent else p.narrationInk,
+                                size = 15.dp
                             )
                             BasicText(
                                 text = cat.label,
@@ -1385,9 +1384,10 @@ private fun ProvidersSubpage(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    BasicText(
-                                        text = if (isSelectedModel) "✦" else "○",
-                                        style = p.uiBodyStyle.copy(color = if (isSelectedModel) p.accent else p.mutedInk)
+                                    KissVectorIcon(
+                                        icon = if (isSelectedModel) KissIcon.SPARKLES else KissIcon.CIRCLE_EMPTY,
+                                        tint = if (isSelectedModel) p.accent else p.mutedInk,
+                                        size = 13.dp
                                     )
                                     BasicText(
                                         text = modelId,
