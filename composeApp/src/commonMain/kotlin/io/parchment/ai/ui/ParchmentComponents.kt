@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -91,6 +93,9 @@ fun SepiaButton(
     ) {
         BasicText(
             text = text,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
             style = p.uiBodyStyle.copy(
                 color = textColor,
                 fontSize = if (compact) 12.sp else 13.sp,
@@ -119,11 +124,14 @@ fun SepiaChip(
             .background(bg)
             .border(1.dp, borderCol, shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 4.dp),
+            .padding(horizontal = 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
         BasicText(
             text = label,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
             style = p.uiLabelStyle.copy(
                 color = txtCol,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
@@ -141,7 +149,9 @@ fun SepiaTextField(
     placeholder: String = "",
     singleLine: Boolean = true,
     monospace: Boolean = false,
-    minHeight: Dp = 36.dp
+    minHeight: Dp = 36.dp,
+    maxHeight: Dp = 220.dp,
+    maxLines: Int = if (singleLine) 1 else 8
 ) {
     val p = LocalParchmentPalette.current
     val shape = RoundedCornerShape(6.dp)
@@ -151,6 +161,8 @@ fun SepiaTextField(
         if (label.isNotBlank()) {
             BasicText(
                 text = label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
             )
             Spacer(Modifier.height(4.dp))
@@ -159,13 +171,15 @@ fun SepiaTextField(
             value = value,
             onValueChange = onValueChange,
             singleLine = singleLine,
+            maxLines = maxLines,
             textStyle = textStyle,
             cursorBrush = SolidColor(p.accent),
+            modifier = Modifier.fillMaxWidth(),
             decorationBox = { innerTextField ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (singleLine) minHeight else Dp.Unspecified)
+                        .heightIn(min = minHeight, max = if (singleLine) minHeight.coerceAtLeast(38.dp) else maxHeight)
                         .clip(shape)
                         .background(p.cardBg)
                         .border(1.dp, p.border, shape)
@@ -175,6 +189,8 @@ fun SepiaTextField(
                     if (value.isEmpty() && placeholder.isNotEmpty()) {
                         BasicText(
                             text = placeholder,
+                            maxLines = if (singleLine) 1 else 2,
+                            overflow = TextOverflow.Ellipsis,
                             style = textStyle.copy(color = p.mutedInk.copy(alpha = 0.65f))
                         )
                     }
@@ -318,6 +334,9 @@ fun SepiaContextGaugeRing(
             val costTag = if (sessionCostUsd > 0.0) " • ${formatUsdCost(sessionCostUsd)}" else ""
             BasicText(
                 text = "${formatCompactTokens(usedTokens)} / ${formatCompactTokens(safeLimit)} tok$costTag",
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
                 style = p.uiLabelStyle.copy(
                     fontFamily = p.codeFontFamily,
                     fontSize = 10.5.sp,
@@ -327,7 +346,7 @@ fun SepiaContextGaugeRing(
             )
             Box(
                 modifier = Modifier
-                    .width(96.dp)
+                    .width(84.dp)
                     .height(3.5.dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(p.border.copy(alpha = 0.6f))

@@ -676,8 +676,9 @@ object AiProviderEngine {
                     if (profile.maxOutputTokens > 0) {
                         put("max_output_tokens", profile.maxOutputTokens)
                     }
-                    if (profile.thinkingEffort != "none") {
-                        put("thinking_level", profile.thinkingEffort)
+                    val effort = profile.thinkingEffort.trim()
+                    if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
+                        put("thinking_level", effort)
                         put("thinking_summaries", "auto")
                     }
                     if (profile.enableImageGeneration && profile.mediaAspectRatio.isNotBlank()) {
@@ -817,26 +818,45 @@ object AiProviderEngine {
                             }
 
                             when (type) {
-                                "interaction.start", "interaction.status_update" -> {
+                                "interaction.start", "interaction.created", "interaction.status_update" -> {
                                     val st = interactionSub?.get("status")?.jsonPrimitive?.contentOrNull
                                         ?: evObj["status"]?.jsonPrimitive?.contentOrNull ?: "streaming"
                                     onStatus("Interaction $st", currentPrevInteractionId)
                                 }
-                                "content.start" -> {
+                                "content.start", "step.start" -> {
                                     val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val contentObj = evObj["content"] as? JsonObject
-                                    if (contentObj?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
-                                        val callId = contentObj["id"]?.jsonPrimitive?.contentOrNull
-                                            ?: contentObj["call_id"]?.jsonPrimitive?.contentOrNull
+                                    val contentObj = (evObj["content"] as? JsonObject) ?: (evObj["step"] as? JsonObject)
+                                    val cType = contentObj?.get("type")?.jsonPrimitive?.contentOrNull ?: ""
+                                    if (cType == "function_call") {
+                                        val callId = contentObj?.get("id")?.jsonPrimitive?.contentOrNull
+                                            ?: contentObj?.get("call_id")?.jsonPrimitive?.contentOrNull
                                             ?: "call_$idx"
-                                        val fnName = contentObj["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        val initialArgs = contentObj["arguments"]?.let {
+                                        val fnName = contentObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
+                                        val initialArgs = contentObj?.get("arguments")?.let {
                                             if (it is JsonPrimitive) it.content else it.toString()
                                         } ?: ""
                                         pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(initialArgs))
+                                    } else if (cType == "thought") {
+                                        val summaryArr = contentObj?.get("summary") as? JsonArray
+                                        summaryArr?.forEach { sEl ->
+                                            val txt = (sEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (txt.isNotEmpty()) {
+                                                onFirstToken()
+                                                onThinking(txt, "")
+                                            }
+                                        }
+                                    } else if (cType == "model_output") {
+                                        val contentArr = contentObj?.get("content") as? JsonArray
+                                        contentArr?.forEach { cEl ->
+                                            val txt = (cEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (txt.isNotEmpty()) {
+                                                onFirstToken()
+                                                onContent(txt)
+                                            }
+                                        }
                                     }
                                 }
-                                "content.delta" -> {
+                                "content.delta", "step.delta" -> {
                                     val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
                                     val deltaObj = evObj["delta"] as? JsonObject ?: evObj
                                     val deltaType = deltaObj["type"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -900,7 +920,7 @@ object AiProviderEngine {
                                         }
                                     }
                                 }
-                                "interaction.complete" -> {
+                                "interaction.complete", "interaction.completed" -> {
                                     val completedObj = interactionSub ?: evObj
                                     val usageObj = completedObj["usage"] as? JsonObject
                                     if (usageObj != null) {
@@ -1313,9 +1333,10 @@ object AiProviderEngine {
                     put("max_output_tokens", profile.maxOutputTokens)
                 }
 
-                if (profile.thinkingEffort != "none") {
+                val effort = profile.thinkingEffort.trim()
+                if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
                     putJsonObject("reasoning") {
-                        put("effort", if (profile.thinkingEffort == "max") "high" else profile.thinkingEffort)
+                        put("effort", effort)
                         put("summary", "auto")
                     }
                 } else {
@@ -1583,6 +1604,10 @@ object AiProviderEngine {
             if (profile.maxOutputTokens > 0) {
                 put("max_tokens", profile.maxOutputTokens)
             }
+            val effort = profile.thinkingEffort.trim()
+            if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
+                put("reasoning_effort", effort)
+            }
             if (profile.enableImageGeneration) {
                 putJsonArray("modalities") {
                     add(JsonPrimitive("text"))
@@ -1729,20 +1754,45 @@ object AiProviderEngine {
 
         while (loopStep < 8) {
             loopStep++
-            val enableThinking = profile.thinkingEffort != "none" && profile.thinkingBudgetTokens >= 1024 && continuePrefix.isBlank()
+            val effort = profile.thinkingEffort.trim()
+            val lowerModel = model.lowercase()
+            val isAdaptiveEffortModel = lowerModel.contains("5-5") ||
+                lowerModel.contains("5.5") ||
+                lowerModel.contains("5-1") ||
+                lowerModel.contains("5.1") ||
+                lowerModel.contains("4-7") ||
+                lowerModel.contains("4.7") ||
+                lowerModel.contains("4-8") ||
+                lowerModel.contains("4.8") ||
+                lowerModel.contains("fable") ||
+                lowerModel.contains("mythos") ||
+                profile.thinkingBudgetTokens <= 0
+
+            val enableBudgetThinking = !isAdaptiveEffortModel &&
+                effort.isNotEmpty() &&
+                !effort.equals("none", ignoreCase = true) &&
+                profile.thinkingBudgetTokens >= 1024 &&
+                continuePrefix.isBlank()
 
             val payloadObj = buildJsonObject {
                 put("model", model)
                 put("stream", true)
-                val maxTok = if (enableThinking) {
+                val maxTok = if (enableBudgetThinking) {
                     maxOf(profile.maxOutputTokens, profile.thinkingBudgetTokens + 4096)
                 } else {
                     profile.maxOutputTokens.coerceAtLeast(4096)
                 }
                 put("max_tokens", maxTok)
 
-                if (enableThinking) {
-                    put("temperature", 1.0) // Required by Anthropic when extended thinking is active
+                if (isAdaptiveEffortModel) {
+                    // Claude Opus 5.5 / Sonnet 5.5 / 4.7+ use output_config.effort (low, medium, high, xhigh, max)
+                    if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
+                        putJsonObject("output_config") {
+                            put("effort", effort)
+                        }
+                    }
+                } else if (enableBudgetThinking) {
+                    put("temperature", 1.0) // Required by Anthropic when budget_tokens thinking is active
                     putJsonObject("thinking") {
                         put("type", "enabled")
                         put("budget_tokens", profile.thinkingBudgetTokens)

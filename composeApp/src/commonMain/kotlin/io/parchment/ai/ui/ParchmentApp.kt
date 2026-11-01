@@ -16,7 +16,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +43,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.AppStateSnapshot
@@ -603,15 +607,23 @@ fun ParchmentApp() {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .background(p.canvasBg)
+                .background(p.sheetBg)
         ) {
             val isCompactScreen = maxWidth < 760.dp
 
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .background(p.canvasBg)
+            ) {
                 // 1. Top Editorial Bar
                 TopEditorialBar(
                     activeSession = activeSession,
                     activeProfile = activeProfile,
+                    isCompactScreen = isCompactScreen,
                     showSidebar = showSidebar,
                     activeModal = activeModal,
                     onToggleSidebar = { showSidebar = !showSidebar },
@@ -641,6 +653,7 @@ fun ParchmentApp() {
                     },
                     onSelectModal = { tab ->
                         activeModal = if (activeModal == tab) ActiveModalTab.NONE else tab
+                        if (isCompactScreen) showSidebar = false
                     }
                 )
 
@@ -757,9 +770,11 @@ fun ParchmentApp() {
                             appState = appState,
                             activeSession = activeSession,
                             activeProfile = activeProfile,
-                            modifier = Modifier
-                                .width(if (isCompactScreen) 265.dp else 290.dp)
-                                .fillMaxHeight(),
+                            modifier = if (isCompactScreen) {
+                                Modifier.fillMaxSize()
+                            } else {
+                                Modifier.width(290.dp).fillMaxHeight()
+                            },
                             onSelectSession = { id ->
                                 persist(appState.copy(activeSessionId = id))
                                 if (isCompactScreen) showSidebar = false
@@ -879,16 +894,19 @@ fun ParchmentApp() {
                                 }
                             }
                         )
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .background(p.border)
-                        )
+                        if (!isCompactScreen) {
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .fillMaxHeight()
+                                    .background(p.border)
+                            )
+                        }
                     }
 
-                    // Right Pane: Active Modal Drawer OR Manuscript Viewport
-                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    // Right Pane: Active Modal Drawer OR Manuscript Viewport (hidden on mobile when full-screen sidebar is open)
+                    if (!isCompactScreen || !showSidebar) {
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                         when (activeModal) {
                             ActiveModalTab.PROMPTS_AND_CARDS -> {
                                 PromptsAndCardsPanel(
@@ -1158,16 +1176,28 @@ fun ParchmentApp() {
                             }
                         }
                     }
+                    }
                 }
             }
         }
     }
 }
 
+private val THINKING_EFFORT_PRESETS = listOf(
+    "minimal",
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+)
+
 @Composable
 private fun TopEditorialBar(
     activeSession: ChatSession,
     activeProfile: ProviderProfile,
+    isCompactScreen: Boolean,
     showSidebar: Boolean,
     activeModal: ActiveModalTab,
     onToggleSidebar: () -> Unit,
@@ -1177,81 +1207,135 @@ private fun TopEditorialBar(
 ) {
     val p = LocalParchmentPalette.current
     val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
+    val modelLabel = activeModel.ifBlank { "Tap to select model" }
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(p.sheetBg)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        // Row 1: Folio Button + Session Title / Active Model + (On Desktop: Nav Chips)
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            SepiaButton(
-                text = if (showSidebar) "◂ Folio" else "☰ Folio",
-                compact = true,
-                style = SepiaButtonStyle.OUTLINE,
-                onClick = onToggleSidebar
-            )
-
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 4.dp)
-                    .clickable { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicText(
-                    text = activeSession.title,
-                    style = p.uiHeaderStyle.copy(fontSize = 15.sp)
+                SepiaButton(
+                    text = if (showSidebar) "◂ Folio" else "☰ Folio",
+                    compact = true,
+                    style = SepiaButtonStyle.OUTLINE,
+                    onClick = onToggleSidebar
                 )
-                val modelLabel = activeModel.ifBlank { "No model selected (click to fetch or enter)" }
-                BasicText(
-                    text = "${activeProfile.name} • $modelLabel",
-                    style = p.uiLabelStyle.copy(color = p.accent)
-                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 2.dp)
+                        .clickable { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
+                ) {
+                    BasicText(
+                        text = activeSession.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = p.uiHeaderStyle.copy(fontSize = 15.sp)
+                    )
+                    BasicText(
+                        text = "${activeProfile.name} • $modelLabel",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = p.uiLabelStyle.copy(color = p.accent)
+                    )
+                }
+            }
+
+            if (!isCompactScreen) {
+                Spacer(Modifier.width(10.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TopNavChipsRow(
+                        activeSession = activeSession,
+                        activeModal = activeModal,
+                        onToggleViewMode = onToggleViewMode,
+                        onCycleWorkspaceMode = onCycleWorkspaceMode,
+                        onSelectModal = onSelectModal
+                    )
+                }
             }
         }
 
-        Spacer(Modifier.width(12.dp))
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SepiaChip(
-                label = if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Editorial Turns",
-                selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
-                onClick = onToggleViewMode
-            )
-
-            SepiaChip(
-                label = activeSession.workspaceMode.label,
-                selected = activeSession.workspaceMode != WorkspaceMode.OFF,
-                onClick = onCycleWorkspaceMode
-            )
-
-            SepiaChip(
-                label = "✦ Prompts & Cards (.png/.json)",
-                selected = activeModal == ActiveModalTab.PROMPTS_AND_CARDS,
-                onClick = { onSelectModal(ActiveModalTab.PROMPTS_AND_CARDS) }
-            )
-
-            SepiaChip(
-                label = "⚙ Providers & Proxy",
-                selected = activeModal == ActiveModalTab.PROVIDERS_AND_PROXY,
-                onClick = { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
-            )
-
-            SepiaChip(
-                label = "🎨 Sepia & Theme",
-                selected = activeModal == ActiveModalTab.THEME_AND_STORAGE,
-                onClick = { onSelectModal(ActiveModalTab.THEME_AND_STORAGE) }
-            )
+        // Row 2 (On Mobile / Compact Screen): Horizontally Scrollable Navigation & Mode Chips
+        if (isCompactScreen) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TopNavChipsRow(
+                    activeSession = activeSession,
+                    activeModal = activeModal,
+                    onToggleViewMode = onToggleViewMode,
+                    onCycleWorkspaceMode = onCycleWorkspaceMode,
+                    onSelectModal = onSelectModal
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun TopNavChipsRow(
+    activeSession: ChatSession,
+    activeModal: ActiveModalTab,
+    onToggleViewMode: () -> Unit,
+    onCycleWorkspaceMode: () -> Unit,
+    onSelectModal: (ActiveModalTab) -> Unit
+) {
+    SepiaChip(
+        label = if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns",
+        selected = activeModal == ActiveModalTab.NONE && activeSession.viewMode == ViewMode.MANUSCRIPT,
+        onClick = {
+            if (activeModal != ActiveModalTab.NONE) {
+                onSelectModal(ActiveModalTab.NONE)
+            } else {
+                onToggleViewMode()
+            }
+        }
+    )
+
+    SepiaChip(
+        label = activeSession.workspaceMode.label,
+        selected = activeSession.workspaceMode != WorkspaceMode.OFF,
+        onClick = onCycleWorkspaceMode
+    )
+
+    SepiaChip(
+        label = "✦ Prompts & Cards",
+        selected = activeModal == ActiveModalTab.PROMPTS_AND_CARDS,
+        onClick = { onSelectModal(ActiveModalTab.PROMPTS_AND_CARDS) }
+    )
+
+    SepiaChip(
+        label = "⚙ Providers & Proxy",
+        selected = activeModal == ActiveModalTab.PROVIDERS_AND_PROXY,
+        onClick = { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
+    )
+
+    SepiaChip(
+        label = "🎨 Sepia & Theme",
+        selected = activeModal == ActiveModalTab.THEME_AND_STORAGE,
+        onClick = { onSelectModal(ActiveModalTab.THEME_AND_STORAGE) }
+    )
 }
 
 @Composable
@@ -1534,6 +1618,9 @@ private fun ManuscriptViewport(
                 } else ""
                 BasicText(
                     text = "✦ $cardSummary$statsSummary",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                     style = p.uiLabelStyle.copy(color = p.narrationInk)
                 )
                 Row(
@@ -1836,12 +1923,14 @@ private fun ManuscriptViewport(
 
         SepiaDivider()
 
-        // Bottom Literary Composer
+        // Bottom Literary Composer (Responsive Mobile + Desktop Layout)
+        var showThinkingEditorRow by remember { mutableStateOf(false) }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(p.sheetBg)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Column(
@@ -1850,7 +1939,7 @@ private fun ManuscriptViewport(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Quick Bleeding-Edge Tool, Media & Decode Toggles
+                // Row 1: Quick Bleeding-Edge Tool, Thinking Level & Decode Toggles
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1893,14 +1982,26 @@ private fun ManuscriptViewport(
                             )
                         }
                     } else {
+                        // Cycle through minimal/none/low/medium/high/xhigh/max OR expand manual input
                         SepiaChip(
-                            label = "Thinking: ${activeProfile.thinkingEffort.uppercase()}",
-                            selected = activeProfile.thinkingEffort != "none",
+                            label = "Thinking: ${activeProfile.thinkingEffort.ifBlank { "default" }.uppercase()}",
+                            selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
                             onClick = {
-                                val order = listOf("none", "low", "medium", "high", "max")
-                                val next = order[(order.indexOf(activeProfile.thinkingEffort) + 1) % order.size]
+                                val cur = activeProfile.thinkingEffort.lowercase()
+                                val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
+                                val next = if (idx >= 0) {
+                                    THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
+                                } else {
+                                    "medium"
+                                }
                                 onUpdateProfile { it.copy(thinkingEffort = next) }
                             }
+                        )
+
+                        SepiaChip(
+                            label = if (showThinkingEditorRow) "▾ Level" else "✎ Level",
+                            selected = showThinkingEditorRow,
+                            onClick = { showThinkingEditorRow = !showThinkingEditorRow }
                         )
 
                         if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS ||
@@ -1958,7 +2059,7 @@ private fun ManuscriptViewport(
                         }
 
                         SepiaChip(
-                            label = if (showPrefillBox) "▾ Assistant Prefill: ON" else "▸ Assistant Prefill",
+                            label = if (showPrefillBox) "▾ Prefill: ON" else "▸ Prefill",
                             selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
                             onClick = onTogglePrefillBox
                         )
@@ -1970,6 +2071,42 @@ private fun ManuscriptViewport(
                                 onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
                             )
                         }
+                    }
+                }
+
+                // Expandable Inline Thinking Level Presets + Manual Input Row
+                if (showThinkingEditorRow) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(p.cardBg)
+                            .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(text = "Presets:", style = p.uiLabelStyle)
+                            THINKING_EFFORT_PRESETS.forEach { preset ->
+                                SepiaChip(
+                                    label = preset,
+                                    selected = activeProfile.thinkingEffort.equals(preset, ignoreCase = true),
+                                    onClick = { onUpdateProfile { it.copy(thinkingEffort = preset) } }
+                                )
+                            }
+                        }
+                        SepiaTextField(
+                            value = activeProfile.thinkingEffort,
+                            onValueChange = { custom -> onUpdateProfile { it.copy(thinkingEffort = custom) } },
+                            label = "Manual Thinking / Effort Level (Argon: low/medium/high • GPT-6.1 Sol & Opus 5.5: low/medium/high/xhigh/max)",
+                            placeholder = "Type any custom level (e.g. minimal, none, low, medium, high, xhigh, max, ultra_high)...",
+                            monospace = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
 
@@ -2004,60 +2141,84 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = assistantPrefillInput,
                         onValueChange = onAssistantPrefillChange,
-                        placeholder = "Optional Assistant Opening Line / Prefill (AI will start its response with these exact words)...",
+                        placeholder = "Optional Assistant Opening Line / Prefill…",
                         singleLine = false,
+                        maxLines = 3,
+                        minHeight = 40.dp,
+                        maxHeight = 96.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
 
+                // Row 2: Dedicated Full-Width Prompt Input Box (Never squished on mobile!)
+                SepiaTextField(
+                    value = userPromptInput,
+                    onValueChange = onUserPromptChange,
+                    placeholder = "Write dialogue/prose, or type a scene direction and tap '🎬 Direct'…",
+                    singleLine = false,
+                    maxLines = 5,
+                    minHeight = 46.dp,
+                    maxHeight = 140.dp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Row 3: Action Buttons + Circular Token Gauge Ring (Horizontally scrollable on narrow mobile screens)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Bottom
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SepiaButton(
-                        text = "📎 Attach",
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = onAddAttachment
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SepiaButton(
+                            text = "📎 Attach",
+                            compact = true,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = onAddAttachment
+                        )
 
-                    SepiaTextField(
-                        value = userPromptInput,
-                        onValueChange = onUserPromptChange,
-                        placeholder = "Write dialogue/prose, or type a scene direction and click '🎬 Direct'…",
-                        singleLine = false,
-                        minHeight = 52.dp,
-                        modifier = Modifier.weight(1f)
-                    )
+                        SepiaContextGaugeRing(
+                            usedTokens = liveContextTokens,
+                            contextLimitTokens = activeProfile.contextWindowTokens,
+                            sessionCostUsd = sessionTotalCostUsd,
+                            onClick = onOpenPricingSettings
+                        )
+                    }
 
-                    // Circular Token Gauge Ring + Mini Progress Bar in the Chat Composer Area
-                    SepiaContextGaugeRing(
-                        usedTokens = liveContextTokens,
-                        contextLimitTokens = activeProfile.contextWindowTokens,
-                        sessionCostUsd = sessionTotalCostUsd,
-                        onClick = onOpenPricingSettings
-                    )
+                    Spacer(Modifier.width(8.dp))
 
-                    SepiaButton(
-                        text = "✍ Impersonate",
-                        enabled = !isStreaming,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = onImpersonateDraft
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SepiaButton(
+                            text = "✍ Impersonate",
+                            compact = true,
+                            enabled = !isStreaming,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = onImpersonateDraft
+                        )
 
-                    SepiaButton(
-                        text = "🎬 Direct",
-                        enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
-                        style = SepiaButtonStyle.SECONDARY,
-                        onClick = onSendGuidedDirection
-                    )
+                        SepiaButton(
+                            text = "🎬 Direct",
+                            compact = true,
+                            enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
+                            style = SepiaButtonStyle.SECONDARY,
+                            onClick = onSendGuidedDirection
+                        )
 
-                    SepiaButton(
-                        text = if (isStreaming) "Writing…" else "Inscribe ↵",
-                        enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
-                        style = SepiaButtonStyle.PRIMARY,
-                        onClick = onSend
-                    )
+                        SepiaButton(
+                            text = if (isStreaming) "Writing…" else "Inscribe ↵",
+                            compact = true,
+                            enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
+                            style = SepiaButtonStyle.PRIMARY,
+                            onClick = onSend
+                        )
+                    }
                 }
             }
         }
@@ -2558,7 +2719,7 @@ private fun PromptsAndCardsPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 BasicText(
                     text = "Card & System Prompt Protocol (.png & .json)",
                     style = p.uiHeaderStyle
@@ -2568,7 +2729,7 @@ private fun PromptsAndCardsPanel(
                     style = p.uiLabelStyle
                 )
             }
-            SepiaButton(text = "Back to Manuscript ✕", style = SepiaButtonStyle.OUTLINE, onClick = onClose)
+            SepiaButton(text = "✕ Back", compact = true, style = SepiaButtonStyle.OUTLINE, onClick = onClose)
         }
 
         // Universal Import / Export Action Bar
@@ -3100,7 +3261,7 @@ private fun ProvidersAndProxyPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 BasicText(
                     text = "Bleeding-Edge Providers, Model Fetcher & Custom Proxy",
                     style = p.uiHeaderStyle
@@ -3110,7 +3271,7 @@ private fun ProvidersAndProxyPanel(
                     style = p.uiLabelStyle
                 )
             }
-            SepiaButton(text = "Back to Manuscript ✕", style = SepiaButtonStyle.OUTLINE, onClick = onClose)
+            SepiaButton(text = "✕ Back", compact = true, style = SepiaButtonStyle.OUTLINE, onClick = onClose)
         }
 
         // Profile Selector & Creator
@@ -3487,6 +3648,32 @@ private fun ProvidersAndProxyPanel(
                     }
                 }
 
+                // Thinking / Reasoning Level Presets (minimal/none/low/medium/high/xhigh/max) + Manual Input
+                BasicText(
+                    text = "Thinking / Reasoning Effort Level (Gemini 4 Argon: low/medium/high • GPT-6.1 Sol & Opus 5.5: low/medium/high/xhigh/max):",
+                    style = p.uiLabelStyle
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    THINKING_EFFORT_PRESETS.forEach { level ->
+                        SepiaChip(
+                            label = level,
+                            selected = activeProfile.thinkingEffort.equals(level, ignoreCase = true),
+                            onClick = { onUpdateProfile { it.copy(thinkingEffort = level) } }
+                        )
+                    }
+                }
+                SepiaTextField(
+                    value = activeProfile.thinkingEffort,
+                    onValueChange = { v -> onUpdateProfile { it.copy(thinkingEffort = v) } },
+                    label = "Manual Thinking Level Value (Type any custom value if default options don't match your model/proxy)",
+                    placeholder = "minimal, none, low, medium, high, xhigh, max, ultra_high...",
+                    monospace = true
+                )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = activeProfile.temperature.toString(),
@@ -3504,6 +3691,8 @@ private fun ProvidersAndProxyPanel(
                         label = "Top-P",
                         modifier = Modifier.weight(1f)
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = activeProfile.maxOutputTokens.toString(),
                         onValueChange = { v ->
@@ -3517,7 +3706,7 @@ private fun ProvidersAndProxyPanel(
                         onValueChange = { v ->
                             v.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
                         },
-                        label = "Thinking Budget Tokens",
+                        label = "Thinking Budget Tokens (0 = Adaptive)",
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -3669,6 +3858,8 @@ private fun ModelsDevPricingCard(
                     monospace = true,
                     modifier = Modifier.weight(1f)
                 )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaTextField(
                     value = activeProfile.cacheReadPricePerM.toString(),
                     onValueChange = { v ->
@@ -3676,7 +3867,7 @@ private fun ModelsDevPricingCard(
                             onUpdateProfile { saveCurrentManualSpec(it.copy(cacheReadPricePerM = num.coerceAtLeast(0.0))) }
                         }
                     },
-                    label = "Cache Read ($ / 1M tok)",
+                    label = "Cache Read ($ / 1M)",
                     monospace = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -3687,7 +3878,7 @@ private fun ModelsDevPricingCard(
                             onUpdateProfile { saveCurrentManualSpec(it.copy(cacheWritePricePerM = num.coerceAtLeast(0.0))) }
                         }
                     },
-                    label = "Cache Write ($ / 1M tok)",
+                    label = "Cache Write ($ / 1M)",
                     monospace = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -3698,7 +3889,7 @@ private fun ModelsDevPricingCard(
                             onUpdateProfile { saveCurrentManualSpec(it.copy(reasoningPricePerM = num.coerceAtLeast(0.0))) }
                         }
                     },
-                    label = "Reasoning ($ / 1M tok)",
+                    label = "Reasoning ($ / 1M)",
                     monospace = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -3741,7 +3932,7 @@ private fun ThemeAndStoragePanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 BasicText(
                     text = "Custom Sepia & Typography Studio",
                     style = p.uiHeaderStyle
@@ -3751,7 +3942,7 @@ private fun ThemeAndStoragePanel(
                     style = p.uiLabelStyle
                 )
             }
-            SepiaButton(text = "Back to Manuscript ✕", style = SepiaButtonStyle.OUTLINE, onClick = onClose)
+            SepiaButton(text = "✕ Back", compact = true, style = SepiaButtonStyle.OUTLINE, onClick = onClose)
         }
 
         // Built-in Sepia & Literary Presets
@@ -3911,7 +4102,7 @@ private fun ThemeAndStoragePanel(
 
                 SepiaDivider()
 
-                // 3. Size, Line Height & Page Geometry
+                // 3. Size, Line Height & Page Geometry (2-column responsive layout)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = theme.proseFontSizeSp.toString(),
@@ -3925,6 +4116,8 @@ private fun ThemeAndStoragePanel(
                         label = "Code Size (sp)",
                         modifier = Modifier.weight(1f)
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = theme.proseLineHeightMultiplier.toString(),
                         onValueChange = { v -> v.toFloatOrNull()?.let { onUpdateTheme(theme.copy(proseLineHeightMultiplier = it)) } },
@@ -3947,7 +4140,7 @@ private fun ThemeAndStoragePanel(
             }
         }
 
-        // Hex Color Token Customizer
+        // Hex Color Token Customizer (2-column responsive rows)
         SepiaSectionCard(
             title = "Surface & Ink Hex Color Tokens",
             subtitle = "Edit any hex code (#RRGGBB) to customize the entire UI in real time"
@@ -3968,6 +4161,8 @@ private fun ThemeAndStoragePanel(
                         monospace = true,
                         modifier = Modifier.weight(1f)
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = theme.cardBgHex,
                         onValueChange = { onUpdateTheme(theme.copy(name = "Custom Theme", cardBgHex = it)) },
@@ -3999,6 +4194,8 @@ private fun ThemeAndStoragePanel(
                         monospace = true,
                         modifier = Modifier.weight(1f)
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = theme.narrationInkHex,
                         onValueChange = { onUpdateTheme(theme.copy(name = "Custom Theme", narrationInkHex = it)) },
@@ -4023,19 +4220,19 @@ private fun ThemeAndStoragePanel(
             subtitle = "Installed Version: v${OtaUpdateEngine.currentAppVersion} • Target Platform: ${PlatformBridge.platformName}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SepiaTextField(
+                    value = otaGithubRepo,
+                    onValueChange = { repo -> onUpdateOtaSettings(repo, autoCheckOta) },
+                    label = "GitHub Release Repository (owner/repo)",
+                    placeholder = "baros4294/parchment",
+                    monospace = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.Bottom
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SepiaTextField(
-                        value = otaGithubRepo,
-                        onValueChange = { repo -> onUpdateOtaSettings(repo, autoCheckOta) },
-                        label = "GitHub Release Repository (owner/repo)",
-                        placeholder = "baros4294/parchment",
-                        monospace = true,
-                        modifier = Modifier.weight(1f)
-                    )
                     SepiaChip(
                         label = if (autoCheckOta) "Auto-Check on Launch: ON" else "Auto-Check on Launch: OFF",
                         selected = autoCheckOta,
@@ -4043,6 +4240,7 @@ private fun ThemeAndStoragePanel(
                     )
                     SepiaButton(
                         text = if (otaState is OtaUpdateState.Checking) "Checking…" else "↻ Check for Update Now",
+                        compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         enabled = otaState !is OtaUpdateState.Checking && otaState !is OtaUpdateState.Downloading,
                         onClick = onCheckOtaNow
