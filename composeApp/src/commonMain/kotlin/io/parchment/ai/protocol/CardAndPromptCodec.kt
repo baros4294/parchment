@@ -1,6 +1,8 @@
 package io.parchment.ai.protocol
 
 import io.parchment.ai.model.CharacterOrScenarioCard
+import io.parchment.ai.model.ContextFragment
+import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import kotlinx.serialization.encodeToString
@@ -9,6 +11,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
@@ -128,6 +131,38 @@ object CardAndPromptCodec {
             return emptyList()
         }
 
+        // Extract character_book lore entries (Errata / V2 / V3 card format) into Composable Fragments
+        val parsedFragments = mutableListOf<ContextFragment>()
+        val charBookObj = (dataObj["character_book"] as? JsonObject) ?: (root["character_book"] as? JsonObject)
+        val entriesArr = (charBookObj?.get("entries") as? JsonArray) ?: (charBookObj?.get("entries") as? JsonObject)?.values?.let { JsonArray(it.toList()) }
+        if (entriesArr != null) {
+            entriesArr.forEachIndexed { idx, entryEl ->
+                val entry = entryEl as? JsonObject ?: return@forEachIndexed
+                val content = entry.str("content", "entry")
+                if (content.isBlank()) return@forEachIndexed
+                val keys = entry.strList("keys", "key", "keywords")
+                val title = entry.str("name", "comment", "title").ifBlank {
+                    keys.firstOrNull() ?: "Lore Fragment #${idx + 1}"
+                }
+                val enabled = entry["enabled"]?.jsonPrimitive?.booleanOrNull ?: true
+                val constant = entry["constant"]?.jsonPrimitive?.booleanOrNull ?: false
+                val mode = when {
+                    !enabled -> FragmentActivationMode.MUTED
+                    constant || keys.isEmpty() -> FragmentActivationMode.PINNED
+                    else -> FragmentActivationMode.KEYWORD
+                }
+                parsedFragments.add(
+                    ContextFragment(
+                        id = "cb-frag-$idx-${kotlin.random.Random.nextInt(1000, 9999)}",
+                        title = title,
+                        content = content,
+                        keywords = keys,
+                        mode = mode
+                    )
+                )
+            }
+        }
+
         return CharacterOrScenarioCard(
             name = dataObj.str("name", "char_name", "title").ifBlank { "Imported Card" },
             description = dataObj.str("description", "char_persona"),
@@ -140,6 +175,7 @@ object CardAndPromptCodec {
             postHistoryInstructions = dataObj.str("post_history_instructions", "postHistoryInstructions", "jailbreak"),
             creatorNotes = dataObj.str("creator_notes", "creatorNotes", "comment"),
             tags = dataObj.strList("tags"),
+            embeddedFragments = parsedFragments,
             sourceFormat = spec
         )
     }
@@ -197,6 +233,25 @@ object CardAndPromptCodec {
                 put("creator_notes", card.creatorNotes)
                 putJsonArray("tags") {
                     card.tags.forEach { add(JsonPrimitive(it)) }
+                }
+                if (card.embeddedFragments.isNotEmpty()) {
+                    putJsonObject("character_book") {
+                        putJsonArray("entries") {
+                            card.embeddedFragments.forEachIndexed { idx, frag ->
+                                add(buildJsonObject {
+                                    put("id", idx)
+                                    put("name", frag.title)
+                                    put("comment", frag.title)
+                                    put("content", frag.content)
+                                    put("enabled", frag.mode != FragmentActivationMode.MUTED)
+                                    put("constant", frag.mode == FragmentActivationMode.PINNED)
+                                    putJsonArray("keys") {
+                                        frag.keywords.forEach { add(JsonPrimitive(it)) }
+                                    }
+                                })
+                            }
+                        }
+                    }
                 }
             }
         }

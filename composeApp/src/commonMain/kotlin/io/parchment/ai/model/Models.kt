@@ -10,7 +10,7 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
         defaultEndpointPath = "/v1beta/interactions"
     ),
     OPENAI_RESPONSES(
-        displayName = "OpenAI Responses API",
+        displayName = "OpenAI Responses & GPT Image API",
         defaultBaseUrl = "https://api.openai.com",
         defaultEndpointPath = "/v1/responses"
     ),
@@ -18,8 +18,30 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
         displayName = "Anthropic Messages API",
         defaultBaseUrl = "https://api.anthropic.com",
         defaultEndpointPath = "/v1/messages"
+    ),
+    BYTEDANCE_ARK(
+        displayName = "ByteDance Seedream (Image) & Seedance (Video) Ark API",
+        defaultBaseUrl = "https://ark.ap-southeast.bytepluses.com",
+        defaultEndpointPath = "/api/v3/images/generations"
     )
 }
+
+@Serializable
+enum class MediaKind {
+    IMAGE,
+    VIDEO
+}
+
+@Serializable
+data class GeneratedMediaItem(
+    val id: String,
+    val kind: MediaKind,
+    val mimeType: String = "image/png",
+    val localFilePath: String = "",
+    val remoteUrl: String = "",
+    val revisedPrompt: String = "",
+    val aspectRatio: String = ""
+)
 
 @Serializable
 enum class AuthHeaderMode(val label: String) {
@@ -27,6 +49,20 @@ enum class AuthHeaderMode(val label: String) {
     BEARER_ONLY("Force Authorization: Bearer <key> (Proxy Mode)"),
     QUERY_PARAM("Query Parameter (?key=<key>)")
 }
+
+@Serializable
+data class ModelPricingSpec(
+    val modelId: String,
+    val displayName: String = "",
+    val providerName: String = "",
+    val inputPricePerM: Double = 0.0,
+    val outputPricePerM: Double = 0.0,
+    val cacheReadPricePerM: Double = 0.0,
+    val cacheWritePricePerM: Double = 0.0,
+    val reasoningPricePerM: Double = 0.0,
+    val contextWindowTokens: Int = 128000,
+    val maxOutputTokens: Int = 32768
+)
 
 @Serializable
 data class ProviderProfile(
@@ -48,14 +84,38 @@ data class ProviderProfile(
     val enableWebSearch: Boolean = false,
     val enableCodeExecution: Boolean = false,
     val enableUrlContext: Boolean = false,
+    val enableImageGeneration: Boolean = false,
+    val enableVideoGeneration: Boolean = false,
+    val allowShellExecution: Boolean = false,
+    val mediaAspectRatio: String = "1:1", // 1:1, 16:9, 9:16, 4:3, 3:4, 21:9
+    val mediaResolution: String = "1K", // 1K, 2K, 4K, 1024x1024, 1536x1024, 1024x1536, 720p, 1080p
+    val videoDurationSeconds: Int = 5,
+    val videoGenerateAudio: Boolean = true,
     val thinkingEffort: String = "high", // none, low, medium, high, max
     val thinkingBudgetTokens: Int = 16384,
     val temperature: Double = 0.85,
     val topP: Double = 0.95,
     val maxOutputTokens: Int = 32768,
-    val anthropicBetaHeaders: String = "interleaved-thinking-2025-05-14,output-128k-2025-02-19",
+    val contextWindowTokens: Int = 128000,
+    val inputPricePerM: Double = 0.0,
+    val outputPricePerM: Double = 0.0,
+    val cacheReadPricePerM: Double = 0.0,
+    val cacheWritePricePerM: Double = 0.0,
+    val reasoningPricePerM: Double = 0.0,
+    val customModelSpecs: Map<String, ModelPricingSpec> = emptyMap(),
+    val anthropicBetaHeaders: String = "",
     val rawJsonExtraBody: String = ""
-)
+) {
+    fun calculateTurnCostUsd(metrics: TokenMetrics): Double {
+        val uncachedInput = (metrics.inputTokens - metrics.cachedInputTokens).coerceAtLeast(0)
+        val inCost = (uncachedInput / 1_000_000.0) * inputPricePerM
+        val cacheCost = (metrics.cachedInputTokens / 1_000_000.0) * cacheReadPricePerM
+        val effReasoningPrice = if (reasoningPricePerM > 0.0) reasoningPricePerM else outputPricePerM
+        val thinkCost = (metrics.reasoningTokens / 1_000_000.0) * effReasoningPrice
+        val outCost = (metrics.outputTokens / 1_000_000.0) * outputPricePerM
+        return inCost + cacheCost + thinkCost + outCost
+    }
+}
 
 @Serializable
 enum class MessageRole {
@@ -81,7 +141,21 @@ data class TokenMetrics(
     val outputTokens: Int = 0,
     val ttftMs: Long = 0L,
     val durationMs: Long = 0L,
-    val tokensPerSec: Double = 0.0
+    val tokensPerSec: Double = 0.0,
+    val estimatedCostUsd: Double = 0.0
+) {
+    val totalTokens: Int
+        get() = inputTokens + reasoningTokens + outputTokens
+}
+
+@Serializable
+data class PromptAttachment(
+    val id: String,
+    val fileName: String,
+    val mimeType: String,
+    val base64Data: String = "",
+    val textContent: String = "",
+    val localFilePath: String = ""
 )
 
 @Serializable
@@ -91,6 +165,8 @@ data class MessageVariant(
     val thinkingSummary: String = "",
     val thinkingSignature: String = "",
     val toolCalls: List<ToolCallRecord> = emptyList(),
+    val mediaItems: List<GeneratedMediaItem> = emptyList(),
+    val attachments: List<PromptAttachment> = emptyList(),
     val providerInteractionId: String = "",
     val providerProtocol: ProviderProtocol? = null,
     val modelUsed: String = "",
@@ -128,6 +204,22 @@ enum class WorkspaceMode(val label: String) {
 }
 
 @Serializable
+enum class FragmentActivationMode(val label: String) {
+    PINNED("Pinned (Always In Context)"),
+    KEYWORD("Keyword-Triggered"),
+    MUTED("Off")
+}
+
+@Serializable
+data class ContextFragment(
+    val id: String,
+    val title: String,
+    val content: String,
+    val keywords: List<String> = emptyList(),
+    val mode: FragmentActivationMode = FragmentActivationMode.PINNED
+)
+
+@Serializable
 data class CharacterOrScenarioCard(
     val name: String = "",
     val description: String = "",
@@ -140,6 +232,7 @@ data class CharacterOrScenarioCard(
     val postHistoryInstructions: String = "",
     val creatorNotes: String = "",
     val tags: List<String> = emptyList(),
+    val embeddedFragments: List<ContextFragment> = emptyList(),
     val sourceFormat: String = "parchment-v1"
 ) {
     fun buildCompiledInstructions(userName: String = "User"): String {
@@ -198,21 +291,18 @@ data class ChatSession(
     val updatedAt: Long,
     val profileId: String,
     val modelOverride: String = "",
-    val userName: String = "Traveler",
-    val systemPrompt: String = DEFAULT_LITERARY_SYSTEM_PROMPT,
+    val userName: String = "User",
+    val systemPrompt: String = "",
     val activeCard: CharacterOrScenarioCard? = null,
+    val storySummary: String = "",
+    val fragments: List<ContextFragment> = emptyList(),
     val authorsNote: String = "",
     val authorsNoteDepth: Int = 2,
     val viewMode: ViewMode = ViewMode.MANUSCRIPT,
     val workspacePath: String = "",
     val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
     val messages: List<MessageNode> = emptyList()
-) {
-    companion object {
-        const val DEFAULT_LITERARY_SYSTEM_PROMPT =
-            "You are a master literary collaborator, researcher, and prose stylist. Prioritize vivid sensory grounding, authentic dialogue, psychological depth, and rhythmic sentence craft. Avoid repetitive clichés, purple melodrama, or unprompted moralizing summaries at the end of scenes."
-    }
-}
+)
 
 @Serializable
 data class ThemeConfig(
@@ -229,9 +319,9 @@ data class ThemeConfig(
     val accentHex: String = "#9E4730",
     val accentSecondaryHex: String = "#B57C2E",
     val dangerHex: String = "#A62B2B",
-    val proseFontFamily: String = "Serif", // Serif, Sans, Monospace, Custom
+    val proseFontFamily: String = "Inter", // Inter, Serif, Sans, Monospace, LaTeX, Custom
     val customProseFontPath: String = "",
-    val codeFontFamily: String = "Monospace", // Monospace, Sans, Serif, Custom
+    val codeFontFamily: String = "JetBrainsMono Nerd", // JetBrainsMono Nerd, Monospace, Inter, Serif, Custom
     val customCodeFontPath: String = "",
     val proseFontSizeSp: Float = 17.5f,
     val codeFontSizeSp: Float = 12.5f,
@@ -298,5 +388,7 @@ data class AppStateSnapshot(
     val activeSessionId: String = "",
     val systemPromptPresets: List<SystemPromptPreset> = emptyList(),
     val savedCards: List<CharacterOrScenarioCard> = emptyList(),
-    val theme: ThemeConfig = ThemeConfig()
+    val theme: ThemeConfig = ThemeConfig(),
+    val otaGithubRepo: String = "baros4294/parchment",
+    val autoCheckOtaOnStartup: Boolean = true
 )

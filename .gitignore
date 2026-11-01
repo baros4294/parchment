@@ -8,3 +8,4 @@ local.properties
 Thumbs.db
 *.keystore
 *.jks
+!keystore/parchment-ota-signing.jks

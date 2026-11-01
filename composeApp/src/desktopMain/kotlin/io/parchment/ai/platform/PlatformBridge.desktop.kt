@@ -1,15 +1,20 @@
 package io.parchment.ai.platform
 
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.platform.Font
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jetbrains.skia.Image
+import java.awt.Desktop
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
 import java.io.FilenameFilter
+import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JFileChooser
@@ -20,6 +25,7 @@ actual object PlatformBridge {
     actual val isAndroid: Boolean = false
 
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
+    private val imageCache = ConcurrentHashMap<String, ImageBitmap>()
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
@@ -171,6 +177,61 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
+    actual fun loadBundledFontFamily(bundleName: String): FontFamily? {
+        val key = "bundled:$bundleName"
+        fontCache[key]?.let { return it }
+
+        fun readResBytes(resPath: String): ByteArray? =
+            Thread.currentThread().contextClassLoader?.getResourceAsStream(resPath)?.use { it.readBytes() }
+                ?: PlatformBridge::class.java.classLoader?.getResourceAsStream(resPath)?.use { it.readBytes() }
+
+        return runCatching {
+            val family = when (bundleName.lowercase()) {
+                "inter" -> {
+                    val reg = readResBytes("fonts/Inter-Regular.ttf") ?: return null
+                    val ital = readResBytes("fonts/Inter-Italic.ttf") ?: reg
+                    FontFamily(
+                        Font(identity = "Inter-Regular", data = reg, weight = FontWeight.Normal, style = FontStyle.Normal),
+                        Font(identity = "Inter-Medium", data = reg, weight = FontWeight.Medium, style = FontStyle.Normal),
+                        Font(identity = "Inter-SemiBold", data = reg, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                        Font(identity = "Inter-Bold", data = reg, weight = FontWeight.Bold, style = FontStyle.Normal),
+                        Font(identity = "Inter-Italic", data = ital, weight = FontWeight.Normal, style = FontStyle.Italic),
+                        Font(identity = "Inter-BoldItalic", data = ital, weight = FontWeight.Bold, style = FontStyle.Italic)
+                    )
+                }
+                "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> {
+                    val reg = readResBytes("fonts/JetBrainsMonoNerdFont-Regular.ttf") ?: return null
+                    val semi = readResBytes("fonts/JetBrainsMonoNerdFont-SemiBold.ttf") ?: reg
+                    val bold = readResBytes("fonts/JetBrainsMonoNerdFont-Bold.ttf") ?: reg
+                    val ital = readResBytes("fonts/JetBrainsMonoNerdFont-Italic.ttf") ?: reg
+                    FontFamily(
+                        Font(identity = "JBMNerd-Regular", data = reg, weight = FontWeight.Normal, style = FontStyle.Normal),
+                        Font(identity = "JBMNerd-Medium", data = reg, weight = FontWeight.Medium, style = FontStyle.Normal),
+                        Font(identity = "JBMNerd-SemiBold", data = semi, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                        Font(identity = "JBMNerd-Bold", data = bold, weight = FontWeight.Bold, style = FontStyle.Normal),
+                        Font(identity = "JBMNerd-Italic", data = ital, weight = FontWeight.Normal, style = FontStyle.Italic)
+                    )
+                }
+                "latex", "katex", "math" -> {
+                    val katexReg = readResBytes("fonts/KaTeX_Main-Regular.ttf") ?: return null
+                    val katexBold = readResBytes("fonts/KaTeX_Main-Bold.ttf") ?: katexReg
+                    val katexItal = readResBytes("fonts/KaTeX_Math-Italic.ttf") ?: katexReg
+                    val notoMath = readResBytes("fonts/NotoSansMath-Regular.ttf") ?: katexReg
+                    FontFamily(
+                        Font(identity = "KaTeX-Regular", data = katexReg, weight = FontWeight.Normal, style = FontStyle.Normal),
+                        Font(identity = "KaTeX-Bold", data = katexBold, weight = FontWeight.Bold, style = FontStyle.Normal),
+                        Font(identity = "KaTeX-SemiBold", data = katexBold, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                        Font(identity = "KaTeX-MathItalic", data = katexItal, weight = FontWeight.Normal, style = FontStyle.Italic),
+                        Font(identity = "NotoSansMath-Regular", data = notoMath, weight = FontWeight.Medium, style = FontStyle.Normal)
+                    )
+                }
+                else -> return null
+            }
+            fontCache[key] = family
+            family
+        }.getOrNull()
+    }
+
     // ========================================================================================
     // Sandboxed Local File System Agent Harness Operations
     // ========================================================================================
@@ -249,22 +310,54 @@ actual object PlatformBridge {
     ): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        val existing = target.readText(Charsets.UTF_8)
+        val existingRaw = target.readText(Charsets.UTF_8)
         require(oldText.isNotEmpty()) { "old_text must not be empty." }
-        require(existing.contains(oldText)) { "old_text was not found in '$relativePath'." }
 
-        val updated = if (replaceAll) {
-            existing.replace(oldText, newText)
+        // Normalize CRLF/LF for reliable matching (OpenCode / Oh-My-Pi style)
+        val usesCrlf = existingRaw.contains("\r\n")
+        val existing = existingRaw.replace("\r\n", "\n")
+        val normOld = oldText.replace("\r\n", "\n")
+        val normNew = newText.replace("\r\n", "\n")
+
+        require(existing.contains(normOld)) { "old_text was not found in '$relativePath'." }
+
+        val updatedLf = if (replaceAll) {
+            existing.replace(normOld, normNew)
         } else {
-            val firstIdx = existing.indexOf(oldText)
-            val secondIdx = existing.indexOf(oldText, startIndex = firstIdx + oldText.length)
+            val firstIdx = existing.indexOf(normOld)
+            val secondIdx = existing.indexOf(normOld, startIndex = firstIdx + normOld.length)
             require(secondIdx == -1) {
-                "old_text matched multiple locations in '$relativePath'. Include more context or set replace_all=true."
+                "old_text matched multiple locations in '$relativePath'. Include more surrounding context or set replace_all=true."
             }
-            existing.replaceFirst(oldText, newText)
+            existing.replaceFirst(normOld, normNew)
         }
-        target.writeText(updated, Charsets.UTF_8)
-        "Successfully edited '$relativePath'."
+
+        val finalContent = if (usesCrlf) updatedLf.replace("\n", "\r\n") else updatedLf
+        target.writeText(finalContent, Charsets.UTF_8)
+        val removedLines = normOld.lines().size
+        val addedLines = normNew.lines().size
+        "Edited '$relativePath' (+$addedLines / -$removedLines lines)."
+    }
+
+    actual fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int): Result<String> = runCatching {
+        val rootDir = File(workspaceRoot).canonicalFile
+        require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
+        val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+        val pb = if (isWin) {
+            ProcessBuilder("powershell.exe", "-NoProfile", "-Command", command)
+        } else {
+            ProcessBuilder("sh", "-c", command)
+        }
+        pb.directory(rootDir)
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val finished = proc.waitFor(timeoutSeconds.coerceIn(1, 300).toLong(), java.util.concurrent.TimeUnit.SECONDS)
+        if (!finished) {
+            proc.destroyForcibly()
+            error("Command timed out after $timeoutSeconds seconds.")
+        }
+        val output = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
+        "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
     }
 
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
@@ -314,5 +407,84 @@ actual object PlatformBridge {
 
     actual fun notifyLongDecodeComplete() {
         windowStatusCallback?.invoke("Parchment — Literary & Bleeding-Edge AI Studio")
+    }
+
+    actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota")
+        if (!tempDir.exists()) tempDir.mkdirs()
+        val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "Parchment-Windows-Setup.exe" }
+        val installerFile = File(tempDir, safeName)
+        installerFile.writeBytes(bytes)
+
+        val localAppData = System.getenv("LOCALAPPDATA") ?: ""
+        val installedExe = File(localAppData, "Programs\\Parchment\\Parchment.exe")
+        val fallbackExe = File(System.getProperty("user.dir"), "Parchment.exe")
+        val relaunchTarget = if (installedExe.exists()) installedExe.absolutePath else fallbackExe.absolutePath
+
+        // Write a tiny updater script that waits for the current process to exit, runs the silent Inno Setup update,
+        // and automatically relaunches Parchment.exe
+        val psScriptFile = File(tempDir, "apply-ota.ps1")
+        psScriptFile.writeText(
+            """
+            Start-Sleep -Milliseconds 900
+            Start-Process -FilePath "${installerFile.absolutePath}" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -Wait
+            if (Test-Path "$relaunchTarget") {
+                Start-Process -FilePath "$relaunchTarget"
+            } elseif (Test-Path "${installedExe.absolutePath}") {
+                Start-Process -FilePath "${installedExe.absolutePath}"
+            }
+            Remove-Item -Force "${installerFile.absolutePath}" -ErrorAction SilentlyContinue
+            """.trimIndent(),
+            Charsets.UTF_8
+        )
+
+        ProcessBuilder(
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-File", psScriptFile.absolutePath
+        ).start()
+
+        // Exit current instance after 400ms so the silent installer can replace files cleanly
+        Thread {
+            Thread.sleep(400L)
+            kotlin.system.exitProcess(0)
+        }.apply { isDaemon = true }.start()
+
+        "Downloaded ${bytes.size / 1024} KB. Applying silent Windows update & restarting Parchment…"
+    }
+
+    actual fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray): String {
+        val mediaDir = File(resolveStorageDir(), "media")
+        if (!mediaDir.exists()) mediaDir.mkdirs()
+        val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val outFile = File(mediaDir, safeName)
+        outFile.writeBytes(bytes)
+        imageCache.remove(outFile.absolutePath)
+        return outFile.absolutePath
+    }
+
+    actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
+        if (filePath.isBlank()) return null
+        imageCache[filePath]?.let { return it }
+        return runCatching {
+            val f = File(filePath)
+            if (!f.exists() || !f.isFile) return null
+            val bmp = Image.makeFromEncoded(f.readBytes()).toComposeImageBitmap()
+            imageCache[filePath] = bmp
+            bmp
+        }.getOrNull()
+    }
+
+    actual fun openOrPlayMedia(localFilePathOrUrl: String) {
+        runCatching {
+            val f = File(localFilePathOrUrl)
+            if (f.exists()) {
+                Desktop.getDesktop().open(f)
+            } else if (localFilePathOrUrl.startsWith("http://") || localFilePathOrUrl.startsWith("https://")) {
+                Desktop.getDesktop().browse(URI(localFilePathOrUrl))
+            }
+        }
     }
 }

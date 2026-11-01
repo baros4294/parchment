@@ -1,5 +1,6 @@
 package io.parchment.ai.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
@@ -21,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -240,4 +245,124 @@ fun SepiaDivider(modifier: Modifier = Modifier) {
             .height(1.dp)
             .background(p.border.copy(alpha = 0.75f))
     )
+}
+
+/**
+ * Circular Context Ring + Mini Progress Bar in the Chat Composer Area.
+ * Displays live estimated token usage vs. context window limit and session cost.
+ */
+@Composable
+fun SepiaContextGaugeRing(
+    usedTokens: Int,
+    contextLimitTokens: Int,
+    sessionCostUsd: Double = 0.0,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    val safeLimit = contextLimitTokens.coerceAtLeast(1000)
+    val fraction = (usedTokens.toFloat() / safeLimit.toFloat()).coerceIn(0f, 1f)
+    val percent = (fraction * 100f).toInt()
+
+    val ringColor = when {
+        fraction >= 0.85f -> p.danger
+        fraction >= 0.60f -> p.accentSecondary
+        else -> p.accent
+    }
+
+    val shape = RoundedCornerShape(6.dp)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(p.cardBg)
+            .border(1.dp, p.border, shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // 1. Round Circular Token Gauge
+        Box(
+            modifier = Modifier.size(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.size(22.dp)) {
+                val strokeWidth = 2.8.dp.toPx()
+                drawArc(
+                    color = p.border,
+                    startAngle = 0f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = ringColor,
+                    startAngle = -90f,
+                    sweepAngle = (fraction * 360f).coerceAtLeast(4f),
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+            }
+            BasicText(
+                text = "$percent%",
+                style = p.uiLabelStyle.copy(
+                    fontSize = 8.sp,
+                    color = p.primaryInk,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+
+        // 2. Token Readout + Mini Horizontal Progress Bar
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            val costTag = if (sessionCostUsd > 0.0) " • ${formatUsdCost(sessionCostUsd)}" else ""
+            BasicText(
+                text = "${formatCompactTokens(usedTokens)} / ${formatCompactTokens(safeLimit)} tok$costTag",
+                style = p.uiLabelStyle.copy(
+                    fontFamily = p.codeFontFamily,
+                    fontSize = 10.5.sp,
+                    color = p.primaryInk,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            Box(
+                modifier = Modifier
+                    .width(96.dp)
+                    .height(3.5.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(p.border.copy(alpha = 0.6f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction.coerceAtLeast(0.02f))
+                        .height(3.5.dp)
+                        .background(ringColor)
+                )
+            }
+        }
+    }
+}
+
+fun formatCompactTokens(tokens: Int): String = when {
+    tokens >= 1_000_000 -> {
+        val m = (tokens / 100_000) / 10.0
+        if (m == m.toLong().toDouble()) "${m.toLong()}M" else "${m}M"
+    }
+    tokens >= 10_000 -> "${tokens / 1000}k"
+    tokens >= 1_000 -> {
+        val k = (tokens / 100) / 10.0
+        "${k}k"
+    }
+    else -> tokens.toString()
+}
+
+fun formatUsdCost(costUsd: Double): String {
+    if (costUsd <= 0.0) return "$0.00"
+    if (costUsd < 0.0001) return "<$0.0001"
+    val scaled = (costUsd * 10000.0 + 0.5).toLong()
+    val whole = scaled / 10000
+    val frac = (scaled % 10000).toString().padStart(4, '0').trimEnd('0').let {
+        if (it.length < 2) it.padEnd(2, '0') else it
+    }
+    return "$$whole.$frac"
 }

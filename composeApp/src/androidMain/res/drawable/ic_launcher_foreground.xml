@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+
+    <!-- Inner Border Frame -->
+    <path
+        android:pathData="M56,56 L200,56 L200,200 L56,200 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#D5C4A1"
+        android:fillColor="#00000000" />
+
+    <!-- Minimalist Folio Lines -->
+    <path
+        android:pathData="M76,92 L138,92"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#C4AE88" />
+    <path
+        android:pathData="M76,114 L126,114"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#C4AE88" />
+    <path
+        android:pathData="M76,136 L112,136"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#C4AE88" />
+
+    <!-- KISS Fountain Pen Nib (Espresso Ink & Terracotta) -->
+    <path
+        android:pathData="M178,70 L190,82 L152,154 L104,178 L128,130 Z"
+        android:fillColor="#261C14" />
+    <path
+        android:pathData="M178,70 L190,82 L168,104 L156,92 Z"
+        android:fillColor="#9E4730" />
+    <path
+        android:pathData="M104,178 L136,146"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#F4ECD8" />
+
+    <!-- Sealing Wax Star -->
+    <path
+        android:pathData="M86,160 L90,170 L100,174 L90,178 L86,188 L82,178 L72,174 L82,170 Z"
+        android:fillColor="#9E4730" />
+</vector>

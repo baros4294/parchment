@@ -11,6 +11,7 @@ import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.readRawBytes
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
@@ -20,6 +21,8 @@ import io.ktor.utils.io.readUTF8Line
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AuthHeaderMode
 import io.parchment.ai.model.ChatSession
+import io.parchment.ai.model.GeneratedMediaItem
+import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.ProviderProfile
@@ -46,18 +49,22 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 sealed class StreamUpdate {
     data class Status(val message: String, val interactionId: String = "") : StreamUpdate()
     data class ThinkingDelta(val delta: String, val signatureDelta: String = "") : StreamUpdate()
     data class ContentDelta(val delta: String) : StreamUpdate()
     data class ToolCallEvent(val toolCall: ToolCallRecord) : StreamUpdate()
+    data class MediaGenerated(val item: GeneratedMediaItem) : StreamUpdate()
     data class RawWireSnapshot(val requestJson: String, val latestResponseChunk: String) : StreamUpdate()
     data class Completed(
         val fullContent: String,
         val fullThinking: String,
         val thinkingSignature: String,
         val toolCalls: List<ToolCallRecord>,
+        val mediaItems: List<GeneratedMediaItem>,
         val providerInteractionId: String,
         val metrics: TokenMetrics,
         val rawRequest: String,
@@ -66,6 +73,7 @@ sealed class StreamUpdate {
     data class Error(val message: String, val rawDetails: String = "") : StreamUpdate()
 }
 
+@OptIn(ExperimentalEncodingApi::class)
 object AiProviderEngine {
 
     private val json = Json {
@@ -119,6 +127,7 @@ object AiProviderEngine {
         val thinkingBuilder = StringBuilder()
         val signatureBuilder = StringBuilder()
         val executedTools = mutableListOf<ToolCallRecord>()
+        val generatedMedia = mutableListOf<GeneratedMediaItem>()
         var lastInteractionId = ""
         var inputTokens = 0
         var cachedTokens = 0
@@ -151,6 +160,11 @@ object AiProviderEngine {
                                 val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                 PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                 emit(StreamUpdate.ContentDelta(delta))
+                            },
+                            onMedia = { item ->
+                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                generatedMedia.add(item)
+                                emit(StreamUpdate.MediaGenerated(item))
                             },
                             onToolCall = { tc ->
                                 executedTools.add(tc)
@@ -192,6 +206,11 @@ object AiProviderEngine {
                                 PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                 emit(StreamUpdate.ContentDelta(delta))
                             },
+                            onMedia = { item ->
+                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                generatedMedia.add(item)
+                                emit(StreamUpdate.MediaGenerated(item))
+                            },
                             onToolCall = { tc ->
                                 executedTools.add(tc)
                                 emit(StreamUpdate.ToolCallEvent(tc))
@@ -213,7 +232,43 @@ object AiProviderEngine {
                 }
 
                 ProviderProtocol.OPENAI_RESPONSES -> {
-                    if (profile.useLegacyFallbackEndpoint) {
+                    val lowerModel = model.lowercase()
+                    val isStandaloneImageModel = lowerModel.contains("gpt-image") ||
+                        lowerModel.contains("dall-e") ||
+                        lowerModel.contains("seedream") ||
+                        lowerModel.contains("imagen") ||
+                        lowerModel.contains("flux") ||
+                        lowerModel.contains("stable-diffusion") ||
+                        lowerModel.contains("sdxl") ||
+                        lowerModel.contains("ideogram") ||
+                        lowerModel.contains("recraft") ||
+                        lowerModel.contains("kolors")
+
+                    val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
+                        (profile.enableImageGeneration && isStandaloneImageModel)
+
+                    if (isDirectImagesEndpoint) {
+                        executeOpenAiDirectImagesEndpoint(
+                            profile = profile,
+                            model = model,
+                            historyNodes = historyNodes,
+                            onStatus = { st -> emit(StreamUpdate.Status(st)) },
+                            onMedia = { item ->
+                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                generatedMedia.add(item)
+                                emit(StreamUpdate.MediaGenerated(item))
+                            },
+                            onContent = { delta ->
+                                contentBuilder.append(delta)
+                                emit(StreamUpdate.ContentDelta(delta))
+                            },
+                            onRawWire = { req, resp ->
+                                lastRawReq = req
+                                lastRawResp = resp
+                                emit(StreamUpdate.RawWireSnapshot(req, resp))
+                            }
+                        )
+                    } else if (profile.useLegacyFallbackEndpoint) {
                         executeOpenAiChatCompletionsLoop(
                             profile = profile,
                             model = model,
@@ -231,6 +286,11 @@ object AiProviderEngine {
                                 val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                 PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                 emit(StreamUpdate.ContentDelta(delta))
+                            },
+                            onMedia = { item ->
+                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                generatedMedia.add(item)
+                                emit(StreamUpdate.MediaGenerated(item))
                             },
                             onToolCall = { tc ->
                                 executedTools.add(tc)
@@ -266,6 +326,11 @@ object AiProviderEngine {
                                 val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                 PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                 emit(StreamUpdate.ContentDelta(delta))
+                            },
+                            onMedia = { item ->
+                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                generatedMedia.add(item)
+                                emit(StreamUpdate.MediaGenerated(item))
                             },
                             onToolCall = { tc ->
                                 executedTools.add(tc)
@@ -324,13 +389,62 @@ object AiProviderEngine {
                         }
                     )
                 }
+
+                ProviderProtocol.BYTEDANCE_ARK -> {
+                    executeByteDanceArkGeneration(
+                        profile = profile,
+                        model = model,
+                        historyNodes = historyNodes,
+                        onStatus = { st, id ->
+                            if (id.isNotBlank()) lastInteractionId = id
+                            emit(StreamUpdate.Status(st, lastInteractionId))
+                        },
+                        onMedia = { item ->
+                            onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                            generatedMedia.add(item)
+                            emit(StreamUpdate.MediaGenerated(item))
+                        },
+                        onContent = { delta ->
+                            contentBuilder.append(delta)
+                            emit(StreamUpdate.ContentDelta(delta))
+                        },
+                        onRawWire = { req, resp ->
+                            lastRawReq = req
+                            lastRawResp = resp
+                            emit(StreamUpdate.RawWireSnapshot(req, resp))
+                        }
+                    )
+                }
             }
 
             val endTime = PlatformBridge.currentTimeMillis()
             val totalDurationMs = (endTime - startTime).coerceAtLeast(1L)
             val ttftMs = if (firstTokenTime > startTime) (firstTokenTime - startTime) else totalDurationMs
+            val finalInTokens = if (inputTokens > 0) {
+                inputTokens
+            } else {
+                val approxChars = buildCompiledSystemPrompt(session).length +
+                    historyNodes.filter { it.includedInContext }.sumOf { it.activeVariant.content.length }
+                (approxChars / 4).coerceAtLeast(1)
+            }
+            val finalThinkTokens = if (reasoningTokens > 0) {
+                reasoningTokens
+            } else if (thinkingBuilder.isNotEmpty()) {
+                (thinkingBuilder.length / 4).coerceAtLeast(1)
+            } else 0
             val finalOutTokens = if (outputTokens > 0) outputTokens else (contentBuilder.length / 4).coerceAtLeast(1)
             val tokPerSec = (finalOutTokens * 1000.0) / totalDurationMs.toDouble()
+
+            val rawMetrics = TokenMetrics(
+                inputTokens = finalInTokens,
+                cachedInputTokens = cachedTokens,
+                reasoningTokens = finalThinkTokens,
+                outputTokens = finalOutTokens,
+                ttftMs = ttftMs,
+                durationMs = totalDurationMs,
+                tokensPerSec = (tokPerSec * 10.0).toInt() / 10.0
+            )
+            val costUsd = profile.calculateTurnCostUsd(rawMetrics)
 
             emit(
                 StreamUpdate.Completed(
@@ -338,16 +452,9 @@ object AiProviderEngine {
                     fullThinking = thinkingBuilder.toString(),
                     thinkingSignature = signatureBuilder.toString(),
                     toolCalls = executedTools,
+                    mediaItems = generatedMedia,
                     providerInteractionId = lastInteractionId,
-                    metrics = TokenMetrics(
-                        inputTokens = inputTokens,
-                        cachedInputTokens = cachedTokens,
-                        reasoningTokens = reasoningTokens,
-                        outputTokens = finalOutTokens,
-                        ttftMs = ttftMs,
-                        durationMs = totalDurationMs,
-                        tokensPerSec = (tokPerSec * 10.0).toInt() / 10.0
-                    ),
+                    metrics = rawMetrics.copy(estimatedCostUsd = costUsd),
                     rawRequest = lastRawReq,
                     rawResponse = lastRawResp
                 )
@@ -378,6 +485,13 @@ object AiProviderEngine {
             ProviderProtocol.ANTHROPIC_MESSAGES -> listOf(
                 "$base/v1/models?limit=100"
             )
+            ProviderProtocol.BYTEDANCE_ARK -> {
+                if (base.endsWith("/api/v3")) {
+                    listOf("$base/models", "${base.removeSuffix("/api/v3")}/v1/models")
+                } else {
+                    listOf("$base/api/v3/models", "$base/v1/models")
+                }
+            }
         }
 
         var lastError = ""
@@ -484,6 +598,7 @@ object AiProviderEngine {
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit
@@ -547,7 +662,14 @@ object AiProviderEngine {
                     put("input", buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix))
                 }
 
-                // Generation config (including Gemini 4 Argon long decode & thinking configuration)
+                if (profile.enableImageGeneration) {
+                    putJsonArray("response_modalities") {
+                        add(JsonPrimitive("TEXT"))
+                        add(JsonPrimitive("IMAGE"))
+                    }
+                }
+
+                // Generation config (including long decode, thinking & image configuration)
                 putJsonObject("generation_config") {
                     put("temperature", profile.temperature)
                     put("top_p", profile.topP)
@@ -557,6 +679,14 @@ object AiProviderEngine {
                     if (profile.thinkingEffort != "none") {
                         put("thinking_level", profile.thinkingEffort)
                         put("thinking_summaries", "auto")
+                    }
+                    if (profile.enableImageGeneration && profile.mediaAspectRatio.isNotBlank()) {
+                        putJsonObject("image_config") {
+                            put("aspect_ratio", profile.mediaAspectRatio)
+                            if (profile.mediaResolution in listOf("1K", "2K", "4K")) {
+                                put("image_size", profile.mediaResolution)
+                            }
+                        }
                     }
                 }
 
@@ -571,7 +701,11 @@ object AiProviderEngine {
                     if (profile.enableUrlContext) {
                         add(buildJsonObject { put("type", "url_context") })
                     }
-                    val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(session.workspaceMode, session.workspacePath)
+                    val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
+                        session.workspaceMode,
+                        session.workspacePath,
+                        profile.allowShellExecution
+                    )
                     workspaceTools.forEach { add(it) }
                 }
                 if (toolsArray.isNotEmpty()) {
@@ -639,6 +773,7 @@ object AiProviderEngine {
                     onFirstToken = onFirstToken,
                     onThinking = onThinking,
                     onContent = onContent,
+                    onMedia = onMedia,
                     onFunctionCall = { callId, fnName, argsStr ->
                         turnToolCalls.add(callId to (fnName to argsStr))
                     },
@@ -729,6 +864,13 @@ object AiProviderEngine {
                                                 onThinking("", sig)
                                             }
                                         }
+                                        "image" -> {
+                                            val b64 = deltaObj["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val uri = deltaObj["uri"]?.jsonPrimitive?.contentOrNull
+                                                ?: deltaObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val mime = deltaObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
+                                            saveAndEmitImage(b64, uri, mime, profile.mediaAspectRatio, "", onMedia)
+                                        }
                                         "function_call" -> {
                                             val callId = deltaObj["id"]?.jsonPrimitive?.contentOrNull
                                                 ?: deltaObj["call_id"]?.jsonPrimitive?.contentOrNull
@@ -786,6 +928,7 @@ object AiProviderEngine {
                                             onFirstToken = onFirstToken,
                                             onThinking = onThinking,
                                             onContent = onContent,
+                                            onMedia = onMedia,
                                             onFunctionCall = { callId, fnName, argsStr ->
                                                 turnToolCalls.add(callId to (fnName to argsStr))
                                             },
@@ -806,6 +949,7 @@ object AiProviderEngine {
                                 onFirstToken = onFirstToken,
                                 onThinking = onThinking,
                                 onContent = onContent,
+                                onMedia = onMedia,
                                 onFunctionCall = { callId, fnName, argsStr ->
                                     turnToolCalls.add(callId to (fnName to argsStr))
                                 },
@@ -854,6 +998,7 @@ object AiProviderEngine {
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
         onFunctionCall: (String, String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit
     ) {
@@ -868,6 +1013,13 @@ object AiProviderEngine {
                         onFirstToken()
                         onContent(txt)
                     }
+                }
+                "image" -> {
+                    val b64 = item["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val uri = item["uri"]?.jsonPrimitive?.contentOrNull
+                        ?: item["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val mime = item["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
+                    saveAndEmitImage(b64, uri, mime, "", "", onMedia)
                 }
                 "thought", "thought_summary" -> {
                     val summary = item["summary"]?.let { s ->
@@ -918,10 +1070,32 @@ object AiProviderEngine {
         continuePrefix: String
     ): JsonArray = buildJsonArray {
         val withAuthorsNote = injectAuthorsNoteIntoHistory(nodes, session)
-        for ((role, text) in withAuthorsNote) {
+        for ((idx, pair) in withAuthorsNote.withIndex()) {
+            val (role, text) = pair
+            val imageAttachments = nodes.getOrNull(idx)?.activeVariant?.attachments
+                ?.filter { it.base64Data.isNotBlank() }.orEmpty()
+
             add(buildJsonObject {
                 put("role", if (role == MessageRole.ASSISTANT) "model" else "user")
-                put("content", text)
+                if (imageAttachments.isEmpty()) {
+                    put("content", text)
+                } else {
+                    putJsonArray("content") {
+                        if (text.isNotBlank()) {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", text)
+                            })
+                        }
+                        for (att in imageAttachments) {
+                            add(buildJsonObject {
+                                put("type", "image")
+                                put("mime_type", att.mimeType)
+                                put("data", att.base64Data)
+                            })
+                        }
+                    }
+                }
             })
         }
         if (continuePrefix.isNotBlank()) {
@@ -948,6 +1122,7 @@ object AiProviderEngine {
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (Int, Int, Int, Int) -> Unit
@@ -990,7 +1165,13 @@ object AiProviderEngine {
                 if (profile.maxOutputTokens > 0) {
                     put("maxOutputTokens", profile.maxOutputTokens)
                 }
-                if (profile.thinkingEffort != "none" && profile.thinkingBudgetTokens > 0) {
+                if (profile.enableImageGeneration) {
+                    putJsonArray("responseModalities") {
+                        add(JsonPrimitive("TEXT"))
+                        add(JsonPrimitive("IMAGE"))
+                    }
+                }
+                if (profile.thinkingEffort != "none" && profile.thinkingBudgetTokens > 0 && !profile.enableImageGeneration) {
                     putJsonObject("thinkingConfig") {
                         put("includeThoughts", true)
                         put("thinkingBudget", profile.thinkingBudgetTokens)
@@ -1026,13 +1207,25 @@ object AiProviderEngine {
                     val candidates = obj["candidates"] as? JsonArray
                     val firstCand = candidates?.firstOrNull() as? JsonObject
                     val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
-                    parts?.forEach { p ->
-                        val partObj = p as? JsonObject ?: return@forEach
-                        val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull == "true"
-                        val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                        if (txt.isNotEmpty()) {
-                            onFirstToken()
-                            if (isThought) onThinking(txt, "") else onContent(txt)
+                    if (parts != null) {
+                        for (p in parts) {
+                            val partObj = p as? JsonObject ?: continue
+                            val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull == "true"
+                            val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                            if (txt.isNotEmpty()) {
+                                onFirstToken()
+                                if (isThought) onThinking(txt, "") else onContent(txt)
+                            }
+                            val inlineData = (partObj["inlineData"] as? JsonObject)
+                                ?: (partObj["inline_data"] as? JsonObject)
+                            if (inlineData != null) {
+                                val mime = inlineData["mimeType"]?.jsonPrimitive?.contentOrNull
+                                    ?: inlineData["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
+                                val b64 = inlineData["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                if (b64.isNotBlank()) {
+                                    saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
+                                }
+                            }
                         }
                     }
                     val usage = obj["usageMetadata"] as? JsonObject
@@ -1065,6 +1258,7 @@ object AiProviderEngine {
         onFirstToken: () -> Unit,
         onThinking: suspend (String) -> Unit,
         onContent: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit
@@ -1133,7 +1327,18 @@ object AiProviderEngine {
                     if (profile.enableWebSearch) {
                         add(buildJsonObject { put("type", "web_search_preview") })
                     }
-                    val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(session.workspaceMode, session.workspacePath)
+                    if (profile.enableImageGeneration) {
+                        add(buildJsonObject {
+                            put("type", "image_generation")
+                            val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+                            if (size != "auto") put("size", size)
+                        })
+                    }
+                    val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(
+                        session.workspaceMode,
+                        session.workspacePath,
+                        profile.allowShellExecution
+                    )
                     wsTools.forEach { add(it) }
                 }
                 if (toolsArr.isNotEmpty()) {
@@ -1209,13 +1414,20 @@ object AiProviderEngine {
                             }
                             "response.output_item.done" -> {
                                 val item = evObj["item"] as? JsonObject
-                                if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
+                                val itemType = item?.get("type")?.jsonPrimitive?.contentOrNull
+                                if (itemType == "function_call") {
                                     val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
                                         ?: item["id"]?.jsonPrimitive?.contentOrNull ?: ""
                                     val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
                                     val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
                                     if (name.isNotBlank()) {
                                         turnToolCalls.add(callId to (name to args))
+                                    }
+                                } else if (itemType == "image_generation_call") {
+                                    val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    if (b64.isNotBlank()) {
+                                        saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
                                     }
                                 }
                             }
@@ -1266,6 +1478,13 @@ object AiProviderEngine {
                                     val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
                                     if (name.isNotBlank()) turnToolCalls.add(callId to (name to args))
                                 }
+                                "image_generation_call" -> {
+                                    val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    if (b64.isNotBlank()) {
+                                        saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1296,10 +1515,31 @@ object AiProviderEngine {
         continuePrefix: String
     ): JsonArray = buildJsonArray {
         val withAuthorsNote = injectAuthorsNoteIntoHistory(nodes, session)
-        for ((role, text) in withAuthorsNote) {
+        for ((idx, pair) in withAuthorsNote.withIndex()) {
+            val (role, text) = pair
+            val imageAttachments = nodes.getOrNull(idx)?.activeVariant?.attachments
+                ?.filter { it.base64Data.isNotBlank() }.orEmpty()
+
             add(buildJsonObject {
                 put("role", if (role == MessageRole.ASSISTANT) "assistant" else "user")
-                put("content", text)
+                if (imageAttachments.isEmpty()) {
+                    put("content", text)
+                } else {
+                    putJsonArray("content") {
+                        if (text.isNotBlank()) {
+                            add(buildJsonObject {
+                                put("type", "input_text")
+                                put("text", text)
+                            })
+                        }
+                        for (att in imageAttachments) {
+                            add(buildJsonObject {
+                                put("type", "input_image")
+                                put("image_url", "data:${att.mimeType};base64,${att.base64Data}")
+                            })
+                        }
+                    }
+                }
             })
         }
         if (continuePrefix.isNotBlank()) {
@@ -1326,6 +1566,7 @@ object AiProviderEngine {
         onFirstToken: () -> Unit,
         onThinking: suspend (String) -> Unit,
         onContent: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (Int, Int, Int, Int) -> Unit
@@ -1341,6 +1582,12 @@ object AiProviderEngine {
             put("top_p", profile.topP)
             if (profile.maxOutputTokens > 0) {
                 put("max_tokens", profile.maxOutputTokens)
+            }
+            if (profile.enableImageGeneration) {
+                putJsonArray("modalities") {
+                    add(JsonPrimitive("text"))
+                    add(JsonPrimitive("image"))
+                }
             }
             putJsonArray("messages") {
                 if (systemInstruction.isNotBlank()) {
@@ -1362,7 +1609,11 @@ object AiProviderEngine {
                     })
                 }
             }
-            val wsTools = WorkspaceHarness.buildOpenAiChatCompletionsTools(session.workspaceMode, session.workspacePath)
+            val wsTools = WorkspaceHarness.buildOpenAiChatCompletionsTools(
+                session.workspaceMode,
+                session.workspacePath,
+                profile.allowShellExecution
+            )
             if (wsTools.isNotEmpty()) {
                 put("tools", wsTools)
             }
@@ -1371,10 +1622,12 @@ object AiProviderEngine {
         val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
         val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
         val base = profile.baseUrl.trimEnd('/')
-        val path = profile.endpointPathOverride.ifBlank { "/v1/chat/completions" }
+        val defaultPath = if (base.endsWith("/v1")) "/chat/completions" else "/v1/chat/completions"
+        val path = profile.endpointPathOverride.ifBlank { defaultPath }
         val url = buildUrlWithAuthQuery(profile, "$base$path")
 
         onRawWire(reqStr, "Dispatching to $url ...")
+        val fullTextAccumulator = StringBuilder()
 
         httpClient.preparePost(url) {
             applyAuthAndCustomHeaders(profile)
@@ -1395,7 +1648,9 @@ object AiProviderEngine {
                     onRawWire(reqStr, dataLine)
                     val obj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
                     val choices = obj["choices"] as? JsonArray
-                    val delta = (choices?.firstOrNull() as? JsonObject)?.get("delta") as? JsonObject
+                    val firstChoice = choices?.firstOrNull() as? JsonObject
+                    val delta = (firstChoice?.get("delta") as? JsonObject)
+                        ?: (firstChoice?.get("message") as? JsonObject)
                     if (delta != null) {
                         val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
                             ?: delta["reasoning"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -1406,7 +1661,25 @@ object AiProviderEngine {
                         val content = delta["content"]?.jsonPrimitive?.contentOrNull ?: ""
                         if (content.isNotEmpty()) {
                             onFirstToken()
+                            fullTextAccumulator.append(content)
                             onContent(content)
+                        }
+                        // Support OpenRouter / NewAPI / LiteLLM multimodal `images` array in delta/message
+                        val imagesArr = delta["images"] as? JsonArray
+                        if (imagesArr != null) {
+                            for (imgEl in imagesArr) {
+                                val imgObj = imgEl as? JsonObject ?: continue
+                                val urlVal = (imgObj["image_url"] as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
+                                    ?: imgObj["url"]?.jsonPrimitive?.contentOrNull
+                                    ?: imgObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                                if (urlVal.startsWith("data:image/")) {
+                                    val mime = urlVal.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
+                                    val b64 = urlVal.substringAfter("base64,")
+                                    saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
+                                } else if (urlVal.startsWith("http")) {
+                                    saveAndEmitImage("", urlVal, "image/png", profile.mediaAspectRatio, "", onMedia)
+                                }
+                            }
                         }
                     }
                     val usage = obj["usage"] as? JsonObject
@@ -1421,6 +1694,10 @@ object AiProviderEngine {
                 }
             )
         }
+
+        // Also extract any Markdown image links `![...](data:image/...;base64,...)` or `![...](https://...)`
+        // emitted by OpenAI-compatible proxies (NewAPI, OneAPI, OpenRouter)
+        extractMarkdownImagesFromText(fullTextAccumulator.toString(), profile.mediaAspectRatio, onMedia)
     }
 
     // ============================================================================================
@@ -1525,7 +1802,11 @@ object AiProviderEngine {
                     }
                 }
 
-                val wsTools = WorkspaceHarness.buildAnthropicTools(session.workspaceMode, session.workspacePath)
+                val wsTools = WorkspaceHarness.buildAnthropicTools(
+                    session.workspaceMode,
+                    session.workspacePath,
+                    profile.allowShellExecution
+                )
                 if (wsTools.isNotEmpty()) {
                     put("tools", wsTools)
                 }
@@ -1714,13 +1995,361 @@ object AiProviderEngine {
     }
 
     // ============================================================================================
+    // 4. OPENAI DIRECT IMAGE GENERATION ENDPOINT (/v1/images/generations)
+    //    For standalone GPT Image / DALL-E models and OpenAI-compatible image proxies.
+    // ============================================================================================
+    private suspend fun executeOpenAiDirectImagesEndpoint(
+        profile: ProviderProfile,
+        model: String,
+        historyNodes: List<MessageNode>,
+        onStatus: suspend (String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        onContent: suspend (String) -> Unit,
+        onRawWire: suspend (String, String) -> Unit
+    ) {
+        val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
+            .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
+        require(latestUserPrompt.isNotBlank()) { "Image generation prompt cannot be empty." }
+
+        val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+        val payloadObj = buildJsonObject {
+            put("model", model)
+            put("prompt", latestUserPrompt)
+            if (size != "auto") {
+                put("size", size)
+            }
+        }
+
+        val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
+        val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+        val base = profile.baseUrl.trimEnd('/')
+        val defaultImgPath = if (base.endsWith("/v1") || base.endsWith("/api/v3")) "/images/generations" else "/v1/images/generations"
+        val path = profile.endpointPathOverride.takeIf { it.contains("images", ignoreCase = true) }
+            ?: defaultImgPath
+        val url = buildUrlWithAuthQuery(profile, "$base$path")
+
+        onStatus("Generating image via $model…")
+        onRawWire(reqStr, "Dispatching to $url ...")
+
+        val resp = httpClient.post(url) {
+            applyAuthAndCustomHeaders(profile)
+            contentType(ContentType.Application.Json)
+            setBody(reqStr)
+        }
+        val bodyText = resp.bodyAsText()
+        onRawWire(reqStr, bodyText)
+        if (!resp.status.isSuccess()) {
+            error("Image Generation HTTP ${resp.status.value}: $bodyText")
+        }
+
+        val root = json.parseToJsonElement(bodyText).jsonObject
+        val dataArr = root["data"] as? JsonArray ?: JsonArray(emptyList())
+        for (itemEl in dataArr) {
+            val itemObj = itemEl as? JsonObject ?: continue
+            val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
+            val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+            val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+            saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia)
+            if (revised.isNotBlank()) {
+                onContent("*Revised Prompt:* $revised\n")
+            }
+        }
+    }
+
+    // ============================================================================================
+    // 5. BYTEDANCE ARK DRIVER: SEEDREAM (IMAGE) & SEEDANCE (VIDEO)
+    //    Supports:
+    //    - Seedream Image Generation (`POST /api/v3/images/generations`)
+    //    - Seedance Video Generation (`POST /api/v3/contents/generations/tasks` + async polling)
+    // ============================================================================================
+    private suspend fun executeByteDanceArkGeneration(
+        profile: ProviderProfile,
+        model: String,
+        historyNodes: List<MessageNode>,
+        onStatus: suspend (String, String) -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        onContent: suspend (String) -> Unit,
+        onRawWire: suspend (String, String) -> Unit
+    ) {
+        val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
+            .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
+        require(latestUserPrompt.isNotBlank()) { "Prompt cannot be empty." }
+
+        val baseClean = profile.baseUrl.trimEnd('/')
+        val apiBase = if (baseClean.endsWith("/api/v3")) baseClean else "$baseClean/api/v3"
+
+        val isSeedanceVideo = profile.enableVideoGeneration ||
+            model.contains("seedance", ignoreCase = true) ||
+            profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true)
+
+        if (isSeedanceVideo) {
+            // Seedance Video Generation Task API
+            val videoRes = if (profile.mediaResolution in listOf("480p", "720p", "1080p")) {
+                profile.mediaResolution
+            } else "720p"
+
+            val payloadObj = buildJsonObject {
+                put("model", model)
+                putJsonArray("content") {
+                    add(buildJsonObject {
+                        put("type", "text")
+                        put("text", latestUserPrompt)
+                    })
+                }
+                if (profile.mediaAspectRatio.isNotBlank()) {
+                    put("ratio", profile.mediaAspectRatio)
+                }
+                put("duration", profile.videoDurationSeconds.coerceIn(2, 15))
+                put("resolution", videoRes)
+                put("generate_audio", profile.videoGenerateAudio)
+                put("watermark", false)
+            }
+
+            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
+            val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+            val taskUrl = if (profile.endpointPathOverride.isNotBlank() && profile.endpointPathOverride.contains("tasks")) {
+                "$baseClean${profile.endpointPathOverride}"
+            } else {
+                "$apiBase/contents/generations/tasks"
+            }
+            val finalCreateUrl = buildUrlWithAuthQuery(profile, taskUrl)
+
+            onStatus("Submitting ByteDance Seedance video task ($model)…", "")
+            onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
+
+            val createResp = httpClient.post(finalCreateUrl) {
+                applyAuthAndCustomHeaders(profile)
+                contentType(ContentType.Application.Json)
+                setBody(reqStr)
+            }
+            val createBody = createResp.bodyAsText()
+            onRawWire(reqStr, createBody)
+            if (!createResp.status.isSuccess()) {
+                error("ByteDance Seedance HTTP ${createResp.status.value}: $createBody")
+            }
+
+            val createObj = json.parseToJsonElement(createBody).jsonObject
+            val taskId = createObj["id"]?.jsonPrimitive?.contentOrNull
+                ?: (createObj["data"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
+                ?: error("Seedance response did not contain a task 'id': $createBody")
+
+            var status = createObj["status"]?.jsonPrimitive?.contentOrNull ?: "queued"
+            var latestTaskObj = createObj
+            var pollCount = 0
+
+            while (status.equals("queued", ignoreCase = true) ||
+                status.equals("running", ignoreCase = true) ||
+                status.equals("in_progress", ignoreCase = true) ||
+                status.equals("processing", ignoreCase = true)
+            ) {
+                pollCount++
+                onStatus("Seedance Video Generating ($status • poll #$pollCount)…", taskId)
+                delay(3000L)
+                val pollUrl = buildUrlWithAuthQuery(profile, "${taskUrl.trimEnd('/')}/$taskId")
+                val pollResp = httpClient.get(pollUrl) {
+                    applyAuthAndCustomHeaders(profile)
+                }
+                val pollBody = pollResp.bodyAsText()
+                onRawWire(reqStr, pollBody)
+                if (!pollResp.status.isSuccess()) {
+                    error("Seedance Task Poll HTTP ${pollResp.status.value}: $pollBody")
+                }
+                latestTaskObj = json.parseToJsonElement(pollBody).jsonObject
+                status = latestTaskObj["status"]?.jsonPrimitive?.contentOrNull
+                    ?: (latestTaskObj["data"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull
+                    ?: "succeeded"
+            }
+
+            if (status.equals("failed", ignoreCase = true) || status.equals("cancelled", ignoreCase = true) || status.equals("canceled", ignoreCase = true)) {
+                val errMsg = (latestTaskObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull
+                    ?: latestTaskObj.toString()
+                error("Seedance Video Task $status: $errMsg")
+            }
+
+            val contentSub = (latestTaskObj["content"] as? JsonObject)
+                ?: ((latestTaskObj["data"] as? JsonObject)?.get("content") as? JsonObject)
+            val videoUrl = contentSub?.get("video_url")?.jsonPrimitive?.contentOrNull
+                ?: latestTaskObj["video_url"]?.jsonPrimitive?.contentOrNull
+                ?: latestTaskObj["result_url"]?.jsonPrimitive?.contentOrNull
+                ?: error("Seedance task completed but no 'video_url' was found in response.")
+
+            onStatus("Downloading generated Seedance MP4 video…", taskId)
+            val videoBytes = runCatching {
+                httpClient.get(videoUrl).readRawBytes()
+            }.getOrElse { ByteArray(0) }
+
+            val localPath = if (videoBytes.isNotEmpty()) {
+                PlatformBridge.saveGeneratedMediaFile("seedance-$taskId.mp4", videoBytes)
+            } else ""
+
+            val mediaItem = GeneratedMediaItem(
+                id = "vid-$taskId",
+                kind = MediaKind.VIDEO,
+                mimeType = "video/mp4",
+                localFilePath = localPath,
+                remoteUrl = videoUrl,
+                aspectRatio = profile.mediaAspectRatio
+            )
+            onMedia(mediaItem)
+            onContent("Generated Seedance video (`$model` • ${profile.mediaAspectRatio} • ${profile.videoDurationSeconds}s).")
+        } else {
+            // Seedream Image Generation API (`POST /api/v3/images/generations`)
+            val size = resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+            val payloadObj = buildJsonObject {
+                put("model", model)
+                put("prompt", latestUserPrompt)
+                put("size", size)
+                put("response_format", "b64_json")
+                put("watermark", false)
+            }
+
+            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
+            val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+            val candidateImgUrls = if (profile.endpointPathOverride.isNotBlank()) {
+                listOf("$baseClean${profile.endpointPathOverride}")
+            } else if (baseClean.endsWith("/v1")) {
+                listOf("$baseClean/images/generations", "${baseClean.removeSuffix("/v1")}/api/v3/images/generations")
+            } else {
+                listOf("$apiBase/images/generations", "$baseClean/v1/images/generations")
+            }
+
+            var bodyText = ""
+            var lastStatus = 0
+            for (candidate in candidateImgUrls) {
+                val finalUrl = buildUrlWithAuthQuery(profile, candidate)
+                onStatus("Generating Seedream image ($model • $size)…", "")
+                onRawWire(reqStr, "Dispatching to $finalUrl ...")
+
+                val resp = httpClient.post(finalUrl) {
+                    applyAuthAndCustomHeaders(profile)
+                    contentType(ContentType.Application.Json)
+                    setBody(reqStr)
+                }
+                bodyText = resp.bodyAsText()
+                lastStatus = resp.status.value
+                onRawWire(reqStr, bodyText)
+                if (resp.status.isSuccess()) break
+                if (lastStatus != 404) break
+            }
+            if (lastStatus !in 200..299) {
+                error("ByteDance Seedream HTTP $lastStatus: $bodyText")
+            }
+
+            val root = json.parseToJsonElement(bodyText).jsonObject
+            val dataArr = root["data"] as? JsonArray ?: JsonArray(emptyList())
+            for (itemEl in dataArr) {
+                val itemObj = itemEl as? JsonObject ?: continue
+                val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia)
+            }
+        }
+    }
+
+    private inline fun onFirstTokenIfZero(current: Long, setter: (Long) -> Unit) {
+        if (current == 0L) setter(PlatformBridge.currentTimeMillis())
+    }
+
+    private suspend fun saveAndEmitImage(
+        base64Data: String,
+        remoteUrl: String,
+        mimeType: String,
+        aspectRatio: String,
+        revisedPrompt: String,
+        onMedia: suspend (GeneratedMediaItem) -> Unit
+    ) {
+        val now = PlatformBridge.currentTimeMillis()
+        val ext = when {
+            mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
+            mimeType.contains("webp") -> "webp"
+            else -> "png"
+        }
+
+        val imageBytes: ByteArray = when {
+            base64Data.isNotBlank() -> {
+                val cleanB64 = base64Data.substringAfter("base64,").replace("\n", "").replace("\r", "").trim()
+                runCatching { Base64.decode(cleanB64) }.getOrElse { ByteArray(0) }
+            }
+            remoteUrl.startsWith("http://") || remoteUrl.startsWith("https://") -> {
+                runCatching { httpClient.get(remoteUrl).readRawBytes() }.getOrElse { ByteArray(0) }
+            }
+            else -> ByteArray(0)
+        }
+
+        if (imageBytes.isEmpty() && remoteUrl.isBlank()) return
+
+        val localPath = if (imageBytes.isNotEmpty()) {
+            PlatformBridge.saveGeneratedMediaFile("img-$now-${kotlin.random.Random.nextInt(100, 999)}.$ext", imageBytes)
+        } else ""
+
+        onMedia(
+            GeneratedMediaItem(
+                id = "media-$now",
+                kind = MediaKind.IMAGE,
+                mimeType = mimeType,
+                localFilePath = localPath,
+                remoteUrl = remoteUrl,
+                revisedPrompt = revisedPrompt,
+                aspectRatio = aspectRatio
+            )
+        )
+    }
+
+    private suspend fun extractMarkdownImagesFromText(
+        text: String,
+        aspectRatio: String,
+        onMedia: suspend (GeneratedMediaItem) -> Unit
+    ) {
+        if (!text.contains("![")) return
+        val regex = Regex("""!\[[^\]]*\]\(([^)]+)\)""")
+        for (match in regex.findAll(text)) {
+            val target = match.groupValues.getOrNull(1)?.trim().orEmpty()
+            if (target.startsWith("data:image/")) {
+                val mime = target.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
+                val b64 = target.substringAfter("base64,")
+                saveAndEmitImage(b64, "", mime, aspectRatio, "", onMedia)
+            } else if (target.startsWith("http://") || target.startsWith("https://")) {
+                saveAndEmitImage("", target, "image/png", aspectRatio, "", onMedia)
+            }
+        }
+    }
+
+    private fun resolveOpenAiImageSize(aspectRatio: String, resolution: String): String {
+        if (resolution.contains("x")) return resolution
+        return when (aspectRatio) {
+            "16:9", "3:2", "4:3" -> "1536x1024"
+            "9:16", "2:3", "3:4" -> "1024x1536"
+            "1:1" -> "1024x1024"
+            else -> "auto"
+        }
+    }
+
+    private fun resolveSeedreamImageSize(aspectRatio: String, resolution: String): String {
+        if (resolution.contains("x")) return resolution
+        val is2K = resolution == "2K" || resolution == "4K"
+        return when (aspectRatio) {
+            "16:9" -> if (is2K) "2560x1440" else "1280x720"
+            "9:16" -> if (is2K) "1440x2560" else "720x1280"
+            "4:3" -> if (is2K) "2304x1728" else "1152x864"
+            "3:4" -> if (is2K) "1728x2304" else "864x1152"
+            else -> if (is2K) "2048x2048" else "1024x1024"
+        }
+    }
+
+    // ============================================================================================
     // SHARED HELPERS: System Prompt Compiler, Cache-Preserving Author's Note Injector,
     // Auth Header Builder, SSE Stream Reader, and Raw JSON Merger.
     // ============================================================================================
     private fun buildCompiledSystemPrompt(session: ChatSession): String {
         val sb = StringBuilder()
+        val charName = session.activeCard?.name?.ifBlank { "Character" } ?: "Character"
+        fun expandMacros(text: String): String =
+            text.replace("{{char}}", charName, ignoreCase = true)
+                .replace("{{user}}", session.userName, ignoreCase = true)
+
         if (session.systemPrompt.isNotBlank()) {
-            sb.appendLine(session.systemPrompt.trim())
+            sb.appendLine(expandMacros(session.systemPrompt.trim()))
             sb.appendLine()
         }
         session.activeCard?.let { card ->
@@ -1730,9 +2359,48 @@ object AiProviderEngine {
                 sb.appendLine()
             }
         }
+
+        // Composable Context Fragments & Card Lorebook (Errata / SillyTavern character_book)
+        val allFragments = session.fragments + session.activeCard?.embeddedFragments.orEmpty()
+        if (allFragments.isNotEmpty()) {
+            val recentWindowText = session.messages.takeLast(8)
+                .joinToString("\n") { it.activeVariant.content }
+            val triggeredFragments = allFragments.filter { frag ->
+                when (frag.mode) {
+                    io.parchment.ai.model.FragmentActivationMode.PINNED -> true
+                    io.parchment.ai.model.FragmentActivationMode.MUTED -> false
+                    io.parchment.ai.model.FragmentActivationMode.KEYWORD -> {
+                        frag.keywords.isEmpty() || frag.keywords.any { kw ->
+                            kw.isNotBlank() && recentWindowText.contains(kw.trim(), ignoreCase = true)
+                        }
+                    }
+                }
+            }
+            if (triggeredFragments.isNotEmpty()) {
+                sb.appendLine("### Context Fragments & World Knowledge")
+                for (frag in triggeredFragments) {
+                    sb.appendLine("#### ${frag.title}")
+                    sb.appendLine(expandMacros(frag.content.trim()))
+                    sb.appendLine()
+                }
+            }
+        }
+
+        // Rolling Story Summary / Continuity Memory (Errata Librarian / SillyBunny Mewmory)
+        if (session.storySummary.isNotBlank()) {
+            sb.appendLine("### Story Summary & Continuity So Far")
+            sb.appendLine(expandMacros(session.storySummary.trim()))
+            sb.appendLine()
+        }
+
         if (session.workspaceMode != io.parchment.ai.model.WorkspaceMode.OFF && session.workspacePath.isNotBlank()) {
-            sb.appendLine("### Local Workspace Agent Access")
-            sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native file tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`" else ""}). Use them proactively when asked to inspect, reference, or edit files.")
+            sb.appendLine("### Local Workspace Agent Harness (OpenCode / Hermes / Oh-My-Pi Style)")
+            sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`, `agent_memory`, `shell_exec`" else ""}, `dice_roll`). Inspect files with `fs_read` before editing, keep edits surgical with `fs_edit`, and record durable project/story conventions with `agent_memory`.")
+            val discoveredContext = WorkspaceHarness.discoverWorkspaceContextFiles(session.workspacePath)
+            if (discoveredContext.isNotBlank()) {
+                sb.appendLine()
+                sb.appendLine(discoveredContext)
+            }
         }
         return sb.toString().trim()
     }
@@ -1746,7 +2414,19 @@ object AiProviderEngine {
         nodes: List<MessageNode>,
         session: ChatSession
     ): List<Pair<MessageRole, String>> {
-        val baseList = nodes.map { it.role to it.activeVariant.content }.toMutableList()
+        val baseList = nodes.map { node ->
+            val v = node.activeVariant
+            val textAttachmentsBlock = v.attachments.filter { it.textContent.isNotBlank() }
+                .joinToString("\n\n") { att ->
+                    "[Attached File: ${att.fileName}]\n```\n${att.textContent}\n```"
+                }
+            val combinedText = if (textAttachmentsBlock.isNotBlank()) {
+                if (v.content.isNotBlank()) "${v.content}\n\n$textAttachmentsBlock" else textAttachmentsBlock
+            } else {
+                v.content
+            }
+            node.role to combinedText
+        }.toMutableList()
         val combinedNote = buildString {
             val cardPost = session.activeCard?.postHistoryInstructions?.trim().orEmpty()
             if (cardPost.isNotEmpty()) appendLine(cardPost)
@@ -1785,6 +2465,7 @@ object AiProviderEngine {
                         ProviderProtocol.GEMINI_INTERACTIONS -> header("x-goog-api-key", key)
                         ProviderProtocol.OPENAI_RESPONSES -> header("Authorization", "Bearer $key")
                         ProviderProtocol.ANTHROPIC_MESSAGES -> header("x-api-key", key)
+                        ProviderProtocol.BYTEDANCE_ARK -> header("Authorization", "Bearer $key")
                     }
                 }
             }

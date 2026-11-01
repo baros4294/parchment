@@ -1,5 +1,6 @@
 package io.parchment.ai.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -34,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -43,9 +46,15 @@ import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AuthHeaderMode
 import io.parchment.ai.model.CharacterOrScenarioCard
 import io.parchment.ai.model.ChatSession
+import io.parchment.ai.model.ContextFragment
+import io.parchment.ai.model.FragmentActivationMode
+import io.parchment.ai.model.GeneratedMediaItem
+import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
+import io.parchment.ai.model.ModelPricingSpec
+import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.SystemPromptPreset
@@ -54,11 +63,17 @@ import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
+import io.parchment.ai.network.ModelsDevClient
+import io.parchment.ai.network.OtaReleaseInfo
+import io.parchment.ai.network.OtaUpdateEngine
+import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 enum class ActiveModalTab {
     NONE,
@@ -67,6 +82,7 @@ enum class ActiveModalTab {
     THEME_AND_STORAGE
 }
 
+@OptIn(ExperimentalEncodingApi::class)
 @Composable
 fun ParchmentApp() {
     val scope = rememberCoroutineScope()
@@ -77,16 +93,21 @@ fun ParchmentApp() {
     var showSessionInspector by remember { mutableStateOf(false) }
     var bannerNotification by remember { mutableStateOf("") }
 
+    // OTA Update state
+    var otaState by remember { mutableStateOf<OtaUpdateState>(OtaUpdateState.Idle) }
+    var dismissOtaBanner by remember { mutableStateOf(false) }
+
     // Streaming state
     var isStreaming by remember { mutableStateOf(false) }
     var streamingStatus by remember { mutableStateOf("") }
     var streamingInteractionId by remember { mutableStateOf("") }
     var activeStreamJob by remember { mutableStateOf<Job?>(null) }
 
-    // Composer inputs
+    // Composer inputs & attachments
     var userPromptInput by remember { mutableStateOf("") }
     var assistantPrefillInput by remember { mutableStateOf("") }
     var showPrefillBox by remember { mutableStateOf(false) }
+    var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
 
     fun persist(updated: AppStateSnapshot) {
         appState = updated
@@ -115,6 +136,52 @@ fun ParchmentApp() {
         persist(appState.copy(profiles = newProfiles))
     }
 
+    // Automatically check for OTA updates on startup if enabled
+    LaunchedEffect(appState.autoCheckOtaOnStartup, appState.otaGithubRepo) {
+        if (appState.autoCheckOtaOnStartup) {
+            otaState = OtaUpdateState.Checking
+            OtaUpdateEngine.checkForUpdates(appState.otaGithubRepo).fold(
+                onSuccess = { rel ->
+                    otaState = if (rel.isNewerThanCurrent) {
+                        OtaUpdateState.Available(rel)
+                    } else {
+                        OtaUpdateState.UpToDate(OtaUpdateEngine.currentAppVersion, rel)
+                    }
+                },
+                onFailure = {
+                    otaState = OtaUpdateState.Idle
+                }
+            )
+        }
+    }
+
+    fun triggerOtaCheckManual() {
+        dismissOtaBanner = false
+        otaState = OtaUpdateState.Checking
+        scope.launch {
+            OtaUpdateEngine.checkForUpdates(appState.otaGithubRepo).fold(
+                onSuccess = { rel ->
+                    otaState = if (rel.isNewerThanCurrent) {
+                        OtaUpdateState.Available(rel)
+                    } else {
+                        OtaUpdateState.UpToDate(OtaUpdateEngine.currentAppVersion, rel)
+                    }
+                },
+                onFailure = { err ->
+                    otaState = OtaUpdateState.Error(err.message ?: "Failed to check GitHub Releases")
+                }
+            )
+        }
+    }
+
+    fun triggerOtaDownloadAndInstall(release: OtaReleaseInfo) {
+        dismissOtaBanner = false
+        scope.launch {
+            OtaUpdateEngine.downloadAndInstall(release).collect { st ->
+                otaState = st
+            }
+        }
+    }
     // Automatically fetch models when API key or custom proxy Base URL is configured and savedModels is empty
     LaunchedEffect(activeProfile.id, activeProfile.baseUrl, activeProfile.apiKey, activeProfile.autoFetchModels) {
         val hasCredentialsOrCustomProxy = activeProfile.apiKey.isNotBlank() ||
@@ -131,6 +198,41 @@ fun ParchmentApp() {
                     }
                     if (activeSession.modelOverride.isBlank()) {
                         updateActiveSession { it.copy(modelOverride = chosenDefault) }
+                    }
+                }
+            }
+        }
+    }
+
+    // Automatically look up pricing & context window from models.dev when active model changes
+    LaunchedEffect(activeProfile.id, activeProfile.defaultModel) {
+        val currentModel = activeProfile.defaultModel.trim()
+        if (currentModel.isNotEmpty()) {
+            val savedCustom = activeProfile.customModelSpecs[currentModel]
+            if (savedCustom != null) {
+                updateActiveProfile {
+                    it.copy(
+                        contextWindowTokens = savedCustom.contextWindowTokens,
+                        maxOutputTokens = savedCustom.maxOutputTokens,
+                        inputPricePerM = savedCustom.inputPricePerM,
+                        outputPricePerM = savedCustom.outputPricePerM,
+                        cacheReadPricePerM = savedCustom.cacheReadPricePerM,
+                        cacheWritePricePerM = savedCustom.cacheWritePricePerM,
+                        reasoningPricePerM = savedCustom.reasoningPricePerM
+                    )
+                }
+            } else {
+                ModelsDevClient.fetchModelSpec(currentModel).onSuccess { spec ->
+                    updateActiveProfile {
+                        it.copy(
+                            contextWindowTokens = spec.contextWindowTokens,
+                            maxOutputTokens = spec.maxOutputTokens,
+                            inputPricePerM = spec.inputPricePerM,
+                            outputPricePerM = spec.outputPricePerM,
+                            cacheReadPricePerM = spec.cacheReadPricePerM,
+                            cacheWritePricePerM = spec.cacheWritePricePerM,
+                            reasoningPricePerM = spec.reasoningPricePerM
+                        )
                     }
                 }
             }
@@ -155,6 +257,7 @@ fun ParchmentApp() {
             var accumulatedThinking = ""
             var accumulatedSignature = ""
             val accumulatedTools = mutableListOf<ToolCallRecord>()
+            val accumulatedMedia = mutableListOf<GeneratedMediaItem>()
             var rawReq = ""
             var rawResp = ""
 
@@ -214,6 +317,13 @@ fun ParchmentApp() {
                             v.copy(toolCalls = accumulatedTools.toList())
                         }
                     }
+                    is StreamUpdate.MediaGenerated -> {
+                        accumulatedMedia.add(update.item)
+                        streamingStatus = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})"
+                        patchTargetVariant { v ->
+                            v.copy(mediaItems = accumulatedMedia.toList())
+                        }
+                    }
                     is StreamUpdate.RawWireSnapshot -> {
                         rawReq = update.requestJson
                         rawResp = update.latestResponseChunk
@@ -231,6 +341,7 @@ fun ParchmentApp() {
                                 thinkingSummary = update.fullThinking,
                                 thinkingSignature = update.thinkingSignature,
                                 toolCalls = update.toolCalls,
+                                mediaItems = update.mediaItems,
                                 providerInteractionId = update.providerInteractionId,
                                 providerProtocol = activeProfile.protocol,
                                 modelUsed = modelName,
@@ -266,15 +377,17 @@ fun ParchmentApp() {
     fun sendUserTurn() {
         val trimmedUser = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
-        if (trimmedUser.isEmpty() && prefill.isEmpty()) return
+        val currentAtts = pendingAttachments
+        if (trimmedUser.isEmpty() && prefill.isEmpty() && currentAtts.isEmpty()) return
 
         val now = PlatformBridge.currentTimeMillis()
         val updatedMessages = activeSession.messages.toMutableList()
 
-        if (trimmedUser.isNotEmpty()) {
+        if (trimmedUser.isNotEmpty() || currentAtts.isNotEmpty()) {
             val userVar = MessageVariant(
                 id = "var-$now-u",
                 content = trimmedUser,
+                attachments = currentAtts,
                 createdAt = now
             )
             updatedMessages.add(
@@ -318,6 +431,7 @@ fun ParchmentApp() {
 
         userPromptInput = ""
         assistantPrefillInput = ""
+        pendingAttachments = emptyList()
 
         triggerGeneration(
             historyForCall = historySnapshot,
@@ -325,6 +439,162 @@ fun ParchmentApp() {
             targetVariantId = assistantVarId,
             continuePrefix = prefill
         )
+    }
+
+    // Guided Scene Direction (Errata / SillyBunny style): directs the next AI turn without adding a user chat bubble
+    fun sendGuidedDirection() {
+        val direction = userPromptInput.trim()
+        val prefill = assistantPrefillInput.trim()
+        if (direction.isEmpty() && prefill.isEmpty()) return
+
+        val now = PlatformBridge.currentTimeMillis()
+        val updatedMessages = activeSession.messages.toMutableList()
+
+        // Create a temporary synthetic direction node for the API call only (not saved into manuscript messages)
+        val syntheticDirectionNode = MessageNode(
+            id = "node-dir-$now",
+            role = MessageRole.USER,
+            variants = listOf(
+                MessageVariant(
+                    id = "var-dir-$now",
+                    content = "[Scene Direction / Plot Guidance for next passage: $direction\nWrite the next narrative passage directly following this direction without acknowledging these instructions.]",
+                    createdAt = now
+                )
+            )
+        )
+        val historyForCall = updatedMessages + syntheticDirectionNode
+
+        val assistantVarId = "var-${now + 1}-a"
+        val assistantNodeId = "node-${now + 1}-a"
+        val modelName = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
+
+        val initialAssistantVar = MessageVariant(
+            id = assistantVarId,
+            content = prefill,
+            modelUsed = modelName,
+            providerProtocol = activeProfile.protocol,
+            createdAt = now + 1
+        )
+        updatedMessages.add(
+            MessageNode(
+                id = assistantNodeId,
+                role = MessageRole.ASSISTANT,
+                variants = listOf(initialAssistantVar),
+                activeVariantIndex = 0
+            )
+        )
+
+        updateActiveSession { it.copy(messages = updatedMessages) }
+        userPromptInput = ""
+        assistantPrefillInput = ""
+
+        triggerGeneration(
+            historyForCall = historyForCall,
+            targetAssistantNodeId = assistantNodeId,
+            targetVariantId = assistantVarId,
+            continuePrefix = prefill
+        )
+    }
+
+    // Impersonate / Draft User Turn (SillyTavern / Errata style): drafts {{user}}'s next response into the composer box
+    fun triggerImpersonateDraft() {
+        if (isStreaming) return
+        val now = PlatformBridge.currentTimeMillis()
+        val seedHint = userPromptInput.trim()
+        val instruction = if (seedHint.isNotEmpty()) {
+            "[Write the next turn from ${activeSession.userName}'s perspective incorporating this idea: \"$seedHint\". Write only ${activeSession.userName}'s dialogue and actions.]"
+        } else {
+            "[Write the next natural response turn from ${activeSession.userName}'s perspective based on the current scene. Write only ${activeSession.userName}'s dialogue and actions.]"
+        }
+
+        val syntheticNode = MessageNode(
+            id = "node-imp-$now",
+            role = MessageRole.USER,
+            variants = listOf(MessageVariant(id = "var-imp-$now", content = instruction, createdAt = now))
+        )
+        val historyForCall = activeSession.messages + syntheticNode
+
+        activeStreamJob?.cancel()
+        isStreaming = true
+        streamingStatus = "Drafting ${activeSession.userName}'s turn…"
+        userPromptInput = ""
+
+        activeStreamJob = scope.launch {
+            val buf = StringBuilder()
+            AiProviderEngine.streamGeneration(
+                profile = activeProfile,
+                session = activeSession,
+                historyNodes = historyForCall
+            ).collect { update ->
+                when (update) {
+                    is StreamUpdate.ContentDelta -> {
+                        buf.append(update.delta)
+                        userPromptInput = buf.toString()
+                    }
+                    is StreamUpdate.Completed -> {
+                        userPromptInput = update.fullContent.trim()
+                        isStreaming = false
+                        streamingStatus = ""
+                    }
+                    is StreamUpdate.Error -> {
+                        bannerNotification = "Impersonate error: ${update.message}"
+                        isStreaming = false
+                        streamingStatus = ""
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    // Auto-Summarize Story / Chat into Rolling Continuity Memory (Errata Librarian / SillyBunny Mewmory)
+    fun triggerAutoSummarizeStory() {
+        if (isStreaming || activeSession.messages.isEmpty()) return
+        val now = PlatformBridge.currentTimeMillis()
+        val summarizeNode = MessageNode(
+            id = "node-sum-$now",
+            role = MessageRole.USER,
+            variants = listOf(
+                MessageVariant(
+                    id = "var-sum-$now",
+                    content = "[Provide a concise, high-signal continuity summary of all key events, character states, unresolved threads, and established facts in the conversation so far. Use bullet points.]",
+                    createdAt = now
+                )
+            )
+        )
+        val historyForCall = activeSession.messages + summarizeNode
+
+        activeStreamJob?.cancel()
+        isStreaming = true
+        streamingStatus = "Summarizing story continuity into memory…"
+
+        activeStreamJob = scope.launch {
+            val buf = StringBuilder()
+            AiProviderEngine.streamGeneration(
+                profile = activeProfile,
+                session = activeSession,
+                historyNodes = historyForCall
+            ).collect { update ->
+                when (update) {
+                    is StreamUpdate.ContentDelta -> {
+                        buf.append(update.delta)
+                        updateActiveSession { it.copy(storySummary = buf.toString()) }
+                    }
+                    is StreamUpdate.Completed -> {
+                        updateActiveSession { it.copy(storySummary = update.fullContent.trim()) }
+                        isStreaming = false
+                        streamingStatus = ""
+                        bannerNotification = "Updated Rolling Story Summary."
+                    }
+                    is StreamUpdate.Error -> {
+                        bannerNotification = "Summarize error: ${update.message}"
+                        isStreaming = false
+                        streamingStatus = ""
+                    }
+                    else -> {}
+                }
+            }
+        }
     }
 
     ProvideParchmentTheme(config = appState.theme) {
@@ -376,6 +646,87 @@ fun ParchmentApp() {
 
                 SepiaDivider()
 
+                // Top In-App OTA Update Banner (when update is available or actively downloading/installing)
+                when (val currentOta = otaState) {
+                    is OtaUpdateState.Available -> {
+                        if (!dismissOtaBanner) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(p.cardBg)
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val sizeMb = (currentOta.release.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                                Column(modifier = Modifier.weight(1f)) {
+                                    BasicText(
+                                        text = "✦ OTA Update Available: ${currentOta.release.tagName} (${currentOta.release.assetName} • $sizeMb MB)",
+                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                    )
+                                    BasicText(
+                                        text = "Installed: v${OtaUpdateEngine.currentAppVersion} — Update directly inside Parchment with zero browser steps.",
+                                        style = p.uiLabelStyle
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SepiaButton(
+                                        text = "⬇ Download & Install Now",
+                                        compact = true,
+                                        style = SepiaButtonStyle.PRIMARY,
+                                        onClick = { triggerOtaDownloadAndInstall(currentOta.release) }
+                                    )
+                                    SepiaButton(
+                                        text = "Later",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        onClick = { dismissOtaBanner = true }
+                                    )
+                                }
+                            }
+                            SepiaDivider()
+                        }
+                    }
+
+                    is OtaUpdateState.Downloading -> {
+                        val downMb = (currentOta.downloadedBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                        val totalMb = (currentOta.totalBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(p.cardBg)
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(
+                                text = "⬇ Downloading OTA Update ${currentOta.release.tagName}: $downMb MB / $totalMb MB (${currentOta.progressPercent}%)…",
+                                style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        SepiaDivider()
+                    }
+
+                    is OtaUpdateState.Installing -> {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(p.cardBg)
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(
+                                text = "⚙ ${currentOta.message}",
+                                style = p.uiBodyStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        SepiaDivider()
+                    }
+
+                    else -> {}
+                }
+
                 if (bannerNotification.isNotBlank()) {
                     Row(
                         modifier = Modifier
@@ -417,7 +768,7 @@ fun ParchmentApp() {
                                 val now = PlatformBridge.currentTimeMillis()
                                 val newSess = ChatSession(
                                     id = "sess-$now",
-                                    title = "Untitled Manuscript",
+                                    title = "New Chat",
                                     createdAt = now,
                                     updatedAt = now,
                                     profileId = activeProfile.id,
@@ -456,16 +807,76 @@ fun ParchmentApp() {
                             onDeleteSession = { targetId ->
                                 val remaining = appState.sessions.filterNot { it.id == targetId }
                                 if (remaining.isNotEmpty()) {
+                                    val nextActive = if (appState.activeSessionId == targetId) remaining.first().id else appState.activeSessionId
                                     persist(
                                         appState.copy(
                                             sessions = remaining,
-                                            activeSessionId = remaining.first().id
+                                            activeSessionId = nextActive
+                                        )
+                                    )
+                                } else {
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    val fresh = ChatSession(
+                                        id = "sess-$now",
+                                        title = "New Chat",
+                                        createdAt = now,
+                                        updatedAt = now,
+                                        profileId = activeProfile.id,
+                                        modelOverride = activeProfile.defaultModel
+                                    )
+                                    persist(
+                                        appState.copy(
+                                            sessions = listOf(fresh),
+                                            activeSessionId = fresh.id
                                         )
                                     )
                                 }
                             },
+                            onDeleteAllSessions = {
+                                val now = PlatformBridge.currentTimeMillis()
+                                val fresh = ChatSession(
+                                    id = "sess-$now",
+                                    title = "New Chat",
+                                    createdAt = now,
+                                    updatedAt = now,
+                                    profileId = activeProfile.id,
+                                    modelOverride = activeProfile.defaultModel
+                                )
+                                persist(
+                                    appState.copy(
+                                        sessions = listOf(fresh),
+                                        activeSessionId = fresh.id
+                                    )
+                                )
+                                bannerNotification = "Deleted all chats."
+                            },
                             onQuickSwitchProfile = { profId ->
                                 persist(appState.copy(activeProfileId = profId))
+                            },
+                            onDeleteProfile = { targetProfId ->
+                                val remaining = appState.profiles.filterNot { it.id == targetProfId }
+                                if (remaining.isNotEmpty()) {
+                                    val nextProfId = if (appState.activeProfileId == targetProfId) remaining.first().id else appState.activeProfileId
+                                    persist(
+                                        appState.copy(
+                                            profiles = remaining,
+                                            activeProfileId = nextProfId
+                                        )
+                                    )
+                                } else {
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    val fallbackProf = ProviderProfile(
+                                        id = "prof-$now",
+                                        name = "Default Profile",
+                                        protocol = ProviderProtocol.GEMINI_INTERACTIONS
+                                    )
+                                    persist(
+                                        appState.copy(
+                                            profiles = listOf(fallbackProf),
+                                            activeProfileId = fallbackProf.id
+                                        )
+                                    )
+                                }
                             }
                         )
                         Box(
@@ -492,6 +903,9 @@ fun ParchmentApp() {
                                         val updatedPresets = listOf(preset) + appState.systemPromptPresets.filterNot { it.id == preset.id }
                                         persist(appState.copy(systemPromptPresets = updatedPresets))
                                     },
+                                    onDeletePresetFromLibrary = { presetId ->
+                                        persist(appState.copy(systemPromptPresets = appState.systemPromptPresets.filterNot { it.id == presetId }))
+                                    },
                                     onApplyTheme = { importedTheme ->
                                         persist(appState.copy(theme = importedTheme))
                                     },
@@ -512,7 +926,7 @@ fun ParchmentApp() {
                                         val now = PlatformBridge.currentTimeMillis()
                                         val newProf = ProviderProfile(
                                             id = "prof-$now",
-                                            name = "Custom ${protocol.displayName.substringBefore(" ")} Proxy",
+                                            name = "${protocol.displayName.substringBefore(" ")} Profile",
                                             protocol = protocol
                                         )
                                         persist(
@@ -522,6 +936,33 @@ fun ParchmentApp() {
                                             )
                                         )
                                     },
+                                    onDeleteProfile = { targetProfId ->
+                                        val remaining = appState.profiles.filterNot { it.id == targetProfId }
+                                        if (remaining.isNotEmpty()) {
+                                            val nextProfId = if (appState.activeProfileId == targetProfId) remaining.first().id else appState.activeProfileId
+                                            persist(
+                                                appState.copy(
+                                                    profiles = remaining,
+                                                    activeProfileId = nextProfId
+                                                )
+                                            )
+                                            bannerNotification = "Deleted connection profile."
+                                        } else {
+                                            val now = PlatformBridge.currentTimeMillis()
+                                            val fallbackProf = ProviderProfile(
+                                                id = "prof-$now",
+                                                name = "Default Profile",
+                                                protocol = ProviderProtocol.GEMINI_INTERACTIONS
+                                            )
+                                            persist(
+                                                appState.copy(
+                                                    profiles = listOf(fallbackProf),
+                                                    activeProfileId = fallbackProf.id
+                                                )
+                                            )
+                                            bannerNotification = "Reset to clean connection profile."
+                                        }
+                                    },
                                     onNotify = { bannerNotification = it },
                                     onClose = { activeModal = ActiveModalTab.NONE }
                                 )
@@ -529,8 +970,21 @@ fun ParchmentApp() {
 
                             ActiveModalTab.THEME_AND_STORAGE -> {
                                 ThemeAndStoragePanel(
+                                    appState = appState,
                                     theme = appState.theme,
+                                    otaGithubRepo = appState.otaGithubRepo,
+                                    autoCheckOta = appState.autoCheckOtaOnStartup,
+                                    otaState = otaState,
+                                    onUpdateOtaSettings = { repo, autoCheck ->
+                                        persist(appState.copy(otaGithubRepo = repo, autoCheckOtaOnStartup = autoCheck))
+                                    },
+                                    onCheckOtaNow = ::triggerOtaCheckManual,
+                                    onInstallOtaRelease = ::triggerOtaDownloadAndInstall,
                                     onUpdateTheme = { newTheme -> persist(appState.copy(theme = newTheme)) },
+                                    onRestoreFullBackup = { restoredState ->
+                                        persist(restoredState)
+                                        bannerNotification = "Restored full Parchment backup (${restoredState.sessions.size} chats, ${restoredState.profiles.size} profiles)."
+                                    },
                                     onWipeAllData = {
                                         PlatformBridge.wipeAllLocalData()
                                         appState = createDefaultAppState()
@@ -556,7 +1010,98 @@ fun ParchmentApp() {
                                     onAssistantPrefillChange = { assistantPrefillInput = it },
                                     showPrefillBox = showPrefillBox,
                                     onTogglePrefillBox = { showPrefillBox = !showPrefillBox },
+                                    pendingAttachments = pendingAttachments,
+                                    onAddAttachment = {
+                                        scope.launch {
+                                            val picked = PlatformBridge.pickFileForImport(
+                                                listOf("png", "jpg", "jpeg", "webp", "md", "txt", "json", "kt", "py", "ts", "js", "tex")
+                                            ) ?: return@launch
+                                            val now = PlatformBridge.currentTimeMillis()
+                                            val lower = picked.fileName.lowercase()
+                                            val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")
+                                            val att = if (isImg) {
+                                                val mime = when {
+                                                    lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+                                                    lower.endsWith(".webp") -> "image/webp"
+                                                    else -> "image/png"
+                                                }
+                                                val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                                                PromptAttachment(
+                                                    id = "att-$now",
+                                                    fileName = picked.fileName,
+                                                    mimeType = mime,
+                                                    base64Data = Base64.encode(picked.bytes),
+                                                    localFilePath = savedPath
+                                                )
+                                            } else {
+                                                PromptAttachment(
+                                                    id = "att-$now",
+                                                    fileName = picked.fileName,
+                                                    mimeType = "text/plain",
+                                                    textContent = picked.bytes.decodeToString()
+                                                )
+                                            }
+                                            pendingAttachments = pendingAttachments + att
+                                        }
+                                    },
+                                    onRemoveAttachment = { attId ->
+                                        pendingAttachments = pendingAttachments.filterNot { it.id == attId }
+                                    },
+                                    onExportChatMarkdown = {
+                                        scope.launch {
+                                            val md = buildString {
+                                                appendLine("# ${activeSession.title}")
+                                                appendLine()
+                                                for (n in activeSession.messages) {
+                                                    val roleHeader = if (n.role == MessageRole.ASSISTANT) {
+                                                        activeSession.activeCard?.name?.ifBlank { n.activeVariant.modelUsed.ifBlank { "Assistant" } } ?: "Assistant"
+                                                    } else {
+                                                        activeSession.userName.ifBlank { "User" }
+                                                    }
+                                                    appendLine("### $roleHeader")
+                                                    if (n.activeVariant.thinkingSummary.isNotBlank()) {
+                                                        appendLine("<details><summary>Reasoning</summary>")
+                                                        appendLine()
+                                                        appendLine(n.activeVariant.thinkingSummary)
+                                                        appendLine("</details>")
+                                                        appendLine()
+                                                    }
+                                                    appendLine(n.activeVariant.content)
+                                                    appendLine()
+                                                    appendLine("---")
+                                                    appendLine()
+                                                }
+                                            }
+                                            val safeTitle = activeSession.title.replace(Regex("[^a-zA-Z0-9-_]"), "_").ifBlank { "chat" }
+                                            val saved = PlatformBridge.saveFileForExport("$safeTitle.md", md.encodeToByteArray())
+                                            if (saved != null) bannerNotification = "Exported chat Markdown to: $saved"
+                                        }
+                                    },
+                                    onOpenPricingSettings = {
+                                        activeModal = ActiveModalTab.PROVIDERS_AND_PROXY
+                                    },
                                     onSend = ::sendUserTurn,
+                                    onSendGuidedDirection = ::sendGuidedDirection,
+                                    onImpersonateDraft = ::triggerImpersonateDraft,
+                                    onAutoSummarizeStory = ::triggerAutoSummarizeStory,
+                                    onForkSessionFromNode = { nodeIndex ->
+                                        val now = PlatformBridge.currentTimeMillis()
+                                        val slicedMessages = activeSession.messages.subList(0, (nodeIndex + 1).coerceAtMost(activeSession.messages.size))
+                                        val forkedSession = activeSession.copy(
+                                            id = "sess-fork-$now",
+                                            title = "${activeSession.title} (Fork #${nodeIndex + 1})",
+                                            createdAt = now,
+                                            updatedAt = now,
+                                            messages = slicedMessages
+                                        )
+                                        persist(
+                                            appState.copy(
+                                                sessions = listOf(forkedSession) + appState.sessions,
+                                                activeSessionId = forkedSession.id
+                                            )
+                                        )
+                                        bannerNotification = "Forked chat at turn #${nodeIndex + 1} into '${forkedSession.title}'."
+                                    },
                                     onStopStream = {
                                         activeStreamJob?.cancel()
                                         if (streamingInteractionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
@@ -718,9 +1263,26 @@ private fun SessionSidebar(
     onSelectSession: (String) -> Unit,
     onNewSession: () -> Unit,
     onDeleteSession: (String) -> Unit,
-    onQuickSwitchProfile: (String) -> Unit
+    onDeleteAllSessions: () -> Unit,
+    onQuickSwitchProfile: (String) -> Unit,
+    onDeleteProfile: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredSessions = remember(appState.sessions, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            appState.sessions
+        } else {
+            appState.sessions.filter { sess ->
+                sess.title.contains(q, ignoreCase = true) ||
+                    sess.messages.any { node ->
+                        node.variants.any { v -> v.content.contains(q, ignoreCase = true) }
+                    }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -733,22 +1295,40 @@ private fun SessionSidebar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             BasicText(
-                text = "Manuscripts & Sessions",
+                text = "Chats",
                 style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
             )
-            SepiaButton(
-                text = "+ New",
-                compact = true,
-                style = SepiaButtonStyle.PRIMARY,
-                onClick = onNewSession
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SepiaButton(
+                    text = "+ New",
+                    compact = true,
+                    style = SepiaButtonStyle.PRIMARY,
+                    onClick = onNewSession
+                )
+                SepiaButton(
+                    text = "Delete All",
+                    compact = true,
+                    style = SepiaButtonStyle.DANGER,
+                    onClick = onDeleteAllSessions
+                )
+            }
         }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Instant Global Search Bar (titles + message content)
+        SepiaTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = "Search chats & messages…",
+            modifier = Modifier.fillMaxWidth()
+        )
 
         Spacer(Modifier.height(10.dp))
 
         // Quick Provider Switcher
         BasicText(
-            text = "Active Wire Protocol",
+            text = "Connection Profiles",
             style = p.uiLabelStyle
         )
         Spacer(Modifier.height(4.dp))
@@ -780,10 +1360,21 @@ private fun SessionSidebar(
                             style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
                         )
                     }
-                    if (prof.apiKey.isNotBlank()) {
-                        BasicText(
-                            text = "● Key",
-                            style = p.uiLabelStyle.copy(color = p.accentSecondary, fontSize = 10.sp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (prof.apiKey.isNotBlank()) {
+                            BasicText(
+                                text = "●",
+                                style = p.uiLabelStyle.copy(color = p.accentSecondary, fontSize = 10.sp)
+                            )
+                        }
+                        SepiaButton(
+                            text = "×",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onDeleteProfile(prof.id) }
                         )
                     }
                 }
@@ -799,7 +1390,7 @@ private fun SessionSidebar(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(appState.sessions, key = { _, s -> s.id }) { _, sess ->
+            itemsIndexed(filteredSessions, key = { _, s -> s.id }) { _, sess ->
                 val selected = sess.id == activeSession.id
                 Row(
                     modifier = Modifier
@@ -825,14 +1416,12 @@ private fun SessionSidebar(
                             style = p.uiLabelStyle.copy(fontSize = 11.sp)
                         )
                     }
-                    if (appState.sessions.size > 1) {
-                        SepiaButton(
-                            text = "×",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { onDeleteSession(sess.id) }
-                        )
-                    }
+                    SepiaButton(
+                        text = "×",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = { onDeleteSession(sess.id) }
+                    )
                 }
             }
         }
@@ -854,7 +1443,16 @@ private fun ManuscriptViewport(
     onAssistantPrefillChange: (String) -> Unit,
     showPrefillBox: Boolean,
     onTogglePrefillBox: () -> Unit,
+    pendingAttachments: List<PromptAttachment>,
+    onAddAttachment: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onExportChatMarkdown: () -> Unit,
+    onOpenPricingSettings: () -> Unit,
     onSend: () -> Unit,
+    onSendGuidedDirection: () -> Unit,
+    onImpersonateDraft: () -> Unit,
+    onAutoSummarizeStory: () -> Unit,
+    onForkSessionFromNode: (Int) -> Unit,
     onStopStream: () -> Unit,
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
@@ -865,11 +1463,58 @@ private fun ManuscriptViewport(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
+    // Compute live session-wide stats & current context window usage
+    val activeContextNodes = remember(activeSession.messages) {
+        activeSession.messages.filter { it.includedInContext }
+    }
+    val sessionTotalInputTok = remember(activeSession.messages) {
+        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.inputTokens }
+    }
+    val sessionTotalCachedTok = remember(activeSession.messages) {
+        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.cachedInputTokens }
+    }
+    val sessionTotalReasoningTok = remember(activeSession.messages) {
+        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.reasoningTokens }
+    }
+    val sessionTotalOutputTok = remember(activeSession.messages) {
+        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
+    }
+    val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
+    val sessionTotalCostUsd = remember(activeSession.messages, activeProfile) {
+        activeSession.messages.sumOf { node ->
+            val m = node.activeVariant.tokenMetrics
+            if (m.estimatedCostUsd > 0.0) m.estimatedCostUsd else activeProfile.calculateTurnCostUsd(m)
+        }
+    }
+
+    // Live context token estimation (includes system prompt, card, active fragments, summary, history, and current typed input)
+    val liveContextTokens = remember(
+        activeSession,
+        activeContextNodes,
+        userPromptInput,
+        assistantPrefillInput,
+        pendingAttachments
+    ) {
+        val baseChars = activeSession.systemPrompt.length +
+            (activeSession.activeCard?.buildCompiledInstructions(activeSession.userName)?.length ?: 0) +
+            activeSession.storySummary.length +
+            activeSession.authorsNote.length +
+            activeSession.fragments.filter { it.mode != FragmentActivationMode.MUTED }.sumOf { it.content.length } +
+            activeContextNodes.sumOf { it.activeVariant.content.length } +
+            userPromptInput.length +
+            assistantPrefillInput.length +
+            pendingAttachments.sumOf { it.textContent.length }
+        val lastReportedContext = activeContextNodes.lastOrNull { it.role == MessageRole.ASSISTANT }
+            ?.activeVariant?.tokenMetrics?.let { it.inputTokens + it.outputTokens } ?: 0
+        val typedDraftTokens = (userPromptInput.length + assistantPrefillInput.length) / 4
+        maxOf(baseChars / 4, lastReportedContext + typedDraftTokens)
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Collapsible Session Setup Bar (System Prompt, Author's Note, Active Card, Mounted Workspace)
+        // Collapsible Session Setup & Cumulative Stats Bar
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -883,20 +1528,39 @@ private fun ManuscriptViewport(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val cardSummary = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
-                    ?: "No Card Attached"
-                val wsSummary = if (activeSession.workspacePath.isNotBlank()) {
-                    " • Workspace: ${activeSession.workspacePath.takeLast(28)}"
+                    ?: "No Card"
+                val statsSummary = if (sessionTotalTokens > 0) {
+                    " • In: ${formatCompactTokens(sessionTotalInputTok)} (Cache: ${formatCompactTokens(sessionTotalCachedTok)}) • Think: ${formatCompactTokens(sessionTotalReasoningTok)} • Out: ${formatCompactTokens(sessionTotalOutputTok)} • Total: ${formatCompactTokens(sessionTotalTokens)} • Cost: ${formatUsdCost(sessionTotalCostUsd)}"
                 } else ""
                 BasicText(
-                    text = "✦ $cardSummary • Author's Note Depth: ${activeSession.authorsNoteDepth}$wsSummary",
+                    text = "✦ $cardSummary$statsSummary",
                     style = p.uiLabelStyle.copy(color = p.narrationInk)
                 )
-                SepiaButton(
-                    text = if (showSessionInspector) "Hide Direction & Note ▲" else "Scene Direction & Author's Note ▼",
-                    compact = true,
-                    style = SepiaButtonStyle.GHOST,
-                    onClick = onToggleSessionInspector
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (activeSession.messages.isNotEmpty()) {
+                        SepiaButton(
+                            text = "Export .MD",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = onExportChatMarkdown
+                        )
+                        SepiaButton(
+                            text = "Clear Chat",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onUpdateSession { it.copy(messages = emptyList()) } }
+                        )
+                    }
+                    SepiaButton(
+                        text = if (showSessionInspector) "Hide Direction & Note ▲" else "Scene Direction & Author's Note ▼",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onToggleSessionInspector
+                    )
+                }
             }
 
             if (showSessionInspector) {
@@ -961,6 +1625,32 @@ private fun ManuscriptViewport(
                         )
                     }
 
+                    // Rolling Story Summary / Continuity Memory (Errata Librarian / SillyBunny Mewmory)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = "Rolling Story Summary / Continuity Memory",
+                            style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
+                        )
+                        SepiaButton(
+                            text = if (isStreaming) "Summarizing…" else "✦ Auto-Summarize Chat into Memory",
+                            compact = true,
+                            enabled = !isStreaming && activeSession.messages.isNotEmpty(),
+                            style = SepiaButtonStyle.SECONDARY,
+                            onClick = onAutoSummarizeStory
+                        )
+                    }
+                    SepiaTextField(
+                        value = activeSession.storySummary,
+                        onValueChange = { sum -> onUpdateSession { it.copy(storySummary = sum) } },
+                        placeholder = "Rolling summary of key plot points, character states, or research findings...",
+                        singleLine = false,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1015,13 +1705,13 @@ private fun ManuscriptViewport(
         ) {
             item { Spacer(Modifier.height(10.dp)) }
 
-            if (activeSession.messages.isEmpty()) {
+            if (activeSession.messages.isEmpty() && activeSession.activeCard?.firstMessage?.isNotBlank() == true) {
                 item {
-                    EmptyManuscriptWelcomeCard(
-                        activeProfile = activeProfile,
-                        activeSession = activeSession,
-                        onStartWithCardGreeting = {
-                            val card = activeSession.activeCard ?: return@EmptyManuscriptWelcomeCard
+                    val card = activeSession.activeCard
+                    SepiaButton(
+                        text = "Insert Opening Scene from '${card.name}'",
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = {
                             val now = PlatformBridge.currentTimeMillis()
                             val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
                             if (allGreetings.isNotEmpty()) {
@@ -1100,6 +1790,7 @@ private fun ManuscriptViewport(
                             sess.copy(messages = sess.messages.filterIndexed { i, _ -> i != index })
                         }
                     },
+                    onForkHere = { onForkSessionFromNode(index) },
                     onRegenerate = { onRegenerateNode(index) },
                     onContinue = { onContinueAssistantNode(index) }
                 )
@@ -1159,60 +1850,154 @@ private fun ManuscriptViewport(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Quick Bleeding-Edge Tool & Decode Toggles
+                // Quick Bleeding-Edge Tool, Media & Decode Toggles
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SepiaChip(
-                        label = "Thinking: ${activeProfile.thinkingEffort.uppercase()}",
-                        selected = activeProfile.thinkingEffort != "none",
-                        onClick = {
-                            val order = listOf("none", "low", "medium", "high", "max")
-                            val next = order[(order.indexOf(activeProfile.thinkingEffort) + 1) % order.size]
-                            onUpdateProfile { it.copy(thinkingEffort = next) }
+                    if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
+                        SepiaChip(
+                            label = if (!activeProfile.enableVideoGeneration) "🖼 Seedream Image: ON" else "🖼 Seedream Image",
+                            selected = !activeProfile.enableVideoGeneration,
+                            onClick = { onUpdateProfile { it.copy(enableVideoGeneration = false, enableImageGeneration = true) } }
+                        )
+                        SepiaChip(
+                            label = if (activeProfile.enableVideoGeneration) "🎬 Seedance Video: ON" else "🎬 Seedance Video",
+                            selected = activeProfile.enableVideoGeneration,
+                            onClick = { onUpdateProfile { it.copy(enableVideoGeneration = true) } }
+                        )
+                        SepiaChip(
+                            label = "Ratio: ${activeProfile.mediaAspectRatio}",
+                            selected = true,
+                            onClick = {
+                                val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4", "21:9")
+                                val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
+                                onUpdateProfile { it.copy(mediaAspectRatio = next) }
+                            }
+                        )
+                        if (activeProfile.enableVideoGeneration) {
+                            SepiaChip(
+                                label = "Duration: ${activeProfile.videoDurationSeconds}s",
+                                selected = true,
+                                onClick = {
+                                    val durs = listOf(5, 10)
+                                    val next = durs[(durs.indexOf(activeProfile.videoDurationSeconds) + 1) % durs.size]
+                                    onUpdateProfile { it.copy(videoDurationSeconds = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = if (activeProfile.videoGenerateAudio) "🔊 Audio: ON" else "🔇 Audio: OFF",
+                                selected = activeProfile.videoGenerateAudio,
+                                onClick = { onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) } }
+                            )
                         }
-                    )
-
-                    if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                    } else {
                         SepiaChip(
-                            label = if (activeProfile.useBackgroundLongDecode) "⚡ Argon Background Poll: ON" else "⚡ Stream SSE",
-                            selected = activeProfile.useBackgroundLongDecode,
-                            onClick = { onUpdateProfile { it.copy(useBackgroundLongDecode = !it.useBackgroundLongDecode) } }
+                            label = "Thinking: ${activeProfile.thinkingEffort.uppercase()}",
+                            selected = activeProfile.thinkingEffort != "none",
+                            onClick = {
+                                val order = listOf("none", "low", "medium", "high", "max")
+                                val next = order[(order.indexOf(activeProfile.thinkingEffort) + 1) % order.size]
+                                onUpdateProfile { it.copy(thinkingEffort = next) }
+                            }
                         )
+
+                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS ||
+                            activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES
+                        ) {
+                            SepiaChip(
+                                label = if (activeProfile.enableImageGeneration) "🖼 Image Gen: ON (${activeProfile.mediaAspectRatio})" else "🖼 Image Gen",
+                                selected = activeProfile.enableImageGeneration,
+                                onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
+                            )
+                            if (activeProfile.enableImageGeneration) {
+                                SepiaChip(
+                                    label = "Ratio: ${activeProfile.mediaAspectRatio}",
+                                    selected = true,
+                                    onClick = {
+                                        val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4")
+                                        val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
+                                        onUpdateProfile { it.copy(mediaAspectRatio = next) }
+                                    }
+                                )
+                            }
+                        }
+
+                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                            SepiaChip(
+                                label = if (activeProfile.useBackgroundLongDecode) "⚡ Background Poll: ON" else "⚡ Stream SSE",
+                                selected = activeProfile.useBackgroundLongDecode,
+                                onClick = { onUpdateProfile { it.copy(useBackgroundLongDecode = !it.useBackgroundLongDecode) } }
+                            )
+                        }
+
+                        SepiaChip(
+                            label = "Stateful Chain",
+                            selected = activeProfile.useStatefulChaining,
+                            onClick = { onUpdateProfile { it.copy(useStatefulChaining = !it.useStatefulChaining) } }
+                        )
+
+                        SepiaChip(
+                            label = "Web Search",
+                            selected = activeProfile.enableWebSearch,
+                            onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
+                        )
+
+                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                            SepiaChip(
+                                label = "Code Exec",
+                                selected = activeProfile.enableCodeExecution,
+                                onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
+                            )
+                            SepiaChip(
+                                label = "URL Context",
+                                selected = activeProfile.enableUrlContext,
+                                onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
+                            )
+                        }
+
+                        SepiaChip(
+                            label = if (showPrefillBox) "▾ Assistant Prefill: ON" else "▸ Assistant Prefill",
+                            selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
+                            onClick = onTogglePrefillBox
+                        )
+
+                        if (activeSession.workspaceMode == WorkspaceMode.READ_WRITE) {
+                            SepiaChip(
+                                label = if (activeProfile.allowShellExecution) "⚡ Shell Exec: ON" else "⚡ Shell Exec: OFF",
+                                selected = activeProfile.allowShellExecution,
+                                onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
+                            )
+                        }
                     }
+                }
 
-                    SepiaChip(
-                        label = "Stateful Chain",
-                        selected = activeProfile.useStatefulChaining,
-                        onClick = { onUpdateProfile { it.copy(useStatefulChaining = !it.useStatefulChaining) } }
-                    )
-
-                    SepiaChip(
-                        label = "Web Search",
-                        selected = activeProfile.enableWebSearch,
-                        onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
-                    )
-
-                    if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
-                        SepiaChip(
-                            label = "Code Exec",
-                            selected = activeProfile.enableCodeExecution,
-                            onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
-                        )
-                        SepiaChip(
-                            label = "URL Context",
-                            selected = activeProfile.enableUrlContext,
-                            onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
-                        )
+                if (pendingAttachments.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        pendingAttachments.forEach { att ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                SepiaChip(
+                                    label = "📎 ${att.fileName}",
+                                    selected = true,
+                                    onClick = {}
+                                )
+                                SepiaButton(
+                                    text = "×",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { onRemoveAttachment(att.id) }
+                                )
+                            }
+                        }
                     }
-
-                    SepiaChip(
-                        label = if (showPrefillBox) "▾ Assistant Prefill: ON" else "▸ Assistant Prefill",
-                        selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
-                        onClick = onTogglePrefillBox
-                    )
                 }
 
                 if (showPrefillBox) {
@@ -1230,55 +2015,51 @@ private fun ManuscriptViewport(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
+                    SepiaButton(
+                        text = "📎 Attach",
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = onAddAttachment
+                    )
+
                     SepiaTextField(
                         value = userPromptInput,
                         onValueChange = onUserPromptChange,
-                        placeholder = "Write your next scene direction, dialogue turn, or research prompt…",
+                        placeholder = "Write dialogue/prose, or type a scene direction and click '🎬 Direct'…",
                         singleLine = false,
                         minHeight = 52.dp,
                         modifier = Modifier.weight(1f)
                     )
 
+                    // Circular Token Gauge Ring + Mini Progress Bar in the Chat Composer Area
+                    SepiaContextGaugeRing(
+                        usedTokens = liveContextTokens,
+                        contextLimitTokens = activeProfile.contextWindowTokens,
+                        sessionCostUsd = sessionTotalCostUsd,
+                        onClick = onOpenPricingSettings
+                    )
+
+                    SepiaButton(
+                        text = "✍ Impersonate",
+                        enabled = !isStreaming,
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = onImpersonateDraft
+                    )
+
+                    SepiaButton(
+                        text = "🎬 Direct",
+                        enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = onSendGuidedDirection
+                    )
+
                     SepiaButton(
                         text = if (isStreaming) "Writing…" else "Inscribe ↵",
-                        enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
+                        enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = onSend
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun EmptyManuscriptWelcomeCard(
-    activeProfile: ProviderProfile,
-    activeSession: ChatSession,
-    onStartWithCardGreeting: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    val modelName = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-
-    SepiaSectionCard(
-        title = "Parchment — Literary & Bleeding-Edge Agent Studio",
-        subtitle = "Active Protocol: ${activeProfile.protocol.displayName} • Model: $modelName"
-    ) {
-        LiteraryProseRenderer(
-            text = """
-                Welcome to **Parchment**. Every element of this workspace is rendered natively in warm Sepia tones using pure Compose Foundation primitives—zero browser or WebView bloat.
-                
-                *“Begin a chapter below, import a `.png` or `.json` instruction card from **Prompts & Cards**, or mount a local folder to let the built-in File System Agent read and edit your manuscript directly.”*
-            """.trimIndent()
-        )
-
-        if (activeSession.activeCard != null && activeSession.activeCard.firstMessage.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            SepiaButton(
-                text = "Insert Opening Scene from '${activeSession.activeCard.name}'",
-                style = SepiaButtonStyle.SECONDARY,
-                onClick = onStartWithCardGreeting
-            )
         }
     }
 }
@@ -1294,6 +2075,7 @@ private fun MessageTurnItem(
     onSaveEditedText: (String, Boolean) -> Unit,
     onToggleContextMute: () -> Unit,
     onDeleteNode: () -> Unit,
+    onForkHere: () -> Unit,
     onRegenerate: () -> Unit,
     onContinue: () -> Unit
 ) {
@@ -1510,9 +2292,121 @@ private fun MessageTurnItem(
                 }
             }
         } else {
-            LiteraryProseRenderer(
-                text = activeVar.content.ifBlank { "…" }
-            )
+            if (activeVar.content.isNotBlank() || activeVar.mediaItems.isEmpty()) {
+                LiteraryProseRenderer(
+                    text = activeVar.content.ifBlank { "…" }
+                )
+            }
+        }
+
+        // Inline Generated Images (Google Gemini, OpenAI GPT Image, ByteDance Seedream)
+        // & Generated Videos (ByteDance Seedance)
+        if (activeVar.mediaItems.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                activeVar.mediaItems.forEach { media ->
+                    when (media.kind) {
+                        MediaKind.IMAGE -> {
+                            val bmp = remember(media.localFilePath) {
+                                PlatformBridge.loadImageBitmapFromFile(media.localFilePath)
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(p.cardBg)
+                                    .border(1.dp, p.border, RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp,
+                                        contentDescription = media.revisedPrompt.ifBlank { "Generated Image" },
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 520.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                val target = media.localFilePath.ifBlank { media.remoteUrl }
+                                                if (target.isNotBlank()) PlatformBridge.openOrPlayMedia(target)
+                                            }
+                                    )
+                                } else {
+                                    BasicText(
+                                        text = "🖼 Generated Image (${media.localFilePath.ifBlank { media.remoteUrl }})",
+                                        style = p.uiBodyStyle.copy(color = p.accent)
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    BasicText(
+                                        text = "🖼 ${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
+                                        style = p.uiLabelStyle
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
+                                        if (openTarget.isNotBlank()) {
+                                            SepiaButton(
+                                                text = "Open Full Image",
+                                                compact = true,
+                                                style = SepiaButtonStyle.OUTLINE,
+                                                onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        MediaKind.VIDEO -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(p.cardBg)
+                                    .border(1.dp, p.accentSecondary, RoundedCornerShape(8.dp))
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                BasicText(
+                                    text = "🎬 Generated Video (${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""})",
+                                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
+                                )
+                                if (media.localFilePath.isNotBlank()) {
+                                    BasicText(
+                                        text = "Saved locally: ${media.localFilePath}",
+                                        style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
+                                    if (playTarget.isNotBlank()) {
+                                        SepiaButton(
+                                            text = "▶ Play Video (.MP4)",
+                                            compact = true,
+                                            style = SepiaButtonStyle.PRIMARY,
+                                            onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
+                                        )
+                                    }
+                                    if (media.remoteUrl.isNotBlank() && media.localFilePath.isNotBlank()) {
+                                        SepiaButton(
+                                            text = "Open Remote Stream URL",
+                                            compact = true,
+                                            style = SepiaButtonStyle.OUTLINE,
+                                            onClick = { PlatformBridge.openOrPlayMedia(media.remoteUrl) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.height(6.dp))
@@ -1548,6 +2442,12 @@ private fun MessageTurnItem(
                     )
                 }
                 SepiaButton(
+                    text = "⑂ Fork Chat",
+                    compact = true,
+                    style = SepiaButtonStyle.GHOST,
+                    onClick = onForkHere
+                )
+                SepiaButton(
                     text = if (node.includedInContext) "Mute Context" else "Unmute Context",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
@@ -1571,11 +2471,12 @@ private fun MessageTurnItem(
 
             val m = activeVar.tokenMetrics
             if (m.outputTokens > 0 || m.inputTokens > 0) {
-                val cacheStr = if (m.cachedInputTokens > 0) " (${m.cachedInputTokens} cached)" else ""
-                val thinkStr = if (m.reasoningTokens > 0) " • ${m.reasoningTokens} think" else ""
+                val cacheStr = if (m.cachedInputTokens > 0) " (Cache: ${m.cachedInputTokens})" else ""
+                val thinkStr = if (m.reasoningTokens > 0) " • Think: ${m.reasoningTokens}" else ""
+                val costStr = if (m.estimatedCostUsd > 0.0) " • Cost: ${formatUsdCost(m.estimatedCostUsd)}" else ""
                 BasicText(
-                    text = "${m.tokensPerSec} tok/s • TTFT ${m.ttftMs}ms • In: ${m.inputTokens}$cacheStr$thinkStr • Out: ${m.outputTokens}",
-                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
+                    text = "TTFT ${m.ttftMs}ms • ${m.tokensPerSec} tok/s • In: ${m.inputTokens}$cacheStr$thinkStr • Out: ${m.outputTokens} • Total: ${m.totalTokens} tok$costStr",
+                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp, fontFamily = p.codeFontFamily)
                 )
             }
         }
@@ -1618,6 +2519,7 @@ private fun PromptsAndCardsPanel(
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onSaveCardToLibrary: (CharacterOrScenarioCard) -> Unit,
     onSavePresetToLibrary: (SystemPromptPreset) -> Unit,
+    onDeletePresetFromLibrary: (String) -> Unit,
     onApplyTheme: (ThemeConfig) -> Unit,
     onNotify: (String) -> Unit,
     onClose: () -> Unit
@@ -1752,37 +2654,51 @@ private fun PromptsAndCardsPanel(
 
         // System Prompt Library & Import/Export
         SepiaSectionCard(
-            title = "System Prompt Presets (Import / Export)",
-            subtitle = "Pure system instruction presets for fiction, non-fiction, roleplay, and workspace coding agents"
+            title = "System Prompt (Import / Export / Saved Presets)",
+            subtitle = "Configure or import/export your System Prompt"
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                appState.systemPromptPresets.forEach { preset ->
-                    SepiaButton(
-                        text = "Apply: ${preset.name}",
-                        compact = true,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = {
-                            onUpdateSession {
-                                it.copy(
-                                    systemPrompt = preset.systemPrompt,
-                                    authorsNote = preset.authorsNoteDefault.ifBlank { it.authorsNote }
-                                )
-                            }
-                            onNotify("Applied System Prompt preset '${preset.name}'.")
+            if (appState.systemPromptPresets.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    appState.systemPromptPresets.forEach { preset ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            SepiaButton(
+                                text = preset.name,
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    onUpdateSession {
+                                        it.copy(
+                                            systemPrompt = preset.systemPrompt,
+                                            authorsNote = preset.authorsNoteDefault.ifBlank { it.authorsNote }
+                                        )
+                                    }
+                                    onNotify("Applied System Prompt '${preset.name}'.")
+                                }
+                            )
+                            SepiaButton(
+                                text = "×",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = { onDeletePresetFromLibrary(preset.id) }
+                            )
                         }
-                    )
+                    }
                 }
+                Spacer(Modifier.height(10.dp))
             }
-
-            Spacer(Modifier.height(10.dp))
 
             SepiaTextField(
                 value = activeSession.systemPrompt,
                 onValueChange = { sp -> onUpdateSession { it.copy(systemPrompt = sp) } },
                 label = "Active Session System Prompt",
+                placeholder = "Enter system instructions (or leave empty)...",
                 singleLine = false,
                 minHeight = 90.dp,
                 modifier = Modifier.fillMaxWidth()
@@ -1790,7 +2706,27 @@ private fun PromptsAndCardsPanel(
 
             Spacer(Modifier.height(8.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SepiaButton(
+                    text = "+ Save Current to Presets",
+                    compact = true,
+                    enabled = activeSession.systemPrompt.isNotBlank(),
+                    style = SepiaButtonStyle.SECONDARY,
+                    onClick = {
+                        val now = PlatformBridge.currentTimeMillis()
+                        val preset = SystemPromptPreset(
+                            id = "prompt-$now",
+                            name = activeSession.title.ifBlank { "Preset" },
+                            systemPrompt = activeSession.systemPrompt,
+                            authorsNoteDefault = activeSession.authorsNote
+                        )
+                        onSavePresetToLibrary(preset)
+                        onNotify("Saved preset '${preset.name}'.")
+                    }
+                )
                 SepiaButton(
                     text = "📤 Export System Prompt as .JSON",
                     compact = true,
@@ -1799,7 +2735,7 @@ private fun PromptsAndCardsPanel(
                         scope.launch {
                             val preset = SystemPromptPreset(
                                 id = "prompt-${PlatformBridge.currentTimeMillis()}",
-                                name = activeSession.title.ifBlank { "Custom System Prompt" },
+                                name = activeSession.title.ifBlank { "System Prompt" },
                                 systemPrompt = activeSession.systemPrompt,
                                 authorsNoteDefault = activeSession.authorsNote
                             )
@@ -1817,7 +2753,7 @@ private fun PromptsAndCardsPanel(
                         scope.launch {
                             val preset = SystemPromptPreset(
                                 id = "prompt-${PlatformBridge.currentTimeMillis()}",
-                                name = activeSession.title.ifBlank { "Custom System Prompt" },
+                                name = activeSession.title.ifBlank { "System Prompt" },
                                 systemPrompt = activeSession.systemPrompt,
                                 authorsNoteDefault = activeSession.authorsNote
                             )
@@ -1915,6 +2851,189 @@ private fun PromptsAndCardsPanel(
                 }
             }
         }
+
+        // Composable Context Fragments & Card Lorebook (Errata / SillyTavern character_book)
+        FragmentsAndLorebookCard(
+            activeSession = activeSession,
+            onUpdateSession = onUpdateSession
+        )
+    }
+}
+
+@Composable
+private fun FragmentsAndLorebookCard(
+    activeSession: ChatSession,
+    onUpdateSession: ((ChatSession) -> ChatSession) -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    var newFragTitle by remember { mutableStateOf("") }
+    var newFragKeywords by remember { mutableStateOf("") }
+    var newFragContent by remember { mutableStateOf("") }
+
+    val cardFragments = activeSession.activeCard?.embeddedFragments.orEmpty()
+
+    SepiaSectionCard(
+        title = "Composable Context Fragments & Lorebook (${activeSession.fragments.size + cardFragments.size})",
+        subtitle = "Pin character notes, style rules, outlines, or keyword-triggered lore entries (auto-extracted from .png/.json character_book)"
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SepiaTextField(
+                    value = newFragTitle,
+                    onValueChange = { newFragTitle = it },
+                    label = "Fragment Title",
+                    placeholder = "e.g. Chapter Outline / Magic System / Research Source",
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = newFragKeywords,
+                    onValueChange = { newFragKeywords = it },
+                    label = "Trigger Keywords (Comma-separated, optional)",
+                    placeholder = "Leave empty for Pinned, or e.g. morpeth, scriptorium",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                SepiaTextField(
+                    value = newFragContent,
+                    onValueChange = { newFragContent = it },
+                    label = "Fragment Content",
+                    placeholder = "Write the lore entry, character note, or guideline...",
+                    singleLine = false,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaButton(
+                    text = "+ Add Fragment",
+                    style = SepiaButtonStyle.PRIMARY,
+                    enabled = newFragContent.isNotBlank(),
+                    onClick = {
+                        val now = PlatformBridge.currentTimeMillis()
+                        val kwList = newFragKeywords.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        val frag = ContextFragment(
+                            id = "frag-$now",
+                            title = newFragTitle.trim().ifBlank { "Fragment #${activeSession.fragments.size + 1}" },
+                            content = newFragContent.trim(),
+                            keywords = kwList,
+                            mode = if (kwList.isEmpty()) FragmentActivationMode.PINNED else FragmentActivationMode.KEYWORD
+                        )
+                        onUpdateSession { it.copy(fragments = it.fragments + frag) }
+                        newFragTitle = ""
+                        newFragKeywords = ""
+                        newFragContent = ""
+                    }
+                )
+            }
+
+            if (activeSession.fragments.isNotEmpty() || cardFragments.isNotEmpty()) {
+                SepiaDivider()
+            }
+
+            // Session fragments
+            activeSession.fragments.forEach { frag ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(p.elevatedBg.copy(alpha = 0.45f))
+                        .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        val kwTag = if (frag.keywords.isNotEmpty()) " • Keys: ${frag.keywords.joinToString(", ")}" else ""
+                        BasicText(
+                            text = "${frag.title}$kwTag",
+                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        BasicText(
+                            text = frag.content.take(180),
+                            style = p.uiLabelStyle
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        SepiaChip(
+                            label = frag.mode.label,
+                            selected = frag.mode != FragmentActivationMode.MUTED,
+                            onClick = {
+                                val order = FragmentActivationMode.entries
+                                val next = order[(order.indexOf(frag.mode) + 1) % order.size]
+                                onUpdateSession { sess ->
+                                    sess.copy(
+                                        fragments = sess.fragments.map {
+                                            if (it.id == frag.id) it.copy(mode = next) else it
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                        SepiaButton(
+                            text = "×",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                onUpdateSession { sess ->
+                                    sess.copy(fragments = sess.fragments.filterNot { it.id == frag.id })
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Card embedded character_book fragments
+            if (cardFragments.isNotEmpty()) {
+                BasicText(
+                    text = "Embedded Card Lorebook Entries (${cardFragments.size}):",
+                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                )
+                cardFragments.forEach { frag ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(p.elevatedBg.copy(alpha = 0.35f))
+                            .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            val kwTag = if (frag.keywords.isNotEmpty()) " • Keys: ${frag.keywords.joinToString(", ")}" else ""
+                            BasicText(
+                                text = "${frag.title}$kwTag",
+                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            BasicText(
+                                text = frag.content.take(180),
+                                style = p.uiLabelStyle
+                            )
+                        }
+                        SepiaChip(
+                            label = frag.mode.label,
+                            selected = frag.mode != FragmentActivationMode.MUTED,
+                            onClick = {
+                                val order = FragmentActivationMode.entries
+                                val next = order[(order.indexOf(frag.mode) + 1) % order.size]
+                                onUpdateSession { sess ->
+                                    val c = sess.activeCard ?: return@onUpdateSession sess
+                                    sess.copy(
+                                        activeCard = c.copy(
+                                            embeddedFragments = c.embeddedFragments.map {
+                                                if (it.id == frag.id) it.copy(mode = next) else it
+                                            }
+                                        )
+                                    )
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1930,6 +3049,7 @@ private fun ProvidersAndProxyPanel(
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onAddProfile: (ProviderProtocol) -> Unit,
+    onDeleteProfile: (String) -> Unit,
     onNotify: (String) -> Unit,
     onClose: () -> Unit
 ) {
@@ -1995,20 +3115,40 @@ private fun ProvidersAndProxyPanel(
 
         // Profile Selector & Creator
         SepiaSectionCard(
-            title = "Provider Profiles",
-            subtitle = "Create multiple profiles for official endpoints or custom reverse proxies"
+            title = "Connection Profiles",
+            subtitle = "Select, create, or delete connection profiles",
+            headerAction = {
+                SepiaButton(
+                    text = "Delete Active Profile",
+                    compact = true,
+                    style = SepiaButtonStyle.DANGER,
+                    onClick = { onDeleteProfile(activeProfile.id) }
+                )
+            }
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 appState.profiles.forEach { prof ->
                     val modelTag = prof.defaultModel.ifBlank { "unset" }
-                    SepiaChip(
-                        label = "${prof.name} ($modelTag)",
-                        selected = prof.id == activeProfile.id,
-                        onClick = { onSelectProfile(prof.id) }
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        SepiaChip(
+                            label = "${prof.name} ($modelTag)",
+                            selected = prof.id == activeProfile.id,
+                            onClick = { onSelectProfile(prof.id) }
+                        )
+                        SepiaButton(
+                            text = "×",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { onDeleteProfile(prof.id) }
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -2017,22 +3157,28 @@ private fun ProvidersAndProxyPanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 SepiaButton(
-                    text = "+ Add Gemini Interactions Profile",
+                    text = "+ New Gemini Interactions Profile",
                     compact = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = { onAddProfile(ProviderProtocol.GEMINI_INTERACTIONS) }
                 )
                 SepiaButton(
-                    text = "+ Add OpenAI Responses Profile",
+                    text = "+ New OpenAI Responses Profile",
                     compact = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = { onAddProfile(ProviderProtocol.OPENAI_RESPONSES) }
                 )
                 SepiaButton(
-                    text = "+ Add Anthropic Messages Profile",
+                    text = "+ New Anthropic Messages Profile",
                     compact = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = { onAddProfile(ProviderProtocol.ANTHROPIC_MESSAGES) }
+                )
+                SepiaButton(
+                    text = "+ New ByteDance Seedream / Seedance Profile",
+                    compact = true,
+                    style = SepiaButtonStyle.OUTLINE,
+                    onClick = { onAddProfile(ProviderProtocol.BYTEDANCE_ARK) }
                 )
             }
         }
@@ -2227,6 +3373,81 @@ private fun ProvidersAndProxyPanel(
             }
         }
 
+        // Model Pricing & Context Window (models.dev Auto-Fetch + Manual Override)
+        ModelsDevPricingCard(
+            activeProfile = activeProfile,
+            onUpdateProfile = onUpdateProfile,
+            onNotify = onNotify
+        )
+
+        // Image & Video Generation Configuration (Google Gemini Image, OpenAI GPT Image, ByteDance Seedream & Seedance)
+        SepiaSectionCard(
+            title = "Image & Video Generation (Google Gemini, OpenAI GPT Image, ByteDance Seedream / Seedance)",
+            subtitle = "Configure image and video generation parameters for the active profile"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SepiaChip(
+                        label = if (activeProfile.enableImageGeneration) "🖼 Image Generation: ON" else "🖼 Image Generation: OFF",
+                        selected = activeProfile.enableImageGeneration,
+                        onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
+                    )
+
+                    if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
+                        SepiaChip(
+                            label = if (activeProfile.enableVideoGeneration) "🎬 Seedance Video Mode: ON" else "🎬 Seedance Video Mode: OFF",
+                            selected = activeProfile.enableVideoGeneration,
+                            onClick = { onUpdateProfile { it.copy(enableVideoGeneration = !it.enableVideoGeneration) } }
+                        )
+                        SepiaChip(
+                            label = if (activeProfile.videoGenerateAudio) "🔊 Seedance Audio: ON" else "🔇 Seedance Audio: OFF",
+                            selected = activeProfile.videoGenerateAudio,
+                            onClick = { onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) } }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(text = "Aspect Ratio:", style = p.uiLabelStyle)
+                    listOf("1:1", "16:9", "9:16", "4:3", "3:4", "21:9").forEach { ratio ->
+                        SepiaChip(
+                            label = ratio,
+                            selected = activeProfile.mediaAspectRatio == ratio,
+                            onClick = { onUpdateProfile { it.copy(mediaAspectRatio = ratio) } }
+                        )
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SepiaTextField(
+                        value = activeProfile.mediaResolution,
+                        onValueChange = { v -> onUpdateProfile { it.copy(mediaResolution = v) } },
+                        label = "Resolution / Size (e.g. 1K, 2K, 1024x1024, 2048x2048, 720p, 1080p)",
+                        monospace = true,
+                        modifier = Modifier.weight(1.4f)
+                    )
+                    if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
+                        SepiaTextField(
+                            value = activeProfile.videoDurationSeconds.toString(),
+                            onValueChange = { v ->
+                                v.toIntOrNull()?.let { sec -> onUpdateProfile { it.copy(videoDurationSeconds = sec.coerceIn(2, 15)) } }
+                            },
+                            label = "Seedance Video Duration (sec)",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
         // Long Decode, Thinking & Wire Behavior
         SepiaSectionCard(
             title = "Long Decode, Reasoning & Wire Parameters",
@@ -2255,6 +3476,7 @@ private fun ProvidersAndProxyPanel(
                         ProviderProtocol.GEMINI_INTERACTIONS -> "Legacy Proxy Fallback (:streamGenerateContent)"
                         ProviderProtocol.OPENAI_RESPONSES -> "Legacy Proxy Fallback (/v1/chat/completions)"
                         ProviderProtocol.ANTHROPIC_MESSAGES -> "Standard /v1/messages"
+                        ProviderProtocol.BYTEDANCE_ARK -> "ByteDance Ark /api/v3"
                     }
                     if (activeProfile.protocol != ProviderProtocol.ANTHROPIC_MESSAGES) {
                         SepiaChip(
@@ -2323,13 +3545,183 @@ private fun ProvidersAndProxyPanel(
     }
 }
 
+@Composable
+private fun ModelsDevPricingCard(
+    activeProfile: ProviderProfile,
+    onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
+    onNotify: (String) -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    val scope = rememberCoroutineScope()
+    var isFetchingModelsDev by remember { mutableStateOf(false) }
+    var modelsDevStatus by remember(activeProfile.id, activeProfile.defaultModel) { mutableStateOf("") }
+
+    fun saveCurrentManualSpec(updatedProfile: ProviderProfile): ProviderProfile {
+        val mId = updatedProfile.defaultModel.trim()
+        if (mId.isEmpty()) return updatedProfile
+        val spec = ModelPricingSpec(
+            modelId = mId,
+            inputPricePerM = updatedProfile.inputPricePerM,
+            outputPricePerM = updatedProfile.outputPricePerM,
+            cacheReadPricePerM = updatedProfile.cacheReadPricePerM,
+            cacheWritePricePerM = updatedProfile.cacheWritePricePerM,
+            reasoningPricePerM = updatedProfile.reasoningPricePerM,
+            contextWindowTokens = updatedProfile.contextWindowTokens,
+            maxOutputTokens = updatedProfile.maxOutputTokens
+        )
+        return updatedProfile.copy(customModelSpecs = updatedProfile.customModelSpecs + (mId to spec))
+    }
+
+    SepiaSectionCard(
+        title = "Model Pricing & Context Window (models.dev Auto-Fetch & Manual Input)",
+        subtitle = "Active Model: ${activeProfile.defaultModel.ifBlank { "None selected" }} — Automatically fetch from models.dev or input values manually",
+        headerAction = {
+            SepiaButton(
+                text = if (isFetchingModelsDev) "Fetching models.dev…" else "↻ Fetch from models.dev",
+                compact = true,
+                enabled = !isFetchingModelsDev && activeProfile.defaultModel.isNotBlank(),
+                style = SepiaButtonStyle.PRIMARY,
+                onClick = {
+                    isFetchingModelsDev = true
+                    modelsDevStatus = "Querying https://models.dev/api.json for '${activeProfile.defaultModel}'…"
+                    scope.launch {
+                        ModelsDevClient.fetchModelSpec(activeProfile.defaultModel, forceRefresh = false).fold(
+                            onSuccess = { spec ->
+                                onUpdateProfile { prof ->
+                                    saveCurrentManualSpec(
+                                        prof.copy(
+                                            contextWindowTokens = spec.contextWindowTokens,
+                                            maxOutputTokens = spec.maxOutputTokens,
+                                            inputPricePerM = spec.inputPricePerM,
+                                            outputPricePerM = spec.outputPricePerM,
+                                            cacheReadPricePerM = spec.cacheReadPricePerM,
+                                            cacheWritePricePerM = spec.cacheWritePricePerM,
+                                            reasoningPricePerM = spec.reasoningPricePerM
+                                        )
+                                    )
+                                }
+                                modelsDevStatus = "Loaded from models.dev (${spec.providerName}): Context ${formatCompactTokens(spec.contextWindowTokens)}, In $${spec.inputPricePerM}/M, Out $${spec.outputPricePerM}/M, Cache $${spec.cacheReadPricePerM}/M"
+                                onNotify("Fetched '${spec.displayName}' pricing & context window from models.dev.")
+                            },
+                            onFailure = { err ->
+                                modelsDevStatus = err.message ?: "Not found in models.dev — enter values manually below."
+                            }
+                        )
+                        isFetchingModelsDev = false
+                    }
+                }
+            )
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (modelsDevStatus.isNotBlank()) {
+                BasicText(
+                    text = modelsDevStatus,
+                    style = p.uiLabelStyle.copy(color = p.accent)
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SepiaTextField(
+                    value = activeProfile.contextWindowTokens.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(contextWindowTokens = num.coerceAtLeast(1024))) }
+                        }
+                    },
+                    label = "Context Window (tokens)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = activeProfile.maxOutputTokens.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(maxOutputTokens = num.coerceAtLeast(256))) }
+                        }
+                    },
+                    label = "Max Output Limit (tokens)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SepiaTextField(
+                    value = activeProfile.inputPricePerM.toString(),
+                    onValueChange = { v ->
+                        v.toDoubleOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(inputPricePerM = num.coerceAtLeast(0.0))) }
+                        }
+                    },
+                    label = "Input ($ / 1M tok)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = activeProfile.outputPricePerM.toString(),
+                    onValueChange = { v ->
+                        v.toDoubleOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(outputPricePerM = num.coerceAtLeast(0.0))) }
+                        }
+                    },
+                    label = "Output ($ / 1M tok)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = activeProfile.cacheReadPricePerM.toString(),
+                    onValueChange = { v ->
+                        v.toDoubleOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(cacheReadPricePerM = num.coerceAtLeast(0.0))) }
+                        }
+                    },
+                    label = "Cache Read ($ / 1M tok)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = activeProfile.cacheWritePricePerM.toString(),
+                    onValueChange = { v ->
+                        v.toDoubleOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(cacheWritePricePerM = num.coerceAtLeast(0.0))) }
+                        }
+                    },
+                    label = "Cache Write ($ / 1M tok)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                SepiaTextField(
+                    value = activeProfile.reasoningPricePerM.toString(),
+                    onValueChange = { v ->
+                        v.toDoubleOrNull()?.let { num ->
+                            onUpdateProfile { saveCurrentManualSpec(it.copy(reasoningPricePerM = num.coerceAtLeast(0.0))) }
+                        }
+                    },
+                    label = "Reasoning ($ / 1M tok)",
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
 // ============================================================================================
-// PANEL 3: SEPIA & CUSTOM THEME STUDIO + ZERO-TRACE STORAGE CONTROL
+// PANEL 3: SEPIA & CUSTOM THEME STUDIO + IN-APP OTA UPDATER + ZERO-TRACE STORAGE CONTROL
 // ============================================================================================
 @Composable
 private fun ThemeAndStoragePanel(
+    appState: AppStateSnapshot,
     theme: ThemeConfig,
+    otaGithubRepo: String,
+    autoCheckOta: Boolean,
+    otaState: OtaUpdateState,
+    onUpdateOtaSettings: (String, Boolean) -> Unit,
+    onCheckOtaNow: () -> Unit,
+    onInstallOtaRelease: (OtaReleaseInfo) -> Unit,
     onUpdateTheme: (ThemeConfig) -> Unit,
+    onRestoreFullBackup: (AppStateSnapshot) -> Unit,
     onWipeAllData: () -> Unit,
     onNotify: (String) -> Unit,
     onClose: () -> Unit
@@ -2411,9 +3803,9 @@ private fun ThemeAndStoragePanel(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     BasicText(text = "Prose Font:", style = p.uiLabelStyle)
-                    listOf("Serif", "Sans", "Monospace").forEach { fam ->
+                    listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd").forEach { fam ->
                         SepiaChip(
-                            label = fam,
+                            label = if (fam == "Inter") "Inter (Bundled Default)" else fam,
                             selected = theme.customProseFontPath.isBlank() && theme.proseFontFamily.equals(fam, ignoreCase = true),
                             onClick = { onUpdateTheme(theme.copy(proseFontFamily = fam, customProseFontPath = "")) }
                         )
@@ -2471,9 +3863,9 @@ private fun ThemeAndStoragePanel(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     BasicText(text = "Code Font:", style = p.uiLabelStyle)
-                    listOf("Monospace", "Sans", "Serif").forEach { fam ->
+                    listOf("JetBrainsMono Nerd", "Monospace", "Inter", "LaTeX").forEach { fam ->
                         SepiaChip(
-                            label = fam,
+                            label = if (fam == "JetBrainsMono Nerd") "JetBrainsMono Nerd (Bundled Default)" else fam,
                             selected = theme.customCodeFontPath.isBlank() && theme.codeFontFamily.equals(fam, ignoreCase = true),
                             onClick = { onUpdateTheme(theme.copy(codeFontFamily = fam, customCodeFontPath = "")) }
                         )
@@ -2625,21 +4017,154 @@ private fun ThemeAndStoragePanel(
             }
         }
 
-        // Zero-Trace Storage & Clean Uninstall Section
+        // In-App Zero-Browser OTA Auto-Updater Section
         SepiaSectionCard(
-            title = "Zero-Trace Storage & Clean Uninstallation",
+            title = "In-App OTA Updates (Android .APK & Windows .EXE)",
+            subtitle = "Installed Version: v${OtaUpdateEngine.currentAppVersion} • Target Platform: ${PlatformBridge.platformName}"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    SepiaTextField(
+                        value = otaGithubRepo,
+                        onValueChange = { repo -> onUpdateOtaSettings(repo, autoCheckOta) },
+                        label = "GitHub Release Repository (owner/repo)",
+                        placeholder = "baros4294/parchment",
+                        monospace = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    SepiaChip(
+                        label = if (autoCheckOta) "Auto-Check on Launch: ON" else "Auto-Check on Launch: OFF",
+                        selected = autoCheckOta,
+                        onClick = { onUpdateOtaSettings(otaGithubRepo, !autoCheckOta) }
+                    )
+                    SepiaButton(
+                        text = if (otaState is OtaUpdateState.Checking) "Checking…" else "↻ Check for Update Now",
+                        style = SepiaButtonStyle.PRIMARY,
+                        enabled = otaState !is OtaUpdateState.Checking && otaState !is OtaUpdateState.Downloading,
+                        onClick = onCheckOtaNow
+                    )
+                }
+
+                when (otaState) {
+                    is OtaUpdateState.Idle -> {
+                        BasicText(
+                            text = "Click '↻ Check for Update Now' to query GitHub Releases directly inside the app.",
+                            style = p.uiLabelStyle
+                        )
+                    }
+                    is OtaUpdateState.Checking -> {
+                        BasicText(
+                            text = "Querying GitHub Releases API ($otaGithubRepo)…",
+                            style = p.uiBodyStyle.copy(color = p.accent)
+                        )
+                    }
+                    is OtaUpdateState.Available -> {
+                        val rel = otaState.release
+                        val sizeMb = (rel.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                        BasicText(
+                            text = "New Release Available: ${rel.tagName} (${rel.assetName} • $sizeMb MB)",
+                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                        )
+                        if (rel.releaseNotes.isNotBlank()) {
+                            BasicText(
+                                text = rel.releaseNotes.take(400),
+                                style = p.uiLabelStyle
+                            )
+                        }
+                        SepiaButton(
+                            text = "⬇ Download & Install ${rel.tagName} In-App",
+                            style = SepiaButtonStyle.PRIMARY,
+                            onClick = { onInstallOtaRelease(rel) }
+                        )
+                    }
+                    is OtaUpdateState.UpToDate -> {
+                        BasicText(
+                            text = "You are on the latest version (v${otaState.currentVersion}).",
+                            style = p.uiBodyStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.Medium)
+                        )
+                        otaState.latestRelease?.let { rel ->
+                            SepiaButton(
+                                text = "Force Re-Download & Re-Install ${rel.tagName} (${rel.assetName})",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = { onInstallOtaRelease(rel) }
+                            )
+                        }
+                    }
+                    is OtaUpdateState.Downloading -> {
+                        val downMb = (otaState.downloadedBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                        val totalMb = (otaState.totalBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                        BasicText(
+                            text = "Downloading ${otaState.release.assetName}: $downMb MB / $totalMb MB (${otaState.progressPercent}%)…",
+                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                    is OtaUpdateState.Installing -> {
+                        BasicText(
+                            text = otaState.message,
+                            style = p.uiBodyStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                    is OtaUpdateState.Error -> {
+                        BasicText(
+                            text = "OTA Status: ${otaState.message}",
+                            style = p.uiBodyStyle.copy(color = p.danger)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Zero-Trace Storage, Portable Backup & Clean Uninstall Section
+        SepiaSectionCard(
+            title = "Portable Full Backup & Zero-Trace Storage",
             subtitle = "All local state lives in a single isolated directory: ${PlatformBridge.getAppStorageDirectoryPath()}"
         ) {
             BasicText(
-                text = "Both the Windows .exe uninstaller and Android 16 package manager (allowBackup=false) are configured to remove 100% of app files, settings, and caches upon uninstallation. You can also wipe all local data immediately below.",
+                text = "Export a single-file backup to transfer all chats, cards, fragments, profiles, and themes between Windows and Android, or wipe all local data cleanly.",
                 style = p.uiBodyStyle
             )
             Spacer(Modifier.height(10.dp))
-            SepiaButton(
-                text = "Wipe All Local Data & Reset to Factory Defaults",
-                style = SepiaButtonStyle.DANGER,
-                onClick = onWipeAllData
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SepiaButton(
+                    text = "📤 Export Full Backup (.json)",
+                    style = SepiaButtonStyle.PRIMARY,
+                    onClick = {
+                        scope.launch {
+                            val bytes = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), appState).encodeToByteArray()
+                            val saved = PlatformBridge.saveFileForExport("parchment-full-backup.json", bytes)
+                            if (saved != null) onNotify("Exported full backup to: $saved")
+                        }
+                    }
+                )
+                SepiaButton(
+                    text = "📥 Restore Full Backup (.json)",
+                    style = SepiaButtonStyle.SECONDARY,
+                    onClick = {
+                        scope.launch {
+                            val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
+                            runCatching {
+                                CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(picked.bytes.decodeToString())
+                            }.fold(
+                                onSuccess = { restored -> onRestoreFullBackup(restored) },
+                                onFailure = { err -> onNotify("Backup restore failed: ${err.message}") }
+                            )
+                        }
+                    }
+                )
+                SepiaButton(
+                    text = "Wipe All Local Data & Reset",
+                    style = SepiaButtonStyle.DANGER,
+                    onClick = onWipeAllData
+                )
+            }
         }
     }
 }
@@ -2658,13 +4183,22 @@ private val LEGACY_HARDCODED_MODELS = setOf(
     "claude-3-7-sonnet-latest"
 )
 
+private val LEGACY_HARDCODED_PRESET_IDS = setOf(
+    "preset-literary-cowriter",
+    "preset-immersive-rp",
+    "preset-nonfiction-synthesis",
+    "preset-workspace-agent"
+)
+
+private const val LEGACY_HARDCODED_SYS_PROMPT =
+    "You are a master literary collaborator, researcher, and prose stylist. Prioritize vivid sensory grounding, authentic dialogue, psychological depth, and rhythmic sentence craft. Avoid repetitive clichés, purple melodrama, or unprompted moralizing summaries at the end of scenes."
+
 private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     val raw = PlatformBridge.loadAppStateJson()
     if (!raw.isNullOrBlank()) {
         runCatching {
             val loaded = CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(raw)
             if (loaded.profiles.isNotEmpty() && loaded.sessions.isNotEmpty()) {
-                // Strip any legacy hardcoded starter model lists if present from an older build
                 val cleanedProfiles = loaded.profiles.map { prof ->
                     val strippedSaved = if (prof.savedModels.isNotEmpty() && prof.savedModels.all { it in LEGACY_HARDCODED_MODELS }) {
                         emptyList()
@@ -2672,12 +4206,45 @@ private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
                     val strippedDefault = if (strippedSaved.isEmpty() && prof.defaultModel in LEGACY_HARDCODED_MODELS) {
                         ""
                     } else prof.defaultModel
-                    prof.copy(defaultModel = strippedDefault, savedModels = strippedSaved)
+                    val strippedBeta = if (prof.anthropicBetaHeaders == "interleaved-thinking-2025-05-14,output-128k-2025-02-19") {
+                        ""
+                    } else prof.anthropicBetaHeaders
+                    prof.copy(
+                        defaultModel = strippedDefault,
+                        savedModels = strippedSaved,
+                        anthropicBetaHeaders = strippedBeta
+                    )
                 }
                 val cleanedSessions = loaded.sessions.map { sess ->
-                    if (sess.modelOverride in LEGACY_HARDCODED_MODELS) sess.copy(modelOverride = "") else sess
+                    sess.copy(
+                        title = if (sess.title == "Folio I — New Manuscript" || sess.title == "Untitled Manuscript") "New Chat" else sess.title,
+                        userName = if (sess.userName == "Traveler") "User" else sess.userName,
+                        systemPrompt = if (sess.systemPrompt == LEGACY_HARDCODED_SYS_PROMPT) "" else sess.systemPrompt,
+                        modelOverride = if (sess.modelOverride in LEGACY_HARDCODED_MODELS) "" else sess.modelOverride
+                    )
                 }
-                return loaded.copy(profiles = cleanedProfiles, sessions = cleanedSessions)
+                val cleanedPresets = loaded.systemPromptPresets.filterNot { it.id in LEGACY_HARDCODED_PRESET_IDS }
+                val withByteDanceDefault = if (cleanedProfiles.none { it.protocol == ProviderProtocol.BYTEDANCE_ARK }) {
+                    cleanedProfiles + ProviderProfile(
+                        id = "prof-bytedance-ark",
+                        name = "ByteDance Seedream / Seedance",
+                        protocol = ProviderProtocol.BYTEDANCE_ARK,
+                        enableImageGeneration = true
+                    )
+                } else cleanedProfiles
+
+                val upgradedTheme = loaded.theme.let { th ->
+                    val newProse = if (th.customProseFontPath.isBlank() && th.proseFontFamily == "Serif") "Inter" else th.proseFontFamily
+                    val newCode = if (th.customCodeFontPath.isBlank() && th.codeFontFamily == "Monospace") "JetBrainsMono Nerd" else th.codeFontFamily
+                    th.copy(proseFontFamily = newProse, codeFontFamily = newCode)
+                }
+
+                return loaded.copy(
+                    profiles = withByteDanceDefault,
+                    sessions = cleanedSessions,
+                    systemPromptPresets = cleanedPresets,
+                    theme = upgradedTheme
+                )
             }
         }
     }
@@ -2701,53 +4268,27 @@ private fun createDefaultAppState(): AppStateSnapshot {
         name = "Anthropic Messages",
         protocol = ProviderProtocol.ANTHROPIC_MESSAGES
     )
-
-    val defaultPrompts = listOf(
-        SystemPromptPreset(
-            id = "preset-literary-cowriter",
-            name = "Literary Fiction & Co-Writing",
-            description = "Rich sensory prose, natural subtext-heavy dialogue, zero clichés",
-            systemPrompt = ChatSession.DEFAULT_LITERARY_SYSTEM_PROMPT,
-            authorsNoteDefault = "Maintain grounded sensory detail, distinct character voices, and natural scene pacing."
-        ),
-        SystemPromptPreset(
-            id = "preset-immersive-rp",
-            name = "Immersive Roleplay Narrator",
-            description = "Stays strictly in-character as {{char}} and the living world without speaking for {{user}}",
-            systemPrompt = "You are portraying {{char}} and the surrounding world in an interactive narrative with {{user}}. Write exclusively from {{char}}'s perspective and the environment's sensory reality. Never write dialogue, internal thoughts, or actions for {{user}}. Leave natural openings for {{user}} to respond.",
-            authorsNoteDefault = "Portray {{char}}'s reactions authentically; do not rush the scene."
-        ),
-        SystemPromptPreset(
-            id = "preset-nonfiction-synthesis",
-            name = "Non-Fiction Deep Research & Essayist",
-            description = "Clear, rigorous analytical prose for long-form non-fiction and synthesis",
-            systemPrompt = "You are a rigorous non-fiction writer, historian, and technical editor. Write with clarity, intellectual honesty, concrete evidence, and rhythmic narrative structure. Avoid filler transitions and generic bullet-point summaries unless requested.",
-            authorsNoteDefault = "Prioritize primary mechanisms, concrete examples, and lucid prose."
-        ),
-        SystemPromptPreset(
-            id = "preset-workspace-agent",
-            name = "Hermes-Style Local Workspace Agent",
-            description = "Proactively uses fs_list, fs_read, fs_search, fs_write, and fs_edit on the mounted folder",
-            systemPrompt = "You are an autonomous local workspace collaborator with direct file-system tools (`fs_list`, `fs_read`, `fs_search`, `fs_write`, `fs_edit`). Inspect files before making changes, keep edits surgical and clean, and explain your work concisely.",
-            authorsNoteDefault = ""
-        )
+    val byteDanceProfile = ProviderProfile(
+        id = "prof-bytedance-ark",
+        name = "ByteDance Seedream / Seedance",
+        protocol = ProviderProtocol.BYTEDANCE_ARK,
+        enableImageGeneration = true
     )
 
     val initialSession = ChatSession(
         id = "sess-initial",
-        title = "Folio I — New Manuscript",
+        title = "New Chat",
         createdAt = now,
         updatedAt = now,
-        profileId = geminiProfile.id,
-        modelOverride = geminiProfile.defaultModel
+        profileId = geminiProfile.id
     )
 
     return AppStateSnapshot(
-        profiles = listOf(geminiProfile, openAiProfile, anthropicProfile),
+        profiles = listOf(geminiProfile, openAiProfile, anthropicProfile, byteDanceProfile),
         activeProfileId = geminiProfile.id,
         sessions = listOf(initialSession),
         activeSessionId = initialSession.id,
-        systemPromptPresets = defaultPrompts,
+        systemPromptPresets = emptyList(),
         savedCards = emptyList(),
         theme = ThemeConfig()
     )

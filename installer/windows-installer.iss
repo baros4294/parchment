@@ -2,7 +2,9 @@
 ; Automatically compiled in GitHub Actions after ./gradlew createDistributable
 
 #define MyAppName "Parchment"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.2"
+#endif
 #define MyAppPublisher "Parchment"
 #define MyAppExeName "Parchment.exe"
 
@@ -20,6 +22,7 @@ OutputBaseFilename=Parchment-Windows-x64-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=parchment-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 

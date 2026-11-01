@@ -9,6 +9,35 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
 }
 
+val appVersionProp = (project.findProperty("appVersion") as? String)?.removePrefix("v")?.trim()
+    ?.takeIf { it.isNotEmpty() } ?: "1.0.2"
+val appVersionCodeProp = (project.findProperty("appVersionCode") as? String)?.toIntOrNull() ?: 2
+val githubRepoProp = (project.findProperty("githubRepo") as? String)?.trim()
+    ?.takeIf { it.isNotEmpty() } ?: "baros4294/parchment"
+
+val generateBuildConfig by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/parchmentConfig")
+    outputs.dir(outputDir)
+    val ver = appVersionProp
+    val code = appVersionCodeProp
+    val repo = githubRepoProp
+    doLast {
+        val file = outputDir.get().file("io/parchment/ai/ParchmentBuildConfig.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            package io.parchment.ai
+
+            object ParchmentBuildConfig {
+                const val APP_VERSION = "$ver"
+                const val APP_VERSION_CODE = $code
+                const val DEFAULT_GITHUB_REPO = "$repo"
+            }
+            """.trimIndent()
+        )
+    }
+}
+
 kotlin {
     compilerOptions {
         freeCompilerArgs.add("-Xexpect-actual-classes")
@@ -29,7 +58,9 @@ kotlin {
     sourceSets {
         val desktopMain by getting
 
-        commonMain.dependencies {
+        commonMain {
+            kotlin.srcDir(generateBuildConfig.map { it.outputs.files.singleFile })
+            dependencies {
             // Pure Compose Foundation & UI primitives only — zero Material / Fluent bloat
             implementation(compose.runtime)
             implementation(compose.foundation)
@@ -44,6 +75,7 @@ kotlin {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
+            }
         }
 
         androidMain.dependencies {
@@ -68,23 +100,37 @@ android {
     namespace = "io.parchment.ai"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
+    sourceSets["main"].assets.srcDirs("src/commonMain/resources")
+
     defaultConfig {
         applicationId = "io.parchment.ai"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = appVersionCodeProp
+        versionName = appVersionProp
     }
 
     signingConfigs {
-        // Allows GitHub Actions or local builds to sign release APKs via env vars or debug keystore fallback
+        // Consistent OTA signing keystore so Android 16 upgrades in-place without signature conflicts
         getByName("debug") {
-            // Standard Android debug keystore
+            val otaKeystore = rootProject.file("keystore/parchment-ota-signing.jks")
+            if (otaKeystore.exists()) {
+                storeFile = otaKeystore
+                storePassword = "parchment123"
+                keyAlias = "parchment"
+                keyPassword = "parchment123"
+            }
         }
         create("releaseSigning") {
             val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
-                storeFile = file(keystorePath)
+            val defaultOtaKeystore = rootProject.file("keystore/parchment-ota-signing.jks")
+            val chosen = if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+                file(keystorePath)
+            } else {
+                defaultOtaKeystore
+            }
+            if (chosen.exists()) {
+                storeFile = chosen
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "parchment123"
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "parchment"
                 keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "parchment123"
@@ -96,12 +142,7 @@ android {
         getByName("release") {
             isMinifyEnabled = false
             isShrinkResources = false
-            val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            signingConfig = if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
-                signingConfigs.getByName("releaseSigning")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("releaseSigning")
         }
     }
 
@@ -124,7 +165,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = "Parchment"
-            packageVersion = "1.0.0"
+            packageVersion = appVersionProp
             description = "Parchment — Minimal Bleeding-Edge Literary & Agent AI Frontend"
             vendor = "Parchment"
 
@@ -139,6 +180,7 @@ compose.desktop {
             )
 
             windows {
+                iconFile.set(rootProject.file("installer/parchment-icon.ico"))
                 menuGroup = "Parchment"
                 shortcut = true
                 dirChooser = true

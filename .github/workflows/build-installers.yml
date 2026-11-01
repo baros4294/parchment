@@ -38,27 +38,18 @@ jobs:
             yes | "$SDKMGR" --licenses > /dev/null || true
           fi
 
-      - name: Generate Self-Signed Release Keystore (if not provided via secrets)
+      - name: Build Signed Release APK (with OTA-consistent keystore)
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/parchment-release.jks" \
-            -alias parchment \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass parchment123 \
-            -keypass parchment123 \
-            -dname "CN=Parchment, OU=AI, O=Parchment, L=Local, S=NA, C=US"
-
-      - name: Build Signed Release APK
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/parchment-release.jks
-          ANDROID_KEYSTORE_PASSWORD: parchment123
-          ANDROID_KEY_ALIAS: parchment
-          ANDROID_KEY_PASSWORD: parchment123
-        run: |
+          APP_VER="1.0.${{ github.run_number }}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            APP_VER="${GITHUB_REF#refs/tags/v}"
+          fi
           chmod +x ./gradlew
-          ./gradlew :composeApp:assembleRelease --no-daemon
+          ./gradlew :composeApp:assembleRelease \
+            -PappVersion="$APP_VER" \
+            -PappVersionCode="${{ github.run_number }}" \
+            -PgithubRepo="${{ github.repository }}" \
+            --no-daemon
 
       - name: Rename APK for Clean Download
         run: |
@@ -73,7 +64,7 @@ jobs:
           if-no-files-found: error
 
   build-windows-exe:
-    name: Build Windows .EXE Installer (Zero-Trace Uninstall)
+    name: Build Windows .EXE Installer (Zero-Trace Uninstall & Silent OTA)
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
@@ -87,12 +78,26 @@ jobs:
           cache: "gradle"
 
       - name: Build Native Windows Distributable Runtime
+        shell: pwsh
         run: |
-          .\gradlew.bat :composeApp:createDistributable --no-daemon
+          $appVer = "1.0.${{ github.run_number }}"
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $appVer = "${{ github.ref }}".Substring(11)
+          }
+          .\gradlew.bat :composeApp:createDistributable `
+            -PappVersion="$appVer" `
+            -PappVersionCode="${{ github.run_number }}" `
+            -PgithubRepo="${{ github.repository }}" `
+            --no-daemon
 
       - name: Package Minimal Zero-Trace .EXE Installer with Inno Setup
+        shell: pwsh
         run: |
-          iscc.exe installer\windows-installer.iss
+          $appVer = "1.0.${{ github.run_number }}"
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $appVer = "${{ github.ref }}".Substring(11)
+          }
+          iscc.exe "/DMyAppVersion=$appVer" installer\windows-installer.iss
 
       - name: Upload Windows EXE Installer Artifact
         uses: actions/upload-artifact@v4
@@ -102,11 +107,21 @@ jobs:
           if-no-files-found: error
 
   publish-github-release:
-    name: Publish Release Assets (on version tag)
+    name: Publish OTA Release Assets (.APK & .EXE)
     needs: [build-android-apk, build-windows-exe]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Determine Release Tag
+        id: rel
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v1.0.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Download Android APK Artifact
         uses: actions/download-artifact@v4
         with:
@@ -119,9 +134,11 @@ jobs:
           name: Parchment-Windows-EXE-Installer
           path: release-assets
 
-      - name: Create GitHub Release with APK & EXE
+      - name: Create or Update GitHub Release for In-App OTA Updater
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: "Parchment ${{ steps.rel.outputs.tag }}"
           files: |
             release-assets/Parchment-Android-Universal.apk
             release-assets/Parchment-Windows-x64-Setup.exe

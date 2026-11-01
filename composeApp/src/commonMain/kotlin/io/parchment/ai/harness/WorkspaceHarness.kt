@@ -30,7 +30,8 @@ object WorkspaceHarness {
         val name: String,
         val description: String,
         val parametersSchema: JsonObject,
-        val requiresWritePermission: Boolean
+        val requiresWritePermission: Boolean,
+        val requiresShellPermission: Boolean = false
     )
 
     private val ALL_TOOLS: List<ToolDefinition> = listOf(
@@ -146,23 +147,111 @@ object WorkspaceHarness {
                     add(JsonPrimitive("new_text"))
                 }
             }
+        ),
+        ToolDefinition(
+            name = "dice_roll",
+            description = "Roll unbiased random dice using standard notation (e.g. '1d20', '2d6+3', '4d6', '1d100') for roleplay checks or story branching outcomes.",
+            requiresWritePermission = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("expression") {
+                        put("type", "string")
+                        put("description", "Dice notation such as '1d20', '2d6+3', or '1d100'.")
+                    }
+                    putJsonObject("reason") {
+                        put("type", "string")
+                        put("description", "Optional label or reason for the roll.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("expression"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "agent_memory",
+            description = "Read or update persistent project/story memory (PARCHMENT_MEMORY.md in workspace) across sessions (Hermes Agent style).",
+            requiresWritePermission = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("action") {
+                        put("type", "string")
+                        put("description", "'read', 'append', or 'overwrite'.")
+                    }
+                    putJsonObject("content") {
+                        put("type", "string")
+                        put("description", "Memory notes to append or overwrite when action is 'append' or 'overwrite'.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("action"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "shell_exec",
+            description = "Execute a shell command inside the mounted workspace directory and return stdout/stderr (OpenCode / Oh-My-Pi style).",
+            requiresWritePermission = true,
+            requiresShellPermission = true,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("command") {
+                        put("type", "string")
+                        put("description", "Shell command to run in the workspace directory.")
+                    }
+                    putJsonObject("timeout_seconds") {
+                        put("type", "integer")
+                        put("description", "Timeout in seconds (default 30).")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("command"))
+                }
+            }
         )
     )
 
-    fun activeToolsForMode(mode: WorkspaceMode, workspacePath: String): List<ToolDefinition> {
+    fun activeToolsForMode(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false
+    ): List<ToolDefinition> {
         if (mode == WorkspaceMode.OFF || workspacePath.isBlank()) return emptyList()
-        return if (mode == WorkspaceMode.READ_ONLY) {
-            ALL_TOOLS.filter { !it.requiresWritePermission }
-        } else {
-            ALL_TOOLS
+        return ALL_TOOLS.filter { tool ->
+            val writeOk = mode == WorkspaceMode.READ_WRITE || !tool.requiresWritePermission
+            val shellOk = !tool.requiresShellPermission || (mode == WorkspaceMode.READ_WRITE && allowShell)
+            writeOk && shellOk
         }
+    }
+
+    /**
+     * Auto-discovers AGENTS.md, CLAUDE.md, PARCHMENT.md, and PARCHMENT_MEMORY.md in the workspace root
+     * (inspired by OpenCode, Hermes Agent, and Oh My Pi).
+     */
+    fun discoverWorkspaceContextFiles(workspaceRoot: String): String {
+        if (workspaceRoot.isBlank()) return ""
+        val candidates = listOf("AGENTS.md", "CLAUDE.md", "PARCHMENT.md", "PARCHMENT_MEMORY.md")
+        val sb = StringBuilder()
+        for (fileName in candidates) {
+            PlatformBridge.workspaceRead(workspaceRoot, fileName, startLine = 1, maxLines = 150).onSuccess { content ->
+                if (content.isNotBlank()) {
+                    sb.appendLine("#### Auto-Loaded Workspace File: `$fileName`")
+                    sb.appendLine(content)
+                    sb.appendLine()
+                }
+            }
+        }
+        return sb.toString().trim()
     }
 
     /**
      * Formats active workspace tools for Google Gemini Interactions API (`tools` array).
      */
-    fun buildGeminiInteractionsTools(mode: WorkspaceMode, workspacePath: String): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath)) {
+    fun buildGeminiInteractionsTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -175,8 +264,8 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for OpenAI Responses API (`/v1/responses`).
      */
-    fun buildOpenAiResponsesTools(mode: WorkspaceMode, workspacePath: String): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath)) {
+    fun buildOpenAiResponsesTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -189,8 +278,8 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for legacy OpenAI `/v1/chat/completions`.
      */
-    fun buildOpenAiChatCompletionsTools(mode: WorkspaceMode, workspacePath: String): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath)) {
+    fun buildOpenAiChatCompletionsTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
             add(buildJsonObject {
                 put("type", "function")
                 putJsonObject("function") {
@@ -205,8 +294,8 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for Anthropic Messages API (`/v1/messages`).
      */
-    fun buildAnthropicTools(mode: WorkspaceMode, workspacePath: String): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath)) {
+    fun buildAnthropicTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
             add(buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
@@ -279,6 +368,49 @@ object WorkspaceHarness {
                     PlatformBridge.workspaceEdit(workspaceRoot, rel, oldText, newText, replaceAll)
                 }
             }
+            "dice_roll" -> {
+                val expr = strArg("expression", "1d20")
+                val reason = strArg("reason", "")
+                runCatching { evaluateDiceExpression(expr, reason) }
+            }
+            "agent_memory" -> {
+                val action = strArg("action", "read").lowercase()
+                val content = strArg("content", "")
+                when (action) {
+                    "read" -> PlatformBridge.workspaceRead(workspaceRoot, "PARCHMENT_MEMORY.md", 1, 500)
+                        .recover { "(PARCHMENT_MEMORY.md does not exist yet.)" }
+                    "append" -> {
+                        if (mode != WorkspaceMode.READ_WRITE) {
+                            Result.failure(IllegalStateException("Switch to Agent R/W mode to update PARCHMENT_MEMORY.md."))
+                        } else {
+                            val existing = PlatformBridge.workspaceRead(workspaceRoot, "PARCHMENT_MEMORY.md", 1, 2000)
+                                .getOrDefault("")
+                                .lines()
+                                .drop(1) // drop header line from workspaceRead
+                                .joinToString("\n") { it.substringAfter(": ") }
+                            val combined = if (existing.isBlank()) content else "$existing\n\n$content"
+                            PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", combined)
+                        }
+                    }
+                    "overwrite" -> {
+                        if (mode != WorkspaceMode.READ_WRITE) {
+                            Result.failure(IllegalStateException("Switch to Agent R/W mode to update PARCHMENT_MEMORY.md."))
+                        } else {
+                            PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", content)
+                        }
+                    }
+                    else -> Result.failure(IllegalArgumentException("Unknown agent_memory action '$action'."))
+                }
+            }
+            "shell_exec" -> {
+                if (mode != WorkspaceMode.READ_WRITE) {
+                    Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to execute shell commands."))
+                } else {
+                    val cmd = strArg("command")
+                    val timeout = args["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 30
+                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout)
+                }
+            }
             else -> Result.failure(IllegalArgumentException("Unknown workspace tool '$toolName'."))
         }
 
@@ -302,5 +434,23 @@ object WorkspaceHarness {
                 )
             }
         )
+    }
+
+    private fun evaluateDiceExpression(expression: String, reason: String): String {
+        val cleaned = expression.trim().lowercase().replace(" ", "")
+        val match = Regex("""^(\d*)d(\d+)([+-]\d+)?$""").matchEntire(cleaned)
+            ?: error("Invalid dice notation '$expression'. Expected format like '1d20' or '2d6+3'.")
+        val count = (match.groupValues[1].toIntOrNull() ?: 1).coerceIn(1, 100)
+        val sides = (match.groupValues[2].toIntOrNull() ?: 20).coerceIn(2, 10000)
+        val modifier = match.groupValues[3].toIntOrNull() ?: 0
+        val rolls = (1..count).map { kotlin.random.Random.nextInt(1, sides + 1) }
+        val sum = rolls.sum() + modifier
+        val modStr = when {
+            modifier > 0 -> " + $modifier"
+            modifier < 0 -> " - ${-modifier}"
+            else -> ""
+        }
+        val label = if (reason.isNotBlank()) " ($reason)" else ""
+        return "Rolled $expression$label: [${rolls.joinToString(", ")}]$modStr = $sum"
     }
 }

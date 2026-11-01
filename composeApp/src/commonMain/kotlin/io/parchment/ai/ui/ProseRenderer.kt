@@ -33,6 +33,8 @@ private sealed class ProseBlock {
     data class SceneBreak(val raw: String) : ProseBlock()
     data class BlockQuote(val text: String) : ProseBlock()
     data class CodeFence(val language: String, val code: String) : ProseBlock()
+    data class MathBlock(val rawLatex: String) : ProseBlock()
+    data class TableBlock(val headers: List<String>, val rows: List<List<String>>) : ProseBlock()
     data class Paragraph(val text: String) : ProseBlock()
 }
 
@@ -141,6 +143,65 @@ fun LiteraryProseRenderer(
                         }
                     }
 
+                    is ProseBlock.MathBlock -> {
+                        LatexMathRenderer.DisplayLatexBlock(rawLatex = block.rawLatex)
+                    }
+
+                    is ProseBlock.TableBlock -> {
+                        val shape = RoundedCornerShape(6.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                                .clip(shape)
+                                .background(p.cardBg)
+                                .border(1.dp, p.border, shape)
+                        ) {
+                            if (block.headers.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(p.sheetBg)
+                                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    block.headers.forEach { h ->
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            BasicText(
+                                                text = styleLiteraryParagraph(h, p, indentChars = 0),
+                                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
+                                            )
+                                        }
+                                    }
+                                }
+                                SepiaDivider()
+                            }
+                            block.rows.forEachIndexed { rIdx, rowCells ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (rIdx % 2 == 1) p.elevatedBg.copy(alpha = 0.35f) else p.cardBg)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    val colCount = maxOf(block.headers.size, rowCells.size).coerceAtLeast(1)
+                                    for (cIdx in 0 until colCount) {
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            val cellText = rowCells.getOrElse(cIdx) { "" }
+                                            BasicText(
+                                                text = styleLiteraryParagraph(cellText, p, indentChars = 0),
+                                                style = p.uiBodyStyle
+                                            )
+                                        }
+                                    }
+                                }
+                                if (rIdx < block.rows.lastIndex) {
+                                    SepiaDivider()
+                                }
+                            }
+                        }
+                    }
+
                     is ProseBlock.Paragraph -> {
                         val styled = remember(block.text, p) {
                             styleLiteraryParagraph(
@@ -194,7 +255,79 @@ private fun parseProseBlocks(raw: String): List<ProseBlock> {
                     codeBuf.append(lines[i])
                     i++
                 }
-                blocks.add(ProseBlock.CodeFence(lang, codeBuf.toString()))
+                if (lang.equals("math", ignoreCase = true) || lang.equals("latex", ignoreCase = true) || lang.equals("tex", ignoreCase = true)) {
+                    blocks.add(ProseBlock.MathBlock(codeBuf.toString()))
+                } else {
+                    blocks.add(ProseBlock.CodeFence(lang, codeBuf.toString()))
+                }
+            }
+
+            trimmed.startsWith("$$") -> {
+                flushPara()
+                if (trimmed.length > 4 && trimmed.endsWith("$$")) {
+                    blocks.add(ProseBlock.MathBlock(trimmed.removeSurrounding("$$")))
+                } else {
+                    val mathBuf = StringBuilder()
+                    val firstLineAfter = trimmed.removePrefix("$$").trim()
+                    if (firstLineAfter.isNotEmpty()) mathBuf.append(firstLineAfter)
+                    i++
+                    while (i < lines.size && !lines[i].trim().endsWith("$$")) {
+                        if (mathBuf.isNotEmpty()) mathBuf.append('\n')
+                        mathBuf.append(lines[i])
+                        i++
+                    }
+                    if (i < lines.size) {
+                        val closingLine = lines[i].trim().removeSuffix("$$").trim()
+                        if (closingLine.isNotEmpty()) {
+                            if (mathBuf.isNotEmpty()) mathBuf.append('\n')
+                            mathBuf.append(closingLine)
+                        }
+                    }
+                    blocks.add(ProseBlock.MathBlock(mathBuf.toString()))
+                }
+            }
+
+            trimmed.startsWith("\\[") -> {
+                flushPara()
+                if (trimmed.endsWith("\\]")) {
+                    blocks.add(ProseBlock.MathBlock(trimmed.removePrefix("\\[").removeSuffix("\\]")))
+                } else {
+                    val mathBuf = StringBuilder()
+                    val firstLineAfter = trimmed.removePrefix("\\[").trim()
+                    if (firstLineAfter.isNotEmpty()) mathBuf.append(firstLineAfter)
+                    i++
+                    while (i < lines.size && !lines[i].trim().endsWith("\\]")) {
+                        if (mathBuf.isNotEmpty()) mathBuf.append('\n')
+                        mathBuf.append(lines[i])
+                        i++
+                    }
+                    if (i < lines.size) {
+                        val closingLine = lines[i].trim().removeSuffix("\\]").trim()
+                        if (closingLine.isNotEmpty()) {
+                            if (mathBuf.isNotEmpty()) mathBuf.append('\n')
+                            mathBuf.append(closingLine)
+                        }
+                    }
+                    blocks.add(ProseBlock.MathBlock(mathBuf.toString()))
+                }
+            }
+
+            trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.count { it == '|' } >= 2 -> {
+                flushPara()
+                val tableLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().let { it.startsWith("|") && it.contains("|") }) {
+                    tableLines.add(lines[i].trim())
+                    i++
+                }
+                val parsedRows = tableLines.map { rowStr ->
+                    rowStr.trim('|').split('|').map { it.trim() }
+                }
+                if (parsedRows.size >= 2 && parsedRows[1].all { cell -> cell.all { c -> c == '-' || c == ':' || c == ' ' } }) {
+                    blocks.add(ProseBlock.TableBlock(headers = parsedRows.first(), rows = parsedRows.drop(2)))
+                } else {
+                    blocks.add(ProseBlock.TableBlock(headers = parsedRows.firstOrNull().orEmpty(), rows = parsedRows.drop(1)))
+                }
+                continue
             }
 
             trimmed == "---" || trimmed == "***" || trimmed == "* * *" || trimmed == "___" -> {
@@ -246,18 +379,58 @@ private fun styleLiteraryParagraph(
     val indentPrefix = if (indentChars > 0) " ".repeat(indentChars * 2) else ""
     val text = indentPrefix + raw
 
-    if (!palette.config.highlightDialogueAndNarration) {
-        append(text)
-        return@buildAnnotatedString
-    }
-
     var i = 0
     val n = text.length
     while (i < n) {
         val ch = text[i]
         when {
+            // Inline Display Math: $$...$$
+            i + 1 < n && ch == '$' && text[i + 1] == '$' -> {
+                val endIdx = text.indexOf("$$", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val innerLatex = text.substring(i + 2, endIdx)
+                    append(LatexMathRenderer.formatInlineLatexToAnnotatedString(innerLatex, palette))
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Inline LaTeX Math: \( ... \)
+            i + 1 < n && ch == '\\' && text[i + 1] == '(' -> {
+                val endIdx = text.indexOf("\\)", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val innerLatex = text.substring(i + 2, endIdx)
+                    append(LatexMathRenderer.formatInlineLatexToAnnotatedString(innerLatex, palette))
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Inline LaTeX Math: $...$ (avoid matching currency like "$10 and $20")
+            ch == '$' && (i + 1 < n && !text[i + 1].isWhitespace()) -> {
+                val endIdx = text.indexOf('$', startIndex = i + 1)
+                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace()) {
+                    val innerLatex = text.substring(i + 1, endIdx)
+                    val looksLikeCurrencyOnly = innerLatex.all { it.isDigit() || it == '.' || it == ',' }
+                    if (!looksLikeCurrencyOnly) {
+                        append(LatexMathRenderer.formatInlineLatexToAnnotatedString(innerLatex, palette))
+                        i = endIdx + 1
+                    } else {
+                        append(ch)
+                        i++
+                    }
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
             // Spoken Dialogue: "..." or “...”
-            ch == '"' || ch == '“' -> {
+            (ch == '"' || ch == '“') && palette.config.highlightDialogueAndNarration -> {
                 val closeChar = if (ch == '“') '”' else '"'
                 val endIdx = text.indexOf(closeChar, startIndex = i + 1)
                 if (endIdx != -1) {

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Warm Aged Parchment Squircle Background with Terracotta & Brass Border -->
+  <rect x="12" y="12" width="232" height="232" rx="52" ry="52" fill="#F4ECD8" stroke="#9E4730" stroke-width="10"/>
+  <rect x="24" y="24" width="208" height="208" rx="42" ry="42" fill="none" stroke="#D5C4A1" stroke-width="3"/>
+
+  <!-- Minimalist Open Folio Lines (Subtle Sepia) -->
+  <line x1="64" y1="82" x2="140" y2="82" stroke="#C4AE88" stroke-width="6" stroke-linecap="round"/>
+  <line x1="64" y1="108" x2="124" y2="108" stroke="#C4AE88" stroke-width="6" stroke-linecap="round"/>
+  <line x1="64" y1="134" x2="110" y2="134" stroke="#C4AE88" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- KISS Fountain Pen Nib / Quill Point (Espresso Ink & Terracotta) -->
+  <path d="M188 56 L200 68 L156 156 L100 184 L128 128 Z" fill="#261C14" stroke="#261C14" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M188 56 L200 68 L174 94 L162 82 Z" fill="#9E4730"/>
+  <line x1="100" y1="184" x2="136" y2="148" stroke="#F4ECD8" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="139" cy="145" r="5.5" fill="#F4ECD8"/>
+
+  <!-- Sealing Wax Spark / Four-Point Literary Star -->
+  <path d="M78 164 L83 177 L96 182 L83 187 L78 200 L73 187 L60 182 L73 177 Z" fill="#9E4730"/>
+</svg>
