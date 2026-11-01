@@ -43,22 +43,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 ; ==============================================================================
-; ZERO-TRACE UNINSTALLATION: Removes 100% of binaries, runtime, user settings,
-; caches, and appdata directories so zero trace of the app remains on Windows.
+; SAFE UNINSTALLATION: Only removes the application binaries in {app},
+; NEVER deleting %LOCALAPPDATA%\ParchmentAI so updates/reinstalls keep all user data!
 ; ==============================================================================
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
-Type: filesandordirs; Name: "{localappdata}\ParchmentAI"
-Type: filesandordirs; Name: "{userappdata}\ParchmentAI"
-Type: filesandordirs; Name: "{%USERPROFILE}\.parchment-ai"
-
-[Code]
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usPostUninstall then
-  begin
-    DelTree(ExpandConstant('{localappdata}\ParchmentAI'), True, True, True);
-    DelTree(ExpandConstant('{userappdata}\ParchmentAI'), True, True, True);
-    DelTree(ExpandConstant('{app}'), True, True, True);
-  end;
-end;

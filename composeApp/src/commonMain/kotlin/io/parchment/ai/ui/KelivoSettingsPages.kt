@@ -417,6 +417,7 @@ private fun PreferencesSubpage(
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
     var showCustomColorHexDrawer by remember { mutableStateOf(false) }
 
@@ -430,7 +431,7 @@ private fun PreferencesSubpage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         BasicText(text = "Preferences", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
@@ -439,14 +440,12 @@ private fun PreferencesSubpage(
         if (matchesSearch("color mode", "theme", "font", "sepia", "dark", "light", "opacity", "size")) {
             SepiaSectionCard(title = "Appearance & Fonts") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(text = "Color Mode & Preset", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
+                    SepiaAdaptiveRow(label = "Color Mode & Preset") {
                         @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             ThemeConfig.PRESETS.forEach { preset ->
                                 SepiaChip(
                                     label = preset.name.substringBefore(" ("),
@@ -459,14 +458,13 @@ private fun PreferencesSubpage(
 
                     SepiaDivider()
 
-                    // Theme Swatches + Custom Hex Toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(text = "Accent Color", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Theme Swatches + Custom Hex Toggle (FlowRow so swatches & Hex button never clip on mobile!)
+                    SepiaAdaptiveRow(label = "Accent Color") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             val accentSwatches = listOf(
                                 "#8B5A2B", "#9E4730", "#3B5998", "#1F6F54",
                                 "#5E4B8B", "#7A5216", "#8C3823", "#2D3748"
@@ -476,7 +474,7 @@ private fun PreferencesSubpage(
                                 val isSel = theme.accentHex.equals(hex, ignoreCase = true)
                                 Box(
                                     modifier = Modifier
-                                        .size(22.dp)
+                                        .size(24.dp)
                                         .clip(CircleShape)
                                         .background(col)
                                         .border(if (isSel) 2.dp else 0.8.dp, if (isSel) p.primaryInk else p.border, CircleShape)
@@ -494,49 +492,83 @@ private fun PreferencesSubpage(
 
                     AnimatedVisibility(visible = showCustomColorHexDrawer) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                SepiaTextField(
-                                    value = theme.canvasBgHex,
-                                    onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
-                                    label = "Canvas Hex",
-                                    monospace = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                SepiaTextField(
-                                    value = theme.cardBgHex,
-                                    onValueChange = { onUpdateTheme(theme.copy(name = "Custom", cardBgHex = it)) },
-                                    label = "Card Hex",
-                                    monospace = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                SepiaTextField(
-                                    value = theme.primaryInkHex,
-                                    onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
-                                    label = "Ink Hex",
-                                    monospace = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                SepiaTextField(
-                                    value = theme.accentHex,
-                                    onValueChange = { onUpdateTheme(theme.copy(name = "Custom", accentHex = it)) },
-                                    label = "Accent Hex",
-                                    monospace = true,
-                                    modifier = Modifier.weight(1f)
-                                )
+                            if (win.isCompact) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SepiaTextField(
+                                        value = theme.canvasBgHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
+                                        label = "Canvas Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SepiaTextField(
+                                        value = theme.cardBgHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", cardBgHex = it)) },
+                                        label = "Card Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SepiaTextField(
+                                        value = theme.primaryInkHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
+                                        label = "Ink Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SepiaTextField(
+                                        value = theme.accentHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", accentHex = it)) },
+                                        label = "Accent Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SepiaTextField(
+                                        value = theme.canvasBgHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
+                                        label = "Canvas Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SepiaTextField(
+                                        value = theme.cardBgHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", cardBgHex = it)) },
+                                        label = "Card Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SepiaTextField(
+                                        value = theme.primaryInkHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
+                                        label = "Ink Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SepiaTextField(
+                                        value = theme.accentHex,
+                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", accentHex = it)) },
+                                        label = "Accent Hex",
+                                        monospace = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
                         }
                     }
 
                     SepiaDivider()
 
-                    // App Font & Code Font
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(text = "App / Prose Font", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // App Font & Code Font (FlowRow so all font chips & .TTF/.OTF button fit on mobile!)
+                    SepiaAdaptiveRow(label = "App / Prose Font") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd").forEach { f ->
                                 SepiaChip(
                                     label = f,
@@ -561,32 +593,34 @@ private fun PreferencesSubpage(
                         }
                     }
 
-                    // Typography Sizes (No artificial clamping when typing!)
+                    // Typography Sizes (No artificial clamping when typing! Stacked cleanly on mobile so labels never truncate)
                     var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }
                     var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                     var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = proseSizeText,
-                            onValueChange = { v ->
-                                proseSizeText = v
-                                v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
-                            },
-                            label = "Prose Font Size (sp)",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = codeSizeText,
-                            onValueChange = { v ->
-                                codeSizeText = v
-                                v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
-                            },
-                            label = "Code Font Size (sp)",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
+                    if (win.isCompact) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SepiaTextField(
+                                value = proseSizeText,
+                                onValueChange = { v ->
+                                    proseSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
+                                },
+                                label = "Prose Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = codeSizeText,
+                                onValueChange = { v ->
+                                    codeSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
+                                },
+                                label = "Code Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                         SepiaTextField(
                             value = maxWidthText,
                             onValueChange = { v ->
@@ -595,8 +629,41 @@ private fun PreferencesSubpage(
                             },
                             label = "Max Reading Width (dp)",
                             monospace = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         )
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SepiaTextField(
+                                value = proseSizeText,
+                                onValueChange = { v ->
+                                    proseSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
+                                },
+                                label = "Prose Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = codeSizeText,
+                                onValueChange = { v ->
+                                    codeSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
+                                },
+                                label = "Code Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = maxWidthText,
+                                onValueChange = { v ->
+                                    maxWidthText = v
+                                    v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
+                                },
+                                label = "Max Reading Width (dp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
             }
@@ -846,13 +913,12 @@ private fun PreferencesSubpage(
                     SepiaDivider()
 
                     // Message Navigation Buttons (Minimap) Visibility
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(text = "Message Navigation Minimap", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaAdaptiveRow(label = "Message Navigation Minimap") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             MessageNavVisibility.entries.forEach { mode ->
                                 SepiaChip(
                                     label = mode.label,
@@ -865,13 +931,12 @@ private fun PreferencesSubpage(
                     SepiaDivider()
 
                     // Send Shortcut
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(text = "Send Shortcut (Desktop)", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaAdaptiveRow(label = "Send Shortcut (Desktop)") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             SendShortcutMode.entries.forEach { mode ->
                                 SepiaChip(
                                     label = mode.label,
@@ -1054,12 +1119,13 @@ private fun ProvidersSubpage(
             }
 
             // Right Pane: Provider Detail OR Per-Model Config Subpage
+            val win = LocalParchmentWindowSize.current
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
                     .verticalScroll(rememberScrollState())
-                    .padding(20.dp),
+                    .padding(if (win.isCompact) 12.dp else 20.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 if (!isWide) {
@@ -1131,13 +1197,16 @@ private fun ProvidersSubpage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         BasicText(
                             text = activeProfile.name,
-                            style = p.uiHeaderStyle.copy(fontSize = 18.sp)
+                            style = p.uiHeaderStyle.copy(fontSize = 18.sp),
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                         SepiaButton(
                             text = "⚙ Protocol & Params",
@@ -1539,6 +1608,7 @@ private fun ProviderProtocolSubpage(
             subtitle = "Leave any box blank to omit that field completely from the outgoing JSON payload. Set 0 for Unlimited where supported."
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val win = LocalParchmentWindowSize.current
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = tempText,
@@ -1551,7 +1621,7 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
                             }
                         },
-                        label = "Temperature (Blank = Strip from API)",
+                        label = "Temperature (Blank = Strip)",
                         placeholder = "Omitted from API request",
                         monospace = true,
                         modifier = Modifier.weight(1f)
@@ -1567,14 +1637,14 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
                             }
                         },
-                        label = "Top-P (Blank = Strip from API)",
+                        label = "Top-P (Blank = Strip)",
                         placeholder = "Omitted from API request",
                         monospace = true,
                         modifier = Modifier.weight(1f)
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (win.isCompact) {
                     SepiaTextField(
                         value = maxOutText,
                         onValueChange = { v ->
@@ -1589,7 +1659,7 @@ private fun ProviderProtocolSubpage(
                         label = "Max Output Tokens (Blank or 0 = Unlimited / Strip)",
                         placeholder = "Omitted / Unlimited",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                     SepiaTextField(
                         value = budgetText,
@@ -1605,8 +1675,43 @@ private fun ProviderProtocolSubpage(
                         label = "Thinking Budget Tokens (Blank or 0 = Adaptive / Strip)",
                         placeholder = "Omitted / Adaptive",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SepiaTextField(
+                            value = maxOutText,
+                            onValueChange = { v ->
+                                maxOutText = v
+                                val trimmed = v.trim()
+                                if (trimmed.isEmpty()) {
+                                    onUpdateProfile { it.copy(maxOutputTokens = null) }
+                                } else {
+                                    trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
+                                }
+                            },
+                            label = "Max Output Tokens (Blank or 0 = Unlimited / Strip)",
+                            placeholder = "Omitted / Unlimited",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = budgetText,
+                            onValueChange = { v ->
+                                budgetText = v
+                                val trimmed = v.trim()
+                                if (trimmed.isEmpty()) {
+                                    onUpdateProfile { it.copy(thinkingBudgetTokens = null) }
+                                } else {
+                                    trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
+                                }
+                            },
+                            label = "Thinking Budget Tokens (Blank or 0 = Adaptive / Strip)",
+                            placeholder = "Omitted / Adaptive",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
 
                 if (profile.protocol == ProviderProtocol.ANTHROPIC_MESSAGES && (profile.maxOutputTokens == null || profile.maxOutputTokens <= 0)) {
@@ -1751,15 +1856,16 @@ private fun ModelConfigSubpage(
                 )
             }
         ) {
+            val win = LocalParchmentWindowSize.current
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (win.isCompact) {
                     SepiaTextField(
                         value = ctxText,
                         onValueChange = { ctxText = it; saveSpec() },
                         label = "Context Window Tokens (0 = Unlimited ∞)",
                         placeholder = "0 = Unlimited",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                     SepiaTextField(
                         value = maxOutText,
@@ -1767,39 +1873,90 @@ private fun ModelConfigSubpage(
                         label = "Max Output Tokens (Blank = Strip from API)",
                         placeholder = "Omitted from API request",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
-                }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SepiaTextField(
+                            value = inPriceText,
+                            onValueChange = { inPriceText = it; saveSpec() },
+                            label = "Input $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = cachePriceText,
+                            onValueChange = { cachePriceText = it; saveSpec() },
+                            label = "Cached $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SepiaTextField(
+                            value = thinkPriceText,
+                            onValueChange = { thinkPriceText = it; saveSpec() },
+                            label = "Reasoning $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = outPriceText,
+                            onValueChange = { outPriceText = it; saveSpec() },
+                            label = "Output $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SepiaTextField(
+                            value = ctxText,
+                            onValueChange = { ctxText = it; saveSpec() },
+                            label = "Context Window Tokens (0 = Unlimited ∞)",
+                            placeholder = "0 = Unlimited",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = maxOutText,
+                            onValueChange = { maxOutText = it; saveSpec() },
+                            label = "Max Output Tokens (Blank = Strip from API)",
+                            placeholder = "Omitted from API request",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SepiaTextField(
-                        value = inPriceText,
-                        onValueChange = { inPriceText = it; saveSpec() },
-                        label = "Input $/1M tok",
-                        monospace = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SepiaTextField(
-                        value = cachePriceText,
-                        onValueChange = { cachePriceText = it; saveSpec() },
-                        label = "Cached $/1M tok",
-                        monospace = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SepiaTextField(
-                        value = thinkPriceText,
-                        onValueChange = { thinkPriceText = it; saveSpec() },
-                        label = "Reasoning $/1M tok",
-                        monospace = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SepiaTextField(
-                        value = outPriceText,
-                        onValueChange = { outPriceText = it; saveSpec() },
-                        label = "Output $/1M tok",
-                        monospace = true,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SepiaTextField(
+                            value = inPriceText,
+                            onValueChange = { inPriceText = it; saveSpec() },
+                            label = "Input $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = cachePriceText,
+                            onValueChange = { cachePriceText = it; saveSpec() },
+                            label = "Cached $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = thinkPriceText,
+                            onValueChange = { thinkPriceText = it; saveSpec() },
+                            label = "Reasoning $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SepiaTextField(
+                            value = outPriceText,
+                            onValueChange = { outPriceText = it; saveSpec() },
+                            label = "Output $/1M tok",
+                            monospace = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
@@ -1816,6 +1973,7 @@ private fun AssistantsSubpage(
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     var editingAssistantId by remember { mutableStateOf<String?>(null) }
 
     val editingAssistant = appState.assistants.find { it.id == editingAssistantId }
@@ -1824,7 +1982,7 @@ private fun AssistantsSubpage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         if (editingAssistant != null) {
@@ -1844,7 +2002,11 @@ private fun AssistantsSubpage(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicText(text = "Edit Assistant — ${editingAssistant.name}", style = p.uiHeaderStyle)
+                BasicText(
+                    text = "Edit Assistant — ${editingAssistant.name}",
+                    style = p.uiHeaderStyle,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                )
                 SepiaButton(
                     text = "← All Assistants",
                     compact = true,
@@ -1870,7 +2032,11 @@ private fun AssistantsSubpage(
                         )
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf("💬", "🧪", "✏️", "🤖", "📚", "⚡", "🎭", "🧭").forEach { emoji ->
                             SepiaChip(
                                 label = emoji,
@@ -1933,7 +2099,7 @@ private fun AssistantsSubpage(
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (win.isCompact) {
                         SepiaTextField(
                             value = maxOutText,
                             onValueChange = { v ->
@@ -1944,7 +2110,7 @@ private fun AssistantsSubpage(
                             label = "Max Output Tokens (Blank/0 = Unlimited)",
                             placeholder = "Unlimited",
                             monospace = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         )
                         SepiaTextField(
                             value = ctxMsgLimitText,
@@ -1956,8 +2122,35 @@ private fun AssistantsSubpage(
                             label = "History Message Limit (0 = Unlimited)",
                             placeholder = "0 = Unlimited",
                             monospace = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         )
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SepiaTextField(
+                                value = maxOutText,
+                                onValueChange = { v ->
+                                    maxOutText = v
+                                    val t = v.trim()
+                                    updateCurrent { it.copy(maxOutputTokens = if (t.isEmpty()) null else t.toIntOrNull()) }
+                                },
+                                label = "Max Output Tokens (Blank/0 = Unlimited)",
+                                placeholder = "Unlimited",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = ctxMsgLimitText,
+                                onValueChange = { v ->
+                                    ctxMsgLimitText = v
+                                    val n = v.trim().toIntOrNull() ?: 0
+                                    updateCurrent { it.copy(contextMessageLimit = n.coerceAtLeast(0)) }
+                                },
+                                label = "History Message Limit (0 = Unlimited)",
+                                placeholder = "0 = Unlimited",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
             }
@@ -1965,16 +2158,24 @@ private fun AssistantsSubpage(
         }
 
         // Master View: Assistant Cards List (Zero hardcoded assistants — 100% user-created)
-        Row(
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            BasicText(text = "Assistants", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BasicText(
+                text = "Assistants",
+                style = p.uiHeaderStyle.copy(fontSize = 19.sp),
+                modifier = Modifier.padding(top = 2.dp, end = 8.dp)
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 if (appState.activeAssistantId.isNotBlank()) {
                     SepiaButton(
-                        text = "Use Pure Zero-Shot (No Assistant)",
+                        text = "Use Pure Zero-Shot",
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = {
@@ -2089,6 +2290,7 @@ private fun DefaultModelSubpage(
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val allModelPairs = remember(appState.profiles) {
         appState.profiles.flatMap { prof ->
             val models = if (prof.savedModels.isNotEmpty()) prof.savedModels
@@ -2102,7 +2304,7 @@ private fun DefaultModelSubpage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         BasicText(text = "Default Models", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
@@ -2244,13 +2446,14 @@ private fun WorkspaceSubpage(
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         BasicText(text = "Workspace & Local Agent Harness", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
@@ -2260,15 +2463,16 @@ private fun WorkspaceSubpage(
             subtitle = "Exposes fs_list, fs_read, fs_search, fs_write, fs_edit, dice_roll, agent_memory, and shell_exec"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     BasicText(
                         text = if (activeSession.workspacePath.isBlank()) "Mounted Folder: None" else "Mounted: ${activeSession.workspacePath}",
                         style = p.uiBodyStyle.copy(fontFamily = p.codeFontFamily),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                     )
                     SepiaButton(
                         text = "📂 Mount Folder…",
@@ -2289,7 +2493,11 @@ private fun WorkspaceSubpage(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     WorkspaceMode.entries.forEach { mode ->
                         SepiaChip(
                             label = mode.label,
@@ -2326,6 +2534,7 @@ private fun WorldBookAndCardsSubpage(
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
 
     val currentCard = activeSession.activeCard ?: CharacterOrScenarioCard()
@@ -2342,7 +2551,7 @@ private fun WorldBookAndCardsSubpage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         BasicText(text = "World Book & Character Cards (.png / .json)", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
@@ -2448,9 +2657,14 @@ private fun WorldBookAndCardsSubpage(
             subtitle = "Pinned or keyword-triggered lore entries injected into context automatically"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry Title", modifier = Modifier.weight(1f))
-                    SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger Keywords (comma-separated)", modifier = Modifier.weight(1f))
+                if (win.isCompact) {
+                    SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry Title", modifier = Modifier.fillMaxWidth())
+                    SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger Keywords (comma-separated)", modifier = Modifier.fillMaxWidth())
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry Title", modifier = Modifier.weight(1f))
+                        SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger Keywords (comma-separated)", modifier = Modifier.weight(1f))
+                    }
                 }
                 SepiaTextField(value = fragContent, onValueChange = { fragContent = it }, label = "Lore Content", singleLine = false, minHeight = 56.dp)
                 SepiaButton(
@@ -2535,13 +2749,14 @@ private fun BackupAndOtaSubpage(
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         BasicText(text = "Backup & In-App OTA Updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))

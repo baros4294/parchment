@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -53,7 +54,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +70,9 @@ import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.CharacterOrScenarioCard
 import io.parchment.ai.model.ChatSession
+import io.parchment.ai.model.ContextFragment
+import io.parchment.ai.model.DefaultModelConfig
+import io.parchment.ai.model.DesktopWindowConfig
 import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.MediaKind
@@ -82,6 +85,7 @@ import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.QueuedPromptItem
+import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
@@ -101,6 +105,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
@@ -1057,56 +1066,60 @@ fun ParchmentApp() {
                 .fillMaxSize()
                 .background(p.sheetBg)
         ) {
+            val windowSize = ParchmentWindowSize(widthDp = maxWidth, heightDp = maxHeight)
             val isCompactScreen = maxWidth < 760.dp
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .background(p.canvasBg)
-            ) {
-                // 1. Top Editorial Header Bar
-                TopEditorialBar(
-                    appState = appState,
-                    activeSession = activeSession,
-                    activeAssistant = activeAssistant,
-                    activeProfile = activeProfile,
-                    isCompactScreen = isCompactScreen,
-                    showSidebar = showSidebar,
-                    isSettingsOpen = isSettingsOpen,
-                    showQuickModelPopover = showQuickModelPopover,
-                    onToggleSidebar = { showSidebar = !showSidebar },
-                    onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
-                    onSelectModelQuick = { profId, modId ->
-                        updateProfileById(profId) { it.copy(defaultModel = modId) }
-                        updateActiveSession(immediate = true) { it.copy(profileId = profId, modelOverride = modId) }
-                        persist(appState.copy(activeProfileId = profId), immediateFlush = true)
-                        showQuickModelPopover = false
-                    },
-                    onRenameTopicInline = { newTitle ->
-                        updateActiveSession(immediate = true) {
-                            it.copy(title = newTitle.ifBlank { "Untitled" }, isTitleManuallySet = true)
-                        }
-                    },
-                    onRegenerateTitleAi = { generateTopicTitle(activeSession.id, forceRegenerate = true) },
-                    onToggleViewMode = {
-                        val next = if (activeSession.viewMode == ViewMode.MANUSCRIPT) ViewMode.EDITORIAL_TURNS else ViewMode.MANUSCRIPT
-                        updateActiveSession(immediate = true) { it.copy(viewMode = next) }
-                    },
-                    onOpenSettings = { cat ->
-                        if (isSettingsOpen && activeSettingsCategory == cat) {
-                            isSettingsOpen = false
-                        } else {
-                            activeSettingsCategory = cat
-                            isSettingsOpen = true
-                            if (isCompactScreen) showSidebar = false
-                        }
-                    }
-                )
+            CompositionLocalProvider(LocalParchmentWindowSize provides windowSize) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .background(p.canvasBg)
+                ) {
+                    // 1. Top Editorial Header Bar (Hidden on mobile when Settings is open so there's only ONE `← Chat` button!)
+                    if (!isSettingsOpen || !isCompactScreen) {
+                        TopEditorialBar(
+                            appState = appState,
+                            activeSession = activeSession,
+                            activeAssistant = activeAssistant,
+                            activeProfile = activeProfile,
+                            isCompactScreen = isCompactScreen,
+                            showSidebar = showSidebar,
+                            isSettingsOpen = isSettingsOpen,
+                            showQuickModelPopover = showQuickModelPopover,
+                            onToggleSidebar = { showSidebar = !showSidebar },
+                            onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
+                            onSelectModelQuick = { profId, modId ->
+                                updateProfileById(profId) { it.copy(defaultModel = modId) }
+                                updateActiveSession(immediate = true) { it.copy(profileId = profId, modelOverride = modId) }
+                                persist(appState.copy(activeProfileId = profId), immediateFlush = true)
+                                showQuickModelPopover = false
+                            },
+                            onRenameTopicInline = { newTitle ->
+                                updateActiveSession(immediate = true) {
+                                    it.copy(title = newTitle.ifBlank { "Untitled" }, isTitleManuallySet = true)
+                                }
+                            },
+                            onRegenerateTitleAi = { generateTopicTitle(activeSession.id, forceRegenerate = true) },
+                            onToggleViewMode = {
+                                val next = if (activeSession.viewMode == ViewMode.MANUSCRIPT) ViewMode.EDITORIAL_TURNS else ViewMode.MANUSCRIPT
+                                updateActiveSession(immediate = true) { it.copy(viewMode = next) }
+                            },
+                            onOpenSettings = { cat ->
+                                if (isSettingsOpen && activeSettingsCategory == cat) {
+                                    isSettingsOpen = false
+                                } else {
+                                    activeSettingsCategory = cat
+                                    isSettingsOpen = true
+                                    if (isCompactScreen) showSidebar = false
+                                }
+                            }
+                        )
 
-                SepiaDivider()
+                        SepiaDivider()
+                    }
 
                 // Top In-App OTA Banner
                 when (val currentOta = otaState) {
@@ -1600,6 +1613,7 @@ fun ParchmentApp() {
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -1739,15 +1753,20 @@ private fun TopEditorialBar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val win = LocalParchmentWindowSize.current
                 if (!isSettingsOpen) {
                     SepiaChip(
-                        label = if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns",
+                        label = if (win.isCompact) {
+                            if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖" else "▤"
+                        } else {
+                            if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns"
+                        },
                         selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
                         onClick = onToggleViewMode
                     )
                 }
                 SepiaButton(
-                    text = if (isSettingsOpen) "← Chat" else "⚙ Settings",
+                    text = if (isSettingsOpen) "← Chat" else if (win.isCompact) "⚙" else "⚙ Settings",
                     compact = true,
                     style = if (isSettingsOpen) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.OUTLINE,
                     onClick = { onOpenSettings(SettingsCategory.PREFERENCES) }
@@ -2285,12 +2304,17 @@ private fun ManuscriptViewport(
                         singleLine = false,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Row(
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        BasicText(text = "Rolling Continuity Memory", style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold))
+                        BasicText(
+                            text = "Rolling Continuity Memory",
+                            style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                        )
                         SepiaButton(
                             text = if (isStreaming) "Summarizing…" else "✦ Auto-Summarize Chat",
                             compact = true,
@@ -2913,9 +2937,9 @@ private fun ManuscriptViewport(
                     value = userPromptInput,
                     onValueChange = onUserPromptChange,
                     placeholder = if (isStreaming) {
-                        "Type a follow-up to '⚡ Steer' immediately or '⏳ Queue' after current reply…"
+                        "Type a follow-up to 'Steer' immediately or 'Queue' after current reply…"
                     } else {
-                        "Write dialogue, prose, or instructions (or type scene guidance and tap '🎬 Direct')…"
+                        "Write dialogue, prose, or instructions (or type scene guidance and tap 'Direct')…"
                     },
                     singleLine = false,
                     borderless = true,
@@ -3038,7 +3062,7 @@ private fun ManuscriptViewport(
                                         text = "✍ Impersonate",
                                         compact = true,
                                         style = SepiaButtonStyle.OUTLINE,
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier.weight(1.18f),
                                         onClick = onImpersonateDraft
                                     )
                                     SepiaButton(
@@ -3046,7 +3070,7 @@ private fun ManuscriptViewport(
                                         compact = true,
                                         enabled = hasTypedInput,
                                         style = SepiaButtonStyle.SECONDARY,
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier.weight(0.85f),
                                         onClick = onSendGuidedDirection
                                     )
                                     SepiaButton(
@@ -3054,7 +3078,7 @@ private fun ManuscriptViewport(
                                         compact = true,
                                         enabled = hasTypedInput,
                                         style = SepiaButtonStyle.PRIMARY,
-                                        modifier = Modifier.weight(1.15f),
+                                        modifier = Modifier.weight(1f),
                                         onClick = onSend
                                     )
                                 }
@@ -3708,31 +3732,128 @@ private fun MessageTurnItem(
 }
 
 // ============================================================================================
-// CLEAN STATE LOADER — LOADS SAVED STATE 1:1 WITHOUT STRIPPING ANY USER DATA!
+// CLEAN & RESILIENT STATE LOADER — LOADS SAVED STATE 1:1 AND RECOVERS FIELD-BY-FIELD IF NEEDED
 // ============================================================================================
 private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     val raw = PlatformBridge.loadAppStateJson()
     if (!raw.isNullOrBlank()) {
-        runCatching {
+        val directResult = runCatching {
             val loaded = compactStateJson.decodeFromString<AppStateSnapshot>(raw)
-            if (loaded.profiles.isNotEmpty() && loaded.sessions.isNotEmpty()) {
-                // Reset any stale isStreaming flags left over if the OS killed the process mid-stream
-                val recoveredSessions = loaded.sessions.map { sess ->
-                    sess.copy(
-                        messages = sess.messages.map { node ->
-                            node.copy(
-                                variants = node.variants.map { v ->
-                                    if (v.isStreaming) v.copy(isStreaming = false) else v
-                                }
-                            )
-                        }
-                    )
-                }
-                return loaded.copy(sessions = recoveredSessions)
-            }
+            sanitizeLoadedSnapshot(loaded)
+        }.getOrNull()
+
+        if (directResult != null) {
+            return directResult
+        }
+
+        // Field-by-field fallback recovery: if a schema field ever changed across updates,
+        // recover every valid profile, API key, assistant, session, and preference individually!
+        val recovered = runCatching {
+            recoverAppStateFromPartialJson(raw)
+        }.getOrNull()
+
+        if (recovered != null) {
+            return sanitizeLoadedSnapshot(recovered)
         }
     }
     return createDefaultAppState()
+}
+
+private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
+    val defaultFallback = createDefaultAppState()
+    val safeProfiles = if (loaded.profiles.isNotEmpty()) loaded.profiles else defaultFallback.profiles
+    val safeActiveProfileId = safeProfiles.find { it.id == loaded.activeProfileId }?.id ?: safeProfiles.first().id
+    val safeActiveProfile = safeProfiles.first { it.id == safeActiveProfileId }
+
+    val recoveredSessions = if (loaded.sessions.isNotEmpty()) {
+        loaded.sessions.map { sess ->
+            sess.copy(
+                messages = sess.messages.map { node ->
+                    node.copy(
+                        variants = node.variants.map { v ->
+                            if (v.isStreaming) v.copy(isStreaming = false) else v
+                        }
+                    )
+                }
+            )
+        }
+    } else {
+        val now = PlatformBridge.currentTimeMillis()
+        listOf(
+            ChatSession(
+                id = "sess-$now",
+                title = "New Chat",
+                createdAt = now,
+                updatedAt = now,
+                profileId = safeActiveProfile.id,
+                modelOverride = safeActiveProfile.defaultModel,
+                assistantId = loaded.activeAssistantId
+            )
+        )
+    }
+
+    val safeActiveSessionId = recoveredSessions.find { it.id == loaded.activeSessionId }?.id ?: recoveredSessions.first().id
+
+    return loaded.copy(
+        profiles = safeProfiles,
+        activeProfileId = safeActiveProfileId,
+        sessions = recoveredSessions,
+        activeSessionId = safeActiveSessionId
+    )
+}
+
+private fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
+    val fallback = createDefaultAppState()
+    val root = compactStateJson.parseToJsonElement(raw) as? JsonObject ?: return fallback
+
+    fun <T> decodeListItems(key: String, itemDeserializer: kotlinx.serialization.DeserializationStrategy<T>): List<T> {
+        val arr = root[key] as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { elem ->
+            runCatching { compactStateJson.decodeFromJsonElement(itemDeserializer, elem) }.getOrNull()
+        }
+    }
+
+    val profiles = decodeListItems("profiles", ProviderProfile.serializer()).ifEmpty { fallback.profiles }
+    val activeProfileId = root["activeProfileId"]?.jsonPrimitive?.contentOrNull ?: profiles.first().id
+    val assistants = decodeListItems("assistants", AssistantAgent.serializer())
+    val activeAssistantId = root["activeAssistantId"]?.jsonPrimitive?.contentOrNull ?: assistants.firstOrNull()?.id.orEmpty()
+    val defaultModels = root["defaultModels"]?.let {
+        runCatching { compactStateJson.decodeFromJsonElement(DefaultModelConfig.serializer(), it) }.getOrNull()
+    } ?: fallback.defaultModels
+    val preferences = root["preferences"]?.let {
+        runCatching { compactStateJson.decodeFromJsonElement(PreferencesConfig.serializer(), it) }.getOrNull()
+    } ?: fallback.preferences
+    val desktopWindow = root["desktopWindow"]?.let {
+        runCatching { compactStateJson.decodeFromJsonElement(DesktopWindowConfig.serializer(), it) }.getOrNull()
+    } ?: fallback.desktopWindow
+    val sessions = decodeListItems("sessions", ChatSession.serializer())
+    val activeSessionId = root["activeSessionId"]?.jsonPrimitive?.contentOrNull ?: sessions.firstOrNull()?.id.orEmpty()
+    val presets = decodeListItems("systemPromptPresets", SystemPromptPreset.serializer())
+    val savedCards = decodeListItems("savedCards", CharacterOrScenarioCard.serializer())
+    val globalWorldBook = decodeListItems("globalWorldBook", ContextFragment.serializer())
+    val theme = root["theme"]?.let {
+        runCatching { compactStateJson.decodeFromJsonElement(ThemeConfig.serializer(), it) }.getOrNull()
+    } ?: fallback.theme
+    val otaRepo = root["otaGithubRepo"]?.jsonPrimitive?.contentOrNull ?: fallback.otaGithubRepo
+    val autoOta = root["autoCheckOtaOnStartup"]?.jsonPrimitive?.booleanOrNull ?: fallback.autoCheckOtaOnStartup
+
+    return AppStateSnapshot(
+        profiles = profiles,
+        activeProfileId = activeProfileId,
+        assistants = assistants,
+        activeAssistantId = activeAssistantId,
+        defaultModels = defaultModels,
+        preferences = preferences,
+        desktopWindow = desktopWindow,
+        sessions = sessions,
+        activeSessionId = activeSessionId,
+        systemPromptPresets = presets,
+        savedCards = savedCards,
+        globalWorldBook = globalWorldBook,
+        theme = theme,
+        otaGithubRepo = otaRepo,
+        autoCheckOtaOnStartup = autoOta
+    )
 }
 
 private fun createDefaultAppState(): AppStateSnapshot {

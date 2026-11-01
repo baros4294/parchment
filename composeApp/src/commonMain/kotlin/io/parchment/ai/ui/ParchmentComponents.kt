@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -50,6 +53,62 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/**
+ * Adaptive Window Size Breakpoints (WindowSizeClass pattern for Mobile Portrait vs Tablet vs Desktop).
+ */
+data class ParchmentWindowSize(
+    val widthDp: Dp = 1024.dp,
+    val heightDp: Dp = 768.dp
+) {
+    val isCompact: Boolean get() = widthDp < 600.dp
+    val isVeryNarrow: Boolean get() = widthDp < 410.dp
+    val isMedium: Boolean get() = widthDp in 600.dp..840.dp
+    val isExpanded: Boolean get() = widthDp > 840.dp
+}
+
+val LocalParchmentWindowSize = compositionLocalOf { ParchmentWindowSize() }
+
+/**
+ * Adaptive Setting Row:
+ * - On Desktop (`!isCompact`): Places `label` on the left and `content` on the right (`SpaceBetween`).
+ * - On Mobile (`isCompact`): Stacks `label` on top and full-width `content` below so chips/buttons never clip or overflow!
+ */
+@Composable
+fun SepiaAdaptiveRow(
+    label: String,
+    modifier: Modifier = Modifier,
+    forceStackOnMobile: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
+    if (win.isCompact && forceStackOnMobile) {
+        Column(
+            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            BasicText(
+                text = label,
+                style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium, fontSize = 13.5.sp)
+            )
+            content()
+        }
+    } else {
+        Row(
+            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                text = label,
+                style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium),
+                modifier = Modifier.padding(end = 12.dp)
+            )
+            content()
+        }
+    }
+}
 
 enum class SepiaButtonStyle {
     PRIMARY,
@@ -129,7 +188,20 @@ fun SepiaButton(
     val textColor by animateColorAsState(targetText, tween(140))
     val borderColor by animateColorAsState(targetBorder, tween(140))
 
+    val win = LocalParchmentWindowSize.current
     val parsed = remember(text) { parseKissLabelIcons(text) }
+    val hPad = when {
+        compact && win.isCompact -> 8.dp
+        compact -> 10.dp
+        win.isCompact -> 11.dp
+        else -> 14.dp
+    }
+    val fontSize = when {
+        compact && win.isVeryNarrow -> 11.5.sp
+        compact -> 12.sp
+        win.isCompact -> 12.5.sp
+        else -> 13.sp
+    }
 
     Box(
         modifier = modifier
@@ -142,20 +214,20 @@ fun SepiaButton(
                 } else Modifier
             )
             .padding(
-                horizontal = if (compact) 10.dp else 14.dp,
+                horizontal = hPad,
                 vertical = if (compact) 6.dp else 8.dp
             ),
         contentAlignment = Alignment.Center
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (parsed.leadingIcon != null) {
                 KissVectorIcon(
                     icon = parsed.leadingIcon,
                     tint = textColor,
-                    size = if (compact) 13.dp else 14.5.dp
+                    size = if (compact) 12.5.dp else 14.5.dp
                 )
             }
             if (parsed.cleanText.isNotEmpty()) {
@@ -166,7 +238,7 @@ fun SepiaButton(
                     overflow = TextOverflow.Ellipsis,
                     style = p.uiBodyStyle.copy(
                         color = textColor,
-                        fontSize = if (compact) 12.sp else 13.sp,
+                        fontSize = fontSize,
                         fontWeight = if (style == SepiaButtonStyle.PRIMARY || style == SepiaButtonStyle.SECONDARY) {
                             FontWeight.SemiBold
                         } else {
@@ -350,7 +422,7 @@ fun SepiaTextField(
         if (label.isNotBlank()) {
             BasicText(
                 text = label,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
             )
@@ -423,7 +495,9 @@ fun SepiaSectionCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
     val shape = RoundedCornerShape(10.dp)
+    val cardPadding = if (win.isCompact) 13.dp else 16.dp
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -436,15 +510,14 @@ fun SepiaSectionCard(
                     stiffness = Spring.StiffnessMediumLow
                 )
             )
-            .padding(16.dp)
+            .padding(cardPadding)
     ) {
         if (title.isNotBlank() || headerAction != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            if (win.isCompact && headerAction != null) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     if (title.isNotBlank()) {
                         BasicText(
                             text = title,
@@ -452,15 +525,37 @@ fun SepiaSectionCard(
                         )
                     }
                     if (subtitle.isNotBlank()) {
-                        Spacer(Modifier.height(2.dp))
                         BasicText(
                             text = subtitle,
                             style = p.uiLabelStyle
                         )
                     }
-                }
-                if (headerAction != null) {
                     headerAction()
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = if (headerAction != null) 8.dp else 0.dp)) {
+                        if (title.isNotBlank()) {
+                            BasicText(
+                                text = title,
+                                style = p.uiHeaderStyle.copy(fontSize = 15.sp)
+                            )
+                        }
+                        if (subtitle.isNotBlank()) {
+                            Spacer(Modifier.height(2.dp))
+                            BasicText(
+                                text = subtitle,
+                                style = p.uiLabelStyle
+                            )
+                        }
+                    }
+                    if (headerAction != null) {
+                        headerAction()
+                    }
                 }
             }
             Spacer(Modifier.height(10.dp))

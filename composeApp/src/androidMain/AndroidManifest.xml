@@ -12,13 +12,12 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
-        allowBackup="false" and hasFragileUserData="false" guarantee 100% zero-trace
-        clean uninstallation on Android 16 (no leftover local or cloud backup ghosts).
+        allowBackup="true" and hasFragileUserData="true" ensure Android preserves user
+        providers, API keys, assistants, and chat history across updates and reinstalls.
     -->
     <application
-        android:allowBackup="false"
-        android:fullBackupContent="false"
-        android:hasFragileUserData="false"
+        android:allowBackup="true"
+        android:hasFragileUserData="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="Parchment"

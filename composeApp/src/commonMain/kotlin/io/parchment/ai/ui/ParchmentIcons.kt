@@ -96,7 +96,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
 
     // Exact single-icon matches (for icon-only buttons)
     when (trimmed) {
-        "☰" -> return ParsedLabelWithIcons(KissIcon.MENU, "", null)
+        "☰", "▤" -> return ParsedLabelWithIcons(KissIcon.MENU, "", null)
         "◂" -> return ParsedLabelWithIcons(KissIcon.SIDEBAR_CLOSE, "", null)
         "+" -> return ParsedLabelWithIcons(KissIcon.PLUS, "", null)
         "—", "-" -> return ParsedLabelWithIcons(KissIcon.MINUS, "", null)

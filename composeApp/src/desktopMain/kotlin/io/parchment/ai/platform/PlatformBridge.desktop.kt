@@ -66,11 +66,14 @@ actual object PlatformBridge {
     private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
     actual fun loadAppStateJson(): String? = runCatching {
+        val dir = resolveStorageDir()
         val f = stateFile()
-        val tmp = File(resolveStorageDir(), "parchment-state.json.tmp")
+        val tmp = File(dir, "parchment-state.json.tmp")
+        val prev = File(dir, "parchment-state.prev.json")
         when {
             f.exists() && f.isFile && f.length() > 10L -> f.readText(Charsets.UTF_8)
             tmp.exists() && tmp.isFile && tmp.length() > 10L -> tmp.readText(Charsets.UTF_8)
+            prev.exists() && prev.isFile && prev.length() > 10L -> prev.readText(Charsets.UTF_8)
             else -> null
         }
     }.getOrNull()
@@ -81,8 +84,12 @@ actual object PlatformBridge {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
             val tmp = File(dir, "parchment-state.json.tmp")
+            val prev = File(dir, "parchment-state.prev.json")
             val target = stateFile()
             tmp.writeText(json, Charsets.UTF_8)
+            if (target.exists() && target.length() > 50L) {
+                runCatching { target.copyTo(prev, overwrite = true) }
+            }
             if (!tmp.renameTo(target)) {
                 target.writeText(json, Charsets.UTF_8)
                 tmp.delete()
@@ -444,6 +451,9 @@ actual object PlatformBridge {
     }
 
     actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {
+        // Flush any pending in-memory state to disk BEFORE starting the OTA installer!
+        flushPendingStateNow()
+
         val tempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota")
         if (!tempDir.exists()) tempDir.mkdirs()
         val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "Parchment-Windows-Setup.exe" }
