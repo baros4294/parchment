@@ -25,7 +25,7 @@ actual object PlatformBridge {
     actual val isAndroid: Boolean = false
 
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
-    private val imageCache = ConcurrentHashMap<String, ImageBitmap>()
+    private val imageCache = LinkedHashMap<String, ImageBitmap>()
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
@@ -461,18 +461,29 @@ actual object PlatformBridge {
         val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val outFile = File(mediaDir, safeName)
         outFile.writeBytes(bytes)
-        imageCache.remove(outFile.absolutePath)
+        synchronized(imageCache) { imageCache.remove(outFile.absolutePath) }
         return outFile.absolutePath
     }
 
+    actual fun readBinaryFileBytes(filePath: String): ByteArray? = runCatching {
+        if (filePath.isBlank()) return null
+        val f = File(filePath)
+        if (f.exists() && f.isFile) f.readBytes() else null
+    }.getOrNull()
+
     actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
         if (filePath.isBlank()) return null
-        imageCache[filePath]?.let { return it }
+        synchronized(imageCache) { imageCache[filePath]?.let { return it } }
         return runCatching {
             val f = File(filePath)
             if (!f.exists() || !f.isFile) return null
             val bmp = Image.makeFromEncoded(f.readBytes()).toComposeImageBitmap()
-            imageCache[filePath] = bmp
+            synchronized(imageCache) {
+                if (imageCache.size >= 16) {
+                    imageCache.keys.firstOrNull()?.let { imageCache.remove(it) }
+                }
+                imageCache[filePath] = bmp
+            }
             bmp
         }.getOrNull()
     }

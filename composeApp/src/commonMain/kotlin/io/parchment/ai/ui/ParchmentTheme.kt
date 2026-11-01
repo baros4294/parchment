@@ -3,6 +3,7 @@ package io.parchment.ai.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -181,7 +182,7 @@ fun ProvideParchmentTheme(
     config: ThemeConfig,
     content: @Composable () -> Unit
 ) {
-    val palette = buildPaletteFromConfig(config)
+    val palette = remember(config) { buildPaletteFromConfig(config) }
     CompositionLocalProvider(LocalParchmentPalette provides palette) {
         content()
     }

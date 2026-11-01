@@ -1,5 +1,17 @@
 package io.parchment.ai.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -9,6 +21,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -74,10 +88,21 @@ import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+
+private val compactStateJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    encodeDefaults = true
+    prettyPrint = false
+}
 
 enum class ActiveModalTab {
     NONE,
@@ -112,12 +137,19 @@ fun ParchmentApp() {
     var assistantPrefillInput by remember { mutableStateOf("") }
     var showPrefillBox by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
+    var diskPersistJob by remember { mutableStateOf<Job?>(null) }
 
-    fun persist(updated: AppStateSnapshot) {
+    fun persist(updated: AppStateSnapshot, immediateFlush: Boolean = false) {
         appState = updated
-        runCatching {
-            val encoded = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), updated)
-            PlatformBridge.saveAppStateJson(encoded)
+        diskPersistJob?.cancel()
+        diskPersistJob = scope.launch(Dispatchers.Default) {
+            if (!immediateFlush) {
+                delay(350L)
+            }
+            runCatching {
+                val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), updated)
+                PlatformBridge.saveAppStateJson(encoded)
+            }
         }
     }
 
@@ -131,6 +163,19 @@ fun ParchmentApp() {
             if (it.id == activeSession.id) transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis()) else it
         }
         persist(appState.copy(sessions = newSessions))
+    }
+
+    /**
+     * Updates the active session in Compose memory ONLY without triggering JSON serialization or disk I/O.
+     * Used during 60fps token streaming so the UI stays silky-smooth with minimal RAM/CPU overhead.
+     */
+    fun updateActiveSessionInMemoryOnly(transform: (ChatSession) -> ChatSession) {
+        val currentState = appState
+        val targetId = currentState.activeSessionId
+        val newSessions = currentState.sessions.map {
+            if (it.id == targetId) transform(it) else it
+        }
+        appState = currentState.copy(sessions = newSessions)
     }
 
     fun updateActiveProfile(transform: (ProviderProfile) -> ProviderProfile) {
@@ -251,22 +296,23 @@ fun ParchmentApp() {
     ) {
         activeStreamJob?.cancel()
         isStreaming = true
-        streamingStatus = "Connecting to ${activeProfile.protocol.displayName}..."
+        streamingStatus = "Connecting to ${activeProfile.protocol.displayName}…"
         streamingInteractionId = ""
 
         val modelName = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
 
         activeStreamJob = scope.launch {
-            var accumulatedContent = continuePrefix
-            var accumulatedThinking = ""
-            var accumulatedSignature = ""
+            val contentSb = StringBuilder(continuePrefix)
+            val thinkingSb = StringBuilder()
+            val signatureSb = StringBuilder()
             val accumulatedTools = mutableListOf<ToolCallRecord>()
             val accumulatedMedia = mutableListOf<GeneratedMediaItem>()
             var rawReq = ""
             var rawResp = ""
+            var lastUiFlushMs = 0L
 
-            fun patchTargetVariant(updater: (MessageVariant) -> MessageVariant) {
-                updateActiveSession { sess ->
+            fun patchTargetVariantInMemory(updater: (MessageVariant) -> MessageVariant) {
+                updateActiveSessionInMemoryOnly { sess ->
                     sess.copy(
                         messages = sess.messages.map { node ->
                             if (node.id != targetAssistantNodeId) node
@@ -279,6 +325,26 @@ fun ParchmentApp() {
                         }
                     )
                 }
+            }
+
+            fun patchTargetVariantAndFlushDisk(updater: (MessageVariant) -> MessageVariant) {
+                val now = PlatformBridge.currentTimeMillis()
+                val newSessions = appState.sessions.map { sess ->
+                    if (sess.id != activeSession.id) sess
+                    else sess.copy(
+                        updatedAt = now,
+                        messages = sess.messages.map { node ->
+                            if (node.id != targetAssistantNodeId) node
+                            else {
+                                val updatedVariants = node.variants.map { v ->
+                                    if (v.id == targetVariantId) updater(v) else v
+                                }
+                                node.copy(variants = updatedVariants)
+                            }
+                        }
+                    )
+                }
+                persist(appState.copy(sessions = newSessions), immediateFlush = true)
             }
 
             AiProviderEngine.streamGeneration(
@@ -295,51 +361,59 @@ fun ParchmentApp() {
                         }
                     }
                     is StreamUpdate.ThinkingDelta -> {
-                        accumulatedThinking += update.delta
-                        accumulatedSignature += update.signatureDelta
-                        val wordCount = accumulatedContent.split(Regex("\\s+")).count { it.isNotBlank() }
-                        streamingStatus = "Thinking & drafting ($modelName • $wordCount words)..."
-                        patchTargetVariant { v ->
-                            v.copy(
-                                thinkingSummary = accumulatedThinking,
-                                thinkingSignature = accumulatedSignature
-                            )
+                        thinkingSb.append(update.delta)
+                        signatureSb.append(update.signatureDelta)
+                        val now = PlatformBridge.currentTimeMillis()
+                        if (now - lastUiFlushMs >= 32L) {
+                            lastUiFlushMs = now
+                            val thinkWords = countWordsFast(thinkingSb)
+                            streamingStatus = "Reasoning ($modelName • $thinkWords words)…"
+                            val curThink = thinkingSb.toString()
+                            val curSig = signatureSb.toString()
+                            patchTargetVariantInMemory { v ->
+                                v.copy(
+                                    thinkingSummary = curThink,
+                                    thinkingSignature = curSig
+                                )
+                            }
                         }
                     }
                     is StreamUpdate.ContentDelta -> {
-                        accumulatedContent += update.delta
-                        val wordCount = accumulatedContent.split(Regex("\\s+")).count { it.isNotBlank() }
-                        streamingStatus = "Writing ($modelName • +$wordCount words)..."
-                        patchTargetVariant { v ->
-                            v.copy(content = accumulatedContent)
+                        contentSb.append(update.delta)
+                        val now = PlatformBridge.currentTimeMillis()
+                        if (now - lastUiFlushMs >= 32L) {
+                            lastUiFlushMs = now
+                            val wordCount = countWordsFast(contentSb)
+                            streamingStatus = "Writing ($modelName • +$wordCount words)…"
+                            val curText = contentSb.toString()
+                            patchTargetVariantInMemory { v ->
+                                v.copy(content = curText)
+                            }
                         }
                     }
                     is StreamUpdate.ToolCallEvent -> {
                         accumulatedTools.add(update.toolCall)
                         streamingStatus = "Executed workspace tool: ${update.toolCall.name}"
-                        patchTargetVariant { v ->
-                            v.copy(toolCalls = accumulatedTools.toList())
+                        val toolsSnap = accumulatedTools.toList()
+                        patchTargetVariantInMemory { v ->
+                            v.copy(toolCalls = toolsSnap)
                         }
                     }
                     is StreamUpdate.MediaGenerated -> {
                         accumulatedMedia.add(update.item)
                         streamingStatus = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})"
-                        patchTargetVariant { v ->
-                            v.copy(mediaItems = accumulatedMedia.toList())
+                        val mediaSnap = accumulatedMedia.toList()
+                        patchTargetVariantInMemory { v ->
+                            v.copy(mediaItems = mediaSnap)
                         }
                     }
                     is StreamUpdate.RawWireSnapshot -> {
-                        rawReq = update.requestJson
-                        rawResp = update.latestResponseChunk
-                        patchTargetVariant { v ->
-                            v.copy(
-                                rawRequestPreview = rawReq,
-                                rawResponsePreview = rawResp
-                            )
-                        }
+                        // Keep bounded snapshots in local variables only; do not recompose UI on every wire line
+                        if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
+                        if (update.latestResponseChunk.isNotEmpty()) rawResp = update.latestResponseChunk.take(4096)
                     }
                     is StreamUpdate.Completed -> {
-                        patchTargetVariant { v ->
+                        patchTargetVariantAndFlushDisk { v ->
                             v.copy(
                                 content = update.fullContent,
                                 thinkingSummary = update.fullThinking,
@@ -350,24 +424,27 @@ fun ParchmentApp() {
                                 providerProtocol = activeProfile.protocol,
                                 modelUsed = modelName,
                                 tokenMetrics = update.metrics,
-                                rawRequestPreview = update.rawRequest,
-                                rawResponsePreview = update.rawResponse
+                                rawRequestPreview = update.rawRequest.take(4096),
+                                rawResponsePreview = update.rawResponse.take(4096)
                             )
                         }
                         isStreaming = false
                         streamingStatus = ""
                     }
                     is StreamUpdate.Error -> {
-                        patchTargetVariant { v ->
-                            val errorNotice = if (accumulatedContent.isBlank()) {
-                                "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL Proxy (`${activeProfile.baseUrl}`), or model ID (`$modelName`) in **Providers & Proxy**."
+                        val finalAccumulated = contentSb.toString()
+                        patchTargetVariantAndFlushDisk { v ->
+                            val errorNotice = if (finalAccumulated.isBlank()) {
+                                "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL Proxy (`${activeProfile.baseUrl}`), or model ID (`$modelName`) in **Studio → Providers & Models**."
                             } else {
-                                "$accumulatedContent\n\n*[Stream interrupted: ${update.message}]*"
+                                "$finalAccumulated\n\n*[Stream interrupted: ${update.message}]*"
                             }
                             v.copy(
                                 content = errorNotice,
+                                thinkingSummary = thinkingSb.toString(),
+                                thinkingSignature = signatureSb.toString(),
                                 rawRequestPreview = rawReq,
-                                rawResponsePreview = update.rawDetails.ifBlank { rawResp }
+                                rawResponsePreview = update.rawDetails.ifBlank { rawResp }.take(4096)
                             )
                         }
                         isStreaming = false
@@ -763,9 +840,14 @@ fun ParchmentApp() {
                     SepiaDivider()
                 }
 
-                // 2. Main Content Area (Sidebar + Manuscript Canvas / Active Modal)
+                // 2. Main Content Area (Animated Sidebar + Crossfade Studio / Manuscript Canvas)
                 Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    if (showSidebar) {
+                    AnimatedVisibility(
+                        visible = showSidebar,
+                        enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                        exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                    ) {
+                        Row(modifier = if (isCompactScreen) Modifier.fillMaxSize() else Modifier.fillMaxHeight()) {
                         SessionSidebar(
                             appState = appState,
                             activeSession = activeSession,
@@ -773,7 +855,7 @@ fun ParchmentApp() {
                             modifier = if (isCompactScreen) {
                                 Modifier.fillMaxSize()
                             } else {
-                                Modifier.width(290.dp).fillMaxHeight()
+                                Modifier.width(280.dp).fillMaxHeight()
                             },
                             onSelectSession = { id ->
                                 persist(appState.copy(activeSessionId = id))
@@ -897,17 +979,22 @@ fun ParchmentApp() {
                         if (!isCompactScreen) {
                             Box(
                                 modifier = Modifier
-                                    .width(1.dp)
+                                    .width(0.85.dp)
                                     .fillMaxHeight()
-                                    .background(p.border)
+                                    .background(p.border.copy(alpha = 0.7f))
                             )
+                        }
                         }
                     }
 
-                    // Right Pane: Active Modal Drawer OR Manuscript Viewport (hidden on mobile when full-screen sidebar is open)
+                    // Right Pane: Active Studio Drawer OR Manuscript Viewport (with smooth Crossfade)
                     if (!isCompactScreen || !showSidebar) {
-                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                        when (activeModal) {
+                        Crossfade(
+                            targetState = activeModal,
+                            animationSpec = tween(180),
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        ) { currentModal ->
+                        when (currentModal) {
                             ActiveModalTab.PROMPTS_AND_CARDS -> {
                                 PromptsAndCardsPanel(
                                     appState = appState,
@@ -1048,7 +1135,8 @@ fun ParchmentApp() {
                                                     id = "att-$now",
                                                     fileName = picked.fileName,
                                                     mimeType = mime,
-                                                    base64Data = Base64.encode(picked.bytes),
+                                                    // Disk-backed: loaded lazily from localFilePath on API dispatch to keep RAM & JSON state tiny
+                                                    base64Data = "",
                                                     localFilePath = savedPath
                                                 )
                                             } else {
@@ -1207,16 +1295,18 @@ private fun TopEditorialBar(
 ) {
     val p = LocalParchmentPalette.current
     val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-    val modelLabel = activeModel.ifBlank { "Tap to select model" }
+    val modelLabel = activeModel.ifBlank { "Select model…" }
+    val isStudioOpen = activeModal != ActiveModalTab.NONE
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(p.sheetBg)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Row 1: Folio Button + Session Title / Active Model + (On Desktop: Nav Chips)
+        // Primary Single-Row Header: Folio Button + Session/Model Identity + Studio Switcher
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1224,21 +1314,22 @@ private fun TopEditorialBar(
         ) {
             Row(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 SepiaButton(
                     text = if (showSidebar) "◂ Folio" else "☰ Folio",
                     compact = true,
-                    style = SepiaButtonStyle.OUTLINE,
+                    style = if (showSidebar) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
                     onClick = onToggleSidebar
                 )
 
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(horizontal = 2.dp)
-                        .clickable { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
+                        .kissClickable(pressScale = 0.98f) {
+                            onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY)
+                        }
                 ) {
                     BasicText(
                         text = activeSession.title,
@@ -1250,92 +1341,69 @@ private fun TopEditorialBar(
                         text = "${activeProfile.name} • $modelLabel",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(color = p.accent)
+                        style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.5.sp)
                     )
                 }
             }
 
-            if (!isCompactScreen) {
-                Spacer(Modifier.width(10.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TopNavChipsRow(
-                        activeSession = activeSession,
-                        activeModal = activeModal,
-                        onToggleViewMode = onToggleViewMode,
-                        onCycleWorkspaceMode = onCycleWorkspaceMode,
-                        onSelectModal = onSelectModal
-                    )
-                }
-            }
-        }
+            Spacer(Modifier.width(8.dp))
 
-        // Row 2 (On Mobile / Compact Screen): Horizontally Scrollable Navigation & Mode Chips
-        if (isCompactScreen) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TopNavChipsRow(
-                    activeSession = activeSession,
-                    activeModal = activeModal,
-                    onToggleViewMode = onToggleViewMode,
-                    onCycleWorkspaceMode = onCycleWorkspaceMode,
-                    onSelectModal = onSelectModal
+                if (!isStudioOpen) {
+                    SepiaChip(
+                        label = if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns",
+                        selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
+                        onClick = onToggleViewMode
+                    )
+                }
+                if (!isCompactScreen && !isStudioOpen) {
+                    SepiaChip(
+                        label = activeSession.workspaceMode.label,
+                        selected = activeSession.workspaceMode != WorkspaceMode.OFF,
+                        onClick = onCycleWorkspaceMode
+                    )
+                }
+                SepiaButton(
+                    text = if (isStudioOpen) "✕ Close Studio" else "⚙ Studio",
+                    compact = true,
+                    style = if (isStudioOpen) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.OUTLINE,
+                    onClick = {
+                        if (isStudioOpen) {
+                            onSelectModal(ActiveModalTab.NONE)
+                        } else {
+                            onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY)
+                        }
+                    }
+                )
+            }
+        }
+
+        // Studio Segmented Navigation Bar (Visible only when Studio is open)
+        AnimatedVisibility(
+            visible = isStudioOpen,
+            enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+            exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SepiaSegmentedBar(
+                    items = listOf(
+                        ActiveModalTab.PROVIDERS_AND_PROXY to "⚙ Providers & Models",
+                        ActiveModalTab.PROMPTS_AND_CARDS to "✦ Cards & Lore",
+                        ActiveModalTab.THEME_AND_STORAGE to "🎨 Theme & OTA"
+                    ),
+                    selected = activeModal,
+                    onSelect = { tab -> onSelectModal(tab) }
                 )
             }
         }
     }
-}
-
-@Composable
-private fun TopNavChipsRow(
-    activeSession: ChatSession,
-    activeModal: ActiveModalTab,
-    onToggleViewMode: () -> Unit,
-    onCycleWorkspaceMode: () -> Unit,
-    onSelectModal: (ActiveModalTab) -> Unit
-) {
-    SepiaChip(
-        label = if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns",
-        selected = activeModal == ActiveModalTab.NONE && activeSession.viewMode == ViewMode.MANUSCRIPT,
-        onClick = {
-            if (activeModal != ActiveModalTab.NONE) {
-                onSelectModal(ActiveModalTab.NONE)
-            } else {
-                onToggleViewMode()
-            }
-        }
-    )
-
-    SepiaChip(
-        label = activeSession.workspaceMode.label,
-        selected = activeSession.workspaceMode != WorkspaceMode.OFF,
-        onClick = onCycleWorkspaceMode
-    )
-
-    SepiaChip(
-        label = "✦ Prompts & Cards",
-        selected = activeModal == ActiveModalTab.PROMPTS_AND_CARDS,
-        onClick = { onSelectModal(ActiveModalTab.PROMPTS_AND_CARDS) }
-    )
-
-    SepiaChip(
-        label = "⚙ Providers & Proxy",
-        selected = activeModal == ActiveModalTab.PROVIDERS_AND_PROXY,
-        onClick = { onSelectModal(ActiveModalTab.PROVIDERS_AND_PROXY) }
-    )
-
-    SepiaChip(
-        label = "🎨 Sepia & Theme",
-        selected = activeModal == ActiveModalTab.THEME_AND_STORAGE,
-        onClick = { onSelectModal(ActiveModalTab.THEME_AND_STORAGE) }
-    )
 }
 
 @Composable
@@ -1598,12 +1666,12 @@ private fun ManuscriptViewport(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Collapsible Session Setup & Cumulative Stats Bar
+        // Subtle Single-Line Context & Telemetry Ribbon + Animated Scene/Memory Drawer
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(p.elevatedBg.copy(alpha = 0.65f))
-                .padding(horizontal = 16.dp, vertical = 7.dp),
+                .background(p.elevatedBg.copy(alpha = 0.5f))
+                .padding(horizontal = 16.dp, vertical = 5.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -1611,20 +1679,20 @@ private fun ManuscriptViewport(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val cardSummary = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
-                    ?: "No Card"
+                val cardSummary = activeSession.activeCard?.name?.takeIf { it.isNotBlank() } ?: "Standard Session"
+                val wsBadge = if (activeSession.workspaceMode != WorkspaceMode.OFF) " • ${activeSession.workspaceMode.label}" else ""
                 val statsSummary = if (sessionTotalTokens > 0) {
-                    " • In: ${formatCompactTokens(sessionTotalInputTok)} (Cache: ${formatCompactTokens(sessionTotalCachedTok)}) • Think: ${formatCompactTokens(sessionTotalReasoningTok)} • Out: ${formatCompactTokens(sessionTotalOutputTok)} • Total: ${formatCompactTokens(sessionTotalTokens)} • Cost: ${formatUsdCost(sessionTotalCostUsd)}"
+                    " • ${formatCompactTokens(sessionTotalTokens)} tok (${formatUsdCost(sessionTotalCostUsd)})"
                 } else ""
                 BasicText(
-                    text = "✦ $cardSummary$statsSummary",
+                    text = "✦ $cardSummary$wsBadge$statsSummary",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                    style = p.uiLabelStyle.copy(color = p.narrationInk)
+                    modifier = Modifier.weight(1f).kissClickable(pressScale = 0.99f, onClick = onToggleSessionInspector),
+                    style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
                 )
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (activeSession.messages.isNotEmpty()) {
@@ -1635,14 +1703,14 @@ private fun ManuscriptViewport(
                             onClick = onExportChatMarkdown
                         )
                         SepiaButton(
-                            text = "Clear Chat",
+                            text = "Clear",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { onUpdateSession { it.copy(messages = emptyList()) } }
                         )
                     }
                     SepiaButton(
-                        text = if (showSessionInspector) "Hide Direction & Note ▲" else "Scene Direction & Author's Note ▼",
+                        text = if (showSessionInspector) "▲ Scene & Memory" else "▾ Scene & Memory",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onToggleSessionInspector
@@ -1650,15 +1718,19 @@ private fun ManuscriptViewport(
                 }
             }
 
-            if (showSessionInspector) {
-                Spacer(Modifier.height(8.dp))
+            AnimatedVisibility(
+                visible = showSessionInspector,
+                enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+            ) {
                 Column(
                     modifier = Modifier
+                        .padding(top = 8.dp, bottom = 4.dp)
                         .widthIn(max = p.maxReadingWidth)
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(RoundedCornerShape(10.dp))
                         .background(p.cardBg)
-                        .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                        .border(0.85.dp, p.border.copy(alpha = 0.8f), RoundedCornerShape(10.dp))
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -1669,14 +1741,14 @@ private fun ManuscriptViewport(
                         SepiaTextField(
                             value = activeSession.title,
                             onValueChange = { title -> onUpdateSession { it.copy(title = title) } },
-                            label = "Manuscript / Session Title",
+                            label = "Session Title",
                             modifier = Modifier.weight(1f)
                         )
                         SepiaTextField(
                             value = activeSession.userName,
                             onValueChange = { uName -> onUpdateSession { it.copy(userName = uName) } },
-                            label = "Your Persona ({{user}})",
-                            modifier = Modifier.width(160.dp)
+                            label = "Persona ({{user}})",
+                            modifier = Modifier.width(140.dp)
                         )
                     }
 
@@ -1696,8 +1768,8 @@ private fun ManuscriptViewport(
                         SepiaTextField(
                             value = activeSession.authorsNote,
                             onValueChange = { note -> onUpdateSession { it.copy(authorsNote = note) } },
-                            label = "Dynamic Author's Note / Current Scene Pacing (Injected near bottom to preserve cache)",
-                            placeholder = "e.g. Keep the dialogue taut and understated; emphasize the rain on the slate roof...",
+                            label = "Author's Note / Scene Pacing (Injected near bottom to preserve cache)",
+                            placeholder = "e.g. Keep the dialogue taut and understated…",
                             singleLine = false,
                             modifier = Modifier.weight(1f)
                         )
@@ -1708,22 +1780,21 @@ private fun ManuscriptViewport(
                                 onUpdateSession { it.copy(authorsNoteDepth = parsed) }
                             },
                             label = "Depth",
-                            modifier = Modifier.width(70.dp)
+                            modifier = Modifier.width(64.dp)
                         )
                     }
 
-                    // Rolling Story Summary / Continuity Memory (Errata Librarian / SillyBunny Mewmory)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            text = "Rolling Story Summary / Continuity Memory",
+                            text = "Rolling Continuity Memory",
                             style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
                         )
                         SepiaButton(
-                            text = if (isStreaming) "Summarizing…" else "✦ Auto-Summarize Chat into Memory",
+                            text = if (isStreaming) "Summarizing…" else "✦ Auto-Summarize Chat",
                             compact = true,
                             enabled = !isStreaming && activeSession.messages.isNotEmpty(),
                             style = SepiaButtonStyle.SECONDARY,
@@ -1733,7 +1804,7 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = activeSession.storySummary,
                         onValueChange = { sum -> onUpdateSession { it.copy(storySummary = sum) } },
-                        placeholder = "Rolling summary of key plot points, character states, or research findings...",
+                        placeholder = "Rolling summary of key plot points, character states, or research findings…",
                         singleLine = false,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1745,13 +1816,28 @@ private fun ManuscriptViewport(
                     ) {
                         BasicText(
                             text = if (activeSession.workspacePath.isBlank()) {
-                                "Local Agent Workspace: Not mounted"
+                                "Agent Workspace: Not mounted"
                             } else {
-                                "Workspace Root: ${activeSession.workspacePath}"
+                                "Workspace: ${activeSession.workspacePath}"
                             },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                             style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SepiaChip(
+                                label = activeSession.workspaceMode.label,
+                                selected = activeSession.workspaceMode != WorkspaceMode.OFF,
+                                onClick = {
+                                    val next = when (activeSession.workspaceMode) {
+                                        WorkspaceMode.OFF -> WorkspaceMode.READ_ONLY
+                                        WorkspaceMode.READ_ONLY -> WorkspaceMode.READ_WRITE
+                                        WorkspaceMode.READ_WRITE -> WorkspaceMode.OFF
+                                    }
+                                    onUpdateSession { it.copy(workspaceMode = next) }
+                                }
+                            )
                             SepiaButton(
                                 text = "Mount Folder…",
                                 compact = true,
@@ -1785,40 +1871,87 @@ private fun ManuscriptViewport(
                 .weight(1f)
                 .widthIn(max = p.maxReadingWidth)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 18.dp),
             verticalArrangement = Arrangement.spacedBy(
-                if (activeSession.viewMode == ViewMode.MANUSCRIPT) 14.dp else 18.dp
+                if (activeSession.viewMode == ViewMode.MANUSCRIPT) 14.dp else 16.dp
             )
         ) {
             item { Spacer(Modifier.height(10.dp)) }
 
-            if (activeSession.messages.isEmpty() && activeSession.activeCard?.firstMessage?.isNotBlank() == true) {
+            if (activeSession.messages.isEmpty()) {
                 item {
+                    val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
                     val card = activeSession.activeCard
-                    SepiaButton(
-                        text = "Insert Opening Scene from '${card.name}'",
-                        style = SepiaButtonStyle.SECONDARY,
-                        onClick = {
-                            val now = PlatformBridge.currentTimeMillis()
-                            val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
-                            if (allGreetings.isNotEmpty()) {
-                                val greetingNode = MessageNode(
-                                    id = "node-greeting-$now",
-                                    role = MessageRole.ASSISTANT,
-                                    variants = allGreetings.mapIndexed { idx, g ->
-                                        MessageVariant(
-                                            id = "var-greeting-$idx-$now",
-                                            content = g.replace("{{char}}", card.name)
-                                                .replace("{{user}}", activeSession.userName),
-                                            modelUsed = "Card Greeting #${idx + 1}",
-                                            createdAt = now
-                                        )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(p.cardBg.copy(alpha = 0.85f))
+                            .border(0.85.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BasicText(
+                            text = if (card != null && card.name.isNotBlank()) "✦ ${card.name}" else "Parchment Folio",
+                            style = p.uiHeaderStyle.copy(fontSize = 18.sp)
+                        )
+                        BasicText(
+                            text = "${activeProfile.protocol.displayName} • ${activeModel.ifBlank { "No model selected yet" }} • Thinking: ${activeProfile.thinkingEffort.ifBlank { "default" }.uppercase()}",
+                            style = p.uiLabelStyle.copy(color = p.accent)
+                        )
+                        BasicText(
+                            text = "Long-horizon workflow active by default (60-min keep-alive, up to 64 agent/tool steps, and automatic 5-min proxy stream continuation across chat, literary writing, and agent modes).",
+                            style = p.uiBodyStyle.copy(color = p.narrationInk, fontSize = 12.5.sp)
+                        )
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (card != null && card.firstMessage.isNotBlank()) {
+                                SepiaButton(
+                                    text = "Insert Opening Scene from '${card.name}'",
+                                    compact = true,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = {
+                                        val now = PlatformBridge.currentTimeMillis()
+                                        val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
+                                        if (allGreetings.isNotEmpty()) {
+                                            val greetingNode = MessageNode(
+                                                id = "node-greeting-$now",
+                                                role = MessageRole.ASSISTANT,
+                                                variants = allGreetings.mapIndexed { idx, g ->
+                                                    MessageVariant(
+                                                        id = "var-greeting-$idx-$now",
+                                                        content = g.replace("{{char}}", card.name)
+                                                            .replace("{{user}}", activeSession.userName),
+                                                        modelUsed = "Card Greeting #${idx + 1}",
+                                                        createdAt = now
+                                                    )
+                                                }
+                                            )
+                                            onUpdateSession { it.copy(messages = listOf(greetingNode)) }
+                                        }
                                     }
                                 )
-                                onUpdateSession { it.copy(messages = listOf(greetingNode)) }
                             }
+                            if (activeModel.isBlank()) {
+                                SepiaButton(
+                                    text = "⚙ Select or Fetch Model",
+                                    compact = true,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = onOpenPricingSettings
+                                )
+                            }
+                            SepiaButton(
+                                text = "▾ Scene & Workspace Setup",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = onToggleSessionInspector
+                            )
                         }
-                    )
+                    }
                 }
             }
 
@@ -1883,214 +2016,117 @@ private fun ManuscriptViewport(
                 )
             }
 
-            item { Spacer(Modifier.height(18.dp)) }
+            item { Spacer(Modifier.height(14.dp)) }
         }
 
-        // Live Streaming / Long Decode Status Pill
-        if (isStreaming) {
-            Row(
-                modifier = Modifier
-                    .widthIn(max = p.maxReadingWidth)
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 4.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(p.sheetBg)
-                    .border(1.dp, p.accent, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    BasicText(
-                        text = streamingStatus.ifBlank { "Streaming response..." },
-                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
-                    )
-                    if (streamingInteractionId.isNotBlank()) {
-                        BasicText(
-                            text = "Stateful ID: $streamingInteractionId",
-                            style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily, fontSize = 10.5.sp)
-                        )
-                    }
-                }
-                SepiaButton(
-                    text = "Stop / Cancel",
-                    compact = true,
-                    style = SepiaButtonStyle.DANGER,
-                    onClick = onStopStream
-                )
-            }
-        }
-
-        SepiaDivider()
-
-        // Bottom Literary Composer (Responsive Mobile + Desktop Layout)
-        var showThinkingEditorRow by remember { mutableStateOf(false) }
+        // ========================================================================================
+        // UNIFIED FLOATING "COMMAND DECK" COMPOSER CARD (KISS Design + Spring Physics)
+        // ========================================================================================
+        var showComposerToolsDrawer by remember { mutableStateOf(false) }
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(p.sheetBg)
+                .background(p.canvasBg)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val deckShape = RoundedCornerShape(14.dp)
             Column(
                 modifier = Modifier
                     .widthIn(max = p.maxReadingWidth)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .fillMaxWidth()
+                    .clip(deckShape)
+                    .background(p.cardBg)
+                    .border(
+                        width = if (isStreaming) 1.2.dp else 0.9.dp,
+                        color = if (isStreaming) p.accent else p.border.copy(alpha = 0.85f),
+                        shape = deckShape
+                    )
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Row 1: Quick Bleeding-Edge Tool, Thinking Level & Decode Toggles
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // 1. Live Streaming / Long-Horizon Status Strip (with breathing pulse dot)
+                AnimatedVisibility(
+                    visible = isStreaming,
+                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
                 ) {
-                    if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
-                        SepiaChip(
-                            label = if (!activeProfile.enableVideoGeneration) "🖼 Seedream Image: ON" else "🖼 Seedream Image",
-                            selected = !activeProfile.enableVideoGeneration,
-                            onClick = { onUpdateProfile { it.copy(enableVideoGeneration = false, enableImageGeneration = true) } }
-                        )
-                        SepiaChip(
-                            label = if (activeProfile.enableVideoGeneration) "🎬 Seedance Video: ON" else "🎬 Seedance Video",
-                            selected = activeProfile.enableVideoGeneration,
-                            onClick = { onUpdateProfile { it.copy(enableVideoGeneration = true) } }
-                        )
-                        SepiaChip(
-                            label = "Ratio: ${activeProfile.mediaAspectRatio}",
-                            selected = true,
-                            onClick = {
-                                val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4", "21:9")
-                                val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
-                                onUpdateProfile { it.copy(mediaAspectRatio = next) }
-                            }
-                        )
-                        if (activeProfile.enableVideoGeneration) {
-                            SepiaChip(
-                                label = "Duration: ${activeProfile.videoDurationSeconds}s",
-                                selected = true,
-                                onClick = {
-                                    val durs = listOf(5, 10)
-                                    val next = durs[(durs.indexOf(activeProfile.videoDurationSeconds) + 1) % durs.size]
-                                    onUpdateProfile { it.copy(videoDurationSeconds = next) }
-                                }
-                            )
-                            SepiaChip(
-                                label = if (activeProfile.videoGenerateAudio) "🔊 Audio: ON" else "🔇 Audio: OFF",
-                                selected = activeProfile.videoGenerateAudio,
-                                onClick = { onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) } }
-                            )
-                        }
-                    } else {
-                        // Cycle through minimal/none/low/medium/high/xhigh/max OR expand manual input
-                        SepiaChip(
-                            label = "Thinking: ${activeProfile.thinkingEffort.ifBlank { "default" }.uppercase()}",
-                            selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
-                            onClick = {
-                                val cur = activeProfile.thinkingEffort.lowercase()
-                                val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
-                                val next = if (idx >= 0) {
-                                    THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
-                                } else {
-                                    "medium"
-                                }
-                                onUpdateProfile { it.copy(thinkingEffort = next) }
-                            }
-                        )
-
-                        SepiaChip(
-                            label = if (showThinkingEditorRow) "▾ Level" else "✎ Level",
-                            selected = showThinkingEditorRow,
-                            onClick = { showThinkingEditorRow = !showThinkingEditorRow }
-                        )
-
-                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS ||
-                            activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(p.sheetBg.copy(alpha = 0.8f))
+                            .border(0.8.dp, p.accent.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            SepiaChip(
-                                label = if (activeProfile.enableImageGeneration) "🖼 Image Gen: ON (${activeProfile.mediaAspectRatio})" else "🖼 Image Gen",
-                                selected = activeProfile.enableImageGeneration,
-                                onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
-                            )
-                            if (activeProfile.enableImageGeneration) {
-                                SepiaChip(
-                                    label = "Ratio: ${activeProfile.mediaAspectRatio}",
-                                    selected = true,
-                                    onClick = {
-                                        val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4")
-                                        val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
-                                        onUpdateProfile { it.copy(mediaAspectRatio = next) }
-                                    }
+                            KissStreamingPulseDot(color = p.accent)
+                            Column(modifier = Modifier.weight(1f)) {
+                                BasicText(
+                                    text = streamingStatus.ifBlank { "Streaming response…" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiBodyStyle.copy(color = p.accent, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                                 )
+                                if (streamingInteractionId.isNotBlank()) {
+                                    BasicText(
+                                        text = "Chain ID: $streamingInteractionId",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily, fontSize = 10.sp)
+                                    )
+                                }
                             }
                         }
-
-                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
-                            SepiaChip(
-                                label = if (activeProfile.useBackgroundLongDecode) "⚡ Background Poll: ON" else "⚡ Stream SSE",
-                                selected = activeProfile.useBackgroundLongDecode,
-                                onClick = { onUpdateProfile { it.copy(useBackgroundLongDecode = !it.useBackgroundLongDecode) } }
-                            )
-                        }
-
-                        SepiaChip(
-                            label = "Stateful Chain",
-                            selected = activeProfile.useStatefulChaining,
-                            onClick = { onUpdateProfile { it.copy(useStatefulChaining = !it.useStatefulChaining) } }
+                        SepiaButton(
+                            text = "■ Stop",
+                            compact = true,
+                            style = SepiaButtonStyle.DANGER,
+                            onClick = onStopStream
                         )
-
-                        SepiaChip(
-                            label = "Web Search",
-                            selected = activeProfile.enableWebSearch,
-                            onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
-                        )
-
-                        if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
-                            SepiaChip(
-                                label = "Code Exec",
-                                selected = activeProfile.enableCodeExecution,
-                                onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
-                            )
-                            SepiaChip(
-                                label = "URL Context",
-                                selected = activeProfile.enableUrlContext,
-                                onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
-                            )
-                        }
-
-                        SepiaChip(
-                            label = if (showPrefillBox) "▾ Prefill: ON" else "▸ Prefill",
-                            selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
-                            onClick = onTogglePrefillBox
-                        )
-
-                        if (activeSession.workspaceMode == WorkspaceMode.READ_WRITE) {
-                            SepiaChip(
-                                label = if (activeProfile.allowShellExecution) "⚡ Shell Exec: ON" else "⚡ Shell Exec: OFF",
-                                selected = activeProfile.allowShellExecution,
-                                onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
-                            )
-                        }
                     }
                 }
 
-                // Expandable Inline Thinking Level Presets + Manual Input Row
-                if (showThinkingEditorRow) {
+                // 2. Collapsible Capabilities, Thinking Level & Protocol Tray (Progressive Disclosure!)
+                AnimatedVisibility(
+                    visible = showComposerToolsDrawer,
+                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(p.cardBg)
-                            .border(1.dp, p.border, RoundedCornerShape(6.dp))
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(p.sheetBg.copy(alpha = 0.65f))
+                            .border(0.8.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(9.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        // Thinking Effort Presets + Manual Override
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            BasicText(text = "Presets:", style = p.uiLabelStyle)
+                            BasicText(
+                                text = "Thinking:",
+                                style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
+                                modifier = Modifier.padding(top = 4.dp, end = 2.dp)
+                            )
                             THINKING_EFFORT_PRESETS.forEach { preset ->
                                 SepiaChip(
                                     label = preset,
@@ -2099,17 +2135,160 @@ private fun ManuscriptViewport(
                                 )
                             }
                         }
+
                         SepiaTextField(
                             value = activeProfile.thinkingEffort,
                             onValueChange = { custom -> onUpdateProfile { it.copy(thinkingEffort = custom) } },
-                            label = "Manual Thinking / Effort Level (Argon: low/medium/high • GPT-6.1 Sol & Opus 5.5: low/medium/high/xhigh/max)",
-                            placeholder = "Type any custom level (e.g. minimal, none, low, medium, high, xhigh, max, ultra_high)...",
+                            placeholder = "Custom thinking level (e.g. minimal, none, low, medium, high, xhigh, max)…",
                             monospace = true,
+                            minHeight = 34.dp,
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        SepiaDivider()
+
+                        // Protocol Capabilities & Workspace Agent Toggles
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
+                                SepiaChip(
+                                    label = if (activeProfile.enableImageGeneration && !activeProfile.enableVideoGeneration) "🖼 Seedream Image: ON" else "🖼 Seedream Image",
+                                    selected = activeProfile.enableImageGeneration && !activeProfile.enableVideoGeneration,
+                                    onClick = {
+                                        onUpdateProfile {
+                                            val nextImg = !(it.enableImageGeneration && !it.enableVideoGeneration)
+                                            it.copy(enableVideoGeneration = false, enableImageGeneration = nextImg)
+                                        }
+                                    }
+                                )
+                                SepiaChip(
+                                    label = if (activeProfile.enableVideoGeneration) "🎬 Seedance Video: ON" else "🎬 Seedance Video",
+                                    selected = activeProfile.enableVideoGeneration,
+                                    onClick = {
+                                        onUpdateProfile {
+                                            val nextVid = !it.enableVideoGeneration
+                                            it.copy(enableVideoGeneration = nextVid, enableImageGeneration = false)
+                                        }
+                                    }
+                                )
+                                if (activeProfile.enableImageGeneration || activeProfile.enableVideoGeneration) {
+                                    SepiaChip(
+                                        label = "Ratio: ${activeProfile.mediaAspectRatio}",
+                                        selected = true,
+                                        onClick = {
+                                            val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4", "21:9")
+                                            val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
+                                            onUpdateProfile { it.copy(mediaAspectRatio = next) }
+                                        }
+                                    )
+                                }
+                                if (activeProfile.enableVideoGeneration) {
+                                    SepiaChip(
+                                        label = "Duration: ${activeProfile.videoDurationSeconds}s",
+                                        selected = true,
+                                        onClick = {
+                                            val durs = listOf(5, 10)
+                                            val next = durs[(durs.indexOf(activeProfile.videoDurationSeconds) + 1) % durs.size]
+                                            onUpdateProfile { it.copy(videoDurationSeconds = next) }
+                                        }
+                                    )
+                                    SepiaChip(
+                                        label = if (activeProfile.videoGenerateAudio) "🔊 Audio: ON" else "🔇 Audio: OFF",
+                                        selected = activeProfile.videoGenerateAudio,
+                                        onClick = { onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) } }
+                                    )
+                                }
+                            } else {
+                                if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS ||
+                                    activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES
+                                ) {
+                                    SepiaChip(
+                                        label = if (activeProfile.enableImageGeneration) "🖼 Image Gen (${activeProfile.mediaAspectRatio})" else "🖼 Image Gen",
+                                        selected = activeProfile.enableImageGeneration,
+                                        onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
+                                    )
+                                    if (activeProfile.enableImageGeneration) {
+                                        SepiaChip(
+                                            label = "Ratio: ${activeProfile.mediaAspectRatio}",
+                                            selected = true,
+                                            onClick = {
+                                                val ratios = listOf("1:1", "16:9", "9:16", "4:3", "3:4")
+                                                val next = ratios[(ratios.indexOf(activeProfile.mediaAspectRatio) + 1) % ratios.size]
+                                                onUpdateProfile { it.copy(mediaAspectRatio = next) }
+                                            }
+                                        )
+                                    }
+                                }
+
+                                if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                                    SepiaChip(
+                                        label = if (activeProfile.useBackgroundLongDecode) "⚡ Background Poll" else "⚡ Stream SSE",
+                                        selected = activeProfile.useBackgroundLongDecode,
+                                        onClick = { onUpdateProfile { it.copy(useBackgroundLongDecode = !it.useBackgroundLongDecode) } }
+                                    )
+                                }
+
+                                SepiaChip(
+                                    label = "⛓ Stateful Chain",
+                                    selected = activeProfile.useStatefulChaining,
+                                    onClick = { onUpdateProfile { it.copy(useStatefulChaining = !it.useStatefulChaining) } }
+                                )
+
+                                SepiaChip(
+                                    label = "🌐 Web Search",
+                                    selected = activeProfile.enableWebSearch,
+                                    onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
+                                )
+
+                                if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                                    SepiaChip(
+                                        label = "💻 Code Exec",
+                                        selected = activeProfile.enableCodeExecution,
+                                        onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
+                                    )
+                                    SepiaChip(
+                                        label = "🔗 URL Context",
+                                        selected = activeProfile.enableUrlContext,
+                                        onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
+                                    )
+                                }
+                            }
+
+                            SepiaChip(
+                                label = activeSession.workspaceMode.label,
+                                selected = activeSession.workspaceMode != WorkspaceMode.OFF,
+                                onClick = {
+                                    val next = when (activeSession.workspaceMode) {
+                                        WorkspaceMode.OFF -> WorkspaceMode.READ_ONLY
+                                        WorkspaceMode.READ_ONLY -> WorkspaceMode.READ_WRITE
+                                        WorkspaceMode.READ_WRITE -> WorkspaceMode.OFF
+                                    }
+                                    onUpdateSession { it.copy(workspaceMode = next) }
+                                }
+                            )
+
+                            if (activeSession.workspaceMode == WorkspaceMode.READ_WRITE) {
+                                SepiaChip(
+                                    label = if (activeProfile.allowShellExecution) "⚡ Shell: ON" else "⚡ Shell: OFF",
+                                    selected = activeProfile.allowShellExecution,
+                                    onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
+                                )
+                            }
+
+                            SepiaChip(
+                                label = if (showPrefillBox) "▾ Assistant Prefill: ON" else "▸ Assistant Prefill",
+                                selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
+                                onClick = onTogglePrefillBox
+                            )
+                        }
                     }
                 }
 
+                // 3. Pending Attachments Row (only when attachments exist)
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -2137,87 +2316,183 @@ private fun ManuscriptViewport(
                     }
                 }
 
-                if (showPrefillBox) {
+                // 4. Collapsible Assistant Prefill Input Box
+                AnimatedVisibility(
+                    visible = showPrefillBox,
+                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                ) {
                     SepiaTextField(
                         value = assistantPrefillInput,
                         onValueChange = onAssistantPrefillChange,
                         placeholder = "Optional Assistant Opening Line / Prefill…",
                         singleLine = false,
                         maxLines = 3,
-                        minHeight = 40.dp,
-                        maxHeight = 96.dp,
+                        minHeight = 38.dp,
+                        maxHeight = 88.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
 
-                // Row 2: Dedicated Full-Width Prompt Input Box (Never squished on mobile!)
+                // 5. Clean Borderless-Feel Prompt Input Area Inside the Command Deck
                 SepiaTextField(
                     value = userPromptInput,
                     onValueChange = onUserPromptChange,
-                    placeholder = "Write dialogue/prose, or type a scene direction and tap '🎬 Direct'…",
+                    placeholder = "Write dialogue, prose, or instructions (or type scene guidance and tap '🎬 Direct')…",
                     singleLine = false,
-                    maxLines = 5,
-                    minHeight = 46.dp,
-                    maxHeight = 140.dp,
+                    borderless = true,
+                    maxLines = 6,
+                    minHeight = 44.dp,
+                    maxHeight = 148.dp,
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Row 3: Action Buttons + Circular Token Gauge Ring (Horizontally scrollable on narrow mobile screens)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SepiaButton(
-                            text = "📎 Attach",
-                            compact = true,
-                            style = SepiaButtonStyle.OUTLINE,
-                            onClick = onAddAttachment
-                        )
+                SepiaDivider()
 
-                        SepiaContextGaugeRing(
-                            usedTokens = liveContextTokens,
-                            contextLimitTokens = activeProfile.contextWindowTokens,
-                            sessionCostUsd = sessionTotalCostUsd,
-                            onClick = onOpenPricingSettings
-                        )
+                // 6. Command Deck Footer: Utility Strip + Proportional Action Bar (100% visible on any portrait or landscape width)
+                val activeCapabilitiesCount = remember(activeProfile, activeSession.workspaceMode, showPrefillBox) {
+                    var c = 0
+                    if (activeProfile.enableWebSearch) c++
+                    if (activeProfile.enableImageGeneration) c++
+                    if (activeProfile.enableVideoGeneration) c++
+                    if (activeProfile.enableCodeExecution) c++
+                    if (activeProfile.enableUrlContext) c++
+                    if (activeSession.workspaceMode != WorkspaceMode.OFF) c++
+                    if (showPrefillBox || assistantPrefillInput.isNotBlank()) c++
+                    c
+                }
+
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val isNarrowViewport = maxWidth < 600.dp
+
+                    val utilityCluster: @Composable () -> Unit = {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SepiaChip(
+                                label = "📎",
+                                selected = pendingAttachments.isNotEmpty(),
+                                onClick = onAddAttachment
+                            )
+                            SepiaChip(
+                                label = "🧠 ${activeProfile.thinkingEffort.ifBlank { "default" }.uppercase()}",
+                                selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
+                                onClick = {
+                                    val cur = activeProfile.thinkingEffort.lowercase()
+                                    val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
+                                    val next = if (idx >= 0) {
+                                        THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
+                                    } else {
+                                        "medium"
+                                    }
+                                    onUpdateProfile { it.copy(thinkingEffort = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = if (activeCapabilitiesCount > 0) "⚙ Tools ($activeCapabilitiesCount)" else "⚙ Tools",
+                                selected = showComposerToolsDrawer || activeCapabilitiesCount > 0,
+                                onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
+                            )
+                        }
                     }
 
-                    Spacer(Modifier.width(8.dp))
+                    if (isNarrowViewport) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                utilityCluster()
+                                SepiaContextGaugeRing(
+                                    usedTokens = liveContextTokens,
+                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    sessionCostUsd = sessionTotalCostUsd,
+                                    onClick = onOpenPricingSettings
+                                )
+                            }
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SepiaButton(
-                            text = "✍ Impersonate",
-                            compact = true,
-                            enabled = !isStreaming,
-                            style = SepiaButtonStyle.OUTLINE,
-                            onClick = onImpersonateDraft
-                        )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SepiaButton(
+                                    text = "✍ Impersonate",
+                                    compact = true,
+                                    enabled = !isStreaming,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = onImpersonateDraft
+                                )
+                                SepiaButton(
+                                    text = "🎬 Direct",
+                                    compact = true,
+                                    enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
+                                    style = SepiaButtonStyle.SECONDARY,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = onSendGuidedDirection
+                                )
+                                SepiaButton(
+                                    text = if (isStreaming) "Writing…" else "Inscribe ↵",
+                                    compact = true,
+                                    enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    modifier = Modifier.weight(1.18f),
+                                    onClick = onSend
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                utilityCluster()
+                                SepiaContextGaugeRing(
+                                    usedTokens = liveContextTokens,
+                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    sessionCostUsd = sessionTotalCostUsd,
+                                    onClick = onOpenPricingSettings
+                                )
+                            }
 
-                        SepiaButton(
-                            text = "🎬 Direct",
-                            compact = true,
-                            enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
-                            style = SepiaButtonStyle.SECONDARY,
-                            onClick = onSendGuidedDirection
-                        )
-
-                        SepiaButton(
-                            text = if (isStreaming) "Writing…" else "Inscribe ↵",
-                            compact = true,
-                            enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
-                            style = SepiaButtonStyle.PRIMARY,
-                            onClick = onSend
-                        )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SepiaButton(
+                                    text = "✍ Impersonate",
+                                    compact = true,
+                                    enabled = !isStreaming,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = onImpersonateDraft
+                                )
+                                SepiaButton(
+                                    text = "🎬 Direct",
+                                    compact = true,
+                                    enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank()),
+                                    style = SepiaButtonStyle.SECONDARY,
+                                    onClick = onSendGuidedDirection
+                                )
+                                SepiaButton(
+                                    text = if (isStreaming) "Writing…" else "Inscribe ↵",
+                                    compact = true,
+                                    enabled = !isStreaming && (userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()),
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = onSend
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -2248,6 +2523,7 @@ private fun MessageTurnItem(
     var editBuffer by remember(node.id, node.activeVariantIndex, activeVar.content) { mutableStateOf(activeVar.content) }
     var showThinkingDrawer by remember(node.id) { mutableStateOf(false) }
     var showRawWireDrawer by remember(node.id) { mutableStateOf(false) }
+    var showMoreActions by remember(node.id) { mutableStateOf(false) }
 
     val speakerTitle = if (isAssistant) {
         characterName.ifBlank { activeVar.modelUsed.ifBlank { "Narrator" } }
@@ -2259,18 +2535,20 @@ private fun MessageTurnItem(
         Modifier
             .fillMaxWidth()
             .then(
-                if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                 else Modifier
             )
-            .padding(vertical = 4.dp)
+            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+            .padding(vertical = 6.dp)
     } else {
-        val shape = RoundedCornerShape(8.dp)
-        val bg = if (isAssistant) p.cardBg else p.elevatedBg.copy(alpha = 0.7f)
+        val shape = RoundedCornerShape(11.dp)
+        val bg = if (isAssistant) p.cardBg else p.elevatedBg.copy(alpha = 0.65f)
         Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(bg)
-            .border(1.dp, p.border, shape)
+            .border(0.85.dp, p.border.copy(alpha = 0.8f), shape)
+            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
             .padding(14.dp)
     }
 
@@ -2282,34 +2560,39 @@ private fun MessageTurnItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
+                modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 BasicText(
                     text = speakerTitle.uppercase(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     style = p.uiLabelStyle.copy(
                         color = if (isAssistant) p.accent else p.narrationInk,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.8.sp
+                        letterSpacing = 0.7.sp
                     )
                 )
 
                 if (activeVar.modelUsed.isNotBlank() && isAssistant) {
                     BasicText(
                         text = "• ${activeVar.modelUsed}",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(fontSize = 11.sp)
                     )
                 }
 
                 if (!node.includedInContext) {
                     BasicText(
-                        text = "[Muted from API Context]",
+                        text = "[Muted]",
                         style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold)
                     )
                 }
             }
 
-            // Swipe / Branch Variant Selector (< 1 / 3 >)
+            // Swipe / Branch Variant Selector (< 1 / 3 >) + Reasoning Accordion Trigger
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -2323,7 +2606,7 @@ private fun MessageTurnItem(
                         onClick = { onSelectVariant(node.activeVariantIndex - 1) }
                     )
                     BasicText(
-                        text = "${node.activeVariantIndex + 1} / ${node.variants.size}",
+                        text = "${node.activeVariantIndex + 1}/${node.variants.size}",
                         style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
                     )
                     SepiaButton(
@@ -2336,8 +2619,9 @@ private fun MessageTurnItem(
                 }
 
                 if (activeVar.thinkingSummary.isNotBlank() || activeVar.toolCalls.isNotEmpty()) {
+                    val toolBadge = if (activeVar.toolCalls.isNotEmpty()) " • ${activeVar.toolCalls.size} tools" else ""
                     SepiaChip(
-                        label = if (showThinkingDrawer) "▾ Thoughts & Tools (${activeVar.toolCalls.size})" else "▸ Thoughts & Tools (${activeVar.toolCalls.size})",
+                        label = if (showThinkingDrawer) "▾ Reasoning$toolBadge" else "▸ Reasoning$toolBadge",
                         selected = showThinkingDrawer,
                         onClick = { showThinkingDrawer = !showThinkingDrawer }
                     )
@@ -2345,21 +2629,25 @@ private fun MessageTurnItem(
             }
         }
 
-        // Collapsible Thinking & Workspace Agent Tool-Call Drawer
-        if (showThinkingDrawer && (activeVar.thinkingSummary.isNotBlank() || activeVar.toolCalls.isNotEmpty())) {
-            Spacer(Modifier.height(8.dp))
+        // Animated Collapsible Thinking & Workspace Agent Tool-Call Drawer
+        AnimatedVisibility(
+            visible = showThinkingDrawer && (activeVar.thinkingSummary.isNotBlank() || activeVar.toolCalls.isNotEmpty()),
+            enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+            exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+        ) {
             Column(
                 modifier = Modifier
+                    .padding(top = 8.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(p.sheetBg)
-                    .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(p.sheetBg.copy(alpha = 0.75f))
+                    .border(0.85.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (activeVar.thinkingSummary.isNotBlank()) {
                     BasicText(
-                        text = "Reasoning / Thinking Trace",
+                        text = "Reasoning Trace",
                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                     )
                     BasicText(
@@ -2372,7 +2660,7 @@ private fun MessageTurnItem(
                     )
                     if (activeVar.thinkingSignature.isNotBlank()) {
                         BasicText(
-                            text = "Cryptographic Signature Preserved (${activeVar.thinkingSignature.length} chars)",
+                            text = "✓ Thought Signature Verified (${activeVar.thinkingSignature.length} chars)",
                             style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
                         )
                     }
@@ -2380,16 +2668,16 @@ private fun MessageTurnItem(
 
                 if (activeVar.toolCalls.isNotEmpty()) {
                     BasicText(
-                        text = "Local Workspace Agent Tool Executions",
+                        text = "Workspace Agent Tool Executions (${activeVar.toolCalls.size})",
                         style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
                     )
                     activeVar.toolCalls.forEach { tc ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(6.dp))
                                 .background(p.cardBg)
-                                .border(1.dp, p.border, RoundedCornerShape(4.dp))
+                                .border(0.8.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
                                 .padding(8.dp)
                         ) {
                             BasicText(
@@ -2433,7 +2721,7 @@ private fun MessageTurnItem(
                         }
                     )
                     SepiaButton(
-                        text = "Save as New Branch Variant",
+                        text = "Save as Branch",
                         compact = true,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
@@ -2460,8 +2748,7 @@ private fun MessageTurnItem(
             }
         }
 
-        // Inline Generated Images (Google Gemini, OpenAI GPT Image, ByteDance Seedream)
-        // & Generated Videos (ByteDance Seedance)
+        // Inline Generated Images & Videos
         if (activeVar.mediaItems.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2474,9 +2761,9 @@ private fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(1.dp, p.border, RoundedCornerShape(8.dp))
+                                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
                                     .padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -2509,16 +2796,14 @@ private fun MessageTurnItem(
                                         text = "🖼 ${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
                                         style = p.uiLabelStyle
                                     )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
-                                        if (openTarget.isNotBlank()) {
-                                            SepiaButton(
-                                                text = "Open Full Image",
-                                                compact = true,
-                                                style = SepiaButtonStyle.OUTLINE,
-                                                onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
-                                            )
-                                        }
+                                    val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
+                                    if (openTarget.isNotBlank()) {
+                                        SepiaButton(
+                                            text = "Open Full Image",
+                                            compact = true,
+                                            style = SepiaButtonStyle.OUTLINE,
+                                            onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                        )
                                     }
                                 }
                             }
@@ -2528,9 +2813,9 @@ private fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(1.dp, p.accentSecondary, RoundedCornerShape(8.dp))
+                                    .border(0.85.dp, p.accentSecondary, RoundedCornerShape(10.dp))
                                     .padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -2540,7 +2825,7 @@ private fun MessageTurnItem(
                                 )
                                 if (media.localFilePath.isNotBlank()) {
                                     BasicText(
-                                        text = "Saved locally: ${media.localFilePath}",
+                                        text = "Saved: ${media.localFilePath}",
                                         style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                     )
                                 }
@@ -2556,7 +2841,7 @@ private fun MessageTurnItem(
                                     }
                                     if (media.remoteUrl.isNotBlank() && media.localFilePath.isNotBlank()) {
                                         SepiaButton(
-                                            text = "Open Remote Stream URL",
+                                            text = "Open Stream URL",
                                             compact = true,
                                             style = SepiaButtonStyle.OUTLINE,
                                             onClick = { PlatformBridge.openOrPlayMedia(media.remoteUrl) }
@@ -2572,15 +2857,34 @@ private fun MessageTurnItem(
 
         Spacer(Modifier.height(6.dp))
 
-        // Quiet Editorial Footer Controls & Token/Cache HUD
+        // Quiet Progressive-Disclosure Footer (Essential actions + `⋯` overflow + compact telemetry)
+        @OptIn(ExperimentalLayoutApi::class)
         Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (isAssistant) {
+                    SepiaButton(
+                        text = "↻ Redo",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onRegenerate
+                    )
+                    SepiaButton(
+                        text = "→ Continue",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onContinue
+                    )
+                }
                 SepiaButton(
-                    text = "Edit Prose",
+                    text = "✎ Edit",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = {
@@ -2588,68 +2892,74 @@ private fun MessageTurnItem(
                         isEditing = !isEditing
                     }
                 )
-                if (isAssistant) {
+                SepiaButton(
+                    text = if (showMoreActions) "▾ Less" else "⋯ More",
+                    compact = true,
+                    style = SepiaButtonStyle.GHOST,
+                    onClick = { showMoreActions = !showMoreActions }
+                )
+
+                if (showMoreActions) {
                     SepiaButton(
-                        text = "Continue →",
+                        text = "⑂ Fork",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
-                        onClick = onContinue
+                        onClick = onForkHere
                     )
                     SepiaButton(
-                        text = "Swipe / Regenerate ↻",
+                        text = if (node.includedInContext) "Mute" else "Unmute",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
-                        onClick = onRegenerate
+                        onClick = onToggleContextMute
+                    )
+                    if (activeVar.rawRequestPreview.isNotBlank()) {
+                        SepiaButton(
+                            text = if (showRawWireDrawer) "Hide JSON" else "Wire JSON",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { showRawWireDrawer = !showRawWireDrawer }
+                        )
+                    }
+                    SepiaButton(
+                        text = "Delete",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onDeleteNode
                     )
                 }
-                SepiaButton(
-                    text = "⑂ Fork Chat",
-                    compact = true,
-                    style = SepiaButtonStyle.GHOST,
-                    onClick = onForkHere
-                )
-                SepiaButton(
-                    text = if (node.includedInContext) "Mute Context" else "Unmute Context",
-                    compact = true,
-                    style = SepiaButtonStyle.GHOST,
-                    onClick = onToggleContextMute
-                )
-                if (activeVar.rawRequestPreview.isNotBlank()) {
-                    SepiaButton(
-                        text = if (showRawWireDrawer) "Hide Wire JSON" else "Wire JSON",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = { showRawWireDrawer = !showRawWireDrawer }
-                    )
-                }
-                SepiaButton(
-                    text = "Delete",
-                    compact = true,
-                    style = SepiaButtonStyle.GHOST,
-                    onClick = onDeleteNode
-                )
             }
 
             val m = activeVar.tokenMetrics
             if (m.outputTokens > 0 || m.inputTokens > 0) {
-                val cacheStr = if (m.cachedInputTokens > 0) " (Cache: ${m.cachedInputTokens})" else ""
-                val thinkStr = if (m.reasoningTokens > 0) " • Think: ${m.reasoningTokens}" else ""
-                val costStr = if (m.estimatedCostUsd > 0.0) " • Cost: ${formatUsdCost(m.estimatedCostUsd)}" else ""
+                val costStr = if (m.estimatedCostUsd > 0.0) " • ${formatUsdCost(m.estimatedCostUsd)}" else ""
+                val detailStr = if (showMoreActions) {
+                    val cacheStr = if (m.cachedInputTokens > 0) " (Cache ${formatCompactTokens(m.cachedInputTokens)})" else ""
+                    val thinkStr = if (m.reasoningTokens > 0) " • Think ${formatCompactTokens(m.reasoningTokens)}" else ""
+                    "TTFT ${m.ttftMs}ms • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)}$costStr"
+                } else {
+                    "${m.tokensPerSec} tok/s • ${formatCompactTokens(m.totalTokens)} tok$costStr"
+                }
                 BasicText(
-                    text = "TTFT ${m.ttftMs}ms • ${m.tokensPerSec} tok/s • In: ${m.inputTokens}$cacheStr$thinkStr • Out: ${m.outputTokens} • Total: ${m.totalTokens} tok$costStr",
-                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp, fontFamily = p.codeFontFamily)
+                    text = detailStr,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
                 )
             }
         }
 
-        if (showRawWireDrawer && activeVar.rawRequestPreview.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
+        AnimatedVisibility(
+            visible = showRawWireDrawer && activeVar.rawRequestPreview.isNotBlank(),
+            enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+            exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+        ) {
             Column(
                 modifier = Modifier
+                    .padding(top = 6.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(p.sheetBg)
-                    .border(1.dp, p.border, RoundedCornerShape(6.dp))
+                    .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {

@@ -46,6 +46,7 @@ expect object PlatformBridge {
 
     // Generated Image & Video Media Storage and Native Playback
     fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray): String
+    fun readBinaryFileBytes(filePath: String): ByteArray?
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)
 }

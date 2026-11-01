@@ -29,7 +29,7 @@ actual object PlatformBridge {
     private var appContext: Context? = null
     private var mainActivityRef: WeakReference<MainActivity>? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
-    private val imageCache = ConcurrentHashMap<String, ImageBitmap>()
+    private val imageCache = LinkedHashMap<String, ImageBitmap>()
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -349,18 +349,38 @@ actual object PlatformBridge {
         val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val outFile = File(mediaDir, safeName)
         outFile.writeBytes(bytes)
-        imageCache.remove(outFile.absolutePath)
+        synchronized(imageCache) { imageCache.remove(outFile.absolutePath) }
         return outFile.absolutePath
     }
 
+    actual fun readBinaryFileBytes(filePath: String): ByteArray? = runCatching {
+        if (filePath.isBlank()) return null
+        val f = File(filePath)
+        if (f.exists() && f.isFile) f.readBytes() else null
+    }.getOrNull()
+
     actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
         if (filePath.isBlank()) return null
-        imageCache[filePath]?.let { return it }
+        synchronized(imageCache) { imageCache[filePath]?.let { return it } }
         return runCatching {
             val f = File(filePath)
             if (!f.exists() || !f.isFile) return null
-            val bmp = BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() ?: return null
-            imageCache[filePath] = bmp
+            // Decode bounds first and downsample large 2K/4K images for UI display to minimize RAM
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.absolutePath, boundsOpts)
+            val maxDim = 1600
+            var sampleSize = 1
+            while ((boundsOpts.outWidth / sampleSize) > maxDim || (boundsOpts.outHeight / sampleSize) > maxDim) {
+                sampleSize *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val bmp = BitmapFactory.decodeFile(f.absolutePath, decodeOpts)?.asImageBitmap() ?: return null
+            synchronized(imageCache) {
+                if (imageCache.size >= 16) {
+                    imageCache.keys.firstOrNull()?.let { imageCache.remove(it) }
+                }
+                imageCache[filePath] = bmp
+            }
             bmp
         }.getOrNull()
     }
