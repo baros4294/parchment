@@ -12,11 +12,16 @@ import org.jetbrains.skia.Image
 import java.awt.Desktop
 import java.awt.FileDialog
 import java.awt.Frame
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FilenameFilter
 import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import javax.imageio.ImageIO
 import javax.swing.JFileChooser
 
 actual object PlatformBridge {
@@ -29,6 +34,10 @@ actual object PlatformBridge {
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
+    @Volatile
+    var dragHoverCallback: ((Boolean) -> Unit)? = null
+    @Volatile
+    var filesDroppedCallback: ((List<PickedBinaryFile>) -> Unit)? = null
     @Volatile
     private var stateFlushCallback: (() -> Unit)? = null
 
@@ -162,8 +171,10 @@ actual object PlatformBridge {
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val dialog = FileDialog(null as Frame?, "Import .PNG or .JSON into Parchment", FileDialog.LOAD)
-                if (allowedExtensions.isNotEmpty()) {
+                val allowAll = allowedExtensions.isEmpty() || allowedExtensions.contains("*")
+                val title = if (allowAll) "Attach Image, Video, or File" else "Import File into Parchment"
+                val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD)
+                if (!allowAll && allowedExtensions.isNotEmpty()) {
                     dialog.file = allowedExtensions.joinToString(";") { "*.$it" }
                     dialog.filenameFilter = FilenameFilter { _, name ->
                         allowedExtensions.any { ext -> name.endsWith(".$ext", ignoreCase = true) }
@@ -588,5 +599,61 @@ actual object PlatformBridge {
                 Desktop.getDesktop().browse(URI(localFilePathOrUrl))
             }
         }
+    }
+
+    actual fun readClipboardFiles(): List<PickedBinaryFile> = runCatching {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+        val contents = clipboard.getContents(null) ?: return@runCatching emptyList()
+
+        // 1. Check for copied files from Explorer (images, videos, PDFs, audio, code, etc.)
+        if (contents.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+            val fileList = contents.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+            val picked = fileList?.mapNotNull { item ->
+                val f = item as? File
+                if (f != null && f.exists() && f.isFile && f.length() <= 150_000_000L) {
+                    runCatching { PickedBinaryFile(f.name, f.readBytes()) }.getOrNull()
+                } else null
+            }.orEmpty()
+            if (picked.isNotEmpty()) return@runCatching picked
+        }
+
+        // 2. Check for raw clipboard image (Snipping Tool Win+Shift+S, PrintScreen, Browser Copy Image)
+        if (contents.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+            val awtImage = contents.getTransferData(DataFlavor.imageFlavor) as? java.awt.Image
+            if (awtImage != null) {
+                val buffered = if (awtImage is BufferedImage) {
+                    awtImage
+                } else {
+                    val w = awtImage.getWidth(null).coerceAtLeast(1)
+                    val h = awtImage.getHeight(null).coerceAtLeast(1)
+                    val b = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+                    val g = b.createGraphics()
+                    g.drawImage(awtImage, 0, 0, null)
+                    g.dispose()
+                    b
+                }
+                val baos = ByteArrayOutputStream()
+                ImageIO.write(buffered, "png", baos)
+                val bytes = baos.toByteArray()
+                if (bytes.isNotEmpty()) {
+                    return@runCatching listOf(
+                        PickedBinaryFile(
+                            fileName = "clipboard-${currentTimeMillis()}.png",
+                            bytes = bytes
+                        )
+                    )
+                }
+            }
+        }
+
+        emptyList()
+    }.getOrDefault(emptyList())
+
+    actual fun registerFileDropCallbacks(
+        onDragHover: (Boolean) -> Unit,
+        onFilesDropped: (List<PickedBinaryFile>) -> Unit
+    ) {
+        dragHoverCallback = onDragHover
+        filesDroppedCallback = onFilesDropped
     }
 }

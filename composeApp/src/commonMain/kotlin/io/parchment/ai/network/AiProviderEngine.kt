@@ -576,7 +576,7 @@ object AiProviderEngine {
     }.flowOn(Dispatchers.IO)
 
     /**
-     * Lightweight one-shot utility text generation (Kelivo-style) for Auto-Title Generation,
+     * Lightweight one-shot utility text generation for Auto-Title Generation,
      * Title Regeneration (`✦`), Context Summarization, and Translation.
      */
     suspend fun generateUtilityText(
@@ -1451,7 +1451,7 @@ object AiProviderEngine {
 
     // ============================================================================================
     // 1B. GOOGLE GEMINI STREAM GENERATE CONTENT DRIVER (/v1beta/models/{model}:streamGenerateContent)
-    //     Implements the exact Gemini 4 Argon / Gemini 3+ / Gemini 2.5 dialect (matching Kelivo):
+    //     Implements the exact Gemini 4 Argon / Gemini 3+ / Gemini 2.5 dialect:
     //     - Gemini 4 Argon: `thinkingConfig: { includeThoughts: true, thinkingLevel: "LOW"|"MEDIUM"|"HIGH" }`,
     //       omits `temperature`/`topP` (SamplingPolicy.never), defaults to 65536 maxOutputTokens,
     //       and replays `thoughtSignature` on multi-turn history & tool calls.
@@ -2108,7 +2108,7 @@ object AiProviderEngine {
     }
 
     /**
-     * Builds the official OpenAI `/v1/responses` input array (matching Kelivo's `openai_provider.dart`):
+     * Builds the official OpenAI `/v1/responses` input array:
      * - Assistant turns use `{"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "..."}]}`
      * - User turns use `{"role": "user", "content": "..."}` or multimodal `input_text` + `input_image` parts.
      */
@@ -2493,7 +2493,7 @@ object AiProviderEngine {
                 put("max_tokens", maxTok)
 
                 if (isAdaptiveEffortModel) {
-                    // Claude 4.6+ / Opus 5.5 / Sonnet 5.5 adaptive effort dialect (matching Kelivo)
+                    // Claude 4.6+ / Opus 5.5 / Sonnet 5.5 adaptive effort dialect
                     if (effort.equals("none", ignoreCase = true) || effort.equals("off", ignoreCase = true)) {
                         putJsonObject("thinking") {
                             put("type", "disabled")
@@ -3043,13 +3043,15 @@ object AiProviderEngine {
     }
 
     /**
-     * Resolves image attachments as `(mimeType, base64String)` pairs, reading lazily from `localFilePath`
-     * on disk when `base64Data` is empty so multi-megabyte base64 strings never bloat RAM or JSON state.
+     * Resolves multimodal binary attachments (images, videos, audio, and PDFs) as `(mimeType, base64String)` pairs,
+     * reading lazily from `localFilePath` on disk when `base64Data` is empty so multi-megabyte base64 strings never bloat RAM or JSON state.
      */
     private fun resolveImageAttachments(nodeVar: MessageVariant?): List<Pair<String, String>> {
         if (nodeVar == null || nodeVar.attachments.isEmpty()) return emptyList()
         return nodeVar.attachments.mapNotNull { att ->
-            if (!att.mimeType.startsWith("image/", ignoreCase = true) && att.base64Data.isBlank()) return@mapNotNull null
+            val m = att.mimeType.lowercase()
+            val isBinaryMedia = m.startsWith("image/") || m.startsWith("video/") || m.startsWith("audio/") || m == "application/pdf"
+            if (!isBinaryMedia && att.base64Data.isBlank()) return@mapNotNull null
             val b64 = if (att.base64Data.isNotBlank()) {
                 att.base64Data
             } else if (att.localFilePath.isNotBlank()) {

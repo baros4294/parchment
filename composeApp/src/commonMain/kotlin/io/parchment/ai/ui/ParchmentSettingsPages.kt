@@ -86,7 +86,7 @@ enum class SettingsCategory(val icon: String, val label: String) {
 }
 
 @Composable
-fun KelivoSettingsScreen(
+fun ParchmentSettingsScreen(
     appState: AppStateSnapshot,
     activeProfile: ProviderProfile,
     activeSession: ChatSession,
@@ -123,7 +123,7 @@ fun KelivoSettingsScreen(
 
         if (isWide) {
             Row(modifier = Modifier.fillMaxSize()) {
-                // Left Category Rail (Matching Kelivo Screenshot 3, 9, 10)
+                // Left Category Rail
                 Column(
                     modifier = Modifier
                         .width(225.dp)
@@ -445,7 +445,7 @@ private fun SettingsSubpageContent(
 }
 
 // ============================================================================================
-// SUBPAGE 1: PREFERENCES (Matching Kelivo Screenshots 3, 4, 5, 6, 7, 8)
+// SUBPAGE 1: PREFERENCES
 // ============================================================================================
 @Composable
 private fun PreferencesSubpage(
@@ -723,13 +723,19 @@ private fun PreferencesSubpage(
                         ) {
                             SepiaChip(
                                 label = "Card Bubbles",
-                                selected = activeSession.viewMode == ViewMode.EDITORIAL_TURNS,
-                                onClick = { onUpdateSession { it.copy(viewMode = ViewMode.EDITORIAL_TURNS) } }
+                                selected = prefs.defaultViewMode == ViewMode.EDITORIAL_TURNS,
+                                onClick = {
+                                    onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.EDITORIAL_TURNS))
+                                    onUpdateSession { it.copy(viewMode = ViewMode.EDITORIAL_TURNS) }
+                                }
                             )
                             SepiaChip(
                                 label = "Clean Page",
-                                selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
-                                onClick = { onUpdateSession { it.copy(viewMode = ViewMode.MANUSCRIPT) } }
+                                selected = prefs.defaultViewMode == ViewMode.MANUSCRIPT,
+                                onClick = {
+                                    onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.MANUSCRIPT))
+                                    onUpdateSession { it.copy(viewMode = ViewMode.MANUSCRIPT) }
+                                }
                             )
                         }
                     }
@@ -938,6 +944,13 @@ private fun PreferencesSubpage(
                     )
                     SepiaDivider()
                     SepiaToggleRow(
+                        title = "Confirm before deleting or clearing chats",
+                        subtitle = "Shows an 'Are you sure?' prompt before deleting a chat or clearing all chats",
+                        checked = prefs.confirmBeforeDeletingChat,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
+                    )
+                    SepiaDivider()
+                    SepiaToggleRow(
                         title = "Keep Message Versions When Forking",
                         checked = prefs.keepMessageVersionsWhenForking,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(keepMessageVersionsWhenForking = it)) }
@@ -1039,7 +1052,7 @@ private fun PreferencesSubpage(
 }
 
 // ============================================================================================
-// SUBPAGE 2: PROVIDERS (Matching Kelivo Screenshot 9 — 3-Pane Provider List + Detail + Model Subpage)
+// SUBPAGE 2: PROVIDERS (3-Pane Provider List + Detail + Model Subpage)
 // ============================================================================================
 @Composable
 private fun ProvidersSubpage(
@@ -1315,7 +1328,8 @@ private fun ProvidersSubpage(
                                         AiProviderEngine.fetchAvailableModels(activeProfile).fold(
                                             onSuccess = { list ->
                                                 val ms = PlatformBridge.currentTimeMillis() - start
-                                                onNotify("✓ Connection OK (${ms}ms • ${list.size} models reachable)")
+                                                val secStr = "${(ms / 10L) / 100.0}s"
+                                                onNotify("✓ Connection OK ($secStr • ${list.size} models reachable)")
                                                 isTestingOrFetching = false
                                             },
                                             onFailure = { err ->
@@ -2056,7 +2070,7 @@ private fun ModelConfigSubpage(
 }
 
 // ============================================================================================
-// SUBPAGE 3: ASSISTANTS (Matching Kelivo Screenshot 10 — Assistant Cards + Editor Subpage)
+// SUBPAGE 3: ASSISTANTS (Assistant Cards + Editor Subpage)
 // ============================================================================================
 @Composable
 private fun AssistantsSubpage(

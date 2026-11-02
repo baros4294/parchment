@@ -52,6 +52,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -102,6 +103,7 @@ import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
+import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.CoroutineScope
@@ -110,6 +112,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -134,6 +137,17 @@ private val compactStateJson = Json {
 enum class SidebarTab {
     ASSISTANTS,
     TOPICS
+}
+
+sealed interface DeleteConfirmRequest {
+    data class SingleSession(val sessionId: String, val title: String) : DeleteConfirmRequest
+    data class ClearAllSessions(val assistantName: String, val count: Int) : DeleteConfirmRequest
+    data class ClearCurrentMessages(val title: String) : DeleteConfirmRequest
+}
+
+private fun formatSecondsFromMs(ms: Long): String {
+    val sec = (ms / 10L).toDouble() / 100.0
+    return "${sec}s"
 }
 
 private val THINKING_EFFORT_PRESETS = listOf(
@@ -189,7 +203,109 @@ fun ParchmentApp() {
     var assistantPrefillInput by remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
     var showPrefillBox by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
+    var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
+    var isDraggingFilesOverWindow by remember { mutableStateOf(false) }
     var diskPersistJob by remember { mutableStateOf<Job?>(null) }
+
+    fun attachPickedFiles(files: List<PickedBinaryFile>) {
+        if (files.isEmpty()) return
+        val newAtts = files.mapIndexed { idx, picked ->
+            val now = PlatformBridge.currentTimeMillis() + idx
+            val lower = picked.fileName.lowercase()
+            val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+                lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".bmp")
+            val isVid = lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") ||
+                lower.endsWith(".mkv") || lower.endsWith(".avi")
+            val isAudio = lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg") ||
+                lower.endsWith(".flac") || lower.endsWith(".m4a")
+            val isPdf = lower.endsWith(".pdf")
+
+            when {
+                isImg -> {
+                    val mime = when {
+                        lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+                        lower.endsWith(".webp") -> "image/webp"
+                        lower.endsWith(".gif") -> "image/gif"
+                        lower.endsWith(".bmp") -> "image/bmp"
+                        else -> "image/png"
+                    }
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    PromptAttachment(
+                        id = "att-$now",
+                        fileName = picked.fileName,
+                        mimeType = mime,
+                        base64Data = "",
+                        localFilePath = savedPath
+                    )
+                }
+                isVid -> {
+                    val mime = when {
+                        lower.endsWith(".webm") -> "video/webm"
+                        lower.endsWith(".mov") -> "video/quicktime"
+                        lower.endsWith(".mkv") -> "video/x-matroska"
+                        else -> "video/mp4"
+                    }
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    PromptAttachment(
+                        id = "att-$now",
+                        fileName = picked.fileName,
+                        mimeType = mime,
+                        base64Data = "",
+                        localFilePath = savedPath
+                    )
+                }
+                isAudio || isPdf -> {
+                    val mime = when {
+                        isPdf -> "application/pdf"
+                        lower.endsWith(".wav") -> "audio/wav"
+                        lower.endsWith(".ogg") -> "audio/ogg"
+                        lower.endsWith(".flac") -> "audio/flac"
+                        else -> "audio/mp3"
+                    }
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    PromptAttachment(
+                        id = "att-$now",
+                        fileName = picked.fileName,
+                        mimeType = mime,
+                        base64Data = "",
+                        localFilePath = savedPath
+                    )
+                }
+                else -> {
+                    val decoded = runCatching { picked.bytes.decodeToString() }.getOrNull()
+                    if (decoded != null && !decoded.contains('\u0000')) {
+                        PromptAttachment(
+                            id = "att-$now",
+                            fileName = picked.fileName,
+                            mimeType = "text/plain",
+                            textContent = decoded
+                        )
+                    } else {
+                        val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                        PromptAttachment(
+                            id = "att-$now",
+                            fileName = picked.fileName,
+                            mimeType = "application/octet-stream",
+                            localFilePath = savedPath,
+                            textContent = "[Binary file attached: ${picked.fileName} (${picked.bytes.size / 1024} KB)]"
+                        )
+                    }
+                }
+            }
+        }
+        pendingAttachments = pendingAttachments + newAtts
+    }
+
+    LaunchedEffect(Unit) {
+        PlatformBridge.registerFileDropCallbacks(
+            onDragHover = { hovering -> isDraggingFilesOverWindow = hovering },
+            onFilesDropped = { dropped ->
+                uiScope.launch {
+                    attachPickedFiles(dropped)
+                }
+            }
+        )
+    }
 
     // Track dirty user state so ShutdownHook / onPause ONLY writes when the user actually changed state!
     var hasDirtyUnflushedChanges by remember { mutableStateOf(false) }
@@ -373,7 +489,7 @@ fun ParchmentApp() {
     }
 
     /**
-     * Kelivo-style Automatic & Manual AI Title Generation.
+     * Parchment Automatic & Manual AI Title Generation.
      * Respects `session.isTitleManuallySet` unless `forceRegenerate = true` (when clicking `✦`).
      */
     fun generateTopicTitle(sessionId: String, forceRegenerate: Boolean = false) {
@@ -539,22 +655,43 @@ fun ParchmentApp() {
                 }
             }
 
-            // 120fps (8ms tick) Smooth Character Pacer Coroutine (works in background & foreground without MonotonicFrameClock crash!)
+            // Hardware VSync Character Pacer (locks to 60Hz / 120Hz / 144Hz / 240Hz display clock via uiScope's MonotonicFrameClock,
+            // with automatic 8ms fallback when backgrounded on Android so background streams never pause or crash!)
+            val uiFrameClock = uiScope.coroutineContext[MonotonicFrameClock]
             val pacerJob = launch {
+                var lastFrameNanos = 0L
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
-                    delay(8L)
+                    val frameNanos = if (uiFrameClock != null) {
+                        runCatching {
+                            withTimeoutOrNull(28L) {
+                                uiFrameClock.withFrameNanos { it }
+                            }
+                        }.getOrNull()
+                    } else null
+
+                    val dtMs = if (frameNanos != null) {
+                        val delta = if (lastFrameNanos > 0L) ((frameNanos - lastFrameNanos) / 1_000_000L).coerceIn(2L, 32L) else 8L
+                        lastFrameNanos = frameNanos
+                        delta
+                    } else {
+                        delay(8L)
+                        lastFrameNanos = 0L
+                        8L
+                    }
+
+                    val frameScale = (dtMs / 8f).coerceIn(0.4f, 3.0f)
                     var changed = false
                     val targetThinkLen = networkThinkingTarget.length
                     if (displayedThinkingLen < targetThinkLen) {
                         val diff = targetThinkLen - displayedThinkingLen
-                        val step = maxOf(2, diff / 4)
+                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
                         displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
                         changed = true
                     }
                     val targetContLen = networkContentTarget.length
                     if (displayedContentLen < targetContLen) {
                         val diff = targetContLen - displayedContentLen
-                        val step = maxOf(2, diff / 4)
+                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
                         displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
                         changed = true
                     }
@@ -823,7 +960,7 @@ fun ParchmentApp() {
         var currentAtts = pendingAttachments
         if (rawInput.isEmpty() && prefill.isEmpty() && currentAtts.isEmpty()) return
 
-        // Support Kelivo's "Paste long text as file" threshold
+        // Support "Paste long text as file" threshold
         val prefs = appState.preferences
         val finalText = if (prefs.pasteLongTextAsFile && rawInput.length >= prefs.pasteConversionThresholdChars) {
             val now = PlatformBridge.currentTimeMillis()
@@ -1060,6 +1197,7 @@ fun ParchmentApp() {
             modelOverride = modId,
             assistantId = assistant.id,
             activeCard = card,
+            viewMode = appState.preferences.defaultViewMode,
             workspacePath = assistant.workspacePath,
             workspaceMode = assistant.workspaceMode,
             messages = initialMessages
@@ -1072,6 +1210,49 @@ fun ParchmentApp() {
             ),
             immediateFlush = true
         )
+    }
+
+    fun executeDeleteSingleSession(targetId: String) {
+        val remaining = appState.sessions.filterNot { it.id == targetId }
+        val remainingForAssistant = remaining.filter {
+            it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
+        }
+        if (remainingForAssistant.isNotEmpty()) {
+            val nextActive = if (appState.activeSessionId == targetId) remainingForAssistant.first().id else appState.activeSessionId
+            persist(appState.copy(sessions = remaining, activeSessionId = nextActive), immediateFlush = true)
+        } else {
+            val now = PlatformBridge.currentTimeMillis()
+            val fresh = ChatSession(
+                id = "sess-$now",
+                title = "New Chat",
+                createdAt = now,
+                updatedAt = now,
+                profileId = activeProfile.id,
+                modelOverride = activeProfile.defaultModel,
+                assistantId = activeAssistant.id,
+                viewMode = appState.preferences.defaultViewMode
+            )
+            persist(appState.copy(sessions = listOf(fresh) + remaining, activeSessionId = fresh.id), immediateFlush = true)
+        }
+    }
+
+    fun executeClearAllTopicsForAssistant() {
+        val otherSessions = appState.sessions.filterNot {
+            it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
+        }
+        val now = PlatformBridge.currentTimeMillis()
+        val fresh = ChatSession(
+            id = "sess-$now",
+            title = "New Chat",
+            createdAt = now,
+            updatedAt = now,
+            profileId = activeProfile.id,
+            modelOverride = activeProfile.defaultModel,
+            assistantId = activeAssistant.id,
+            viewMode = appState.preferences.defaultViewMode
+        )
+        persist(appState.copy(sessions = listOf(fresh) + otherSessions, activeSessionId = fresh.id), immediateFlush = true)
+        bannerNotification = "Cleared all chats for '${activeAssistant.name}' (Assistant & System Prompt preserved)."
     }
 
     ProvideParchmentTheme(config = appState.theme) {
@@ -1221,7 +1402,7 @@ fun ParchmentApp() {
                     // - On Desktop: Side-by-side Sidebar + Chat/Settings
                     // - On Mobile: Chat/Settings underneath + 86%-width Slide-Over Drawer with Scrim!
                     val sidebarComposable: @Composable (Modifier) -> Unit = { mod ->
-                        KelivoSidebar(
+                        ParchmentSidebar(
                             appState = appState,
                             activeAssistant = activeAssistant,
                             activeSession = activeSession,
@@ -1291,40 +1472,25 @@ fun ParchmentApp() {
                                 generateTopicTitle(sessId, forceRegenerate = true)
                             },
                             onDeleteSession = { targetId ->
-                                val remaining = appState.sessions.filterNot { it.id == targetId }
-                                val remainingForAssistant = remaining.filter { it.assistantId == activeAssistant.id }
-                                if (remainingForAssistant.isNotEmpty()) {
-                                    val nextActive = if (appState.activeSessionId == targetId) remainingForAssistant.first().id else appState.activeSessionId
-                                    persist(appState.copy(sessions = remaining, activeSessionId = nextActive), immediateFlush = true)
+                                if (appState.preferences.confirmBeforeDeletingChat) {
+                                    val title = appState.sessions.find { it.id == targetId }?.title ?: "Chat"
+                                    pendingDeleteConfirmation = DeleteConfirmRequest.SingleSession(targetId, title)
                                 } else {
-                                    // Deleting the last topic for this Assistant creates a fresh empty topic while keeping all Assistants intact!
-                                    val now = PlatformBridge.currentTimeMillis()
-                                    val fresh = ChatSession(
-                                        id = "sess-$now",
-                                        title = "New Chat",
-                                        createdAt = now,
-                                        updatedAt = now,
-                                        profileId = activeProfile.id,
-                                        modelOverride = activeProfile.defaultModel,
-                                        assistantId = activeAssistant.id
-                                    )
-                                    persist(appState.copy(sessions = listOf(fresh) + remaining, activeSessionId = fresh.id), immediateFlush = true)
+                                    executeDeleteSingleSession(targetId)
                                 }
                             },
                             onDeleteAllTopicsForAssistant = {
-                                val otherSessions = appState.sessions.filterNot { it.assistantId == activeAssistant.id }
-                                val now = PlatformBridge.currentTimeMillis()
-                                val fresh = ChatSession(
-                                    id = "sess-$now",
-                                    title = "New Chat",
-                                    createdAt = now,
-                                    updatedAt = now,
-                                    profileId = activeProfile.id,
-                                    modelOverride = activeProfile.defaultModel,
-                                    assistantId = activeAssistant.id
-                                )
-                                persist(appState.copy(sessions = listOf(fresh) + otherSessions, activeSessionId = fresh.id), immediateFlush = true)
-                                bannerNotification = "Cleared all topics for '${activeAssistant.name}' (Assistant & System Prompt kept)."
+                                val matchingCount = appState.sessions.count {
+                                    it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
+                                }
+                                if (appState.preferences.confirmBeforeDeletingChat) {
+                                    pendingDeleteConfirmation = DeleteConfirmRequest.ClearAllSessions(
+                                        assistantName = activeAssistant.name,
+                                        count = matchingCount
+                                    )
+                                } else {
+                                    executeClearAllTopicsForAssistant()
+                                }
                             },
                             onOpenSettings = {
                                 isSettingsOpen = true
@@ -1357,7 +1523,7 @@ fun ParchmentApp() {
                                 modifier = Modifier.weight(1f).fillMaxHeight()
                             ) { settingsMode ->
                             if (settingsMode) {
-                                KelivoSettingsScreen(
+                                ParchmentSettingsScreen(
                                     appState = appState,
                                     activeProfile = activeProfile,
                                     activeSession = activeSession,
@@ -1478,35 +1644,25 @@ fun ParchmentApp() {
                                     pendingAttachments = pendingAttachments,
                                     onAddAttachment = {
                                         uiScope.launch {
-                                            val picked = PlatformBridge.pickFileForImport(
-                                                listOf("png", "jpg", "jpeg", "webp", "md", "txt", "json", "kt", "py", "ts", "js", "tex")
-                                            ) ?: return@launch
-                                            val now = PlatformBridge.currentTimeMillis()
-                                            val lower = picked.fileName.lowercase()
-                                            val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")
-                                            val att = if (isImg) {
-                                                val mime = when {
-                                                    lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
-                                                    lower.endsWith(".webp") -> "image/webp"
-                                                    else -> "image/png"
-                                                }
-                                                val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
-                                                PromptAttachment(
-                                                    id = "att-$now",
-                                                    fileName = picked.fileName,
-                                                    mimeType = mime,
-                                                    base64Data = "",
-                                                    localFilePath = savedPath
-                                                )
-                                            } else {
-                                                PromptAttachment(
-                                                    id = "att-$now",
-                                                    fileName = picked.fileName,
-                                                    mimeType = "text/plain",
-                                                    textContent = picked.bytes.decodeToString()
-                                                )
-                                            }
-                                            pendingAttachments = pendingAttachments + att
+                                            val picked = PlatformBridge.pickFileForImport(emptyList()) ?: return@launch
+                                            attachPickedFiles(listOf(picked))
+                                        }
+                                    },
+                                    onPasteClipboardMedia = {
+                                        val pasted = PlatformBridge.readClipboardFiles()
+                                        if (pasted.isNotEmpty()) {
+                                            attachPickedFiles(pasted)
+                                            bannerNotification = "Attached ${pasted.size} clipboard item(s): ${pasted.joinToString { it.fileName }}"
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    },
+                                    onRequestClearCurrentChat = {
+                                        if (appState.preferences.confirmBeforeDeletingChat) {
+                                            pendingDeleteConfirmation = DeleteConfirmRequest.ClearCurrentMessages(activeSession.title)
+                                        } else {
+                                            updateActiveSession(immediate = true) { it.copy(messages = emptyList()) }
                                         }
                                     },
                                     onRemoveAttachment = { attId ->
@@ -1682,6 +1838,127 @@ fun ParchmentApp() {
                                                 .width(1.dp)
                                                 .fillMaxHeight()
                                                 .background(p.border)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Drag-and-Drop Full-Window Visual Overlay
+                        if (isDraggingFilesOverWindow) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(p.canvasBg.copy(alpha = 0.88f))
+                                    .border(2.dp, p.accent, RoundedCornerShape(14.dp))
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.UPLOAD, tint = p.accent, size = 34.dp)
+                                    BasicText(
+                                        text = "Drop Images, Videos, or Files to Attach",
+                                        style = p.uiHeaderStyle.copy(fontSize = 20.sp, color = p.accent)
+                                    )
+                                    BasicText(
+                                        text = "Supports PNG, JPG, WEBP, GIF, MP4, WEBM, MOV, PDF, Audio, and Code/Text files",
+                                        style = p.uiLabelStyle.copy(color = p.narrationInk)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Delete / Clear Confirmation Modal Dialog (Active by default, toggleable in Settings -> Preferences)
+                        val confirmReq = pendingDeleteConfirmation
+                        if (confirmReq != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.42f))
+                                    .clickable { pendingDeleteConfirmation = null },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val dialogTitle = when (confirmReq) {
+                                    is DeleteConfirmRequest.SingleSession -> "Delete Chat?"
+                                    is DeleteConfirmRequest.ClearAllSessions -> "Clear All Chats?"
+                                    is DeleteConfirmRequest.ClearCurrentMessages -> "Clear Messages?"
+                                }
+                                val dialogBody = when (confirmReq) {
+                                    is DeleteConfirmRequest.SingleSession ->
+                                        "Are you sure you want to delete '${confirmReq.title}'? This cannot be undone."
+                                    is DeleteConfirmRequest.ClearAllSessions ->
+                                        "Are you sure you want to delete all ${confirmReq.count} chat(s) for '${confirmReq.assistantName}'? Your Assistant and System Prompt will be kept."
+                                    is DeleteConfirmRequest.ClearCurrentMessages ->
+                                        "Are you sure you want to clear all messages in '${confirmReq.title}'?"
+                                }
+                                val confirmBtnText = when (confirmReq) {
+                                    is DeleteConfirmRequest.SingleSession -> "🗑 Delete"
+                                    is DeleteConfirmRequest.ClearAllSessions -> "🗑 Clear All"
+                                    is DeleteConfirmRequest.ClearCurrentMessages -> "🗑 Clear"
+                                }
+
+                                Column(
+                                    modifier = Modifier
+                                        .widthIn(max = 420.dp)
+                                        .fillMaxWidth(0.9f)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(p.cardBg)
+                                        .border(1.dp, p.border, RoundedCornerShape(14.dp))
+                                        .clickable(enabled = false) {}
+                                        .padding(18.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    BasicText(
+                                        text = dialogTitle,
+                                        style = p.uiHeaderStyle.copy(fontSize = 17.sp)
+                                    )
+                                    BasicText(
+                                        text = dialogBody,
+                                        style = p.uiBodyStyle.copy(color = p.narrationInk)
+                                    )
+                                    SepiaToggleRow(
+                                        title = "Ask for confirmation before deleting",
+                                        subtitle = "You can also change this anytime in Settings → Preferences",
+                                        checked = appState.preferences.confirmBeforeDeletingChat,
+                                        onCheckedChange = { checked ->
+                                            persist(
+                                                appState.copy(
+                                                    preferences = appState.preferences.copy(confirmBeforeDeletingChat = checked)
+                                                ),
+                                                immediateFlush = true
+                                            )
+                                        }
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        SepiaButton(
+                                            text = "Cancel",
+                                            compact = true,
+                                            style = SepiaButtonStyle.OUTLINE,
+                                            onClick = { pendingDeleteConfirmation = null }
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        SepiaButton(
+                                            text = confirmBtnText,
+                                            compact = true,
+                                            style = SepiaButtonStyle.DANGER,
+                                            onClick = {
+                                                pendingDeleteConfirmation = null
+                                                when (confirmReq) {
+                                                    is DeleteConfirmRequest.SingleSession ->
+                                                        executeDeleteSingleSession(confirmReq.sessionId)
+                                                    is DeleteConfirmRequest.ClearAllSessions ->
+                                                        executeClearAllTopicsForAssistant()
+                                                    is DeleteConfirmRequest.ClearCurrentMessages ->
+                                                        updateActiveSession(immediate = true) { it.copy(messages = emptyList()) }
+                                                }
+                                            }
                                         )
                                     }
                                 }
@@ -1898,10 +2175,10 @@ private fun TopEditorialBar(
 }
 
 // ============================================================================================
-// KELIVO-STYLE `[ Assistants | Topics ]` LEFT SIDEBAR (Matching Screenshots 1 & 2)
+// PARCHMENT `[ Assistants | Chats ]` LEFT SIDEBAR
 // ============================================================================================
 @Composable
-private fun KelivoSidebar(
+private fun ParchmentSidebar(
     appState: AppStateSnapshot,
     activeAssistant: AssistantAgent,
     activeSession: ChatSession,
@@ -1952,7 +2229,7 @@ private fun KelivoSidebar(
             )
         }
 
-        // 2. Kelivo 2-Tab Pill Switcher (`[ Assistants | Chats ]`)
+        // 2. Parchment 2-Tab Pill Switcher (`[ Assistants | Chats ]`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2108,7 +2385,7 @@ private fun KelivoSidebar(
                         style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
                     )
                 }
-                if (assistantTopics.size > 1) {
+                if (assistantTopics.size > 1 || assistantTopics.any { it.messages.isNotEmpty() || it.title != "New Chat" }) {
                     SepiaButton(
                         text = "Clear All",
                         compact = true,
@@ -2251,6 +2528,8 @@ private fun ManuscriptViewport(
     onTogglePrefillBox: () -> Unit,
     pendingAttachments: List<PromptAttachment>,
     onAddAttachment: () -> Unit,
+    onPasteClipboardMedia: () -> Boolean,
+    onRequestClearCurrentChat: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onExportChatMarkdown: () -> Unit,
     onOpenPricingSettings: () -> Unit,
@@ -2398,7 +2677,7 @@ private fun ManuscriptViewport(
                                     text = "Clear Chat",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
-                                    onClick = { onUpdateSession { it.copy(messages = emptyList()) } }
+                                    onClick = onRequestClearCurrentChat
                                 )
                             }
                             SepiaButton(
@@ -2472,7 +2751,7 @@ private fun ManuscriptViewport(
                     .fillMaxWidth()
                     .padding(horizontal = if (win.isCompact) 12.dp else 18.dp),
                 verticalArrangement = Arrangement.spacedBy(
-                    if (activeSession.viewMode == ViewMode.MANUSCRIPT) 16.dp else 18.dp
+                    if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else 18.dp
                 )
             ) {
                 item { Spacer(Modifier.height(10.dp)) }
@@ -2540,7 +2819,7 @@ private fun ManuscriptViewport(
                     MessageTurnItem(
                         node = node,
                         nodeIndex = index,
-                        viewMode = activeSession.viewMode,
+                        viewMode = preferences.defaultViewMode,
                         preferences = preferences,
                         userName = activeSession.userName,
                         characterName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
@@ -3066,8 +3345,13 @@ private fun ManuscriptViewport(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         pendingAttachments.forEach { att ->
+                            val attIcon = when {
+                                att.mimeType.startsWith("image/") -> "🖼"
+                                att.mimeType.startsWith("video/") -> "🎬"
+                                else -> "📎"
+                            }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                SepiaChip(label = "📎 ${att.fileName}", selected = true, onClick = {})
+                                SepiaChip(label = "$attIcon ${att.fileName}", selected = true, onClick = {})
                                 SepiaButton(text = "×", compact = true, style = SepiaButtonStyle.GHOST, onClick = { onRemoveAttachment(att.id) })
                             }
                         }
@@ -3121,7 +3405,8 @@ private fun ManuscriptViewport(
                                 false
                             }
                         }
-                    } else null
+                    } else null,
+                    onClipboardPaste = onPasteClipboardMedia
                 )
 
                 SepiaDivider()
@@ -3792,7 +4077,7 @@ private fun MessageTurnItem(
                     val detailStr = if (showMoreActions || preferences.showTokensForEntireTurn) {
                         val cacheStr = if (m.cachedInputTokens > 0) " (Cache ${formatCompactTokens(m.cachedInputTokens)})" else ""
                         val thinkStr = if (m.reasoningTokens > 0) " • Think ${formatCompactTokens(m.reasoningTokens)}" else ""
-                        "TTFT ${m.ttftMs}ms • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok$costStr"
+                        "first token ${formatSecondsFromMs(m.ttftMs)} • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok$costStr"
                     } else {
                         "${m.tokensPerSec} tok/s • ${formatCompactTokens(m.totalTokens)} tok$costStr"
                     }
@@ -3895,11 +4180,18 @@ private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
 
     val safeActiveSessionId = recoveredSessions.find { it.id == loaded.activeSessionId }?.id ?: recoveredSessions.first().id
 
+    val migratedTheme = if (loaded.theme.name.endsWith("Warm Ivory (Light)") && !loaded.theme.name.startsWith("Parchment ")) {
+        loaded.theme.copy(name = "Parchment Warm Ivory (Light)")
+    } else {
+        loaded.theme
+    }
+
     return loaded.copy(
         profiles = safeProfiles,
         activeProfileId = safeActiveProfileId,
         sessions = recoveredSessions,
-        activeSessionId = safeActiveSessionId
+        activeSessionId = safeActiveSessionId,
+        theme = migratedTheme
     )
 }
 

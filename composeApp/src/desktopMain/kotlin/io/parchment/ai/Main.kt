@@ -16,11 +16,21 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.ui.ParchmentApp
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import org.jetbrains.skia.Image
+import java.awt.Component
+import java.awt.Container
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDragEvent
+import java.awt.dnd.DropTargetDropEvent
+import java.awt.dnd.DropTargetEvent
 import java.io.File
 import java.util.Properties
 
@@ -68,10 +78,25 @@ private fun saveWindowGeometry(geom: SavedWindowGeometry) {
     }
 }
 
+private fun attachDropTargetRecursively(component: Component, createTarget: () -> DropTarget) {
+    runCatching {
+        component.dropTarget = createTarget()
+        if (component is Container) {
+            for (child in component.components) {
+                attachDropTargetRecursively(child, createTarget)
+            }
+        }
+    }
+}
+
 @OptIn(kotlinx.coroutines.FlowPreview::class)
-fun main() = application {
-    var windowTitle by remember { mutableStateOf("Parchment — Literary & Bleeding-Edge AI Studio") }
-    PlatformBridge.windowStatusCallback = { newTitle -> windowTitle = newTitle }
+fun main() {
+    // Enable hardware VSync so Skia renders smoothly at the monitor's native refresh rate (60Hz / 120Hz / 144Hz / 240Hz)
+    System.setProperty("skiko.vsync.enabled", "true")
+
+    application {
+        var windowTitle by remember { mutableStateOf("Parchment — Literary & Bleeding-Edge AI Studio") }
+        PlatformBridge.windowStatusCallback = { newTitle -> windowTitle = newTitle }
 
     val initialGeom = remember { loadSavedWindowGeometry() }
 
@@ -136,25 +161,79 @@ fun main() = application {
         }.getOrNull()
     }
 
-    Window(
-        onCloseRequest = {
-            val isMax = windowState.placement == WindowPlacement.Maximized || windowState.placement == WindowPlacement.Fullscreen
-            saveWindowGeometry(
-                SavedWindowGeometry(
-                    isMaximized = isMax,
-                    widthDp = lastFloatingWidth,
-                    heightDp = lastFloatingHeight,
-                    xDp = lastFloatingX,
-                    yDp = lastFloatingY
+        Window(
+            onCloseRequest = {
+                val isMax = windowState.placement == WindowPlacement.Maximized || windowState.placement == WindowPlacement.Fullscreen
+                saveWindowGeometry(
+                    SavedWindowGeometry(
+                        isMaximized = isMax,
+                        widthDp = lastFloatingWidth,
+                        heightDp = lastFloatingHeight,
+                        xDp = lastFloatingX,
+                        yDp = lastFloatingY
+                    )
                 )
-            )
-            PlatformBridge.flushPendingStateNow()
-            exitApplication()
-        },
-        state = windowState,
-        title = windowTitle,
-        icon = appIconPainter
-    ) {
-        ParchmentApp()
+                PlatformBridge.flushPendingStateNow()
+                exitApplication()
+            },
+            state = windowState,
+            title = windowTitle,
+            icon = appIconPainter
+        ) {
+            LaunchedEffect(window) {
+                val makeDropTarget: () -> DropTarget = {
+                    DropTarget(
+                        null,
+                        DnDConstants.ACTION_COPY_OR_MOVE,
+                        object : DropTargetAdapter() {
+                            override fun dragEnter(dtde: DropTargetDragEvent) {
+                                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                                    PlatformBridge.dragHoverCallback?.invoke(true)
+                                }
+                            }
+
+                            override fun dragOver(dtde: DropTargetDragEvent) {
+                                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                                }
+                            }
+
+                            override fun dragExit(dte: DropTargetEvent) {
+                                PlatformBridge.dragHoverCallback?.invoke(false)
+                            }
+
+                            override fun drop(dtde: DropTargetDropEvent) {
+                                PlatformBridge.dragHoverCallback?.invoke(false)
+                                runCatching {
+                                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                        dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                                        val dropped = dtde.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+                                        val pickedFiles = dropped?.mapNotNull { item ->
+                                            val f = item as? File
+                                            if (f != null && f.exists() && f.isFile && f.length() <= 150_000_000L) {
+                                                runCatching { PickedBinaryFile(f.name, f.readBytes()) }.getOrNull()
+                                            } else null
+                                        }.orEmpty()
+                                        if (pickedFiles.isNotEmpty()) {
+                                            PlatformBridge.filesDroppedCallback?.invoke(pickedFiles)
+                                        }
+                                        dtde.dropComplete(true)
+                                    } else {
+                                        dtde.rejectDrop()
+                                    }
+                                }.onFailure {
+                                    runCatching { dtde.dropComplete(false) }
+                                }
+                            }
+                        },
+                        true
+                    )
+                }
+                attachDropTargetRecursively(window, makeDropTarget)
+            }
+
+            ParchmentApp()
+        }
     }
 }

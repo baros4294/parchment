@@ -53,4 +53,11 @@ expect object PlatformBridge {
     fun readBinaryFileBytes(filePath: String): ByteArray?
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)
+
+    // Clipboard Image/Video/File Paste & Native Drag-and-Drop Support
+    fun readClipboardFiles(): List<PickedBinaryFile>
+    fun registerFileDropCallbacks(
+        onDragHover: (Boolean) -> Unit,
+        onFilesDropped: (List<PickedBinaryFile>) -> Unit
+    )
 }

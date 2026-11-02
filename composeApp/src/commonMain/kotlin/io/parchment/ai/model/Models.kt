@@ -289,7 +289,7 @@ data class SystemPromptPreset(
 )
 
 /**
- * Kelivo-Style Persistent Assistant / Agent Profile.
+ * Parchment Persistent Assistant / Agent Profile.
  * Lives independently of Topics (ChatSessions), so deleting a Topic never deletes your System Prompt or Agent setup.
  */
 @Serializable
@@ -315,7 +315,7 @@ data class AssistantAgent(
 )
 
 /**
- * Kelivo-Style Global & Task-Specific Default Models Configuration.
+ * Parchment Global & Task-Specific Default Models Configuration.
  */
 @Serializable
 data class DefaultModelConfig(
@@ -349,11 +349,12 @@ enum class SendShortcutMode(val label: String) {
 }
 
 /**
- * Kelivo-Style Granular Display, Rendering, and Behavior Preferences.
+ * Parchment Granular Display, Rendering, and Behavior Preferences.
  */
 @Serializable
 data class PreferencesConfig(
     // Chat item display
+    val defaultViewMode: ViewMode = ViewMode.EDITORIAL_TURNS,
     val showProviderInModelCapsule: Boolean = true,
     val showUserAvatar: Boolean = true,
     val showUserName: Boolean = true,
@@ -386,6 +387,7 @@ data class PreferencesConfig(
     val deleteMessagesBelowWhenRegenerating: Boolean = false,
     val deletePreviousMessageWhenRegenerating: Boolean = false,
     val confirmBeforeRegenerating: Boolean = false,
+    val confirmBeforeDeletingChat: Boolean = true,
     val keepMessageVersionsWhenForking: Boolean = true,
     val showChatListDates: Boolean = true,
     val newChatWhenSwitchingAssistants: Boolean = false,
@@ -438,7 +440,7 @@ data class ChatSession(
     val fragments: List<ContextFragment> = emptyList(),
     val authorsNote: String = "",
     val authorsNoteDepth: Int = 2,
-    val viewMode: ViewMode = ViewMode.MANUSCRIPT,
+    val viewMode: ViewMode = ViewMode.EDITORIAL_TURNS,
     val workspacePath: String = "",
     val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
     val messages: List<MessageNode> = emptyList()
@@ -476,7 +478,7 @@ data class ThemeConfig(
         val PRESETS: List<ThemeConfig> = listOf(
             ThemeConfig(),
             ThemeConfig(
-                name = "Kelivo Warm Ivory (Light)",
+                name = "Parchment Warm Ivory (Light)",
                 colorMode = "Light",
                 canvasBgHex = "#F8F7F4",
                 sheetBgHex = "#EFECE6",

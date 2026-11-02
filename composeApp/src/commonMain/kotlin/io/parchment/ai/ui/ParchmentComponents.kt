@@ -256,9 +256,10 @@ fun SepiaButton(
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else Color.Transparent
     }
 
-    val bgColor by animateColorAsState(targetBg, tween(if (isPressed) 40 else 130))
-    val textColor by animateColorAsState(targetText, tween(if (isPressed) 40 else 130))
-    val borderColor by animateColorAsState(targetBorder, tween(if (isPressed) 40 else 130))
+    val colorSpec = spring<Color>(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
+    val bgColor by animateColorAsState(targetBg, colorSpec)
+    val textColor by animateColorAsState(targetText, colorSpec)
+    val borderColor by animateColorAsState(targetBorder, colorSpec)
 
     val win = LocalParchmentWindowSize.current
     val parsed = remember(text) { parseKissLabelIcons(text) }
@@ -347,6 +348,7 @@ fun SepiaChip(
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
     val shape = RoundedCornerShape(7.dp)
+    val chipColorSpec = spring<Color>(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
     val bg by animateColorAsState(
         targetValue = when {
             isPressed -> p.accent.copy(alpha = 0.24f)
@@ -354,7 +356,7 @@ fun SepiaChip(
             isHovered -> p.accent.copy(alpha = 0.09f)
             else -> p.cardBg.copy(alpha = 0.78f)
         },
-        animationSpec = tween(if (isPressed) 40 else 140)
+        animationSpec = chipColorSpec
     )
     val borderCol by animateColorAsState(
         targetValue = when {
@@ -362,11 +364,11 @@ fun SepiaChip(
             isHovered -> p.accent.copy(alpha = 0.65f)
             else -> p.border.copy(alpha = 0.65f)
         },
-        animationSpec = tween(if (isPressed) 40 else 140)
+        animationSpec = chipColorSpec
     )
     val txtCol by animateColorAsState(
         targetValue = if (selected || isPressed || isHovered) p.accent else p.narrationInk,
-        animationSpec = tween(if (isPressed) 40 else 140)
+        animationSpec = chipColorSpec
     )
 
     val parsed = remember(label) { parseKissLabelIcons(label) }
@@ -491,7 +493,8 @@ fun SepiaTextField(
     minHeight: Dp = 36.dp,
     maxHeight: Dp = 220.dp,
     maxLines: Int = if (singleLine) 1 else 8,
-    onEnterKeySend: ((isCtrlOrMetaPressed: Boolean, isShiftPressed: Boolean) -> Boolean)? = null
+    onEnterKeySend: ((isCtrlOrMetaPressed: Boolean, isShiftPressed: Boolean) -> Boolean)? = null,
+    onClipboardPaste: (() -> Boolean)? = null
 ) {
     val p = LocalParchmentPalette.current
     val shape = RoundedCornerShape(8.dp)
@@ -506,7 +509,7 @@ fun SepiaTextField(
             isFocused -> p.accent.copy(alpha = 0.85f)
             else -> p.border.copy(alpha = 0.75f)
         },
-        animationSpec = tween(150)
+        animationSpec = spring(stiffness = Spring.StiffnessMedium)
     )
 
     Column(modifier = modifier) {
@@ -530,29 +533,45 @@ fun SepiaTextField(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
-                    if (onEnterKeySend != null) {
+                    if (onEnterKeySend != null || onClipboardPaste != null) {
                         Modifier.onPreviewKeyEvent { keyEvent ->
-                            val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
-                            if (!isEnter || keyEvent.isAltPressed) return@onPreviewKeyEvent false
-                            when (keyEvent.type) {
-                                KeyEventType.KeyDown -> {
-                                    val consumed = onEnterKeySend(
-                                        keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
-                                        keyEvent.isShiftPressed
-                                    )
-                                    consumeNextEnterKeyUp = consumed
-                                    consumed
+                            // 1. Check Ctrl+V / Cmd+V for Clipboard Image / Video / File Paste
+                            if (onClipboardPaste != null &&
+                                keyEvent.type == KeyEventType.KeyDown &&
+                                (keyEvent.isCtrlPressed || keyEvent.isMetaPressed) &&
+                                !keyEvent.isAltPressed &&
+                                keyEvent.key == Key.V
+                            ) {
+                                if (onClipboardPaste()) {
+                                    return@onPreviewKeyEvent true
                                 }
-                                KeyEventType.KeyUp -> {
-                                    if (consumeNextEnterKeyUp) {
-                                        consumeNextEnterKeyUp = false
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                }
-                                else -> false
                             }
+
+                            // 2. Check Enter / Shift+Enter for Send vs Newline
+                            if (onEnterKeySend != null) {
+                                val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                                if (!isEnter || keyEvent.isAltPressed) return@onPreviewKeyEvent false
+                                return@onPreviewKeyEvent when (keyEvent.type) {
+                                    KeyEventType.KeyDown -> {
+                                        val consumed = onEnterKeySend(
+                                            keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
+                                            keyEvent.isShiftPressed
+                                        )
+                                        consumeNextEnterKeyUp = consumed
+                                        consumed
+                                    }
+                                    KeyEventType.KeyUp -> {
+                                        if (consumeNextEnterKeyUp) {
+                                            consumeNextEnterKeyUp = false
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    else -> false
+                                }
+                            }
+                            false
                         }
                     } else Modifier
                 ),
@@ -697,7 +716,7 @@ fun SepiaDivider(modifier: Modifier = Modifier) {
 }
 
 /**
- * Kelivo-style Soft Circular Avatar / Icon Badge (for Assistants, Providers, and Models).
+ * Parchment Soft Circular Avatar / Icon Badge (for Assistants, Providers, and Models).
  */
 @Composable
 fun SepiaAvatarCircle(
@@ -709,7 +728,7 @@ fun SepiaAvatarCircle(
     val p = LocalParchmentPalette.current
     val bg by animateColorAsState(
         targetValue = if (selected) p.accent.copy(alpha = 0.18f) else p.sheetBg.copy(alpha = 0.85f),
-        animationSpec = tween(150)
+        animationSpec = spring(stiffness = Spring.StiffnessMedium)
     )
     val fgColor = if (selected) p.accent else p.primaryInk
     val parsedIcon = remember(symbol) { parseKissLabelIcons(symbol).leadingIcon }
@@ -751,7 +770,7 @@ fun SepiaAvatarCircle(
 }
 
 /**
- * Kelivo-style Animated Pill Toggle Switch (Pure Compose Foundation).
+ * Parchment Animated Pill Toggle Switch (Pure Compose Foundation).
  */
 @Composable
 fun SepiaToggleSwitch(
@@ -762,7 +781,7 @@ fun SepiaToggleSwitch(
     val p = LocalParchmentPalette.current
     val trackColor by animateColorAsState(
         targetValue = if (checked) p.accent else p.border.copy(alpha = 0.7f),
-        animationSpec = tween(160)
+        animationSpec = spring(stiffness = Spring.StiffnessMedium)
     )
     val thumbBias by animateFloatAsState(
         targetValue = if (checked) 1f else 0f,
@@ -795,7 +814,7 @@ fun SepiaToggleSwitch(
 }
 
 /**
- * Kelivo-style Settings Preference Toggle Row (Title + Subtitle on left, Switch on right).
+ * Parchment Settings Preference Toggle Row (Title + Subtitle on left, Switch on right).
  */
 @Composable
 fun SepiaToggleRow(
@@ -815,7 +834,7 @@ fun SepiaToggleRow(
             isHovered -> p.accent.copy(alpha = 0.06f)
             else -> Color.Transparent
         },
-        animationSpec = tween(if (isPressed) 40 else 130)
+        animationSpec = spring(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
     )
     val shape = RoundedCornerShape(7.dp)
     Row(

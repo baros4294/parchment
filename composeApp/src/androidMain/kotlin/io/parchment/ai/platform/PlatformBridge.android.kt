@@ -1,6 +1,7 @@
 package io.parchment.ai.platform
 
 import android.app.PendingIntent
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
@@ -8,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -488,5 +490,37 @@ actual object PlatformBridge {
             }
             ctx.startActivity(viewIntent)
         }
+    }
+
+    actual fun readClipboardFiles(): List<PickedBinaryFile> = runCatching {
+        val ctx = appContext ?: return@runCatching emptyList()
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@runCatching emptyList()
+        val clip = cm.primaryClip ?: return@runCatching emptyList()
+        val results = mutableListOf<PickedBinaryFile>()
+        for (i in 0 until clip.itemCount) {
+            val uri = clip.getItemAt(i)?.uri ?: continue
+            val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: continue
+            if (bytes.isEmpty()) continue
+            var displayName = ""
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    displayName = cursor.getString(0) ?: ""
+                }
+            }
+            if (displayName.isBlank()) {
+                val mime = ctx.contentResolver.getType(uri) ?: "image/png"
+                val ext = mime.substringAfter('/', "png").substringBefore(';')
+                displayName = "clipboard-${currentTimeMillis()}.$ext"
+            }
+            results.add(PickedBinaryFile(displayName, bytes))
+        }
+        results
+    }.getOrDefault(emptyList())
+
+    actual fun registerFileDropCallbacks(
+        onDragHover: (Boolean) -> Unit,
+        onFilesDropped: (List<PickedBinaryFile>) -> Unit
+    ) {
+        // Android uses system share/clipboard/picker intents
     }
 }
