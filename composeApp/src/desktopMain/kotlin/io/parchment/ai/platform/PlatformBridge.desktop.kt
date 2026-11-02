@@ -65,18 +65,47 @@ actual object PlatformBridge {
 
     private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
-    actual fun loadAppStateJson(): String? = runCatching {
+    private fun isBlankDefaultStateJson(json: String): Boolean {
+        return json.contains("\"id\":\"sess-initial\"") &&
+            json.contains("\"assistants\":[]") &&
+            json.contains("\"messages\":[]") &&
+            !json.contains("\"apiKey\":\"sk-") &&
+            Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+    }
+
+    actual fun loadAppStateJson(): String? {
         val dir = resolveStorageDir()
         val f = stateFile()
         val tmp = File(dir, "parchment-state.json.tmp")
         val prev = File(dir, "parchment-state.prev.json")
-        when {
-            f.exists() && f.isFile && f.length() > 10L -> f.readText(Charsets.UTF_8)
-            tmp.exists() && tmp.isFile && tmp.length() > 10L -> tmp.readText(Charsets.UTF_8)
-            prev.exists() && prev.isFile && prev.length() > 10L -> prev.readText(Charsets.UTF_8)
-            else -> null
+        val userBak = File(dir, "parchment-state.user-backup.json")
+
+        // Retry up to 6 times (50ms apart) in case the previous process during an OTA restart is still releasing its file handle
+        repeat(6) { attempt ->
+            val candidates = listOf(f, tmp, prev, userBak)
+            for (cand in candidates) {
+                val content = runCatching {
+                    if (cand.exists() && cand.isFile && cand.length() > 10L) {
+                        cand.readText(Charsets.UTF_8)
+                    } else null
+                }.getOrNull()
+                if (!content.isNullOrBlank()) {
+                    // If the primary file was somehow overwritten by a blank default state, but userBak has real user data, prefer userBak!
+                    if (cand != userBak && isBlankDefaultStateJson(content) && userBak.exists() && userBak.length() > 50L) {
+                        val bakContent = runCatching { userBak.readText(Charsets.UTF_8) }.getOrNull()
+                        if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
+                            return bakContent
+                        }
+                    }
+                    return content
+                }
+            }
+            if (attempt < 5 && (f.exists() || tmp.exists() || prev.exists() || userBak.exists())) {
+                runCatching { Thread.sleep(50L) }
+            }
         }
-    }.getOrNull()
+        return null
+    }
 
     @Synchronized
     actual fun saveAppStateJson(json: String) {
@@ -85,7 +114,16 @@ actual object PlatformBridge {
             if (!dir.exists()) dir.mkdirs()
             val tmp = File(dir, "parchment-state.json.tmp")
             val prev = File(dir, "parchment-state.prev.json")
+            val userBak = File(dir, "parchment-state.user-backup.json")
             val target = stateFile()
+
+            val incomingIsBlankDefault = isBlankDefaultStateJson(json)
+
+            // Guard: Never allow a blank default state to overwrite an existing populated user state file on disk!
+            if (incomingIsBlankDefault && userBak.exists() && userBak.length() > 50L) {
+                return
+            }
+
             tmp.writeText(json, Charsets.UTF_8)
             if (target.exists() && target.length() > 50L) {
                 runCatching { target.copyTo(prev, overwrite = true) }
@@ -93,6 +131,10 @@ actual object PlatformBridge {
             if (!tmp.renameTo(target)) {
                 target.writeText(json, Charsets.UTF_8)
                 tmp.delete()
+            }
+            // Whenever the state contains actual user customizations, persist a protected user backup!
+            if (!incomingIsBlankDefault && json.length > 50) {
+                runCatching { target.copyTo(userBak, overwrite = true) }
             }
         }
     }
@@ -465,12 +507,17 @@ actual object PlatformBridge {
         val fallbackExe = File(System.getProperty("user.dir"), "Parchment.exe")
         val relaunchTarget = if (installedExe.exists()) installedExe.absolutePath else fallbackExe.absolutePath
 
-        // Write a tiny updater script that waits for the current process to exit, runs the silent Inno Setup update,
-        // and automatically relaunches Parchment.exe
+        val currentPid = runCatching { ProcessHandle.current().pid() }.getOrDefault(0L)
+
+        // Write a tiny updater script that waits for the current process PID to exit completely,
+        // runs the silent Inno Setup update, and automatically relaunches Parchment.exe
         val psScriptFile = File(tempDir, "apply-ota.ps1")
         psScriptFile.writeText(
             """
-            Start-Sleep -Milliseconds 900
+            if ($currentPid -gt 0) {
+                Wait-Process -Id $currentPid -Timeout 15 -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 600
             Start-Process -FilePath "${installerFile.absolutePath}" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -Wait
             if (Test-Path "$relaunchTarget") {
                 Start-Process -FilePath "$relaunchTarget"

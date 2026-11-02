@@ -64,19 +64,34 @@ actual object PlatformBridge {
 
     private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
+    private fun isBlankDefaultStateJson(json: String): Boolean {
+        return json.contains("\"id\":\"sess-initial\"") &&
+            json.contains("\"assistants\":[]") &&
+            json.contains("\"messages\":[]") &&
+            Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+    }
+
     actual fun loadAppStateJson(): String? = runCatching {
         val dir = resolveStorageDir()
         val f = stateFile()
         val tmp = File(dir, "parchment-state.json.tmp")
         val prev = File(dir, "parchment-state.prev.json")
+        val userBak = File(dir, "parchment-state.user-backup.json")
         val legacy = appContext?.noBackupFilesDir?.let { File(it, "parchment-state.json") }
-        when {
-            f.exists() && f.isFile && f.length() > 10L -> f.readText(Charsets.UTF_8)
-            tmp.exists() && tmp.isFile && tmp.length() > 10L -> tmp.readText(Charsets.UTF_8)
-            prev.exists() && prev.isFile && prev.length() > 10L -> prev.readText(Charsets.UTF_8)
-            legacy != null && legacy.exists() && legacy.isFile && legacy.length() > 10L -> legacy.readText(Charsets.UTF_8)
-            else -> null
+        val candidates = listOfNotNull(f, tmp, prev, userBak, legacy)
+        for (cand in candidates) {
+            if (cand.exists() && cand.isFile && cand.length() > 10L) {
+                val content = cand.readText(Charsets.UTF_8)
+                if (cand != userBak && isBlankDefaultStateJson(content) && userBak.exists() && userBak.length() > 50L) {
+                    val bakContent = runCatching { userBak.readText(Charsets.UTF_8) }.getOrNull()
+                    if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
+                        return@runCatching bakContent
+                    }
+                }
+                return@runCatching content
+            }
         }
+        null
     }.getOrNull()
 
     @Synchronized
@@ -86,7 +101,14 @@ actual object PlatformBridge {
             if (!dir.exists()) dir.mkdirs()
             val tmp = File(dir, "parchment-state.json.tmp")
             val prev = File(dir, "parchment-state.prev.json")
+            val userBak = File(dir, "parchment-state.user-backup.json")
             val target = stateFile()
+
+            val incomingIsBlankDefault = isBlankDefaultStateJson(json)
+            if (incomingIsBlankDefault && userBak.exists() && userBak.length() > 50L) {
+                return
+            }
+
             tmp.writeText(json, Charsets.UTF_8)
             if (target.exists() && target.length() > 50L) {
                 runCatching { target.copyTo(prev, overwrite = true) }
@@ -94,6 +116,9 @@ actual object PlatformBridge {
             if (!tmp.renameTo(target)) {
                 target.writeText(json, Charsets.UTF_8)
                 tmp.delete()
+            }
+            if (!incomingIsBlankDefault && json.length > 50) {
+                runCatching { target.copyTo(userBak, overwrite = true) }
             }
         }
     }

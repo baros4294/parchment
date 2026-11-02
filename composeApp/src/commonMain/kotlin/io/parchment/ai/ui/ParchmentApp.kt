@@ -191,24 +191,32 @@ fun ParchmentApp() {
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
     var diskPersistJob by remember { mutableStateOf<Job?>(null) }
 
+    // Track dirty user state so ShutdownHook / onPause ONLY writes when the user actually changed state!
+    var hasDirtyUnflushedChanges by remember { mutableStateOf(false) }
+
     // Register synchronous flush callback for Android MainActivity.onPause/onStop & Desktop Shutdown Hook
     LaunchedEffect(Unit) {
         PlatformBridge.registerStateFlushCallback {
-            runCatching {
-                val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
-                PlatformBridge.saveAppStateJson(encoded)
+            if (hasDirtyUnflushedChanges) {
+                runCatching {
+                    val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
+                    PlatformBridge.saveAppStateJson(encoded)
+                    hasDirtyUnflushedChanges = false
+                }
             }
         }
     }
 
     fun persist(updated: AppStateSnapshot, immediateFlush: Boolean = false) {
         appState = updated
+        hasDirtyUnflushedChanges = true
         diskPersistJob?.cancel()
         if (immediateFlush) {
             appProcessScope.launch(Dispatchers.IO) {
                 runCatching {
                     val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), updated)
                     PlatformBridge.saveAppStateJson(encoded)
+                    hasDirtyUnflushedChanges = false
                 }
             }
         } else {
@@ -217,6 +225,7 @@ fun ParchmentApp() {
                 runCatching {
                     val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
                     PlatformBridge.saveAppStateJson(encoded)
+                    hasDirtyUnflushedChanges = false
                 }
             }
         }
@@ -243,6 +252,7 @@ fun ParchmentApp() {
             if (it.id == sessionId) transform(it) else it
         }
         appState = currentState.copy(sessions = newSessions)
+        hasDirtyUnflushedChanges = true
     }
 
     fun updateActiveProfile(transform: (ProviderProfile) -> ProviderProfile) {
@@ -1635,42 +1645,45 @@ fun ParchmentApp() {
                                 )
                             }
                         }
+                        } // Closes Row(modifier = Modifier.fillMaxSize()) so Crossfade(Modifier.weight(1f)) gets 100% width!
 
                         // Mobile 86%-Width Slide-Over Sidebar Drawer + Dimmed Tap-to-Dismiss Backdrop Scrim
-                        Row(modifier = Modifier.fillMaxSize()) {
-                            AnimatedVisibility(
-                                visible = isCompactScreen && showSidebar && !isSettingsOpen,
-                                enter = fadeIn(tween(150)),
-                                exit = fadeOut(tween(130))
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(Color.Black.copy(alpha = 0.34f))
-                                        .clickable { showSidebar = false }
-                                )
-                            }
-                        }
-
-                        Row(modifier = Modifier.fillMaxHeight()) {
-                            AnimatedVisibility(
-                                visible = isCompactScreen && showSidebar && !isSettingsOpen,
-                                enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
-                                exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
-                            ) {
-                                Row(modifier = Modifier.fillMaxHeight()) {
-                                    sidebarComposable(
-                                        Modifier
-                                            .fillMaxWidth(0.86f)
-                                            .fillMaxHeight()
-                                            .clickable(enabled = false) {}
-                                    )
+                        if (isCompactScreen) {
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                AnimatedVisibility(
+                                    visible = showSidebar && !isSettingsOpen,
+                                    enter = fadeIn(tween(150)),
+                                    exit = fadeOut(tween(130))
+                                ) {
                                     Box(
                                         modifier = Modifier
-                                            .width(1.dp)
-                                            .fillMaxHeight()
-                                            .background(p.border)
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.34f))
+                                            .clickable { showSidebar = false }
                                     )
+                                }
+                            }
+
+                            Row(modifier = Modifier.fillMaxHeight()) {
+                                AnimatedVisibility(
+                                    visible = showSidebar && !isSettingsOpen,
+                                    enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
+                                    exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                                ) {
+                                    Row(modifier = Modifier.fillMaxHeight()) {
+                                        sidebarComposable(
+                                            Modifier
+                                                .fillMaxWidth(0.86f)
+                                                .fillMaxHeight()
+                                                .clickable(enabled = false) {}
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .width(1.dp)
+                                                .fillMaxHeight()
+                                                .background(p.border)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1679,7 +1692,6 @@ fun ParchmentApp() {
             }
         }
     }
-}
 }
 
 // ============================================================================================
