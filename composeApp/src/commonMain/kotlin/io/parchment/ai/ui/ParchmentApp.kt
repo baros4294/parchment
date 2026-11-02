@@ -393,15 +393,13 @@ fun ParchmentApp() {
     // Track dirty user state so ShutdownHook / onPause ONLY writes when the user actually changed state!
     var hasDirtyUnflushedChanges by remember { mutableStateOf(false) }
 
-    // Register synchronous flush callback for Android MainActivity.onPause/onStop & Desktop Shutdown Hook
+    // Register synchronous flush callback for Android MainActivity.onPause/onStop, OTA updates, & Desktop Shutdown Hook
     LaunchedEffect(Unit) {
         PlatformBridge.registerStateFlushCallback {
-            if (hasDirtyUnflushedChanges) {
-                runCatching {
-                    val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
-                    PlatformBridge.saveAppStateJson(encoded)
-                    hasDirtyUnflushedChanges = false
-                }
+            runCatching {
+                val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
+                PlatformBridge.saveAppStateJson(encoded)
+                hasDirtyUnflushedChanges = false
             }
         }
     }
@@ -509,6 +507,7 @@ fun ParchmentApp() {
 
     fun triggerOtaDownloadAndInstall(release: OtaReleaseInfo) {
         dismissOtaBanner = false
+        PlatformBridge.flushPendingStateNow()
         uiScope.launch {
             OtaUpdateEngine.downloadAndInstall(release).collect { st ->
                 otaState = st

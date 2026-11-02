@@ -139,7 +139,14 @@ class ParchmentProtocolAndHarnessTest {
             )
             assertTrue(blockedWrite.isError, "fs_write must be blocked in READ_ONLY mode")
         } finally {
-            PlatformBridge.wipeAllLocalData()
+            // Never call wipeAllLocalData() in tests; only clean up the isolated test file
+            WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_cleanup",
+                toolName = "fs_write",
+                argumentsJson = """{"path":"chapter1.md","content":""}"""
+            )
         }
     }
 

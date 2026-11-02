@@ -55,12 +55,18 @@ actual object PlatformBridge {
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
     private fun resolveStorageDir(): File {
+        // 0. Isolate Gradle/JUnit test workers so unit tests NEVER touch the user's real %LOCALAPPDATA%\ParchmentAI folder!
+        if (!System.getProperty("org.gradle.test.worker").isNullOrBlank()) {
+            val testDir = File(System.getProperty("java.io.tmpdir"), "parchment-test-data")
+            if (!testDir.exists()) testDir.mkdirs()
+            return testDir
+        }
         // 1. Check if portable 'data' directory exists alongside app launcher
         val portableDir = File(System.getProperty("user.dir"), "parchment-portable-data")
         if (portableDir.exists() && portableDir.isDirectory && portableDir.canWrite()) {
             return portableDir
         }
-        // 2. Standard isolated per-user app data directory (cleaned 100% by Windows uninstaller)
+        // 2. Standard isolated per-user app data directory
         val localAppData = System.getenv("LOCALAPPDATA")
         val baseDir = if (!localAppData.isNullOrBlank()) {
             File(localAppData, "ParchmentAI")
@@ -78,11 +84,12 @@ actual object PlatformBridge {
     private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
-        return json.contains("\"id\":\"sess-initial\"") &&
-            json.contains("\"assistants\":[]") &&
-            json.contains("\"messages\":[]") &&
-            !json.contains("\"apiKey\":\"sk-") &&
-            Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+        val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+        val hasNoAssistants = json.contains("\"assistants\":[]")
+        val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
+        val hasNoSavedCards = !json.contains("\"savedCards\":[{")
+        val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
+        return hasNoApiKeys && hasNoAssistants && hasNoMessages && hasNoSavedCards && hasNoPresets
     }
 
     actual fun loadAppStateJson(): String? {

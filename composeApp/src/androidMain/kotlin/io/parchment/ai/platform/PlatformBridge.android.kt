@@ -95,10 +95,12 @@ actual object PlatformBridge {
     private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
-        return json.contains("\"id\":\"sess-initial\"") &&
-            json.contains("\"assistants\":[]") &&
-            json.contains("\"messages\":[]") &&
-            Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+        val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+        val hasNoAssistants = json.contains("\"assistants\":[]")
+        val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
+        val hasNoSavedCards = !json.contains("\"savedCards\":[{")
+        val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
+        return hasNoApiKeys && hasNoAssistants && hasNoMessages && hasNoSavedCards && hasNoPresets
     }
 
     actual fun loadAppStateJson(): String? = runCatching {
