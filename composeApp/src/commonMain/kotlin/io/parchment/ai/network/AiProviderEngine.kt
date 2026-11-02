@@ -22,6 +22,7 @@ import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AuthHeaderMode
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
+import io.parchment.ai.model.GoalTrackerState
 import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
@@ -60,6 +61,7 @@ sealed class StreamUpdate {
     data class ThinkingDelta(val delta: String, val signatureDelta: String = "") : StreamUpdate()
     data class ContentDelta(val delta: String) : StreamUpdate()
     data class ToolCallEvent(val toolCall: ToolCallRecord) : StreamUpdate()
+    data class GoalProgress(val goalTracker: GoalTrackerState) : StreamUpdate()
     data class MediaGenerated(val item: GeneratedMediaItem) : StreamUpdate()
     data class RawWireSnapshot(val requestJson: String, val latestResponseChunk: String) : StreamUpdate()
     data class Completed(
@@ -67,6 +69,7 @@ sealed class StreamUpdate {
         val fullThinking: String,
         val thinkingSignature: String,
         val toolCalls: List<ToolCallRecord>,
+        val goalTracker: GoalTrackerState?,
         val mediaItems: List<GeneratedMediaItem>,
         val providerInteractionId: String,
         val metrics: TokenMetrics,
@@ -80,12 +83,14 @@ sealed class StreamUpdate {
 object AiProviderEngine {
 
     /**
-     * Long-horizon multi-step agent/writing loop ceiling (matching OpenCode's deep iterative workflow).
-     * Allows up to 64 consecutive tool/continuation rounds in a single turn across all modes.
+     * Long-horizon autonomous execution engine (inspired by Anthropic Claude Code & OpenAI Codex).
+     * Uses a Repeated-Failure Circuit Breaker + Stop-Hook Work-Check Gate instead of a brittle 64-step limit,
+     * allowing tasks to run productively for hours, days, or weeks while halting repeated identical errors.
      */
-    private const val MAX_LONG_HORIZON_STEPS = 64
-    private const val MAX_PRE_TOKEN_RETRIES = 3
-    private const val MAX_MID_STREAM_CONTINUATION_PASSES = 4
+    private const val MAX_SAFETY_HORIZON_STEPS = 10_000
+    private const val MAX_PRE_TOKEN_RETRIES = 6
+    private const val MAX_GOAL_NETWORK_RETRIES = 120
+    private const val MAX_MID_STREAM_CONTINUATION_PASSES = 32
     private val GEMINI_4_REGEX = Regex("""(^|[/:_-])gemini-4(?:\.\d+)?-""")
 
     private val json = Json {
@@ -106,9 +111,9 @@ object AiProviderEngine {
             json(this@AiProviderEngine.json)
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 60 * 60 * 1000L // 60 minutes for Gemini 4 Argon long decode
-            connectTimeoutMillis = 30_000L
-            socketTimeoutMillis = 60 * 60 * 1000L
+            requestTimeoutMillis = 24 * 60 * 60 * 1000L // 24-hour per-request ceiling for ultra-long reasoning & decodes
+            connectTimeoutMillis = 45_000L
+            socketTimeoutMillis = 24 * 60 * 60 * 1000L
         }
     }
 
@@ -148,6 +153,14 @@ object AiProviderEngine {
         var lastRawReq = ""
         var lastRawResp = ""
 
+        val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
+        val circuitBreaker = WorkspaceHarness.LoopCircuitBreaker(
+            initialGoal = if (initialGoalObjective.isNotBlank()) {
+                GoalTrackerState(goalObjective = initialGoalObjective)
+            } else null
+        )
+        circuitBreaker.goalState?.let { emit(StreamUpdate.GoalProgress(it)) }
+
         PlatformBridge.notifyLongDecodeStart(model)
 
         try {
@@ -163,13 +176,18 @@ object AiProviderEngine {
                 try {
                     when (profile.protocol) {
                         ProviderProtocol.GEMINI_INTERACTIONS -> {
-                            if (profile.useLegacyFallbackEndpoint) {
+                            suspend fun runLegacyGeminiGenerateContent() {
                                 executeGeminiGenerateContentLoop(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     continuePrefix = currentContinuePrefix,
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { statusMsg ->
+                                        emit(StreamUpdate.Status(statusMsg, lastInteractionId))
+                                    },
+                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                     onThinking = { delta, sig ->
                                         thinkingBuilder.append(delta)
@@ -204,22 +222,104 @@ object AiProviderEngine {
                                         outputTokens = outTok
                                     }
                                 )
+                            }
+
+                            if (profile.useLegacyFallbackEndpoint) {
+                                runLegacyGeminiGenerateContent()
                             } else {
-                                executeGeminiInteractionsLoop(
+                                try {
+                                    executeGeminiInteractionsLoop(
+                                        profile = profile,
+                                        model = model,
+                                        session = session,
+                                        historyNodes = historyNodes,
+                                        continuePrefix = currentContinuePrefix,
+                                        circuitBreaker = circuitBreaker,
+                                        onStatus = { statusMsg, id ->
+                                            if (id.isNotBlank()) lastInteractionId = id
+                                            emit(StreamUpdate.Status(statusMsg, lastInteractionId))
+                                        },
+                                        onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                        onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                        onThinking = { delta, sig ->
+                                            thinkingBuilder.append(delta)
+                                            if (sig.isNotEmpty()) signatureBuilder.append(sig)
+                                            emit(StreamUpdate.ThinkingDelta(delta, sig))
+                                        },
+                                        onContent = { delta ->
+                                            contentBuilder.append(delta)
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                            val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onMedia = { item ->
+                                            onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                            generatedMedia.add(item)
+                                            emit(StreamUpdate.MediaGenerated(item))
+                                        },
+                                        onToolCall = { tc ->
+                                            executedTools.add(tc)
+                                            emit(StreamUpdate.ToolCallEvent(tc))
+                                        },
+                                        onRawWire = { req, resp ->
+                                            lastRawReq = req
+                                            lastRawResp = resp
+                                            emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        },
+                                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                            if (id.isNotBlank()) lastInteractionId = id
+                                            inputTokens = inTok
+                                            cachedTokens = cacheTok
+                                            reasoningTokens = thinkTok
+                                            outputTokens = outTok
+                                        }
+                                    )
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Throwable) {
+                                    if (contentBuilder.length == charsBeforePass && isEndpointUnsupportedForAutoFallback(e)) {
+                                        emit(StreamUpdate.Status("Endpoint does not support /v1beta/interactions — auto-falling back to :streamGenerateContent…"))
+                                        runLegacyGeminiGenerateContent()
+                                    } else {
+                                        throw e
+                                    }
+                                }
+                            }
+                        }
+
+                        ProviderProtocol.OPENAI_RESPONSES -> {
+                            val lowerModel = model.lowercase()
+                            val isByteDanceMediaModel = lowerModel.contains("seedream") ||
+                                lowerModel.contains("seedance") ||
+                                profile.enableVideoGeneration
+                            val isStandaloneImageModel = lowerModel.contains("gpt-image") ||
+                                lowerModel.contains("dall-e") ||
+                                lowerModel.contains("imagen") ||
+                                lowerModel.contains("flux") ||
+                                lowerModel.contains("stable-diffusion") ||
+                                lowerModel.contains("sdxl") ||
+                                lowerModel.contains("ideogram") ||
+                                lowerModel.contains("recraft") ||
+                                lowerModel.contains("kolors")
+
+                            val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
+                                (profile.enableImageGeneration && isStandaloneImageModel)
+
+                            suspend fun runLegacyOpenAiChatCompletions() {
+                                executeOpenAiChatCompletionsLoop(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     continuePrefix = currentContinuePrefix,
-                                    onStatus = { statusMsg, id ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        emit(StreamUpdate.Status(statusMsg, lastInteractionId))
-                                    },
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { st -> emit(StreamUpdate.Status(st)) },
+                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                    onThinking = { delta, sig ->
+                                    onThinking = { delta ->
                                         thinkingBuilder.append(delta)
-                                        if (sig.isNotEmpty()) signatureBuilder.append(sig)
-                                        emit(StreamUpdate.ThinkingDelta(delta, sig))
+                                        emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onContent = { delta ->
                                         contentBuilder.append(delta)
@@ -242,8 +342,7 @@ object AiProviderEngine {
                                         lastRawResp = resp
                                         emit(StreamUpdate.RawWireSnapshot(req, resp))
                                     },
-                                    onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                        if (id.isNotBlank()) lastInteractionId = id
+                                    onUsage = { inTok, cacheTok, thinkTok, outTok ->
                                         inputTokens = inTok
                                         cachedTokens = cacheTok
                                         reasoningTokens = thinkTok
@@ -251,25 +350,39 @@ object AiProviderEngine {
                                     }
                                 )
                             }
-                        }
 
-                        ProviderProtocol.OPENAI_RESPONSES -> {
-                            val lowerModel = model.lowercase()
-                            val isStandaloneImageModel = lowerModel.contains("gpt-image") ||
-                                lowerModel.contains("dall-e") ||
-                                lowerModel.contains("seedream") ||
-                                lowerModel.contains("imagen") ||
-                                lowerModel.contains("flux") ||
-                                lowerModel.contains("stable-diffusion") ||
-                                lowerModel.contains("sdxl") ||
-                                lowerModel.contains("ideogram") ||
-                                lowerModel.contains("recraft") ||
-                                lowerModel.contains("kolors")
-
-                            val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
-                                (profile.enableImageGeneration && isStandaloneImageModel)
-
-                            if (isDirectImagesEndpoint) {
+                            if (isByteDanceMediaModel) {
+                                executeByteDanceArkGeneration(
+                                    profile = profile,
+                                    model = model,
+                                    session = session,
+                                    historyNodes = historyNodes,
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { st, id ->
+                                        if (id.isNotBlank()) lastInteractionId = id
+                                        emit(StreamUpdate.Status(st, lastInteractionId))
+                                    },
+                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onThinking = { delta ->
+                                        thinkingBuilder.append(delta)
+                                        emit(StreamUpdate.ThinkingDelta(delta))
+                                    },
+                                    onMedia = { item ->
+                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        generatedMedia.add(item)
+                                        emit(StreamUpdate.MediaGenerated(item))
+                                    },
+                                    onContent = { delta ->
+                                        contentBuilder.append(delta)
+                                        emit(StreamUpdate.ContentDelta(delta))
+                                    },
+                                    onRawWire = { req, resp ->
+                                        lastRawReq = req
+                                        lastRawResp = resp
+                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                    }
+                                )
+                            } else if (isDirectImagesEndpoint) {
                                 executeOpenAiDirectImagesEndpoint(
                                     profile = profile,
                                     model = model,
@@ -291,86 +404,62 @@ object AiProviderEngine {
                                     }
                                 )
                             } else if (profile.useLegacyFallbackEndpoint) {
-                                executeOpenAiChatCompletionsLoop(
-                                    profile = profile,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = historyNodes,
-                                    continuePrefix = currentContinuePrefix,
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                    onThinking = { delta ->
-                                        thinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onContent = { delta ->
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
-                                    },
-                                    onToolCall = { tc ->
-                                        executedTools.add(tc)
-                                        emit(StreamUpdate.ToolCallEvent(tc))
-                                    },
-                                    onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
-                                    },
-                                    onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
-                                    }
-                                )
+                                runLegacyOpenAiChatCompletions()
                             } else {
-                                executeOpenAiResponsesLoop(
-                                    profile = profile,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = historyNodes,
-                                    continuePrefix = currentContinuePrefix,
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                    onThinking = { delta ->
-                                        thinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onContent = { delta ->
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
-                                    },
-                                    onToolCall = { tc ->
-                                        executedTools.add(tc)
-                                        emit(StreamUpdate.ToolCallEvent(tc))
-                                    },
-                                    onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
-                                    },
-                                    onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
+                                try {
+                                    executeOpenAiResponsesLoop(
+                                        profile = profile,
+                                        model = model,
+                                        session = session,
+                                        historyNodes = historyNodes,
+                                        continuePrefix = currentContinuePrefix,
+                                        circuitBreaker = circuitBreaker,
+                                        onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                        onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                        onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                        onThinking = { delta ->
+                                            thinkingBuilder.append(delta)
+                                            emit(StreamUpdate.ThinkingDelta(delta))
+                                        },
+                                        onContent = { delta ->
+                                            contentBuilder.append(delta)
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                            val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onMedia = { item ->
+                                            onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                            generatedMedia.add(item)
+                                            emit(StreamUpdate.MediaGenerated(item))
+                                        },
+                                        onToolCall = { tc ->
+                                            executedTools.add(tc)
+                                            emit(StreamUpdate.ToolCallEvent(tc))
+                                        },
+                                        onRawWire = { req, resp ->
+                                            lastRawReq = req
+                                            lastRawResp = resp
+                                            emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        },
+                                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                            if (id.isNotBlank()) lastInteractionId = id
+                                            inputTokens = inTok
+                                            cachedTokens = cacheTok
+                                            reasoningTokens = thinkTok
+                                            outputTokens = outTok
+                                        }
+                                    )
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Throwable) {
+                                    if (contentBuilder.length == charsBeforePass && isEndpointUnsupportedForAutoFallback(e)) {
+                                        emit(StreamUpdate.Status("Proxy does not support /v1/responses — auto-falling back to /v1/chat/completions…"))
+                                        runLegacyOpenAiChatCompletions()
+                                    } else {
+                                        throw e
                                     }
-                                )
+                                }
                             }
                         }
 
@@ -381,6 +470,9 @@ object AiProviderEngine {
                                 session = session,
                                 historyNodes = historyNodes,
                                 continuePrefix = currentContinuePrefix,
+                                circuitBreaker = circuitBreaker,
+                                onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
                                 onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                 onThinking = { delta, sig ->
                                     thinkingBuilder.append(delta)
@@ -422,10 +514,17 @@ object AiProviderEngine {
                                 executeByteDanceArkGeneration(
                                     profile = profile,
                                     model = model,
+                                    session = session,
                                     historyNodes = historyNodes,
+                                    circuitBreaker = circuitBreaker,
                                     onStatus = { st, id ->
                                         if (id.isNotBlank()) lastInteractionId = id
                                         emit(StreamUpdate.Status(st, lastInteractionId))
+                                    },
+                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onThinking = { delta ->
+                                        thinkingBuilder.append(delta)
+                                        emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onMedia = { item ->
                                         onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
@@ -449,6 +548,9 @@ object AiProviderEngine {
                                     session = session,
                                     historyNodes = historyNodes,
                                     continuePrefix = currentContinuePrefix,
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                     onThinking = { delta ->
                                         thinkingBuilder.append(delta)
@@ -493,30 +595,32 @@ object AiProviderEngine {
                     val producedNewContent = contentBuilder.length > charsBeforePass
                     val producedMediaOrTools = generatedMedia.size > mediaBeforePass || executedTools.size > toolsBeforePass
                     val isRetryable = isTransientOrProxyTimeoutError(err)
+                    val isLongGoalRun = circuitBreaker.goalState != null
+                    val maxRetries = if (isLongGoalRun) MAX_GOAL_NETWORK_RETRIES else MAX_PRE_TOKEN_RETRIES
 
-                    if (!producedNewContent && !producedMediaOrTools && isRetryable && retryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                    if (!producedNewContent && !producedMediaOrTools && isRetryable && retryAttempt < maxRetries) {
                         retryAttempt++
-                        val backoffMs = 2000L * retryAttempt
+                        val backoffMs = (2000L * retryAttempt).coerceAtMost(60_000L)
                         emit(
                             StreamUpdate.Status(
-                                "Gateway/proxy timeout during deep reasoning — auto-retrying ($retryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000}s)…",
+                                "Network/gateway timeout during reasoning — auto-retrying ($retryAttempt/$maxRetries in ${backoffMs / 1000}s)…",
                                 lastInteractionId
                             )
                         )
                         delay(backoffMs)
                         continue
-                    } else if (producedNewContent && isRetryable && continuationPass < MAX_MID_STREAM_CONTINUATION_PASSES) {
-                        // Defeat the 5-minute (~300s) proxy/Cloudflare stream cutoff by seamlessly stitching a continuation pass
+                    } else if ((producedNewContent || producedMediaOrTools) && isRetryable && (isLongGoalRun || continuationPass < MAX_MID_STREAM_CONTINUATION_PASSES)) {
+                        // Defeat proxy/Cloudflare stream cutoffs or overnight Wi-Fi drops by seamlessly stitching a continuation pass
                         continuationPass++
                         retryAttempt = 0
                         currentContinuePrefix = contentBuilder.toString()
                         emit(
                             StreamUpdate.Status(
-                                "5-min proxy stream limit reached — seamlessly continuing generation (pass ${continuationPass + 1})…",
+                                "Stream interrupted — seamlessly continuing generation (pass ${continuationPass + 1})…",
                                 lastInteractionId
                             )
                         )
-                        delay(900L)
+                        delay(2000L)
                         continue
                     } else {
                         throw err
@@ -530,7 +634,7 @@ object AiProviderEngine {
             val finalInTokens = if (inputTokens > 0) {
                 inputTokens
             } else {
-                val approxChars = buildCompiledSystemPrompt(session).length +
+                val approxChars = buildCompiledSystemPrompt(session, circuitBreaker.goalState).length +
                     historyNodes.filter { it.includedInContext }.sumOf { it.activeVariant.content.length }
                 (approxChars / 4).coerceAtLeast(1)
             }
@@ -559,6 +663,7 @@ object AiProviderEngine {
                     fullThinking = thinkingBuilder.toString(),
                     thinkingSignature = signatureBuilder.toString(),
                     toolCalls = executedTools,
+                    goalTracker = circuitBreaker.goalState,
                     mediaItems = generatedMedia,
                     providerInteractionId = lastInteractionId,
                     metrics = rawMetrics.copy(estimatedCostUsd = costUsd),
@@ -752,7 +857,9 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         continuePrefix: String,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
         onStatus: suspend (String, String) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
@@ -762,7 +869,7 @@ object AiProviderEngine {
         onUsage: (String, Int, Int, Int, Int) -> Unit
     ) {
         val activeNodes = historyNodes.filter { it.includedInContext }
-        val systemInstruction = buildCompiledSystemPrompt(session)
+        val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
         // Check if we can use stateful previous_interaction_id chaining
         val previousAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
@@ -776,12 +883,13 @@ object AiProviderEngine {
         var currentPrevInteractionId = previousInteractionId
         val extraLoopSteps = mutableListOf<JsonObject>()
         var pendingToolResults: List<ToolCallRecord> = emptyList()
+        var pendingStopHookPrompt: String = ""
         var loopStep = 0
 
         val lowerModel = model.lowercase()
         val isGemini4 = GEMINI_4_REGEX.containsMatchIn(lowerModel) || lowerModel.startsWith("gemini-4")
 
-        while (loopStep < MAX_LONG_HORIZON_STEPS) {
+        while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val baseInputSteps = if (currentPrevInteractionId.isNotBlank() && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
                 val trailingNodes = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
@@ -789,6 +897,9 @@ object AiProviderEngine {
             } else {
                 buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix)
             }
+
+            // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps
+            val compactedExtraSteps = compactGeminiInteractionsExtraSteps(extraLoopSteps)
 
             val payloadObj = buildJsonObject {
                 put("model", model.trim().removePrefix("models/"))
@@ -820,10 +931,22 @@ object AiProviderEngine {
                             })
                         }
                     }
+                } else if (pendingStopHookPrompt.isNotBlank() && currentPrevInteractionId.isNotBlank()) {
+                    putJsonArray("input") {
+                        add(buildJsonObject {
+                            put("type", "user_input")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", pendingStopHookPrompt)
+                                })
+                            }
+                        })
+                    }
                 } else {
                     putJsonArray("input") {
                         baseInputSteps.forEach { add(it) }
-                        extraLoopSteps.forEach { add(it) }
+                        compactedExtraSteps.forEach { add(it) }
                     }
                 }
 
@@ -887,7 +1010,8 @@ object AiProviderEngine {
                     val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
                         session.workspaceMode,
                         session.workspacePath,
-                        profile.allowShellExecution
+                        profile.allowShellExecution,
+                        goalModeActive = circuitBreaker.goalState != null
                     )
                     workspaceTools.forEach { add(it) }
                 }
@@ -1241,8 +1365,25 @@ object AiProviderEngine {
             }
 
             if (turnToolCalls.isEmpty()) {
+                val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
+                if (stopHookPrompt != null) {
+                    pendingToolResults = emptyList()
+                    pendingStopHookPrompt = stopHookPrompt
+                    extraLoopSteps.add(buildJsonObject {
+                        put("type", "user_input")
+                        putJsonArray("content") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", stopHookPrompt)
+                            })
+                        }
+                    })
+                    onStatus("Goal Work-Check: continuing incomplete checklist steps…", currentPrevInteractionId)
+                    continue
+                }
                 break
             }
+            pendingStopHookPrompt = ""
 
             // Record thought + function_call + function_result steps for next round
             if (roundThoughtSig.isNotEmpty()) {
@@ -1263,13 +1404,15 @@ object AiProviderEngine {
                     put("arguments", parsedArgs)
                 })
 
-                val record = WorkspaceHarness.executeToolCall(
+                val rawRecord = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
                     argumentsJson = fnPair.second
                 )
+                val record = circuitBreaker.onToolExecuted(rawRecord)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(record)
                 results.add(record)
 
@@ -1281,6 +1424,11 @@ object AiProviderEngine {
                 })
             }
             pendingToolResults = results
+            val trippedReason = circuitBreaker.checkTripped()
+            if (trippedReason != null) {
+                onStatus(trippedReason, currentPrevInteractionId)
+                break
+            }
         }
     }
 
@@ -1462,6 +1610,9 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         continuePrefix: String,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
@@ -1479,7 +1630,7 @@ object AiProviderEngine {
         val supportsMixedTools = isGemini4 || isGemini3
 
         val activeNodes = historyNodes.filter { it.includedInContext }
-        val systemInstruction = buildCompiledSystemPrompt(session)
+        val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
 
         // Rolling conversation contents for multi-round tool execution
@@ -1523,16 +1674,17 @@ object AiProviderEngine {
             })
         }
 
-        val activeWorkspaceTools = WorkspaceHarness.activeToolsForMode(
-            session.workspaceMode,
-            session.workspacePath,
-            profile.allowShellExecution
-        )
         val hasBuiltInTools = profile.enableWebSearch || profile.enableCodeExecution || profile.enableUrlContext
 
         var loopStep = 0
-        while (loopStep < MAX_LONG_HORIZON_STEPS) {
+        while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
+            val activeWorkspaceTools = WorkspaceHarness.activeToolsForMode(
+                session.workspaceMode,
+                session.workspacePath,
+                profile.allowShellExecution,
+                goalModeActive = circuitBreaker.goalState != null
+            )
 
             val payloadObj = buildJsonObject {
                 if (systemInstruction.isNotBlank()) {
@@ -1772,7 +1924,26 @@ object AiProviderEngine {
                 )
             }
 
-            if (roundToolCalls.isEmpty()) break
+            if (roundToolCalls.isEmpty()) {
+                val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
+                if (stopHookPrompt != null) {
+                    if (roundModelParts.isNotEmpty()) {
+                        rollingContents.add(buildJsonObject {
+                            put("role", "model")
+                            put("parts", JsonArray(roundModelParts))
+                        })
+                    }
+                    rollingContents.add(buildJsonObject {
+                        put("role", "user")
+                        putJsonArray("parts") {
+                            add(buildJsonObject { put("text", stopHookPrompt) })
+                        }
+                    })
+                    onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                    continue
+                }
+                break
+            }
 
             // Ensure at least the first functionCall part has a thoughtSignature (required by Gemini 3+ / 4)
             val signedModelParts = roundModelParts.mapIndexed { idx, part ->
@@ -1789,13 +1960,15 @@ object AiProviderEngine {
 
             val responseParts = mutableListOf<JsonObject>()
             for ((callId, fnName, argsJson) in roundToolCalls) {
-                val rec = WorkspaceHarness.executeToolCall(
+                val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnName,
                     argumentsJson = argsJson
                 )
+                val rec = circuitBreaker.onToolExecuted(rawRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
                 responseParts.add(buildJsonObject {
                     putJsonObject("functionResponse") {
@@ -1813,6 +1986,11 @@ object AiProviderEngine {
                 put("role", "user")
                 put("parts", JsonArray(responseParts))
             })
+            val trippedReason = circuitBreaker.checkTripped()
+            if (trippedReason != null) {
+                onStatus(trippedReason)
+                break
+            }
         }
     }
 
@@ -1827,6 +2005,9 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         continuePrefix: String,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String) -> Unit,
         onContent: suspend (String) -> Unit,
@@ -1836,7 +2017,7 @@ object AiProviderEngine {
         onUsage: (String, Int, Int, Int, Int) -> Unit
     ) {
         val activeNodes = historyNodes.filter { it.includedInContext }
-        val systemInstruction = buildCompiledSystemPrompt(session)
+        val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
         val previousAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
         var currentPrevResponseId = if (profile.useStatefulChaining && continuePrefix.isBlank() && previousAssistantIdx >= 0) {
@@ -1847,10 +2028,11 @@ object AiProviderEngine {
         } else ""
 
         var pendingToolResults: List<ToolCallRecord> = emptyList()
+        var pendingStopHookPrompt: String = ""
         val extraResponsesLoopItems = mutableListOf<JsonObject>()
         var loopStep = 0
 
-        while (loopStep < MAX_LONG_HORIZON_STEPS) {
+        while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val baseInputItems = if (currentPrevResponseId.isNotBlank() && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
                 val trailing = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
@@ -1858,6 +2040,8 @@ object AiProviderEngine {
             } else {
                 buildOpenAiResponsesInputArray(activeNodes, session, continuePrefix)
             }
+
+            val compactedLoopItems = compactOpenAiResponsesExtraItems(extraResponsesLoopItems)
 
             val payloadObj = buildJsonObject {
                 put("model", model)
@@ -1882,10 +2066,17 @@ object AiProviderEngine {
                             })
                         }
                     }
+                } else if (pendingStopHookPrompt.isNotBlank() && currentPrevResponseId.isNotBlank()) {
+                    putJsonArray("input") {
+                        add(buildJsonObject {
+                            put("role", "user")
+                            put("content", pendingStopHookPrompt)
+                        })
+                    }
                 } else {
                     putJsonArray("input") {
                         baseInputItems.forEach { add(it) }
-                        extraResponsesLoopItems.forEach { add(it) }
+                        compactedLoopItems.forEach { add(it) }
                     }
                 }
 
@@ -1919,7 +2110,8 @@ object AiProviderEngine {
                     val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(
                         session.workspaceMode,
                         session.workspacePath,
-                        profile.allowShellExecution
+                        profile.allowShellExecution,
+                        goalModeActive = circuitBreaker.goalState != null
                     )
                     wsTools.forEach { add(it) }
                 }
@@ -2078,7 +2270,21 @@ object AiProviderEngine {
                 )
             }
 
-            if (turnToolCalls.isEmpty()) break
+            if (turnToolCalls.isEmpty()) {
+                val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
+                if (stopHookPrompt != null) {
+                    pendingToolResults = emptyList()
+                    pendingStopHookPrompt = stopHookPrompt
+                    extraResponsesLoopItems.add(buildJsonObject {
+                        put("role", "user")
+                        put("content", stopHookPrompt)
+                    })
+                    onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                    continue
+                }
+                break
+            }
+            pendingStopHookPrompt = ""
 
             val results = mutableListOf<ToolCallRecord>()
             for ((callId, fnPair) in turnToolCalls) {
@@ -2088,13 +2294,15 @@ object AiProviderEngine {
                     put("name", fnPair.first)
                     put("arguments", fnPair.second)
                 })
-                val rec = WorkspaceHarness.executeToolCall(
+                val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
                     argumentsJson = fnPair.second
                 )
+                val rec = circuitBreaker.onToolExecuted(rawRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
                 results.add(rec)
                 extraResponsesLoopItems.add(buildJsonObject {
@@ -2104,6 +2312,11 @@ object AiProviderEngine {
                 })
             }
             pendingToolResults = results
+            val trippedReason = circuitBreaker.checkTripped()
+            if (trippedReason != null) {
+                onStatus(trippedReason)
+                break
+            }
         }
     }
 
@@ -2180,6 +2393,9 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         continuePrefix: String,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String) -> Unit,
         onContent: suspend (String) -> Unit,
@@ -2189,14 +2405,15 @@ object AiProviderEngine {
         onUsage: (Int, Int, Int, Int) -> Unit
     ) {
         val activeNodes = historyNodes.filter { it.includedInContext }
-        val systemInstruction = buildCompiledSystemPrompt(session)
+        val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
         val extraToolMessages = mutableListOf<JsonObject>()
         val fullTextAccumulator = StringBuilder()
 
         var loopStep = 0
-        while (loopStep < MAX_LONG_HORIZON_STEPS) {
+        while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
+            val compactedToolMessages = compactChatCompletionsToolMessages(extraToolMessages)
             val payloadObj = buildJsonObject {
                 put("model", model)
                 put("stream", true)
@@ -2253,7 +2470,7 @@ object AiProviderEngine {
                             }
                         })
                     }
-                    extraToolMessages.forEach { add(it) }
+                    compactedToolMessages.forEach { add(it) }
                     if (continuePrefix.isNotBlank() && extraToolMessages.isEmpty()) {
                         add(buildJsonObject {
                             put("role", "assistant")
@@ -2264,7 +2481,8 @@ object AiProviderEngine {
                 val wsTools = WorkspaceHarness.buildOpenAiChatCompletionsTools(
                     session.workspaceMode,
                     session.workspacePath,
-                    profile.allowShellExecution
+                    profile.allowShellExecution,
+                    goalModeActive = circuitBreaker.goalState != null
                 )
                 if (wsTools.isNotEmpty()) {
                     put("tools", wsTools)
@@ -2388,7 +2606,24 @@ object AiProviderEngine {
             }
 
             val validCalls = roundToolCalls.values.filter { it.second.isNotBlank() }
-            if (validCalls.isEmpty()) break
+            if (validCalls.isEmpty()) {
+                val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
+                if (stopHookPrompt != null) {
+                    if (roundContentBuilder.isNotEmpty()) {
+                        extraToolMessages.add(buildJsonObject {
+                            put("role", "assistant")
+                            put("content", roundContentBuilder.toString())
+                        })
+                    }
+                    extraToolMessages.add(buildJsonObject {
+                        put("role", "user")
+                        put("content", stopHookPrompt)
+                    })
+                    onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                    continue
+                }
+                break
+            }
 
             extraToolMessages.add(buildJsonObject {
                 put("role", "assistant")
@@ -2408,13 +2643,15 @@ object AiProviderEngine {
             })
 
             for ((callId, fnName, argsSb) in validCalls) {
-                val rec = WorkspaceHarness.executeToolCall(
+                val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnName,
                     argumentsJson = argsSb.toString().ifBlank { "{}" }
                 )
+                val rec = circuitBreaker.onToolExecuted(rawRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
                 extraToolMessages.add(buildJsonObject {
                     put("role", "tool")
@@ -2422,6 +2659,11 @@ object AiProviderEngine {
                     put("name", fnName)
                     put("content", rec.resultText)
                 })
+            }
+            val trippedReason = circuitBreaker.checkTripped()
+            if (trippedReason != null) {
+                onStatus(trippedReason)
+                break
             }
         }
 
@@ -2440,6 +2682,9 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         continuePrefix: String,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String, String) -> Unit,
         onContent: suspend (String) -> Unit,
@@ -2448,14 +2693,14 @@ object AiProviderEngine {
         onUsage: (String, Int, Int, Int) -> Unit
     ) {
         val activeNodes = historyNodes.filter { it.includedInContext }
-        val systemInstruction = buildCompiledSystemPrompt(session)
+        val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turnsWithAuthorsNote = injectAuthorsNoteIntoHistory(activeNodes, session)
 
         // Mutable conversation list for multi-step tool loop
         val extraLoopMessages = mutableListOf<JsonObject>()
         var loopStep = 0
 
-        while (loopStep < MAX_LONG_HORIZON_STEPS) {
+        while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val effort = profile.thinkingEffort.trim()
             val lowerModel = model.lowercase()
@@ -2575,7 +2820,8 @@ object AiProviderEngine {
                             }
                         })
                     }
-                    for (extraMsg in extraLoopMessages) {
+                    val compactedAnthropicExtras = compactAnthropicExtraMessages(extraLoopMessages)
+                    for (extraMsg in compactedAnthropicExtras) {
                         add(extraMsg)
                     }
                     // Native Assistant Prefill for seamless mid-sentence continuation
@@ -2595,7 +2841,8 @@ object AiProviderEngine {
                 val wsTools = WorkspaceHarness.buildAnthropicTools(
                     session.workspaceMode,
                     session.workspacePath,
-                    profile.allowShellExecution
+                    profile.allowShellExecution,
+                    goalModeActive = circuitBreaker.goalState != null
                 )
                 if (wsTools.isNotEmpty()) {
                     put("tools", wsTools)
@@ -2728,7 +2975,42 @@ object AiProviderEngine {
                 }
             }
 
-            if (turnToolCalls.isEmpty()) break
+            if (turnToolCalls.isEmpty()) {
+                val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
+                if (stopHookPrompt != null) {
+                    if (turnThinkingText.isNotEmpty() && turnThinkingSig.isNotEmpty()) {
+                        assistantContentBlocksForToolLoop.add(buildJsonObject {
+                            put("type", "thinking")
+                            put("thinking", turnThinkingText.toString())
+                            put("signature", turnThinkingSig.toString())
+                        })
+                    }
+                    if (turnText.isNotEmpty()) {
+                        assistantContentBlocksForToolLoop.add(buildJsonObject {
+                            put("type", "text")
+                            put("text", turnText.toString())
+                        })
+                    }
+                    if (assistantContentBlocksForToolLoop.isNotEmpty()) {
+                        extraLoopMessages.add(buildJsonObject {
+                            put("role", "assistant")
+                            put("content", JsonArray(assistantContentBlocksForToolLoop))
+                        })
+                    }
+                    extraLoopMessages.add(buildJsonObject {
+                        put("role", "user")
+                        putJsonArray("content") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", stopHookPrompt)
+                            })
+                        }
+                    })
+                    onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                    continue
+                }
+                break
+            }
 
             // Preserve assistant thinking + signature + tool_use blocks for Anthropic multi-turn tool loop
             if (turnThinkingText.isNotEmpty() && turnThinkingSig.isNotEmpty()) {
@@ -2762,13 +3044,15 @@ object AiProviderEngine {
 
             val toolResultBlocks = mutableListOf<JsonObject>()
             for ((callId, fnPair) in turnToolCalls) {
-                val rec = WorkspaceHarness.executeToolCall(
+                val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
                     argumentsJson = fnPair.second
                 )
+                val rec = circuitBreaker.onToolExecuted(rawRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
                 toolResultBlocks.add(buildJsonObject {
                     put("type", "tool_result")
@@ -2782,6 +3066,11 @@ object AiProviderEngine {
                 put("role", "user")
                 put("content", JsonArray(toolResultBlocks))
             })
+            val trippedReason = circuitBreaker.checkTripped()
+            if (trippedReason != null) {
+                onStatus(trippedReason)
+                break
+            }
         }
     }
 
@@ -2848,16 +3137,21 @@ object AiProviderEngine {
     }
 
     // ============================================================================================
-    // 5. BYTEDANCE ARK DRIVER: SEEDREAM (IMAGE) & SEEDANCE (VIDEO)
+    // 5. BYTEDANCE ARK & OPENAI-PROXY DRIVER: SEEDREAM (IMAGE) & SEEDANCE (VIDEO)
     //    Supports:
-    //    - Seedream Image Generation (`POST /api/v3/images/generations`)
-    //    - Seedance Video Generation (`POST /api/v3/contents/generations/tasks` + async polling)
+    //    - Seedream Image Generation (`POST /api/v3/images/generations` & `/v1/images/generations`)
+    //    - Seedance Video Generation (`POST /api/v3/contents/generations/tasks` & `/v1/contents/generations/tasks` + async polling)
+    //    - Automatic fallback to `/v1/chat/completions` when an OpenAI proxy wraps Seedream/Seedance in chat completions!
     // ============================================================================================
     private suspend fun executeByteDanceArkGeneration(
         profile: ProviderProfile,
         model: String,
+        session: ChatSession,
         historyNodes: List<MessageNode>,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
         onStatus: suspend (String, String) -> Unit,
+        onFirstToken: () -> Unit,
+        onThinking: suspend (String) -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onContent: suspend (String) -> Unit,
         onRawWire: suspend (String, String) -> Unit
@@ -2867,7 +3161,7 @@ object AiProviderEngine {
         require(latestUserPrompt.isNotBlank()) { "Prompt cannot be empty." }
 
         val baseClean = profile.baseUrl.trimEnd('/')
-        val apiBase = if (baseClean.endsWith("/api/v3")) baseClean else "$baseClean/api/v3"
+        val rootBase = baseClean.removeSuffix("/v1").removeSuffix("/api/v3").trimEnd('/')
 
         val isSeedanceVideo = profile.enableVideoGeneration ||
             model.contains("seedance", ignoreCase = true) ||
@@ -2898,25 +3192,72 @@ object AiProviderEngine {
 
             val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
             val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
-            val taskUrl = if (profile.endpointPathOverride.isNotBlank() && profile.endpointPathOverride.contains("tasks")) {
-                "$baseClean${profile.endpointPathOverride}"
+            val candidateTaskUrls = if (profile.endpointPathOverride.isNotBlank() && profile.endpointPathOverride.contains("tasks")) {
+                listOf("$baseClean${profile.endpointPathOverride}")
+            } else if (baseClean.endsWith("/v1")) {
+                listOf(
+                    "$baseClean/contents/generations/tasks",
+                    "$rootBase/api/v3/contents/generations/tasks",
+                    "$baseClean/videos/generations"
+                )
             } else {
-                "$apiBase/contents/generations/tasks"
+                listOf(
+                    "$rootBase/api/v3/contents/generations/tasks",
+                    "$rootBase/v1/contents/generations/tasks"
+                )
             }
-            val finalCreateUrl = buildUrlWithAuthQuery(profile, taskUrl)
 
-            onStatus("Submitting ByteDance Seedance video task ($model)…", "")
-            onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
+            var activeTaskUrl = candidateTaskUrls.first()
+            var createBody = ""
+            var createStatus = 0
+            for (candUrl in candidateTaskUrls) {
+                activeTaskUrl = candUrl
+                val finalCreateUrl = buildUrlWithAuthQuery(profile, candUrl)
+                onStatus("Submitting Seedance video task ($model)…", "")
+                onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
 
-            val createResp = httpClient.post(finalCreateUrl) {
-                applyAuthAndCustomHeaders(profile)
-                contentType(ContentType.Application.Json)
-                setBody(reqStr)
+                val createResp = httpClient.post(finalCreateUrl) {
+                    applyAuthAndCustomHeaders(profile)
+                    contentType(ContentType.Application.Json)
+                    setBody(reqStr)
+                }
+                createBody = createResp.bodyAsText()
+                createStatus = createResp.status.value
+                onRawWire(reqStr, createBody)
+                if (createResp.status.isSuccess()) break
+                if (createStatus != 404 && createStatus != 405 && createStatus != 501) break
             }
-            val createBody = createResp.bodyAsText()
-            onRawWire(reqStr, createBody)
-            if (!createResp.status.isSuccess()) {
-                error("ByteDance Seedance HTTP ${createResp.status.value}: $createBody")
+
+            if (createStatus == 404 || createStatus == 405 || createStatus == 501) {
+                // Proxy wraps Seedance inside /v1/chat/completions — fall back seamlessly!
+                onStatus("Proxy wraps Seedance in /v1/chat/completions — routing via Chat Completions…", "")
+                val chatAccumulator = StringBuilder()
+                executeOpenAiChatCompletionsLoop(
+                    profile = profile,
+                    model = model,
+                    session = session,
+                    historyNodes = historyNodes,
+                    continuePrefix = "",
+                    circuitBreaker = circuitBreaker,
+                    onStatus = { st -> onStatus(st, "") },
+                    onGoalProgress = {},
+                    onFirstToken = onFirstToken,
+                    onThinking = onThinking,
+                    onContent = { delta ->
+                        chatAccumulator.append(delta)
+                        onContent(delta)
+                    },
+                    onMedia = onMedia,
+                    onToolCall = {},
+                    onRawWire = onRawWire,
+                    onUsage = { _, _, _, _ -> }
+                )
+                extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia)
+                return
+            }
+
+            if (createStatus !in 200..299) {
+                error("ByteDance Seedance HTTP $createStatus: $createBody")
             }
 
             val createObj = json.parseToJsonElement(createBody).jsonObject
@@ -2936,7 +3277,7 @@ object AiProviderEngine {
                 pollCount++
                 onStatus("Seedance Video Generating ($status • poll #$pollCount)…", taskId)
                 delay(3000L)
-                val pollUrl = buildUrlWithAuthQuery(profile, "${taskUrl.trimEnd('/')}/$taskId")
+                val pollUrl = buildUrlWithAuthQuery(profile, "${activeTaskUrl.trimEnd('/')}/$taskId")
                 val pollResp = httpClient.get(pollUrl) {
                     applyAuthAndCustomHeaders(profile)
                 }
@@ -2984,7 +3325,7 @@ object AiProviderEngine {
             onMedia(mediaItem)
             onContent("Generated Seedance video (`$model` • ${profile.mediaAspectRatio} • ${profile.videoDurationSeconds}s).")
         } else {
-            // Seedream Image Generation API (`POST /api/v3/images/generations`)
+            // Seedream Image Generation API (`POST /api/v3/images/generations` & `/v1/images/generations`)
             val size = resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
             val payloadObj = buildJsonObject {
                 put("model", model)
@@ -2999,9 +3340,9 @@ object AiProviderEngine {
             val candidateImgUrls = if (profile.endpointPathOverride.isNotBlank()) {
                 listOf("$baseClean${profile.endpointPathOverride}")
             } else if (baseClean.endsWith("/v1")) {
-                listOf("$baseClean/images/generations", "${baseClean.removeSuffix("/v1")}/api/v3/images/generations")
+                listOf("$baseClean/images/generations", "$rootBase/api/v3/images/generations")
             } else {
-                listOf("$apiBase/images/generations", "$baseClean/v1/images/generations")
+                listOf("$rootBase/api/v3/images/generations", "$rootBase/v1/images/generations")
             }
 
             var bodyText = ""
@@ -3020,8 +3361,32 @@ object AiProviderEngine {
                 lastStatus = resp.status.value
                 onRawWire(reqStr, bodyText)
                 if (resp.status.isSuccess()) break
-                if (lastStatus != 404) break
+                if (lastStatus != 404 && lastStatus != 405 && lastStatus != 501) break
             }
+
+            if (lastStatus == 404 || lastStatus == 405 || lastStatus == 501) {
+                // Proxy wraps Seedream in /v1/chat/completions — fall back seamlessly!
+                onStatus("Proxy wraps Seedream in /v1/chat/completions — routing via Chat Completions…", "")
+                executeOpenAiChatCompletionsLoop(
+                    profile = profile,
+                    model = model,
+                    session = session,
+                    historyNodes = historyNodes,
+                    continuePrefix = "",
+                    circuitBreaker = circuitBreaker,
+                    onStatus = { st -> onStatus(st, "") },
+                    onGoalProgress = {},
+                    onFirstToken = onFirstToken,
+                    onThinking = onThinking,
+                    onContent = onContent,
+                    onMedia = onMedia,
+                    onToolCall = {},
+                    onRawWire = onRawWire,
+                    onUsage = { _, _, _, _ -> }
+                )
+                return
+            }
+
             if (lastStatus !in 200..299) {
                 error("ByteDance Seedream HTTP $lastStatus: $bodyText")
             }
@@ -3087,7 +3452,157 @@ object AiProviderEngine {
             msg.contains("broken pipe") ||
             msg.contains("eof") ||
             msg.contains("socket") ||
+            msg.contains("unknownhost") ||
+            msg.contains("unresolvedaddress") ||
+            msg.contains("network is unreachable") ||
             msg.contains("incomplete")
+    }
+
+    /**
+     * Detects when a proxy or server does not implement `/v1beta/interactions` or `/v1/responses`
+     * so `streamGeneration` can automatically fall back to `:streamGenerateContent` or `/v1/chat/completions`.
+     */
+    private fun isEndpointUnsupportedForAutoFallback(err: Throwable): Boolean {
+        val msg = (err.message ?: err.toString()).lowercase()
+        return msg.contains("http 404") ||
+            msg.contains("http 405") ||
+            msg.contains("http 501") ||
+            msg.contains("not found") ||
+            msg.contains("unknown endpoint") ||
+            msg.contains("unrecognized request url") ||
+            msg.contains("unsupported path")
+    }
+
+    private fun extractGoalObjectiveFromHistory(historyNodes: List<MessageNode>): String {
+        val lastUserText = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content?.trim().orEmpty()
+        if (lastUserText.startsWith("/goal", ignoreCase = true)) {
+            return lastUserText.substringAfter("/goal").trim().ifBlank { "Complete the user's requested objective thoroughly." }
+        }
+        if (lastUserText.startsWith("[Autonomous Goal Mode:", ignoreCase = true)) {
+            return lastUserText.substringAfter("[Autonomous Goal Mode:").substringBefore("]").trim()
+                .ifBlank { lastUserText }
+        }
+        return ""
+    }
+
+    /**
+     * 3-Layer Rolling Context Compaction Helpers for Gemini Interactions, OpenAI Responses,
+     * OpenAI Chat Completions, and Anthropic Messages loops.
+     */
+    private fun compactGeminiInteractionsExtraSteps(steps: List<JsonObject>): List<JsonObject> {
+        if (steps.size <= 16) return steps
+        val total = steps.size
+        return steps.mapIndexed { idx, obj ->
+            val type = obj["type"]?.jsonPrimitive?.contentOrNull
+            if (type == "function_result") {
+                val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "tool"
+                val raw = obj["result"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val compacted = WorkspaceHarness.compactStaleToolOutputText(idx, total, name, raw)
+                if (compacted != raw) {
+                    buildJsonObject {
+                        for ((k, v) in obj) {
+                            if (k == "result") put("result", compacted) else put(k, v)
+                        }
+                    }
+                } else obj
+            } else obj
+        }
+    }
+
+    private fun compactOpenAiResponsesExtraItems(items: List<JsonObject>): List<JsonObject> {
+        if (items.size <= 16) return items
+        val total = items.size
+        return items.mapIndexed { idx, obj ->
+            val type = obj["type"]?.jsonPrimitive?.contentOrNull
+            if (type == "function_call_output") {
+                val raw = obj["output"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val compacted = WorkspaceHarness.compactStaleToolOutputText(idx, total, "tool", raw)
+                if (compacted != raw) {
+                    buildJsonObject {
+                        for ((k, v) in obj) {
+                            if (k == "output") put("output", compacted) else put(k, v)
+                        }
+                    }
+                } else obj
+            } else obj
+        }
+    }
+
+    private fun compactChatCompletionsToolMessages(messages: List<JsonObject>): List<JsonObject> {
+        if (messages.size <= 16) return messages
+        val total = messages.size
+        return messages.mapIndexed { idx, obj ->
+            val role = obj["role"]?.jsonPrimitive?.contentOrNull
+            if (role == "tool") {
+                val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "tool"
+                val raw = obj["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val compacted = WorkspaceHarness.compactStaleToolOutputText(idx, total, name, raw)
+                if (compacted != raw) {
+                    buildJsonObject {
+                        for ((k, v) in obj) {
+                            if (k == "content") put("content", compacted) else put(k, v)
+                        }
+                    }
+                } else obj
+            } else obj
+        }
+    }
+
+    private fun compactAnthropicExtraMessages(messages: List<JsonObject>): List<JsonObject> {
+        if (messages.size <= 16) return messages
+        val total = messages.size
+        return messages.mapIndexed { idx, obj ->
+            val role = obj["role"]?.jsonPrimitive?.contentOrNull
+            val contentArr = obj["content"] as? JsonArray
+            if (role == "user" && contentArr != null && total - idx > 16) {
+                val updatedArr = buildJsonArray {
+                    for (el in contentArr) {
+                        val bObj = el as? JsonObject
+                        if (bObj != null && bObj["type"]?.jsonPrimitive?.contentOrNull == "tool_result") {
+                            val raw = bObj["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                            val compacted = WorkspaceHarness.compactStaleToolOutputText(idx, total, "tool", raw)
+                            add(buildJsonObject {
+                                for ((k, v) in bObj) {
+                                    if (k == "content") put("content", compacted) else put(k, v)
+                                }
+                            })
+                        } else {
+                            add(el)
+                        }
+                    }
+                }
+                buildJsonObject {
+                    put("role", "user")
+                    put("content", updatedArr)
+                }
+            } else obj
+        }
+    }
+
+    private suspend fun extractMarkdownVideosFromText(
+        text: String,
+        aspectRatio: String,
+        onMedia: suspend (GeneratedMediaItem) -> Unit
+    ) {
+        val urlRegex = Regex("""https?://[^\s)"'>]+\.mp4(?:\?[^\s)"'>]*)?""", RegexOption.IGNORE_CASE)
+        for (match in urlRegex.findAll(text)) {
+            val videoUrl = match.value.trim()
+            val now = PlatformBridge.currentTimeMillis()
+            val videoBytes = runCatching { httpClient.get(videoUrl).readRawBytes() }.getOrElse { ByteArray(0) }
+            val localPath = if (videoBytes.isNotEmpty()) {
+                PlatformBridge.saveGeneratedMediaFile("video-$now.mp4", videoBytes)
+            } else ""
+            onMedia(
+                GeneratedMediaItem(
+                    id = "vid-$now",
+                    kind = MediaKind.VIDEO,
+                    mimeType = "video/mp4",
+                    localFilePath = localPath,
+                    remoteUrl = videoUrl,
+                    aspectRatio = aspectRatio
+                )
+            )
+        }
     }
 
     private suspend fun saveAndEmitImage(
@@ -3180,7 +3695,10 @@ object AiProviderEngine {
     // SHARED HELPERS: System Prompt Compiler, Cache-Preserving Author's Note Injector,
     // Auth Header Builder, SSE Stream Reader, and Raw JSON Merger.
     // ============================================================================================
-    private fun buildCompiledSystemPrompt(session: ChatSession): String {
+    private fun buildCompiledSystemPrompt(
+        session: ChatSession,
+        activeGoalState: GoalTrackerState? = null
+    ): String {
         val sb = StringBuilder()
         val charName = session.activeCard?.name?.ifBlank { "Character" } ?: "Character"
         fun expandMacros(text: String): String =
@@ -3233,13 +3751,22 @@ object AiProviderEngine {
         }
 
         if (session.workspaceMode != io.parchment.ai.model.WorkspaceMode.OFF && session.workspacePath.isNotBlank()) {
-            sb.appendLine("### Local Workspace Agent Harness (OpenCode / Hermes / Oh-My-Pi Style)")
-            sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`, `agent_memory`, `shell_exec`" else ""}, `dice_roll`). Inspect files with `fs_read` before editing, keep edits surgical with `fs_edit`, and record durable project/story conventions with `agent_memory`.")
+            sb.appendLine("### Local Workspace Agent Harness (OpenCode / Claude Code / Codex Style)")
+            sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`, `agent_memory`, `shell_exec`" else ""}, `todo_write`, `goal_complete`, `dice_roll`). Inspect files with `fs_read` before editing, keep edits surgical with `fs_edit`, and record durable project/story conventions with `agent_memory`. For multi-step tasks, track your steps with `todo_write` and verify completion with `goal_complete`.")
             val discoveredContext = WorkspaceHarness.discoverWorkspaceContextFiles(session.workspacePath)
             if (discoveredContext.isNotBlank()) {
                 sb.appendLine()
                 sb.appendLine(discoveredContext)
             }
+        }
+
+        if (activeGoalState != null) {
+            sb.appendLine()
+            sb.appendLine("### Autonomous Goal & Verification Mode (Claude Code / OpenAI Codex Protocol)")
+            sb.appendLine("Active Goal Objective: ${activeGoalState.goalObjective}")
+            sb.appendLine("1. Plan: Immediately call `todo_write` to break the objective into concrete, verifiable steps (mark step 1 `in_progress`).")
+            sb.appendLine("2. Execute & Verify: Complete each step thoroughly. After verifying a step, call `todo_write` to mark it `completed` and set the next step `in_progress`.")
+            sb.appendLine("3. Complete: Do NOT stop early while steps remain `pending` or `in_progress`. Only when 100% of acceptance criteria are verified, call `goal_complete`.")
         }
         return sb.toString().trim()
     }

@@ -40,14 +40,14 @@ jobs:
 
       - name: Build Signed Release APK (with OTA-consistent keystore)
         run: |
-          APP_VER="1.0.${{ github.run_number }}"
+          APP_VER="2.0.${{ github.run_number }}"
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             APP_VER="${GITHUB_REF#refs/tags/v}"
           fi
           chmod +x ./gradlew
           ./gradlew :composeApp:assembleRelease \
             -PappVersion="$APP_VER" \
-            -PappVersionCode="${{ github.run_number }}" \
+            -PappVersionCode="$((200 + ${{ github.run_number }}))" \
             -PgithubRepo="${{ github.repository }}" \
             --no-daemon
 
@@ -80,7 +80,7 @@ jobs:
       - name: Build Native Windows Distributable Runtime
         shell: pwsh
         run: |
-          $appVer = "1.0.${{ github.run_number }}"
+          $appVer = "2.0.${{ github.run_number }}"
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
             $appVer = "${{ github.ref }}".Substring(11)
           }
@@ -93,7 +93,7 @@ jobs:
       - name: Package Minimal Zero-Trace .EXE Installer with Inno Setup
         shell: pwsh
         run: |
-          $appVer = "1.0.${{ github.run_number }}"
+          $appVer = "2.0.${{ github.run_number }}"
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
             $appVer = "${{ github.ref }}".Substring(11)
           }
@@ -118,7 +118,7 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v1.0.${{ github.run_number }}"
+            TAG="v2.0.${{ github.run_number }}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -138,7 +138,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          name: "Parchment ${{ steps.rel.outputs.tag }}"
+          name: "Parchment ${{ steps.rel.outputs.tag }} — Horizon"
           files: |
             release-assets/Parchment-Android-Universal.apk
             release-assets/Parchment-Windows-x64-Setup.exe

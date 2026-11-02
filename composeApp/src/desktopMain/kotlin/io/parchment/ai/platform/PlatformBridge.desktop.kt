@@ -502,8 +502,48 @@ actual object PlatformBridge {
         if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
     }
 
+    @Volatile
+    private var keepAwakeProcess: Process? = null
+
+    private fun setWindowsKeepAwake(active: Boolean) {
+        runCatching {
+            val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+            if (!isWin) return@runCatching
+            if (!active) {
+                keepAwakeProcess?.destroyForcibly()
+                keepAwakeProcess = null
+                return@runCatching
+            }
+            if (keepAwakeProcess?.isAlive == true) return@runCatching
+            val parentPid = runCatching { ProcessHandle.current().pid() }.getOrDefault(0L)
+            // Holds Win32 SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED = 0x80000041)
+            // while the active generation/goal is running so Windows 11 never suspends CPU/network during multi-day runs.
+            val psCmd = buildString {
+                append("\$code = '[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint esFlags);'; ")
+                append("\$ste = Add-Type -MemberDefinition \$code -Name 'Win32Ste' -Namespace 'Parchment' -PassThru; ")
+                append("try { ")
+                append("while (\$true) { ")
+                append("[void]\$ste::SetThreadExecutionState(0x80000041); ")
+                if (parentPid > 0L) {
+                    append("if (-not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) { break }; ")
+                }
+                append("Start-Sleep -Seconds 30 ")
+                append("} ")
+                append("} finally { [void]\$ste::SetThreadExecutionState(0x80000000) }")
+            }
+            keepAwakeProcess = ProcessBuilder(
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle", "Hidden",
+                "-Command", psCmd
+            ).start()
+        }
+    }
+
     actual fun notifyLongDecodeStart(modelName: String) {
         windowStatusCallback?.invoke("Parchment — Decoding ($modelName)…")
+        setWindowsKeepAwake(true)
     }
 
     actual fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int) {
@@ -512,6 +552,7 @@ actual object PlatformBridge {
 
     actual fun notifyLongDecodeComplete() {
         windowStatusCallback?.invoke("Parchment — Literary & Bleeding-Edge AI Studio")
+        setWindowsKeepAwake(false)
     }
 
     actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {

@@ -3,7 +3,7 @@
 
 #define MyAppName "Parchment"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.2"
+  #define MyAppVersion "2.0.0"
 #endif
 #define MyAppPublisher "Parchment"
 #define MyAppExeName "Parchment.exe"

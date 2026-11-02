@@ -179,4 +179,63 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("application/pdf", normPdf.mimeType)
         assertEquals("manuscript_proof.pdf", normPdf.fileName)
     }
+
+    @Test
+    fun testGoalTodoWriteStopHookAndCircuitBreaker() {
+        val breaker = WorkspaceHarness.LoopCircuitBreaker(initialGoal = null)
+
+        // 1. Normal chat / roleplay turn (no goal, no todos) -> Stop Hook must NOT fire (null)
+        assertEquals(null, breaker.evaluateStopHookPrompt(), "Normal chat without todos must exit in 1 pass")
+
+        // 2. Model calls todo_write (works even with WorkspaceMode.OFF!)
+        val todoCall = WorkspaceHarness.executeToolCall(
+            workspaceRoot = "",
+            mode = WorkspaceMode.OFF,
+            callId = "tc_todo_1",
+            toolName = "todo_write",
+            argumentsJson = """{"goal":"Write 2-part treatise","todos":[{"id":"1","content":"Part 1","status":"completed"},{"id":"2","content":"Part 2","status":"in_progress"}]}"""
+        )
+        assertFalse(todoCall.isError, "todo_write must work even when WorkspaceMode is OFF")
+        breaker.onToolExecuted(todoCall)
+
+        // 3. Stop Hook must fire while step 2 is still 'in_progress'
+        val stopHook1 = breaker.evaluateStopHookPrompt()
+        assertTrue(stopHook1 != null && stopHook1.contains("Part 2"), "Stop hook must remind model of incomplete step 2")
+
+        // 4. Model calls goal_complete -> Stop Hook must release and return null
+        val doneCall = WorkspaceHarness.executeToolCall(
+            workspaceRoot = "",
+            mode = WorkspaceMode.OFF,
+            callId = "tc_done_1",
+            toolName = "goal_complete",
+            argumentsJson = """{"summary":"Treatise completed","verification":"Both parts verified"}"""
+        )
+        breaker.onToolExecuted(doneCall)
+        assertTrue(breaker.goalState?.isCompleted == true)
+        assertEquals(null, breaker.evaluateStopHookPrompt(), "Stop hook must not fire after goal_complete")
+
+        // 5. Repeated identical tool errors must trip the Circuit Breaker on the 3rd repeat
+        val failingCall = WorkspaceHarness.executeToolCall(
+            workspaceRoot = "",
+            mode = WorkspaceMode.OFF,
+            callId = "fail_1",
+            toolName = "fs_write",
+            argumentsJson = """{"path":"a.txt","content":"x"}"""
+        )
+        assertTrue(failingCall.isError)
+        breaker.onToolExecuted(failingCall)
+        assertEquals(null, breaker.checkTripped())
+        val warnCall = breaker.onToolExecuted(failingCall)
+        assertTrue(warnCall.resultText.contains("CIRCUIT BREAKER WARNING"))
+        assertEquals(null, breaker.checkTripped())
+        breaker.onToolExecuted(failingCall)
+        assertTrue(breaker.checkTripped() != null, "3 consecutive identical failing tool calls must trip the circuit breaker")
+
+        // 6. Rolling Context Compactor must compact verbose outputs older than 8 steps
+        val longOutput = "Line of file content\n".repeat(60)
+        val compactedOld = WorkspaceHarness.compactStaleToolOutputText(1, 15, "fs_read", longOutput)
+        assertTrue(compactedOld.startsWith("[Compacted step #1"), "Old verbose tool output (>8 steps ago) must be compacted")
+        val recentUnchanged = WorkspaceHarness.compactStaleToolOutputText(12, 15, "fs_read", longOutput)
+        assertEquals(longOutput, recentUnchanged, "Recent tool output (<=8 steps ago) must remain verbatim")
+    }
 }

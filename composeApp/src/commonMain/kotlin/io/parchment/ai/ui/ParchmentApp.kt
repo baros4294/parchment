@@ -86,6 +86,7 @@ import io.parchment.ai.model.DefaultModelConfig
 import io.parchment.ai.model.DesktopWindowConfig
 import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.GeneratedMediaItem
+import io.parchment.ai.model.GoalTrackerState
 import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.MessageNavVisibility
 import io.parchment.ai.model.MessageNode
@@ -224,6 +225,7 @@ fun ParchmentApp() {
     var userPromptInput by remember(activeSession.id) { mutableStateOf(activeSession.draftInput) }
     var assistantPrefillInput by remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
     var showPrefillBox by remember { mutableStateOf(false) }
+    var isGoalModeEnabled by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
     var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
     var activeViewerItem by remember { mutableStateOf<ActiveMediaViewerItem?>(null) }
@@ -624,7 +626,8 @@ fun ParchmentApp() {
         historyForCall: List<MessageNode>,
         targetAssistantNodeId: String,
         targetVariantId: String,
-        continuePrefix: String = ""
+        continuePrefix: String = "",
+        autoMuteNodeIdsOnFinish: Set<String> = emptySet()
     ) {
         activeStreamJob?.cancel()
         val sessionSnap = appState.sessions.find { it.id == sessionId } ?: activeSession
@@ -681,6 +684,7 @@ fun ParchmentApp() {
             var displayedContentLen = continuePrefix.length
             var displayedThinkingLen = 0
             val accumulatedTools = mutableListOf<ToolCallRecord>()
+            var latestGoalTracker: GoalTrackerState? = null
             val accumulatedMedia = mutableListOf<GeneratedMediaItem>()
             var rawReq = ""
             var rawResp = ""
@@ -709,29 +713,36 @@ fun ParchmentApp() {
                 val curThink = if (isFinal) networkThinkingTarget.toString() else networkThinkingTarget.substring(0, displayedThinkingLen.coerceAtMost(networkThinkingTarget.length))
                 val curSig = signatureSb.toString()
                 val curTools = accumulatedTools.toList()
+                val curGoal = latestGoalTracker
                 val curMedia = accumulatedMedia.toList()
                 updateSessionById(sessionId, immediate = true) { sess ->
                     sess.copy(
                         messages = sess.messages.map { node ->
-                            if (node.id != targetAssistantNodeId) node
-                            else node.copy(
-                                variants = node.variants.map { v ->
-                                    if (v.id != targetVariantId) v
-                                    else {
-                                        val base = v.copy(
-                                            content = curContent,
-                                            thinkingSummary = curThink,
-                                            thinkingSignature = curSig,
-                                            thinkingDurationMs = thinkingDurationMs,
-                                            toolCalls = curTools,
-                                            mediaItems = curMedia,
-                                            pendingBackgroundInteractionId = if (isFinal) "" else streamingInteractionId,
-                                            isStreaming = !isFinal
-                                        )
-                                        if (finalUpdater != null) finalUpdater(base) else base
+                            val shouldAutoMute = isFinal && node.id in autoMuteNodeIdsOnFinish
+                            if (node.id != targetAssistantNodeId) {
+                                if (shouldAutoMute) node.copy(includedInContext = false) else node
+                            } else {
+                                node.copy(
+                                    includedInContext = if (shouldAutoMute) false else node.includedInContext,
+                                    variants = node.variants.map { v ->
+                                        if (v.id != targetVariantId) v
+                                        else {
+                                            val base = v.copy(
+                                                content = curContent,
+                                                thinkingSummary = curThink,
+                                                thinkingSignature = curSig,
+                                                thinkingDurationMs = thinkingDurationMs,
+                                                toolCalls = curTools,
+                                                goalTracker = curGoal ?: v.goalTracker,
+                                                mediaItems = curMedia,
+                                                pendingBackgroundInteractionId = if (isFinal) "" else streamingInteractionId,
+                                                isStreaming = !isFinal
+                                            )
+                                            if (finalUpdater != null) finalUpdater(base) else base
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            }
                         }
                     )
                 }
@@ -837,9 +848,22 @@ fun ParchmentApp() {
                         }
                         is StreamUpdate.ToolCallEvent -> {
                             accumulatedTools.add(update.toolCall)
-                            streamingStatus = "Executed workspace tool: ${update.toolCall.name}"
+                            streamingStatus = "Executed tool: ${update.toolCall.name}"
                             val toolsSnap = accumulatedTools.toList()
                             patchVariantMemory { v -> v.copy(toolCalls = toolsSnap) }
+                            flushCheckpointToDisk(isFinal = false)
+                        }
+                        is StreamUpdate.GoalProgress -> {
+                            latestGoalTracker = update.goalTracker
+                            val done = update.goalTracker.completedCount
+                            val total = update.goalTracker.todos.size
+                            streamingStatus = if (total > 0) {
+                                "Goal Progress ($done/$total steps done)…"
+                            } else {
+                                "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
+                            }
+                            patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
+                            flushCheckpointToDisk(isFinal = false)
                         }
                         is StreamUpdate.MediaGenerated -> {
                             accumulatedMedia.add(update.item)
@@ -860,6 +884,9 @@ fun ParchmentApp() {
                                 networkThinkingTarget.clear()
                                 networkThinkingTarget.append(update.fullThinking)
                             }
+                            if (update.goalTracker != null) {
+                                latestGoalTracker = update.goalTracker
+                            }
                             networkDone = true
                             pacerJob.join()
                             flushCheckpointToDisk(isFinal = true) { v ->
@@ -869,6 +896,7 @@ fun ParchmentApp() {
                                     thinkingSignature = update.thinkingSignature,
                                     thinkingDurationMs = thinkingDurationMs,
                                     toolCalls = update.toolCalls,
+                                    goalTracker = update.goalTracker ?: latestGoalTracker,
                                     mediaItems = update.mediaItems,
                                     providerInteractionId = update.providerInteractionId,
                                     pendingBackgroundInteractionId = "",
@@ -948,11 +976,13 @@ fun ParchmentApp() {
         text: String,
         prefill: String,
         attachments: List<PromptAttachment>,
-        isGuidedDirection: Boolean
+        isGuidedDirection: Boolean,
+        isBtwSideQuestion: Boolean = false
     ) {
         val targetSess = appState.sessions.find { it.id == sessionId } ?: activeSession
         val now = PlatformBridge.currentTimeMillis()
         val updatedMessages = targetSess.messages.toMutableList()
+        val userNodeId = "node-$now-u"
 
         val historyForCall = if (isGuidedDirection) {
             val syntheticDirectionNode = MessageNode(
@@ -977,7 +1007,7 @@ fun ParchmentApp() {
                 )
                 updatedMessages.add(
                     MessageNode(
-                        id = "node-$now-u",
+                        id = userNodeId,
                         role = MessageRole.USER,
                         variants = listOf(userVar),
                         activeVariantIndex = 0
@@ -1017,12 +1047,15 @@ fun ParchmentApp() {
             )
         }
 
+        val autoMuteSet = if (isBtwSideQuestion) setOf(userNodeId, assistantNodeId) else emptySet()
+
         triggerGeneration(
             sessionId = sessionId,
             historyForCall = historyForCall,
             targetAssistantNodeId = assistantNodeId,
             targetVariantId = assistantVarId,
-            continuePrefix = prefill
+            continuePrefix = prefill,
+            autoMuteNodeIdsOnFinish = autoMuteSet
         )
     }
 
@@ -1036,25 +1069,139 @@ fun ParchmentApp() {
         )
     }
 
+    fun triggerAutoSummarizeStory(autoMuteOlderTurns: Boolean = false) {
+        if (isStreaming || activeSession.messages.isEmpty()) return
+        val now = PlatformBridge.currentTimeMillis()
+        val dm = appState.defaultModels
+        val summaryProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
+            appState.profiles.find { it.id == dm.summaryProfileId } ?: activeProfile
+        } else activeProfile
+        val summaryModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
+            dm.summaryModelId
+        } else activeSession.modelOverride.ifBlank { summaryProf.defaultModel }
+
+        val summarizeNode = MessageNode(
+            id = "node-sum-$now",
+            role = MessageRole.USER,
+            variants = listOf(
+                MessageVariant(
+                    id = "var-sum-$now",
+                    content = "[Provide a concise, high-signal continuity summary of all key events, character states, unresolved threads, and established facts in the conversation so far. Use bullet points.]",
+                    createdAt = now
+                )
+            )
+        )
+        val historyForCall = activeSession.messages + summarizeNode
+
+        activeStreamJob?.cancel()
+        isStreaming = true
+        streamingStatus = if (autoMuteOlderTurns) {
+            "Compacting context & summarizing continuity ($summaryModel)…"
+        } else {
+            "Summarizing story continuity into memory ($summaryModel)…"
+        }
+
+        activeStreamJob = appProcessScope.launch {
+            val buf = StringBuilder()
+            try {
+                AiProviderEngine.streamGeneration(
+                    profile = summaryProf.copy(defaultModel = summaryModel),
+                    session = activeSession.copy(modelOverride = summaryModel),
+                    historyNodes = historyForCall
+                ).collect { update ->
+                    when (update) {
+                        is StreamUpdate.ContentDelta -> {
+                            buf.append(update.delta)
+                            updateActiveSession { it.copy(storySummary = buf.toString()) }
+                        }
+                        is StreamUpdate.Completed -> {
+                            val summaryText = update.fullContent.trim()
+                            updateActiveSession(immediate = true) { sess ->
+                                val updatedMsgs = if (autoMuteOlderTurns && sess.messages.size > 4) {
+                                    val keepStartIdx = sess.messages.size - 4
+                                    sess.messages.mapIndexed { idx, node ->
+                                        if (idx < keepStartIdx) node.copy(includedInContext = false) else node
+                                    }
+                                } else {
+                                    sess.messages
+                                }
+                                sess.copy(
+                                    storySummary = summaryText,
+                                    messages = updatedMsgs
+                                )
+                            }
+                            bannerNotification = if (autoMuteOlderTurns) {
+                                "Context Compacted: summarized into Memory & muted older turns (last 4 turns kept active)."
+                            } else {
+                                "Updated Rolling Continuity Memory."
+                            }
+                        }
+                        is StreamUpdate.Error -> {
+                            bannerNotification = "Summarize error: ${update.message}"
+                        }
+                        else -> {}
+                    }
+                }
+            } finally {
+                isStreaming = false
+                streamingStatus = ""
+            }
+        }
+    }
+
     fun sendUserTurn() {
         val rawInput = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
         var currentAtts = pendingAttachments
         if (rawInput.isEmpty() && prefill.isEmpty() && currentAtts.isEmpty()) return
 
+        // Handle `/compact` slash command (Summarizes into Memory + Mutes older turns, keeping last 4 active)
+        if (rawInput.equals("/compact", ignoreCase = true) && currentAtts.isEmpty()) {
+            userPromptInput = ""
+            updateActiveSession { it.copy(draftInput = "") }
+            triggerAutoSummarizeStory(autoMuteOlderTurns = true)
+            return
+        }
+
+        // Handle `/rewind` slash command (Removes the last turn pair in-place)
+        if (rawInput.equals("/rewind", ignoreCase = true) && currentAtts.isEmpty()) {
+            userPromptInput = ""
+            if (activeSession.messages.isNotEmpty()) {
+                val dropCount = if (activeSession.messages.size >= 2 && activeSession.messages.last().role == MessageRole.ASSISTANT) 2 else 1
+                updateActiveSession(immediate = true) {
+                    it.copy(
+                        messages = it.messages.dropLast(dropCount),
+                        draftInput = ""
+                    )
+                }
+                bannerNotification = "Rewound last $dropCount message(s)."
+            }
+            return
+        }
+
+        // Handle `/btw <question>` ephemeral side-question (auto-muted from context once answered!)
+        val isBtw = rawInput.startsWith("/btw ", ignoreCase = true)
+        val cleanedInput = if (isBtw) {
+            "[Side Question (/btw): ${rawInput.substringAfter(" ").trim()}]"
+        } else if (isGoalModeEnabled && !rawInput.startsWith("/goal", ignoreCase = true)) {
+            "/goal $rawInput"
+        } else {
+            rawInput
+        }
+
         // Support "Paste long text as file" threshold
         val prefs = appState.preferences
-        val finalText = if (prefs.pasteLongTextAsFile && rawInput.length >= prefs.pasteConversionThresholdChars) {
+        val finalText = if (prefs.pasteLongTextAsFile && cleanedInput.length >= prefs.pasteConversionThresholdChars) {
             val now = PlatformBridge.currentTimeMillis()
             currentAtts = currentAtts + PromptAttachment(
                 id = "att-paste-$now",
-                fileName = "pasted-text-${rawInput.length}chars.txt",
+                fileName = "pasted-text-${cleanedInput.length}chars.txt",
                 mimeType = "text/plain",
-                textContent = rawInput
+                textContent = cleanedInput
             )
-            "[Attached pasted text (${rawInput.length} characters)]"
+            "[Attached pasted text (${cleanedInput.length} characters)]"
         } else {
-            rawInput
+            cleanedInput
         }
 
         userPromptInput = ""
@@ -1066,7 +1213,8 @@ fun ParchmentApp() {
             text = finalText,
             prefill = prefill,
             attachments = currentAtts,
-            isGuidedDirection = false
+            isGuidedDirection = false,
+            isBtwSideQuestion = isBtw
         )
     }
 
@@ -1174,64 +1322,6 @@ fun ParchmentApp() {
                         }
                         is StreamUpdate.Error -> {
                             bannerNotification = "Impersonate error: ${update.message}"
-                        }
-                        else -> {}
-                    }
-                }
-            } finally {
-                isStreaming = false
-                streamingStatus = ""
-            }
-        }
-    }
-
-    fun triggerAutoSummarizeStory() {
-        if (isStreaming || activeSession.messages.isEmpty()) return
-        val now = PlatformBridge.currentTimeMillis()
-        val dm = appState.defaultModels
-        val summaryProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
-            appState.profiles.find { it.id == dm.summaryProfileId } ?: activeProfile
-        } else activeProfile
-        val summaryModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
-            dm.summaryModelId
-        } else activeSession.modelOverride.ifBlank { summaryProf.defaultModel }
-
-        val summarizeNode = MessageNode(
-            id = "node-sum-$now",
-            role = MessageRole.USER,
-            variants = listOf(
-                MessageVariant(
-                    id = "var-sum-$now",
-                    content = "[Provide a concise, high-signal continuity summary of all key events, character states, unresolved threads, and established facts in the conversation so far. Use bullet points.]",
-                    createdAt = now
-                )
-            )
-        )
-        val historyForCall = activeSession.messages + summarizeNode
-
-        activeStreamJob?.cancel()
-        isStreaming = true
-        streamingStatus = "Summarizing story continuity into memory ($summaryModel)…"
-
-        activeStreamJob = appProcessScope.launch {
-            val buf = StringBuilder()
-            try {
-                AiProviderEngine.streamGeneration(
-                    profile = summaryProf.copy(defaultModel = summaryModel),
-                    session = activeSession.copy(modelOverride = summaryModel),
-                    historyNodes = historyForCall
-                ).collect { update ->
-                    when (update) {
-                        is StreamUpdate.ContentDelta -> {
-                            buf.append(update.delta)
-                            updateActiveSession { it.copy(storySummary = buf.toString()) }
-                        }
-                        is StreamUpdate.Completed -> {
-                            updateActiveSession(immediate = true) { it.copy(storySummary = update.fullContent.trim()) }
-                            bannerNotification = "Updated Rolling Continuity Memory."
-                        }
-                        is StreamUpdate.Error -> {
-                            bannerNotification = "Summarize error: ${update.message}"
                         }
                         else -> {}
                     }
@@ -1723,6 +1813,8 @@ fun ParchmentApp() {
                                     },
                                     showPrefillBox = showPrefillBox,
                                     onTogglePrefillBox = { showPrefillBox = !showPrefillBox },
+                                    isGoalModeEnabled = isGoalModeEnabled,
+                                    onToggleGoalMode = { isGoalModeEnabled = !isGoalModeEnabled },
                                     pendingAttachments = pendingAttachments,
                                     onAddAttachment = {
                                         uiScope.launch {
@@ -1798,7 +1890,18 @@ fun ParchmentApp() {
                                     onSteerNow = ::triggerSteerNow,
                                     onQueuePrompt = ::enqueueFollowUpPrompt,
                                     onImpersonateDraft = ::triggerImpersonateDraft,
-                                    onAutoSummarizeStory = ::triggerAutoSummarizeStory,
+                                    onAutoSummarizeStory = { triggerAutoSummarizeStory(autoMuteOlderTurns = false) },
+                                    onCompactContext = { triggerAutoSummarizeStory(autoMuteOlderTurns = true) },
+                                    onRewindToNode = { nodeIndex ->
+                                        val keepCount = (nodeIndex + 1).coerceIn(1, activeSession.messages.size)
+                                        val dropped = activeSession.messages.size - keepCount
+                                        if (dropped > 0) {
+                                            updateActiveSession(immediate = true) { sess ->
+                                                sess.copy(messages = sess.messages.take(keepCount))
+                                            }
+                                            bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed $dropped later turn(s))."
+                                        }
+                                    },
                                     onForkSessionFromNode = { nodeIndex ->
                                         val now = PlatformBridge.currentTimeMillis()
                                         val keepVersions = appState.preferences.keepMessageVersionsWhenForking
@@ -2627,6 +2730,8 @@ private fun ManuscriptViewport(
     onAssistantPrefillChange: (String) -> Unit,
     showPrefillBox: Boolean,
     onTogglePrefillBox: () -> Unit,
+    isGoalModeEnabled: Boolean,
+    onToggleGoalMode: () -> Unit,
     pendingAttachments: List<PromptAttachment>,
     onAddAttachment: () -> Unit,
     onPasteClipboardMedia: () -> Boolean,
@@ -2642,6 +2747,8 @@ private fun ManuscriptViewport(
     onQueuePrompt: () -> Unit,
     onImpersonateDraft: () -> Unit,
     onAutoSummarizeStory: () -> Unit,
+    onCompactContext: () -> Unit,
+    onRewindToNode: (Int) -> Unit,
     onForkSessionFromNode: (Int) -> Unit,
     onStopStream: () -> Unit,
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
@@ -2819,13 +2926,22 @@ private fun ManuscriptViewport(
                             style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
                             modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                         )
-                        SepiaButton(
-                            text = if (isStreaming) "Summarizing…" else "✦ Summarize So Far",
-                            compact = true,
-                            enabled = !isStreaming && activeSession.messages.isNotEmpty(),
-                            style = SepiaButtonStyle.SECONDARY,
-                            onClick = onAutoSummarizeStory
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SepiaButton(
+                                text = if (isStreaming) "Working…" else "✦ Summarize",
+                                compact = true,
+                                enabled = !isStreaming && activeSession.messages.isNotEmpty(),
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = onAutoSummarizeStory
+                            )
+                            SepiaButton(
+                                text = "⚡ Compact Context",
+                                compact = true,
+                                enabled = !isStreaming && activeSession.messages.size > 4,
+                                style = SepiaButtonStyle.SECONDARY,
+                                onClick = onCompactContext
+                            )
+                        }
                     }
                     SepiaTextField(
                         value = activeSession.storySummary,
@@ -2978,6 +3094,7 @@ private fun ManuscriptViewport(
                             }
                         },
                         onForkHere = { onForkSessionFromNode(index) },
+                        onRewindHere = { onRewindToNode(index) },
                         onRegenerate = { onRegenerateNode(index) },
                         onContinue = { onContinueAssistantNode(index) },
                         onInspectAttachment = onInspectAttachment,
@@ -3032,12 +3149,23 @@ private fun ManuscriptViewport(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                    // Expandable Interactive Tree & Swipe Minimap Modal
+                    // Expandable Interactive Tree & Swipe Minimap Modal with In-Chat Turn Filter
                     AnimatedVisibility(visible = showMinimapTreeModal) {
+                        var mapFilterQuery by remember { mutableStateOf("") }
+                        val filteredMapItems = remember(activeSession.messages, mapFilterQuery) {
+                            val q = mapFilterQuery.trim()
+                            activeSession.messages.mapIndexedNotNull { idx, node ->
+                                if (q.isEmpty() || node.activeVariant.content.contains(q, ignoreCase = true) ||
+                                    node.activeVariant.thinkingSummary.contains(q, ignoreCase = true)
+                                ) {
+                                    idx to node
+                                } else null
+                            }
+                        }
                         Column(
                             modifier = Modifier
                                 .width(if (win.isCompact) 255.dp else 290.dp)
-                                .heightIn(max = 380.dp)
+                                .heightIn(max = 410.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(p.cardBg)
                                 .border(1.dp, p.accent, RoundedCornerShape(12.dp))
@@ -3055,7 +3183,7 @@ private fun ManuscriptViewport(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = 13.5.dp)
                                     BasicText(
-                                        text = "Message Map (${activeSession.messages.size})",
+                                        text = "Message Map (${filteredMapItems.size}/${activeSession.messages.size})",
                                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
                                     )
                                 }
@@ -3066,12 +3194,20 @@ private fun ManuscriptViewport(
                                     onClick = { showMinimapTreeModal = false }
                                 )
                             }
+                            SepiaTextField(
+                                value = mapFilterQuery,
+                                onValueChange = { mapFilterQuery = it },
+                                placeholder = "🔍 Filter turns…",
+                                singleLine = true,
+                                minHeight = 30.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                             SepiaDivider()
                             Column(
                                 modifier = Modifier.verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                activeSession.messages.forEachIndexed { idx, mNode ->
+                                filteredMapItems.forEach { (idx, mNode) ->
                                     val isAsst = mNode.role == MessageRole.ASSISTANT
                                     val roleBadge = if (isAsst) "AI" else "You"
                                     Column(
@@ -3371,13 +3507,20 @@ private fun ManuscriptViewport(
                                     onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
                                 )
                             }
-                            if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK) {
+                            if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK ||
+                                activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES
+                            ) {
                                 SepiaChip(
                                     label = "🎬 Video Gen",
                                     selected = activeProfile.enableVideoGeneration,
                                     onClick = { onUpdateProfile { it.copy(enableVideoGeneration = !it.enableVideoGeneration) } }
                                 )
                             }
+                            SepiaChip(
+                                label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode (/goal)",
+                                selected = isGoalModeEnabled,
+                                onClick = onToggleGoalMode
+                            )
                             if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                 SepiaChip(
                                     label = "💻 Code Exec",
@@ -3565,6 +3708,7 @@ private fun ManuscriptViewport(
                     activeProfile.enableCodeExecution ||
                     activeProfile.enableUrlContext ||
                     activeSession.workspaceMode != WorkspaceMode.OFF ||
+                    isGoalModeEnabled ||
                     showPrefillBox
 
                 val thinkingLabel = if (preferences.showReasoningLevelOnButton) {
@@ -3687,6 +3831,7 @@ private fun MessageTurnItem(
     onToggleContextMute: () -> Unit,
     onDeleteNode: () -> Unit,
     onForkHere: () -> Unit,
+    onRewindHere: () -> Unit = {},
     onRegenerate: () -> Unit,
     onContinue: () -> Unit,
     onInspectAttachment: (PromptAttachment) -> Unit = {},
@@ -3976,6 +4121,87 @@ private fun MessageTurnItem(
         }
 
         Spacer(Modifier.height(8.dp))
+
+        // Live Autonomous Goal & Todo Checklist Card (Claude Code / OpenAI Codex style)
+        val goalTracker = activeVar.goalTracker
+        if (goalTracker != null && (goalTracker.goalObjective.isNotBlank() || goalTracker.todos.isNotEmpty())) {
+            val doneCount = goalTracker.completedCount
+            val totalCount = goalTracker.todos.size
+            val statusBadge = when {
+                goalTracker.isCompleted -> "✓ COMPLETED ($doneCount/$totalCount)"
+                totalCount > 0 -> "⟳ IN PROGRESS ($doneCount/$totalCount)"
+                else -> "🎯 PLANNING GOAL"
+            }
+            Column(
+                modifier = Modifier
+                    .padding(bottom = 8.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(p.sheetBg.copy(alpha = 0.78f))
+                    .border(
+                        width = 0.9.dp,
+                        color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
+                        shape = RoundedCornerShape(9.dp)
+                    )
+                    .padding(11.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    BasicText(
+                        text = "🎯 Goal: ${goalTracker.goalObjective.ifBlank { "Autonomous Task Checklist" }}",
+                        style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    BasicText(
+                        text = statusBadge,
+                        style = p.uiLabelStyle.copy(
+                            color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    )
+                }
+                if (goalTracker.todos.isNotEmpty()) {
+                    SepiaDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        goalTracker.todos.forEach { item ->
+                            val st = item.status.lowercase()
+                            val iconStr = when (st) {
+                                "completed" -> "✓"
+                                "in_progress" -> "⟳"
+                                "cancelled" -> "—"
+                                else -> "○"
+                            }
+                            val itemColor = when (st) {
+                                "completed" -> p.mutedInk
+                                "in_progress" -> p.accent
+                                else -> p.primaryInk
+                            }
+                            BasicText(
+                                text = "$iconStr [${item.id}] ${item.content}",
+                                style = p.uiBodyStyle.copy(
+                                    fontSize = 12.5.sp,
+                                    color = itemColor,
+                                    fontWeight = if (st == "in_progress") FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            )
+                        }
+                    }
+                }
+                if (goalTracker.verificationSummary.isNotBlank()) {
+                    SepiaDivider()
+                    BasicText(
+                        text = "✓ Verified: ${goalTracker.verificationSummary}",
+                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Medium)
+                    )
+                }
+            }
+        }
 
         // Main Prose Content OR In-Place Editor
         if (isEditing) {
@@ -4335,6 +4561,12 @@ private fun MessageTurnItem(
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onForkHere
+                        )
+                        SepiaButton(
+                            text = "↺ Rewind",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = onRewindHere
                         )
                         SepiaButton(
                             text = if (node.includedInContext) "Mute" else "Unmute",

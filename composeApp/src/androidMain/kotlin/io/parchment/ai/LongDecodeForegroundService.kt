@@ -64,9 +64,9 @@ class LongDecodeForegroundService : Service() {
                     setReferenceCounted(false)
                 }
             }
-            if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(60 * 60 * 1000L) // 60-minute safety ceiling
-            }
+            // Continuously renew a rolling 12-hour lease on every progress tick so multi-day / multi-week
+            // long-horizon tasks never expire while the screen is off, yet still release if the process is killed.
+            wakeLock?.acquire(12 * 60 * 60 * 1000L)
         }
         runCatching {
             if (wifiLock == null) {

@@ -136,6 +136,31 @@ data class ToolCallRecord(
 )
 
 @Serializable
+data class TodoItem(
+    val id: String,
+    val content: String,
+    val status: String = "pending" // "pending", "in_progress", "completed", "cancelled"
+)
+
+@Serializable
+data class GoalTrackerState(
+    val goalObjective: String = "",
+    val todos: List<TodoItem> = emptyList(),
+    val isCompleted: Boolean = false,
+    val verificationSummary: String = ""
+) {
+    val completedCount: Int
+        get() = todos.count { it.status.equals("completed", ignoreCase = true) }
+
+    val hasPendingOrInProgress: Boolean
+        get() = !isCompleted && (todos.isEmpty() && goalObjective.isNotBlank() ||
+            todos.any {
+                val s = it.status.lowercase()
+                s == "pending" || s == "in_progress"
+            })
+}
+
+@Serializable
 data class TokenMetrics(
     val inputTokens: Int = 0,
     val cachedInputTokens: Int = 0,
@@ -168,6 +193,7 @@ data class MessageVariant(
     val thinkingSignature: String = "",
     val thinkingDurationMs: Long = 0L,
     val toolCalls: List<ToolCallRecord> = emptyList(),
+    val goalTracker: GoalTrackerState? = null,
     val mediaItems: List<GeneratedMediaItem> = emptyList(),
     val attachments: List<PromptAttachment> = emptyList(),
     val providerInteractionId: String = "",

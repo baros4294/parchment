@@ -1,5 +1,7 @@
 package io.parchment.ai.harness
 
+import io.parchment.ai.model.GoalTrackerState
+import io.parchment.ai.model.TodoItem
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.platform.PlatformBridge
@@ -10,7 +12,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -18,7 +22,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * Self-contained, pure-API Local File System Agent Harness (Hermes / Oh-My-Pi style).
+ * Self-contained, pure-API Local File System & Long-Horizon Goal Agent Harness
+ * (inspired by Anthropic Claude Code `/goal` + `TodoWrite` & OpenAI Codex).
  * Zero external CLI bridge required. Works directly with Gemini Interactions, OpenAI Responses,
  * and Anthropic Messages tool loops.
  */
@@ -31,7 +36,8 @@ object WorkspaceHarness {
         val description: String,
         val parametersSchema: JsonObject,
         val requiresWritePermission: Boolean,
-        val requiresShellPermission: Boolean = false
+        val requiresShellPermission: Boolean = false,
+        val requiresWorkspaceFolder: Boolean = true
     )
 
     private val ALL_TOOLS: List<ToolDefinition> = listOf(
@@ -152,6 +158,7 @@ object WorkspaceHarness {
             name = "dice_roll",
             description = "Roll unbiased random dice using standard notation (e.g. '1d20', '2d6+3', '4d6', '1d100') for roleplay checks or story branching outcomes.",
             requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
             parametersSchema = buildJsonObject {
                 put("type", "object")
                 putJsonObject("properties") {
@@ -166,6 +173,72 @@ object WorkspaceHarness {
                 }
                 putJsonArray("required") {
                     add(JsonPrimitive("expression"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "todo_write",
+            description = "Create or update the structured task checklist for multi-step or long-horizon goals (Claude Code TodoWrite / Codex style). Always keep one current step 'in_progress' and mark steps 'completed' as you verify them.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("goal") {
+                        put("type", "string")
+                        put("description", "Overarching goal objective and definition of done.")
+                    }
+                    putJsonObject("todos") {
+                        put("type", "array")
+                        put("description", "Ordered list of verifiable task steps.")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("id") {
+                                    put("type", "string")
+                                    put("description", "Step ID such as '1', '2', '3'.")
+                                }
+                                putJsonObject("content") {
+                                    put("type", "string")
+                                    put("description", "Specific actionable step and verification check.")
+                                }
+                                putJsonObject("status") {
+                                    put("type", "string")
+                                    put("description", "'pending', 'in_progress', 'completed', or 'cancelled'.")
+                                }
+                            }
+                            putJsonArray("required") {
+                                add(JsonPrimitive("id"))
+                                add(JsonPrimitive("content"))
+                                add(JsonPrimitive("status"))
+                            }
+                        }
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("todos"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "goal_complete",
+            description = "Signal that all steps and acceptance criteria of the active goal have been verified and completed.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("summary") {
+                        put("type", "string")
+                        put("description", "Concise summary of all completed work.")
+                    }
+                    putJsonObject("verification") {
+                        put("type", "string")
+                        put("description", "Verification checks performed to confirm the goal is 100% done.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("summary"))
                 }
             }
         ),
@@ -217,13 +290,19 @@ object WorkspaceHarness {
     fun activeToolsForMode(
         mode: WorkspaceMode,
         workspacePath: String,
-        allowShell: Boolean = false
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false
     ): List<ToolDefinition> {
-        if (mode == WorkspaceMode.OFF || workspacePath.isBlank()) return emptyList()
+        val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
+        if (!hasMountedWorkspace && !goalModeActive) return emptyList()
         return ALL_TOOLS.filter { tool ->
-            val writeOk = mode == WorkspaceMode.READ_WRITE || !tool.requiresWritePermission
-            val shellOk = !tool.requiresShellPermission || (mode == WorkspaceMode.READ_WRITE && allowShell)
-            writeOk && shellOk
+            if (!hasMountedWorkspace) {
+                !tool.requiresWorkspaceFolder
+            } else {
+                val writeOk = mode == WorkspaceMode.READ_WRITE || !tool.requiresWritePermission
+                val shellOk = !tool.requiresShellPermission || (mode == WorkspaceMode.READ_WRITE && allowShell)
+                writeOk && shellOk
+            }
         }
     }
 
@@ -250,8 +329,13 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for Google Gemini Interactions API (`tools` array).
      */
-    fun buildGeminiInteractionsTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
+    fun buildGeminiInteractionsTools(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false
+    ): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -264,8 +348,13 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for OpenAI Responses API (`/v1/responses`).
      */
-    fun buildOpenAiResponsesTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
+    fun buildOpenAiResponsesTools(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false
+    ): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -278,8 +367,13 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for legacy OpenAI `/v1/chat/completions`.
      */
-    fun buildOpenAiChatCompletionsTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
+    fun buildOpenAiChatCompletionsTools(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false
+    ): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
             add(buildJsonObject {
                 put("type", "function")
                 putJsonObject("function") {
@@ -294,8 +388,13 @@ object WorkspaceHarness {
     /**
      * Formats active workspace tools for Anthropic Messages API (`/v1/messages`).
      */
-    fun buildAnthropicTools(mode: WorkspaceMode, workspacePath: String, allowShell: Boolean = false): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell)) {
+    fun buildAnthropicTools(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false
+    ): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
             add(buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
@@ -305,7 +404,8 @@ object WorkspaceHarness {
     }
 
     /**
-     * Executes a single tool call requested by the model inside the sandboxed workspace directory.
+     * Executes a single tool call requested by the model inside the sandboxed workspace directory
+     * (or executes workspace-independent goal/dice tools even when no folder is mounted).
      */
     fun executeToolCall(
         workspaceRoot: String,
@@ -314,7 +414,8 @@ object WorkspaceHarness {
         toolName: String,
         argumentsJson: String
     ): ToolCallRecord {
-        if (mode == WorkspaceMode.OFF || workspaceRoot.isBlank()) {
+        val isFolderFreeTool = toolName == "todo_write" || toolName == "goal_complete" || toolName == "dice_roll"
+        if (!isFolderFreeTool && (mode == WorkspaceMode.OFF || workspaceRoot.isBlank())) {
             return ToolCallRecord(
                 id = callId,
                 name = toolName,
@@ -329,9 +430,44 @@ object WorkspaceHarness {
         }.getOrElse { JsonObject(emptyMap()) }
 
         fun strArg(key: String, default: String = ""): String =
-            args[key]?.jsonPrimitive?.content ?: default
+            args[key]?.jsonPrimitive?.contentOrNull ?: default
 
         val result: Result<String> = when (toolName) {
+            "todo_write" -> runCatching {
+                val goal = strArg("goal", "")
+                val todosArr = args["todos"] as? JsonArray ?: JsonArray(emptyList())
+                val parsed = todosArr.mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNull?.ifBlank { "•" } ?: "•"
+                    val content = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val status = obj["status"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "pending"
+                    TodoItem(id = id, content = content, status = status)
+                }
+                val done = parsed.count { it.status == "completed" }
+                val active = parsed.count { it.status == "in_progress" }
+                val pending = parsed.count { it.status == "pending" }
+                val mdSummary = buildString {
+                    if (goal.isNotBlank()) appendLine("# Goal: $goal")
+                    parsed.forEach { t ->
+                        val mark = when (t.status) {
+                            "completed" -> "[x]"
+                            "in_progress" -> "[/]"
+                            "cancelled" -> "[-]"
+                            else -> "[ ]"
+                        }
+                        appendLine("- $mark (${t.id}) ${t.content}")
+                    }
+                }.trim()
+                if (mode == WorkspaceMode.READ_WRITE && workspaceRoot.isNotBlank()) {
+                    PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_TODO.md", mdSummary)
+                }
+                "Updated Todo Checklist ($done/${parsed.size} completed, $active in_progress, $pending pending).\n$mdSummary"
+            }
+            "goal_complete" -> runCatching {
+                val summary = strArg("summary", "Goal completed.")
+                val verification = strArg("verification", "Verified all acceptance criteria.")
+                "Goal marked 100% COMPLETE.\nSummary: $summary\nVerification: $verification"
+            }
             "fs_list" -> {
                 val rel = strArg("path", "")
                 val rec = args["recursive"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -452,5 +588,172 @@ object WorkspaceHarness {
         }
         val label = if (reason.isNotBlank()) " ($reason)" else ""
         return "Rolled $expression$label: [${rolls.joinToString(", ")}]$modStr = $sum"
+    }
+
+    /**
+     * Parses `todo_write` or `goal_complete` tool calls into an updated `GoalTrackerState`.
+     */
+    fun applyGoalToolUpdate(current: GoalTrackerState?, tc: ToolCallRecord): GoalTrackerState? {
+        if (tc.isError) return current
+        val args = runCatching {
+            json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject
+        }.getOrElse { return current }
+
+        return when (tc.name) {
+            "todo_write" -> {
+                val goal = args["goal"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: current?.goalObjective.orEmpty()
+                val todosArr = args["todos"] as? JsonArray ?: JsonArray(emptyList())
+                val parsed = todosArr.mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNull?.ifBlank { "•" } ?: "•"
+                    val content = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val status = obj["status"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "pending"
+                    TodoItem(id = id, content = content, status = status)
+                }
+                val allDone = parsed.isNotEmpty() && parsed.all {
+                    it.status == "completed" || it.status == "cancelled"
+                }
+                GoalTrackerState(
+                    goalObjective = goal,
+                    todos = parsed,
+                    isCompleted = allDone,
+                    verificationSummary = current?.verificationSummary.orEmpty()
+                )
+            }
+            "goal_complete" -> {
+                val summary = args["summary"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val verification = args["verification"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val base = current ?: GoalTrackerState()
+                base.copy(
+                    todos = base.todos.map {
+                        if (it.status == "in_progress" || it.status == "pending") it.copy(status = "completed") else it
+                    },
+                    isCompleted = true,
+                    verificationSummary = listOf(summary, verification).filter { it.isNotBlank() }.joinToString(" — ")
+                )
+            }
+            else -> current
+        }
+    }
+
+    /**
+     * 3-Layer Rolling Context Compactor (Claude Code s06_context_compact / OpenAI Codex style).
+     * Keeps the most recent `keepRecentCount` tool outputs verbatim, while compacting older verbose
+     * tool outputs (>850 chars) into concise 1-line receipts so multi-day runs never overflow context.
+     */
+    fun compactStaleToolOutputText(
+        stepIndex: Int,
+        totalSteps: Int,
+        toolName: String,
+        rawOutput: String,
+        keepRecentCount: Int = 8
+    ): String {
+        if (totalSteps - stepIndex <= keepRecentCount || rawOutput.length <= 850) {
+            return rawOutput
+        }
+        val firstLine = rawOutput.lineSequence().firstOrNull()?.take(140).orEmpty()
+        return "[Compacted step #$stepIndex ($toolName): ${rawOutput.length} chars (${rawOutput.lines().size} lines) — \"$firstLine…\". Re-run tool if exact lines are needed.]"
+    }
+
+    /**
+     * Repeated-Failure Circuit Breaker & Stop-Hook Work-Check Gate (Claude Code & OpenAI Codex style).
+     * - Replaces the arbitrary 64-step ceiling with intelligent progress vs. stagnation tracking.
+     * - Allows unlimited productive steps over hours/days/weeks while halting repeated identical error loops.
+     */
+    class LoopCircuitBreaker(initialGoal: GoalTrackerState? = null) {
+        var goalState: GoalTrackerState? = initialGoal
+            private set
+
+        private var lastFingerprint: String = ""
+        private var lastToolName: String = ""
+        var consecutiveIdenticalCalls: Int = 0
+            private set
+        var consecutiveTotalErrors: Int = 0
+            private set
+        var consecutiveUnproductiveStopHookNudges: Int = 0
+            private set
+
+        fun onToolExecuted(tc: ToolCallRecord): ToolCallRecord {
+            val fp = "${tc.name}:${tc.argumentsJson.trim().hashCode()}"
+            if (fp == lastFingerprint) {
+                consecutiveIdenticalCalls++
+            } else {
+                lastFingerprint = fp
+                lastToolName = tc.name
+                consecutiveIdenticalCalls = 1
+            }
+
+            if (tc.isError) {
+                consecutiveTotalErrors++
+            } else {
+                consecutiveTotalErrors = 0
+                consecutiveUnproductiveStopHookNudges = 0
+            }
+
+            val updatedGoal = applyGoalToolUpdate(goalState, tc)
+            if (updatedGoal != goalState) {
+                goalState = updatedGoal
+                consecutiveUnproductiveStopHookNudges = 0
+            }
+
+            // Inject diagnostic pivot warning if the model repeats the same failing call twice
+            val shouldWarn = (consecutiveIdenticalCalls == 2 && tc.isError) ||
+                (consecutiveIdenticalCalls == 3 && tc.name != "fs_read" && tc.name != "todo_write")
+            return if (shouldWarn) {
+                tc.copy(
+                    resultText = tc.resultText +
+                        "\n\n[HARNESS CIRCUIT BREAKER WARNING]: You have called '${tc.name}' with identical arguments $consecutiveIdenticalCalls times in a row" +
+                        (if (tc.isError) " and it failed each time." else ".") +
+                        " Do NOT repeat this exact call again. Diagnose the root cause, inspect the target file/state, or try a different strategy."
+                )
+            } else {
+                tc
+            }
+        }
+
+        fun checkTripped(): String? {
+            if (consecutiveIdenticalCalls >= 3 && consecutiveTotalErrors >= 2) {
+                return "Circuit Breaker halted loop: '$lastToolName' failed $consecutiveIdenticalCalls times in a row with identical arguments."
+            }
+            if (consecutiveTotalErrors >= 6) {
+                return "Circuit Breaker halted loop: 6 consecutive tool errors occurred without a single successful step."
+            }
+            if (consecutiveUnproductiveStopHookNudges >= 3) {
+                return "Circuit Breaker halted loop: Work-check nudged 3 times without further tool or todo progress."
+            }
+            return null
+        }
+
+        /**
+         * Stop-Hook Work-Check Gate:
+         * Called when the model finishes a turn with zero tool calls (`toolCalls.isEmpty()`).
+         * - If no `/goal` or `todo_write` checklist is active (normal chat, roleplay, short writing), returns `null` -> immediate exit!
+         * - If `goalState` has incomplete (`pending` / `in_progress`) items and the circuit breaker hasn't tripped,
+         *   returns the Work-Check continuation prompt so the model continues until 100% complete!
+         */
+        fun evaluateStopHookPrompt(): String? {
+            val gs = goalState ?: return null
+            if (!gs.hasPendingOrInProgress) return null
+            if (consecutiveUnproductiveStopHookNudges >= 3) return null
+
+            consecutiveUnproductiveStopHookNudges++
+            val incompleteItems = gs.todos.filter {
+                val s = it.status.lowercase()
+                s == "pending" || s == "in_progress"
+            }
+            return if (incompleteItems.isNotEmpty()) {
+                val remainingList = incompleteItems.joinToString("\n") {
+                    "  - [${it.status.uppercase()}] (${it.id}) ${it.content}"
+                }
+                "[Harness Work-Check — Goal Incomplete (${gs.completedCount}/${gs.todos.size} done)]:\n" +
+                    "You paused before completing all items in your checklist:\n$remainingList\n\n" +
+                    "Continue executing the next incomplete step now, update statuses with `todo_write` as you verify each step, and call `goal_complete` once everything is finished."
+            } else {
+                "[Harness Work-Check — Goal Active]:\n" +
+                    "Objective: \"${gs.goalObjective}\"\n" +
+                    "Break this goal into verifiable steps using `todo_write`, execute each step thoroughly, and call `goal_complete` when 100% finished."
+            }
+        }
     }
 }
