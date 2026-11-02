@@ -105,6 +105,7 @@ object LatexMathRenderer {
         modifier: Modifier = Modifier
     ) {
         val p = LocalParchmentPalette.current
+        @Suppress("DEPRECATION")
         val clipboard = LocalClipboardManager.current
         val cleaned = rawLatex.trim()
             .removeSurrounding("$$")

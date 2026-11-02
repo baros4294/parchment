@@ -2,12 +2,17 @@ package io.parchment.ai
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.platform.InterceptPlatformTextInput
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.ui.ParchmentApp
@@ -22,9 +27,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var openDocumentLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var createDocumentLauncher: ActivityResultLauncher<String>
 
+    @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PlatformBridge.initAndroid(applicationContext, this)
+        handleIncomingShareIntent(intent)
 
         openDocumentLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
             val deferred = pendingImportDeferred
@@ -33,12 +40,7 @@ class MainActivity : ComponentActivity() {
                 deferred?.complete(null)
                 return@registerForActivityResult
             }
-            val result = runCatching {
-                val fileName = queryDisplayName(uri) ?: "imported-file"
-                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("Could not read selected file")
-                PickedBinaryFile(fileName, bytes)
-            }.getOrNull()
+            val result = PlatformBridge.readUriAsPickedFile(uri)
             deferred.complete(result)
         }
 
@@ -62,7 +64,71 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ParchmentApp()
+            val view = LocalView.current
+            DisposableEffect(view) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    view.setOnReceiveContentListener(PlatformBridge.RICH_CONTENT_MIME_TYPES) { _, payload ->
+                        PlatformBridge.handleReceiveContentPayload(payload)
+                    }
+                }
+                onDispose {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        view.setOnReceiveContentListener(null, null)
+                    }
+                }
+            }
+
+            // Intercept Android InputConnection creation so Gboard Emoji Kitchen, GIFs, Stickers,
+            // and Android's floating Paste toolbar see RICH_CONTENT_MIME_TYPES and commit directly!
+            InterceptPlatformTextInput(
+                interceptor = { request, nextHandler ->
+                    val wrappedRequest = PlatformTextInputMethodRequest { outAttrs ->
+                        val baseIc = request.createInputConnection(outAttrs)
+                        PlatformBridge.wrapInputConnection(baseIc, outAttrs)
+                    }
+                    nextHandler.startInputMethod(wrappedRequest)
+                }
+            ) {
+                ParchmentApp()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIncomingShareIntent(intent)
+    }
+
+    private fun handleIncomingShareIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action ?: return
+        val mime = intent.type.orEmpty()
+        when (action) {
+            Intent.ACTION_SEND -> {
+                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                }
+                if (uri != null) {
+                    PlatformBridge.readUriAsPickedFile(uri, mime)?.let {
+                        PlatformBridge.deliverRichContentFiles(listOf(it))
+                    }
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                val picked = uris?.mapNotNull { PlatformBridge.readUriAsPickedFile(it, mime) }.orEmpty()
+                if (picked.isNotEmpty()) {
+                    PlatformBridge.deliverRichContentFiles(picked)
+                }
+            }
         }
     }
 
@@ -98,13 +164,4 @@ class MainActivity : ComponentActivity() {
         }
         return deferred.await()
     }
-
-    private fun queryDisplayName(uri: Uri): String? = runCatching {
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) cursor.getString(idx) else null
-            } else null
-        }
-    }.getOrNull()
 }

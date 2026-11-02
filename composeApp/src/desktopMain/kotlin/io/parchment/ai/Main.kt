@@ -9,6 +9,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -16,7 +24,6 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.ui.ParchmentApp
 import kotlinx.coroutines.flow.collectLatest
@@ -24,6 +31,7 @@ import kotlinx.coroutines.flow.debounce
 import org.jetbrains.skia.Image
 import java.awt.Component
 import java.awt.Container
+import java.awt.MouseInfo
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
@@ -31,6 +39,8 @@ import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDragEvent
 import java.awt.dnd.DropTargetDropEvent
 import java.awt.dnd.DropTargetEvent
+import java.awt.event.ContainerAdapter
+import java.awt.event.ContainerEvent
 import java.io.File
 import java.util.Properties
 
@@ -82,6 +92,11 @@ private fun attachDropTargetRecursively(component: Component, createTarget: () -
     runCatching {
         component.dropTarget = createTarget()
         if (component is Container) {
+            component.addContainerListener(object : ContainerAdapter() {
+                override fun componentAdded(e: ContainerEvent) {
+                    e.child?.let { attachDropTargetRecursively(it, createTarget) }
+                }
+            })
             for (child in component.components) {
                 attachDropTargetRecursively(child, createTarget)
             }
@@ -178,47 +193,77 @@ fun main() {
             },
             state = windowState,
             title = windowTitle,
-            icon = appIconPainter
+            icon = appIconPainter,
+            onKeyEvent = { keyEvent ->
+                // Fallback window-level paste (Ctrl+V or Shift+Insert) for images/files when text field isn't focused
+                val isPasteShortcut = keyEvent.type == KeyEventType.KeyDown &&
+                    !keyEvent.isAltPressed &&
+                    (((keyEvent.isCtrlPressed || keyEvent.isMetaPressed) && keyEvent.key == Key.V) ||
+                        (keyEvent.isShiftPressed && keyEvent.key == Key.Insert))
+                if (isPasteShortcut) {
+                    val pastedFiles = PlatformBridge.readClipboardFiles()
+                    if (pastedFiles.isNotEmpty()) {
+                        PlatformBridge.filesDroppedCallback?.invoke(pastedFiles)
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
         ) {
             LaunchedEffect(window) {
+                fun isSupportedDrop(dtde: DropTargetDragEvent): Boolean {
+                    return dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor) ||
+                        dtde.isDataFlavorSupported(DataFlavor.imageFlavor)
+                }
+
                 val makeDropTarget: () -> DropTarget = {
                     DropTarget(
                         null,
                         DnDConstants.ACTION_COPY_OR_MOVE,
                         object : DropTargetAdapter() {
                             override fun dragEnter(dtde: DropTargetDragEvent) {
-                                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                if (isSupportedDrop(dtde)) {
                                     dtde.acceptDrag(DnDConstants.ACTION_COPY)
                                     PlatformBridge.dragHoverCallback?.invoke(true)
                                 }
                             }
 
                             override fun dragOver(dtde: DropTargetDragEvent) {
-                                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                if (isSupportedDrop(dtde)) {
                                     dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                                    PlatformBridge.dragHoverCallback?.invoke(true)
                                 }
                             }
 
                             override fun dragExit(dte: DropTargetEvent) {
-                                PlatformBridge.dragHoverCallback?.invoke(false)
+                                // Only clear drag hover if cursor actually left the window bounds (prevents child-component flicker)
+                                val stillInside = runCatching {
+                                    val mousePt = MouseInfo.getPointerInfo()?.location
+                                    val winBounds = window.bounds
+                                    mousePt != null && winBounds.contains(mousePt)
+                                }.getOrDefault(false)
+                                if (!stillInside) {
+                                    PlatformBridge.dragHoverCallback?.invoke(false)
+                                }
                             }
 
                             override fun drop(dtde: DropTargetDropEvent) {
                                 PlatformBridge.dragHoverCallback?.invoke(false)
                                 runCatching {
-                                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor) ||
+                                        dtde.isDataFlavorSupported(DataFlavor.imageFlavor)
+                                    ) {
                                         dtde.acceptDrop(DnDConstants.ACTION_COPY)
-                                        val dropped = dtde.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
-                                        val pickedFiles = dropped?.mapNotNull { item ->
-                                            val f = item as? File
-                                            if (f != null && f.exists() && f.isFile && f.length() <= 150_000_000L) {
-                                                runCatching { PickedBinaryFile(f.name, f.readBytes()) }.getOrNull()
-                                            } else null
-                                        }.orEmpty()
+                                        val pickedFiles = PlatformBridge.extractTransferableFiles(dtde.transferable)
                                         if (pickedFiles.isNotEmpty()) {
                                             PlatformBridge.filesDroppedCallback?.invoke(pickedFiles)
+                                            dtde.dropComplete(true)
+                                        } else {
+                                            dtde.dropComplete(false)
                                         }
-                                        dtde.dropComplete(true)
                                     } else {
                                         dtde.rejectDrop()
                                     }

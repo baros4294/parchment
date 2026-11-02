@@ -17,6 +17,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -48,6 +50,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -63,6 +66,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -105,6 +110,7 @@ import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -143,6 +149,22 @@ sealed interface DeleteConfirmRequest {
     data class SingleSession(val sessionId: String, val title: String) : DeleteConfirmRequest
     data class ClearAllSessions(val assistantName: String, val count: Int) : DeleteConfirmRequest
     data class ClearCurrentMessages(val title: String) : DeleteConfirmRequest
+}
+
+sealed interface ActiveMediaViewerItem {
+    data class ImageViewer(
+        val title: String,
+        val mimeType: String,
+        val localFilePath: String,
+        val remoteUrl: String = ""
+    ) : ActiveMediaViewerItem
+
+    data class TextOrCodeViewer(
+        val title: String,
+        val mimeType: String,
+        val textContent: String,
+        val localFilePath: String = ""
+    ) : ActiveMediaViewerItem
 }
 
 private fun formatSecondsFromMs(ms: Long): String {
@@ -204,25 +226,82 @@ fun ParchmentApp() {
     var showPrefillBox by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
     var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
+    var activeViewerItem by remember { mutableStateOf<ActiveMediaViewerItem?>(null) }
     var isDraggingFilesOverWindow by remember { mutableStateOf(false) }
     var diskPersistJob by remember { mutableStateOf<Job?>(null) }
 
+    fun openAttachmentInViewer(att: PromptAttachment) {
+        val mime = att.mimeType.lowercase().trim()
+        val lower = att.fileName.lowercase().trim()
+        val isPdf = mime == "application/pdf" || lower.endsWith(".pdf")
+        val isVideoOrAudio = mime.startsWith("video/") || mime.startsWith("audio/") ||
+            lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") ||
+            lower.endsWith(".mkv") || lower.endsWith(".avi") || lower.endsWith(".mp3") ||
+            lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac")
+        val isImage = mime.startsWith("image/") || lower.endsWith(".png") || lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".bmp")
+
+        when {
+            isPdf || isVideoOrAudio -> {
+                if (att.localFilePath.isNotBlank()) {
+                    PlatformBridge.openOrPlayMedia(att.localFilePath)
+                } else {
+                    bannerNotification = "File path is unavailable for ${att.fileName}."
+                }
+            }
+            isImage -> {
+                activeViewerItem = ActiveMediaViewerItem.ImageViewer(
+                    title = att.fileName.ifBlank { "Image Attachment" },
+                    mimeType = att.mimeType.ifBlank { "image/png" },
+                    localFilePath = att.localFilePath
+                )
+            }
+            att.textContent.isNotBlank() || mime.startsWith("text/") || mime == "application/json" -> {
+                val content = att.textContent.ifBlank {
+                    PlatformBridge.readBinaryFileBytes(att.localFilePath)?.let {
+                        runCatching { it.decodeToString() }.getOrNull()
+                    }.orEmpty()
+                }
+                activeViewerItem = ActiveMediaViewerItem.TextOrCodeViewer(
+                    title = att.fileName.ifBlank { "Text Attachment" },
+                    mimeType = att.mimeType.ifBlank { "text/plain" },
+                    textContent = content,
+                    localFilePath = att.localFilePath
+                )
+            }
+            att.localFilePath.isNotBlank() -> {
+                PlatformBridge.openOrPlayMedia(att.localFilePath)
+            }
+        }
+    }
+
     fun attachPickedFiles(files: List<PickedBinaryFile>) {
         if (files.isEmpty()) return
-        val newAtts = files.mapIndexed { idx, picked ->
+        val newAtts = files.mapIndexed { idx, rawPicked ->
             val now = PlatformBridge.currentTimeMillis() + idx
+            val picked = normalizePickedBinaryFile(
+                rawFileName = rawPicked.fileName,
+                bytes = rawPicked.bytes,
+                explicitMimeType = rawPicked.mimeType,
+                fallbackTimestamp = now
+            )
             val lower = picked.fileName.lowercase()
-            val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+            val resolvedMime = picked.mimeType.lowercase()
+            val isImg = resolvedMime.startsWith("image/") ||
+                lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                 lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".bmp")
-            val isVid = lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") ||
+            val isVid = resolvedMime.startsWith("video/") ||
+                lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") ||
                 lower.endsWith(".mkv") || lower.endsWith(".avi")
-            val isAudio = lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg") ||
+            val isAudio = resolvedMime.startsWith("audio/") ||
+                lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg") ||
                 lower.endsWith(".flac") || lower.endsWith(".m4a")
-            val isPdf = lower.endsWith(".pdf")
+            val isPdf = resolvedMime == "application/pdf" || lower.endsWith(".pdf")
 
             when {
                 isImg -> {
                     val mime = when {
+                        resolvedMime.startsWith("image/") -> resolvedMime
                         lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
                         lower.endsWith(".webp") -> "image/webp"
                         lower.endsWith(".gif") -> "image/gif"
@@ -240,6 +319,7 @@ fun ParchmentApp() {
                 }
                 isVid -> {
                     val mime = when {
+                        resolvedMime.startsWith("video/") -> resolvedMime
                         lower.endsWith(".webm") -> "video/webm"
                         lower.endsWith(".mov") -> "video/quicktime"
                         lower.endsWith(".mkv") -> "video/x-matroska"
@@ -257,6 +337,7 @@ fun ParchmentApp() {
                 isAudio || isPdf -> {
                     val mime = when {
                         isPdf -> "application/pdf"
+                        resolvedMime.startsWith("audio/") -> resolvedMime
                         lower.endsWith(".wav") -> "audio/wav"
                         lower.endsWith(".ogg") -> "audio/ogg"
                         lower.endsWith(".flac") -> "audio/flac"
@@ -273,15 +354,16 @@ fun ParchmentApp() {
                 }
                 else -> {
                     val decoded = runCatching { picked.bytes.decodeToString() }.getOrNull()
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
                     if (decoded != null && !decoded.contains('\u0000')) {
                         PromptAttachment(
                             id = "att-$now",
                             fileName = picked.fileName,
                             mimeType = "text/plain",
-                            textContent = decoded
+                            textContent = decoded,
+                            localFilePath = savedPath
                         )
                     } else {
-                        val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
                         PromptAttachment(
                             id = "att-$now",
                             fileName = picked.fileName,
@@ -302,6 +384,7 @@ fun ParchmentApp() {
             onFilesDropped = { dropped ->
                 uiScope.launch {
                     attachPickedFiles(dropped)
+                    bannerNotification = "Attached ${dropped.size} item(s): ${dropped.joinToString { it.fileName }}"
                 }
             }
         )
@@ -1668,6 +1751,15 @@ fun ParchmentApp() {
                                     onRemoveAttachment = { attId ->
                                         pendingAttachments = pendingAttachments.filterNot { it.id == attId }
                                     },
+                                    onInspectAttachment = ::openAttachmentInViewer,
+                                    onInspectGeneratedImage = { media ->
+                                        activeViewerItem = ActiveMediaViewerItem.ImageViewer(
+                                            title = media.revisedPrompt.take(48).ifBlank { "Generated Image" },
+                                            mimeType = media.mimeType.ifBlank { "image/png" },
+                                            localFilePath = media.localFilePath,
+                                            remoteUrl = media.remoteUrl
+                                        )
+                                    },
                                     onExportChatMarkdown = {
                                         uiScope.launch {
                                             val md = buildString {
@@ -1963,6 +2055,16 @@ fun ParchmentApp() {
                                     }
                                 }
                             }
+                        }
+
+                        // Built-In Zoomable Image & Text/Code Attachment Viewer Modal
+                        val viewerItem = activeViewerItem
+                        if (viewerItem != null) {
+                            ParchmentAttachmentViewerModal(
+                                item = viewerItem,
+                                onNotify = { bannerNotification = it },
+                                onClose = { activeViewerItem = null }
+                            )
                         }
                     }
                 }
@@ -2531,6 +2633,8 @@ private fun ManuscriptViewport(
     onPasteClipboardMedia: () -> Boolean,
     onRequestClearCurrentChat: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
+    onInspectAttachment: (PromptAttachment) -> Unit,
+    onInspectGeneratedImage: (GeneratedMediaItem) -> Unit,
     onExportChatMarkdown: () -> Unit,
     onOpenPricingSettings: () -> Unit,
     onSend: () -> Unit,
@@ -2876,7 +2980,9 @@ private fun ManuscriptViewport(
                         },
                         onForkHere = { onForkSessionFromNode(index) },
                         onRegenerate = { onRegenerateNode(index) },
-                        onContinue = { onContinueAssistantNode(index) }
+                        onContinue = { onContinueAssistantNode(index) },
+                        onInspectAttachment = onInspectAttachment,
+                        onInspectGeneratedImage = onInspectGeneratedImage
                     )
                 }
 
@@ -3341,18 +3447,60 @@ private fun ManuscriptViewport(
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         pendingAttachments.forEach { att ->
+                            val mime = att.mimeType.lowercase()
+                            val lowerName = att.fileName.lowercase()
+                            val isImg = mime.startsWith("image/")
                             val attIcon = when {
-                                att.mimeType.startsWith("image/") -> "🖼"
-                                att.mimeType.startsWith("video/") -> "🎬"
+                                isImg -> "🖼"
+                                mime.startsWith("video/") -> "🎬"
+                                mime.startsWith("audio/") -> "🎵"
+                                mime == "application/pdf" || lowerName.endsWith(".pdf") -> "📄"
                                 else -> "📎"
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                SepiaChip(label = "$attIcon ${att.fileName}", selected = true, onClick = {})
-                                SepiaButton(text = "×", compact = true, style = SepiaButtonStyle.GHOST, onClick = { onRemoveAttachment(att.id) })
+                            val thumbBmp = remember(att.localFilePath, isImg) {
+                                if (isImg && att.localFilePath.isNotBlank()) {
+                                    PlatformBridge.loadImageBitmapFromFile(att.localFilePath)
+                                } else null
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(p.cardBg)
+                                    .border(0.85.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                    .clickable { onInspectAttachment(att) }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (thumbBmp != null) {
+                                    Image(
+                                        bitmap = thumbBmp,
+                                        contentDescription = att.fileName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(5.dp))
+                                            .border(0.6.dp, p.border, RoundedCornerShape(5.dp))
+                                    )
+                                }
+                                BasicText(
+                                    text = "$attIcon ${att.fileName}",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.widthIn(max = 180.dp)
+                                )
+                                SepiaButton(
+                                    text = "×",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { onRemoveAttachment(att.id) }
+                                )
                             }
                         }
                     }
@@ -3440,6 +3588,13 @@ private fun ManuscriptViewport(
                             label = "📎",
                             selected = pendingAttachments.isNotEmpty(),
                             onClick = onAddAttachment
+                        )
+                        SepiaChip(
+                            label = "📋",
+                            selected = false,
+                            onClick = {
+                                onPasteClipboardMedia()
+                            }
                         )
                         SepiaChip(
                             label = thinkingLabel,
@@ -3534,9 +3689,12 @@ private fun MessageTurnItem(
     onDeleteNode: () -> Unit,
     onForkHere: () -> Unit,
     onRegenerate: () -> Unit,
-    onContinue: () -> Unit
+    onContinue: () -> Unit,
+    onInspectAttachment: (PromptAttachment) -> Unit = {},
+    onInspectGeneratedImage: (GeneratedMediaItem) -> Unit = {}
 ) {
     val p = LocalParchmentPalette.current
+    @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val activeVar = node.activeVariant
     val isAssistant = node.role == MessageRole.ASSISTANT
@@ -3865,7 +4023,7 @@ private fun MessageTurnItem(
                 }
             }
         } else {
-            if (activeVar.content.isNotBlank() || activeVar.mediaItems.isEmpty()) {
+            if (activeVar.content.isNotBlank() || (activeVar.mediaItems.isEmpty() && activeVar.attachments.isEmpty())) {
                 val enableMd = if (isAssistant) preferences.renderAssistantMessagesWithMarkdown else preferences.renderUserMessagesWithMarkdown
                 LiteraryProseRenderer(
                     text = activeVar.content.ifBlank { if (activeVar.isStreaming) "…" else "" },
@@ -3874,6 +4032,129 @@ private fun MessageTurnItem(
                     enableInlineDollarMath = preferences.inlineDollarMathRendering,
                     autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
                 )
+            }
+        }
+
+        // Pasted / Attached Images, Videos, PDFs, Audio, & Text/Code Files in Chat Turns
+        if (preferences.showFilesBelowReplies && activeVar.attachments.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            val imageAtts = activeVar.attachments.filter {
+                val m = it.mimeType.lowercase()
+                val l = it.fileName.lowercase()
+                m.startsWith("image/") || l.endsWith(".png") || l.endsWith(".jpg") ||
+                    l.endsWith(".jpeg") || l.endsWith(".webp") || l.endsWith(".gif") || l.endsWith(".bmp")
+            }
+            val otherAtts = activeVar.attachments.filterNot { it in imageAtts }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (imageAtts.isNotEmpty()) {
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        imageAtts.forEach { att ->
+                            val bmp = remember(att.localFilePath) {
+                                PlatformBridge.loadImageBitmapFromFile(att.localFilePath)
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .widthIn(max = 360.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(p.cardBg)
+                                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                                    .clickable { onInspectAttachment(att) }
+                                    .padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp,
+                                        contentDescription = att.fileName,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .heightIn(max = 260.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                    )
+                                } else {
+                                    BasicText(
+                                        text = "🖼 ${att.fileName}",
+                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    BasicText(
+                                        text = att.fileName,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiLabelStyle,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    BasicText(
+                                        text = "🔍 Tap to Zoom",
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (otherAtts.isNotEmpty()) {
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        otherAtts.forEach { att ->
+                            val mime = att.mimeType.lowercase()
+                            val lower = att.fileName.lowercase()
+                            val isPdf = mime == "application/pdf" || lower.endsWith(".pdf")
+                            val isVid = mime.startsWith("video/") || lower.endsWith(".mp4") ||
+                                lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".mkv")
+                            val isAud = mime.startsWith("audio/") || lower.endsWith(".mp3") ||
+                                lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac")
+                            val iconAndAction = when {
+                                isPdf -> "📄" to "Open PDF"
+                                isVid -> "🎬" to "▶ Play Video"
+                                isAud -> "🎵" to "▶ Play Audio"
+                                else -> {
+                                    val stats = if (att.textContent.isNotBlank()) {
+                                        "${att.textContent.lines().size} lines"
+                                    } else "File"
+                                    "📝" to "View ($stats)"
+                                }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(p.cardBg)
+                                    .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                                    .clickable { onInspectAttachment(att) }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                BasicText(
+                                    text = "${iconAndAction.first} ${att.fileName}",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium, fontSize = 13.sp),
+                                    modifier = Modifier.widthIn(max = 220.dp)
+                                )
+                                BasicText(
+                                    text = "• ${iconAndAction.second}",
+                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -3906,8 +4187,7 @@ private fun MessageTurnItem(
                                             .heightIn(max = 520.dp)
                                             .clip(RoundedCornerShape(6.dp))
                                             .clickable {
-                                                val target = media.localFilePath.ifBlank { media.remoteUrl }
-                                                if (target.isNotBlank()) PlatformBridge.openOrPlayMedia(target)
+                                                onInspectGeneratedImage(media)
                                             }
                                     )
                                 } else {
@@ -3927,14 +4207,24 @@ private fun MessageTurnItem(
                                         style = p.uiLabelStyle,
                                         modifier = Modifier.padding(top = 4.dp)
                                     )
-                                    val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
-                                    if (openTarget.isNotBlank()) {
-                                        SepiaButton(
-                                            text = "Open Full Image",
-                                            compact = true,
-                                            style = SepiaButtonStyle.OUTLINE,
-                                            onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
-                                        )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (bmp != null) {
+                                            SepiaButton(
+                                                text = "🔍 View & Zoom",
+                                                compact = true,
+                                                style = SepiaButtonStyle.PRIMARY,
+                                                onClick = { onInspectGeneratedImage(media) }
+                                            )
+                                        }
+                                        val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
+                                        if (openTarget.isNotBlank()) {
+                                            SepiaButton(
+                                                text = "Open in OS",
+                                                compact = true,
+                                                style = SepiaButtonStyle.OUTLINE,
+                                                onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -4113,6 +4403,297 @@ private fun MessageTurnItem(
         if (viewMode == ViewMode.MANUSCRIPT) {
             Spacer(Modifier.height(8.dp))
             SepiaDivider()
+        }
+    }
+}
+
+// ============================================================================================
+// BUILT-IN ZOOMABLE IMAGE LIGHTBOX & TEXT/CODE ATTACHMENT VIEWER MODAL (KISS)
+// ============================================================================================
+@Composable
+private fun ParchmentAttachmentViewerModal(
+    item: ActiveMediaViewerItem,
+    onNotify: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    @Suppress("DEPRECATION")
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.82f))
+            .clickable { onClose() },
+        contentAlignment = Alignment.Center
+    ) {
+        when (item) {
+            is ActiveMediaViewerItem.ImageViewer -> {
+                val bmp = remember(item.localFilePath) {
+                    PlatformBridge.loadImageBitmapFromFile(item.localFilePath)
+                }
+                var scale by remember(item) { mutableStateOf(1f) }
+                var offsetX by remember(item) { mutableStateOf(0f) }
+                var offsetY by remember(item) { mutableStateOf(0f) }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(14.dp)
+                        .clickable(enabled = false) {},
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Top Control Bar
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(p.cardBg.copy(alpha = 0.96f))
+                            .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                            BasicText(
+                                text = "🖼 ${item.title}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                            )
+                            val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
+                            BasicText(
+                                text = "$dimInfo${item.mimeType} • Pinch, Scroll Wheel, or Double-Tap to Zoom",
+                                style = p.uiLabelStyle
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SepiaButton(
+                                text = "−",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    scale = (scale / 1.25f).coerceIn(0.5f, 8f)
+                                    if (scale <= 1.02f) {
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    }
+                                }
+                            )
+                            SepiaButton(
+                                text = "${(scale * 100).toInt()}%",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = {
+                                    scale = 1f
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+                            )
+                            SepiaButton(
+                                text = "+",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    scale = (scale * 1.25f).coerceIn(0.5f, 8f)
+                                }
+                            )
+                            val openTarget = item.localFilePath.ifBlank { item.remoteUrl }
+                            if (openTarget.isNotBlank()) {
+                                SepiaButton(
+                                    text = "Open in OS",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                )
+                            }
+                            if (item.localFilePath.isNotBlank()) {
+                                SepiaButton(
+                                    text = "Save As",
+                                    compact = true,
+                                    style = SepiaButtonStyle.SECONDARY,
+                                    onClick = {
+                                        scope.launch {
+                                            val bytes = PlatformBridge.readBinaryFileBytes(item.localFilePath) ?: return@launch
+                                            val saved = PlatformBridge.saveFileForExport(item.title, bytes)
+                                            if (saved != null) onNotify("Saved image to $saved")
+                                        }
+                                    }
+                                )
+                            }
+                            SepiaButton(
+                                text = "✕ Close",
+                                compact = true,
+                                style = SepiaButtonStyle.PRIMARY,
+                                onClick = onClose
+                            )
+                        }
+                    }
+
+                    // Interactive Zoomable & Pannable Image Viewport
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .pointerInput(item) {
+                                detectTapGestures(
+                                    onDoubleTap = {
+                                        if (scale > 1.05f) {
+                                            scale = 1f
+                                            offsetX = 0f
+                                            offsetY = 0f
+                                        } else {
+                                            scale = 2.5f
+                                        }
+                                    }
+                                )
+                            }
+                            .pointerInput(item) {
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    val newScale = (scale * zoom).coerceIn(0.5f, 8f)
+                                    scale = newScale
+                                    if (newScale > 1.0f) {
+                                        offsetX += pan.x
+                                        offsetY += pan.y
+                                    } else {
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    }
+                                }
+                            }
+                            .pointerInput(item) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        if (event.type == PointerEventType.Scroll) {
+                                            val deltaY = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                                            if (deltaY != 0f) {
+                                                val factor = if (deltaY < 0f) 1.15f else (1f / 1.15f)
+                                                scale = (scale * factor).coerceIn(0.5f, 8f)
+                                                if (scale <= 1.02f) {
+                                                    offsetX = 0f
+                                                    offsetY = 0f
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (bmp != null) {
+                            Image(
+                                bitmap = bmp,
+                                contentDescription = item.title,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer(
+                                        scaleX = scale,
+                                        scaleY = scale,
+                                        translationX = offsetX,
+                                        translationY = offsetY
+                                    )
+                            )
+                        } else {
+                            BasicText(
+                                text = "Unable to decode image preview (${item.localFilePath.ifBlank { item.remoteUrl }})",
+                                style = p.uiHeaderStyle.copy(color = Color.White)
+                            )
+                        }
+                    }
+                }
+            }
+
+            is ActiveMediaViewerItem.TextOrCodeViewer -> {
+                var copied by remember(item) { mutableStateOf(false) }
+                val linesCount = remember(item.textContent) { item.textContent.lines().size }
+
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 940.dp)
+                        .fillMaxWidth(0.94f)
+                        .fillMaxHeight(0.88f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(p.cardBg)
+                        .border(1.dp, p.border, RoundedCornerShape(12.dp))
+                        .clickable(enabled = false) {}
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                            BasicText(
+                                text = "📝 ${item.title}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
+                            )
+                            BasicText(
+                                text = "$linesCount lines • ${item.textContent.length} chars • ${item.mimeType}",
+                                style = p.uiLabelStyle
+                            )
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SepiaButton(
+                                text = if (copied) "✓ Copied" else "📋 Copy",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(item.textContent))
+                                    copied = true
+                                }
+                            )
+                            if (item.localFilePath.isNotBlank()) {
+                                SepiaButton(
+                                    text = "Open in OS",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
+                                )
+                            }
+                            SepiaButton(
+                                text = "✕ Close",
+                                compact = true,
+                                style = SepiaButtonStyle.PRIMARY,
+                                onClick = onClose
+                            )
+                        }
+                    }
+
+                    SepiaDivider()
+
+                    SelectionContainer(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(p.sheetBg.copy(alpha = 0.65f))
+                            .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        BasicText(
+                            text = item.textContent.ifEmpty { "(Empty file)" },
+                            style = p.monoStyle.copy(fontSize = 12.5.sp, lineHeight = 18.sp)
+                        )
+                    }
+                }
+            }
         }
     }
 }

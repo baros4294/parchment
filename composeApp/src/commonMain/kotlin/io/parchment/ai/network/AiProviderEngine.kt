@@ -17,7 +17,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.readLine
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AuthHeaderMode
 import io.parchment.ai.model.ChatSession
@@ -3366,7 +3366,7 @@ object AiProviderEngine {
         var sawSseLine = false
 
         while (!channel.isClosedForRead) {
-            val line = channel.readUTF8Line() ?: break
+            val line = channel.readLine() ?: break
             when {
                 line.startsWith("event:") -> {
                     sawSseLine = true

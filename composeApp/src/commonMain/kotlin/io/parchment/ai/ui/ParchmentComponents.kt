@@ -535,12 +535,12 @@ fun SepiaTextField(
                 .then(
                     if (onEnterKeySend != null || onClipboardPaste != null) {
                         Modifier.onPreviewKeyEvent { keyEvent ->
-                            // 1. Check Ctrl+V / Cmd+V for Clipboard Image / Video / File Paste
+                            // 1. Check Ctrl+V / Cmd+V / Shift+Insert for Clipboard Image / Video / File Paste
                             if (onClipboardPaste != null &&
                                 keyEvent.type == KeyEventType.KeyDown &&
-                                (keyEvent.isCtrlPressed || keyEvent.isMetaPressed) &&
                                 !keyEvent.isAltPressed &&
-                                keyEvent.key == Key.V
+                                (((keyEvent.isCtrlPressed || keyEvent.isMetaPressed) && keyEvent.key == Key.V) ||
+                                    (keyEvent.isShiftPressed && keyEvent.key == Key.Insert))
                             ) {
                                 if (onClipboardPaste()) {
                                     return@onPreviewKeyEvent true

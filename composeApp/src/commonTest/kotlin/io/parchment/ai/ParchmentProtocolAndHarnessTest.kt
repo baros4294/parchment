@@ -6,6 +6,7 @@ import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -140,5 +141,35 @@ class ParchmentProtocolAndHarnessTest {
         } finally {
             PlatformBridge.wipeAllLocalData()
         }
+    }
+
+    @Test
+    fun testClipboardAndEmojiKitchenMimeAndExtensionNormalization() {
+        // 1. Extensionless PNG (e.g. Gboard Emoji Kitchen sticker URI with numeric displayName)
+        val pngHeader = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01)
+        val normPng = normalizePickedBinaryFile("100004921", pngHeader, explicitMimeType = "image/png", fallbackTimestamp = 1700L)
+        assertEquals("image/png", normPng.mimeType)
+        assertEquals("100004921.png", normPng.fileName)
+
+        // 2. Extensionless GIF (e.g. Gboard GIF search commitContent)
+        val gifHeader = "GIF89a\u0001\u0000\u0001\u0000".encodeToByteArray()
+        val normGif = normalizePickedBinaryFile("gboard_sticker", gifHeader, explicitMimeType = "", fallbackTimestamp = 1701L)
+        assertEquals("image/gif", normGif.mimeType)
+        assertEquals("gboard_sticker.gif", normGif.fileName)
+
+        // 3. Extensionless WebP (e.g. Android sticker mashup)
+        val webpHeader = byteArrayOf(
+            0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00,
+            0x57, 0x45, 0x42, 0x50
+        )
+        val normWebp = normalizePickedBinaryFile("", webpHeader, explicitMimeType = "image/webp", fallbackTimestamp = 1702L)
+        assertEquals("image/webp", normWebp.mimeType)
+        assertEquals("pasted-image-1702.webp", normWebp.fileName)
+
+        // 4. PDF magic header detection
+        val pdfBytes = "%PDF-1.7\n1 0 obj".encodeToByteArray()
+        val normPdf = normalizePickedBinaryFile("manuscript_proof", pdfBytes, explicitMimeType = "", fallbackTimestamp = 1703L)
+        assertEquals("application/pdf", normPdf.mimeType)
+        assertEquals("manuscript_proof.pdf", normPdf.fileName)
     }
 }

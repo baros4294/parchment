@@ -1,6 +1,7 @@
 package io.parchment.ai.platform
 
 import android.app.PendingIntent
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -8,9 +9,15 @@ import android.content.pm.PackageInstaller
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.ContentInfo
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
+import android.view.inputmethod.InputContentInfo
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.Font
@@ -20,21 +27,42 @@ import androidx.compose.ui.text.font.FontWeight
 import io.parchment.ai.LongDecodeForegroundService
 import io.parchment.ai.MainActivity
 import io.parchment.ai.OtaInstallReceiver
+import io.parchment.ai.ParchmentFileProvider
 import java.io.File
 import java.lang.ref.WeakReference
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
+@OptIn(ExperimentalEncodingApi::class)
 actual object PlatformBridge {
     actual val platformName: String = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
     actual val isAndroid: Boolean = true
+
+    val RICH_CONTENT_MIME_TYPES: Array<String> = arrayOf(
+        "image/*",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/jpeg",
+        "image/bmp",
+        "video/*",
+        "video/mp4",
+        "video/webm",
+        "application/pdf",
+        "audio/*"
+    )
 
     private var appContext: Context? = null
     private var mainActivityRef: WeakReference<MainActivity>? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
     private val imageCache = LinkedHashMap<String, ImageBitmap>()
+    private val pendingSharedOrPastedFiles = mutableListOf<PickedBinaryFile>()
     @Volatile
     private var stateFlushCallback: (() -> Unit)? = null
+    @Volatile
+    private var filesDroppedCallback: ((List<PickedBinaryFile>) -> Unit)? = null
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -479,40 +507,196 @@ actual object PlatformBridge {
 
     actual fun openOrPlayMedia(localFilePathOrUrl: String) {
         val ctx = appContext ?: return
+        val act = mainActivityRef?.get()
         runCatching {
-            val uri = if (localFilePathOrUrl.startsWith("http://") || localFilePathOrUrl.startsWith("https://")) {
-                Uri.parse(localFilePathOrUrl)
+            val target = localFilePathOrUrl.trim()
+            if (target.isEmpty()) return@runCatching
+            if (target.startsWith("http://") || target.startsWith("https://")) {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                (act ?: ctx).startActivity(browserIntent)
             } else {
-                Uri.fromFile(File(localFilePathOrUrl))
+                val f = File(target)
+                if (!f.exists() || !f.isFile) return@runCatching
+                val contentUri = ParchmentFileProvider.getUriForFile(ctx, f)
+                val mimeType = ParchmentFileProvider.resolveMimeType(f)
+                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(contentUri, mimeType)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                (act ?: ctx).startActivity(viewIntent)
             }
-            val viewIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            ctx.startActivity(viewIntent)
         }
+    }
+
+    fun readUriAsPickedFile(uri: Uri, hintMimeType: String = ""): PickedBinaryFile? = runCatching {
+        val ctx = appContext ?: return@runCatching null
+        val bytes = when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let { File(it).takeIf { f -> f.exists() && f.isFile }?.readBytes() }
+            else -> ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } ?: return@runCatching null
+        if (bytes.isEmpty()) return@runCatching null
+
+        var displayName = ""
+        runCatching {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        displayName = cursor.getString(idx) ?: ""
+                    }
+                }
+            }
+        }
+        if (displayName.isBlank()) {
+            displayName = uri.lastPathSegment?.substringAfterLast('/') ?: ""
+        }
+        val resolverMime = runCatching { ctx.contentResolver.getType(uri) }.getOrNull().orEmpty()
+        val effectiveMime = resolverMime.ifBlank { hintMimeType }
+
+        normalizePickedBinaryFile(
+            rawFileName = displayName,
+            bytes = bytes,
+            explicitMimeType = effectiveMime,
+            fallbackTimestamp = currentTimeMillis()
+        )
+    }.getOrNull()
+
+    fun deliverRichContentFiles(files: List<PickedBinaryFile>) {
+        if (files.isEmpty()) return
+        val cb = filesDroppedCallback
+        if (cb != null) {
+            cb.invoke(files)
+        } else {
+            synchronized(pendingSharedOrPastedFiles) {
+                pendingSharedOrPastedFiles.addAll(files)
+            }
+        }
+    }
+
+    fun wrapInputConnection(baseIc: InputConnection, outAttrs: EditorInfo): InputConnection {
+        outAttrs.contentMimeTypes = RICH_CONTENT_MIME_TYPES
+        return object : InputConnectionWrapper(baseIc, true) {
+            override fun commitContent(
+                inputContentInfo: InputContentInfo,
+                flags: Int,
+                opts: Bundle?
+            ): Boolean {
+                val hasPermFlag = (flags and InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0
+                if (hasPermFlag) {
+                    runCatching { inputContentInfo.requestPermission() }
+                }
+                val mime = if (inputContentInfo.description.mimeTypeCount > 0) {
+                    inputContentInfo.description.getMimeType(0) ?: ""
+                } else ""
+                val picked = readUriAsPickedFile(inputContentInfo.contentUri, mime)
+                if (hasPermFlag) {
+                    runCatching { inputContentInfo.releasePermission() }
+                }
+                if (picked != null) {
+                    deliverRichContentFiles(listOf(picked))
+                    return true
+                }
+                return super.commitContent(inputContentInfo, flags, opts)
+            }
+
+            override fun performContextMenuAction(id: Int): Boolean {
+                if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+                    val clipFiles = readClipboardFiles()
+                    if (clipFiles.isNotEmpty()) {
+                        deliverRichContentFiles(clipFiles)
+                        return true
+                    }
+                }
+                return super.performContextMenuAction(id)
+            }
+        }
+    }
+
+    fun handleReceiveContentPayload(payload: ContentInfo): ContentInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return payload
+        val clip = payload.clip
+        val pickedFiles = mutableListOf<PickedBinaryFile>()
+        val remainingItems = mutableListOf<ClipData.Item>()
+        val defaultMime = if (clip.description.mimeTypeCount > 0) {
+            clip.description.getMimeType(0) ?: ""
+        } else ""
+
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i)
+            val uri = item?.uri
+            if (uri != null) {
+                val picked = readUriAsPickedFile(uri, defaultMime)
+                if (picked != null) {
+                    pickedFiles.add(picked)
+                    continue
+                }
+            }
+            if (item != null) {
+                remainingItems.add(item)
+            }
+        }
+
+        if (pickedFiles.isEmpty()) {
+            return payload
+        }
+        deliverRichContentFiles(pickedFiles)
+
+        if (remainingItems.isEmpty()) {
+            return null
+        }
+        val newClip = ClipData(clip.description, remainingItems.first())
+        for (i in 1 until remainingItems.size) {
+            newClip.addItem(remainingItems[i])
+        }
+        return ContentInfo.Builder(newClip, payload.source)
+            .setFlags(payload.flags)
+            .setLinkUri(payload.linkUri)
+            .setExtras(payload.extras)
+            .build()
     }
 
     actual fun readClipboardFiles(): List<PickedBinaryFile> = runCatching {
         val ctx = appContext ?: return@runCatching emptyList()
         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@runCatching emptyList()
         val clip = cm.primaryClip ?: return@runCatching emptyList()
+        val defaultMime = if (clip.description.mimeTypeCount > 0) {
+            clip.description.getMimeType(0) ?: ""
+        } else ""
         val results = mutableListOf<PickedBinaryFile>()
         for (i in 0 until clip.itemCount) {
-            val uri = clip.getItemAt(i)?.uri ?: continue
-            val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: continue
-            if (bytes.isEmpty()) continue
-            var displayName = ""
-            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    displayName = cursor.getString(0) ?: ""
+            val item = clip.getItemAt(i) ?: continue
+            val uri = item.uri
+            if (uri != null) {
+                readUriAsPickedFile(uri, defaultMime)?.let { results.add(it) }
+                continue
+            }
+            // Also check for inline data:image/...;base64,... in text or HTML clipboard items
+            val candidateText = item.text?.toString()?.trim().orEmpty()
+            val htmlText = item.htmlText?.trim().orEmpty()
+            val dataUrl = when {
+                candidateText.startsWith("data:image/") && candidateText.contains(";base64,") -> candidateText
+                htmlText.contains("data:image/") && htmlText.contains(";base64,") -> {
+                    Regex("""data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+""").find(htmlText)?.value.orEmpty()
+                }
+                else -> ""
+            }
+            if (dataUrl.isNotEmpty()) {
+                val mime = dataUrl.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
+                val b64 = dataUrl.substringAfter(";base64,").trim()
+                val bytes = runCatching { Base64.decode(b64) }.getOrNull()
+                if (bytes != null && bytes.isNotEmpty()) {
+                    results.add(
+                        normalizePickedBinaryFile(
+                            rawFileName = "",
+                            bytes = bytes,
+                            explicitMimeType = mime,
+                            fallbackTimestamp = currentTimeMillis() + i
+                        )
+                    )
                 }
             }
-            if (displayName.isBlank()) {
-                val mime = ctx.contentResolver.getType(uri) ?: "image/png"
-                val ext = mime.substringAfter('/', "png").substringBefore(';')
-                displayName = "clipboard-${currentTimeMillis()}.$ext"
-            }
-            results.add(PickedBinaryFile(displayName, bytes))
         }
         results
     }.getOrDefault(emptyList())
@@ -521,6 +705,16 @@ actual object PlatformBridge {
         onDragHover: (Boolean) -> Unit,
         onFilesDropped: (List<PickedBinaryFile>) -> Unit
     ) {
-        // Android uses system share/clipboard/picker intents
+        filesDroppedCallback = onFilesDropped
+        val drained = synchronized(pendingSharedOrPastedFiles) {
+            if (pendingSharedOrPastedFiles.isNotEmpty()) {
+                val copy = pendingSharedOrPastedFiles.toList()
+                pendingSharedOrPastedFiles.clear()
+                copy
+            } else emptyList()
+        }
+        if (drained.isNotEmpty()) {
+            onFilesDropped(drained)
+        }
     }
 }

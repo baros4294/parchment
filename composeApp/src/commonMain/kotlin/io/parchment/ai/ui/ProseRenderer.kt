@@ -69,6 +69,7 @@ fun LiteraryProseRenderer(
     autoCollapseCodeBlocks: Boolean = false
 ) {
     val p = LocalParchmentPalette.current
+    @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
 
     val baseTextStyle = if (compactReasoningMode) {

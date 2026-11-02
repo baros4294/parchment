@@ -14,14 +14,17 @@ import java.awt.FileDialog
 import java.awt.Frame
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.Transferable
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FilenameFilter
+import java.io.InputStream
 import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
+import javax.swing.ImageIcon
 import javax.swing.JFileChooser
 
 actual object PlatformBridge {
@@ -186,9 +189,10 @@ actual object PlatformBridge {
                 if (dir != null && file != null) {
                     val target = File(dir, file)
                     if (target.exists() && target.isFile) {
-                        PickedBinaryFile(
-                            fileName = target.name,
-                            bytes = target.readBytes()
+                        normalizePickedBinaryFile(
+                            rawFileName = target.name,
+                            bytes = target.readBytes(),
+                            fallbackTimestamp = currentTimeMillis()
                         )
                     } else null
                 } else null
@@ -601,34 +605,62 @@ actual object PlatformBridge {
         }
     }
 
-    actual fun readClipboardFiles(): List<PickedBinaryFile> = runCatching {
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        val contents = clipboard.getContents(null) ?: return@runCatching emptyList()
-
-        // 1. Check for copied files from Explorer (images, videos, PDFs, audio, code, etc.)
+    fun extractTransferableFiles(contents: Transferable): List<PickedBinaryFile> = runCatching {
+        // 1. Check for copied/dropped files from Explorer (images, GIFs, videos, PDFs, audio, code, etc.)
         if (contents.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
             val fileList = contents.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
             val picked = fileList?.mapNotNull { item ->
                 val f = item as? File
                 if (f != null && f.exists() && f.isFile && f.length() <= 150_000_000L) {
-                    runCatching { PickedBinaryFile(f.name, f.readBytes()) }.getOrNull()
+                    runCatching {
+                        normalizePickedBinaryFile(
+                            rawFileName = f.name,
+                            bytes = f.readBytes(),
+                            fallbackTimestamp = currentTimeMillis()
+                        )
+                    }.getOrNull()
                 } else null
             }.orEmpty()
             if (picked.isNotEmpty()) return@runCatching picked
         }
 
-        // 2. Check for raw clipboard image (Snipping Tool Win+Shift+S, PrintScreen, Browser Copy Image)
+        // 2. Check for raw binary image InputStream flavors (preserves animated GIFs & WebP from browsers)
+        val rawImageFlavor = contents.transferDataFlavors.firstOrNull { flavor ->
+            val mime = "${flavor.primaryType}/${flavor.subType}".lowercase()
+            (mime == "image/gif" || mime == "image/webp" || mime == "image/png" || mime == "image/jpeg") &&
+                InputStream::class.java.isAssignableFrom(flavor.representationClass)
+        }
+        if (rawImageFlavor != null) {
+            val mime = "${rawImageFlavor.primaryType}/${rawImageFlavor.subType}".lowercase()
+            val streamBytes = runCatching {
+                (contents.getTransferData(rawImageFlavor) as? InputStream)?.use { it.readBytes() }
+            }.getOrNull()
+            if (streamBytes != null && streamBytes.isNotEmpty()) {
+                return@runCatching listOf(
+                    normalizePickedBinaryFile(
+                        rawFileName = "",
+                        bytes = streamBytes,
+                        explicitMimeType = mime,
+                        fallbackTimestamp = currentTimeMillis()
+                    )
+                )
+            }
+        }
+
+        // 3. Check for raw clipboard/dragged AWT Image (Snipping Tool Win+Shift+S, PrintScreen, Browser Copy Image)
         if (contents.isDataFlavorSupported(DataFlavor.imageFlavor)) {
-            val awtImage = contents.getTransferData(DataFlavor.imageFlavor) as? java.awt.Image
-            if (awtImage != null) {
-                val buffered = if (awtImage is BufferedImage) {
-                    awtImage
+            val rawAwtImage = contents.getTransferData(DataFlavor.imageFlavor) as? java.awt.Image
+            if (rawAwtImage != null) {
+                val buffered = if (rawAwtImage is BufferedImage) {
+                    rawAwtImage
                 } else {
-                    val w = awtImage.getWidth(null).coerceAtLeast(1)
-                    val h = awtImage.getHeight(null).coerceAtLeast(1)
+                    // Use ImageIcon's MediaTracker so asynchronous ToolkitImage dimensions (>0) finish loading
+                    val loaded = ImageIcon(rawAwtImage).image
+                    val w = loaded.getWidth(null).coerceAtLeast(1)
+                    val h = loaded.getHeight(null).coerceAtLeast(1)
                     val b = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
                     val g = b.createGraphics()
-                    g.drawImage(awtImage, 0, 0, null)
+                    g.drawImage(loaded, 0, 0, null)
                     g.dispose()
                     b
                 }
@@ -637,9 +669,11 @@ actual object PlatformBridge {
                 val bytes = baos.toByteArray()
                 if (bytes.isNotEmpty()) {
                     return@runCatching listOf(
-                        PickedBinaryFile(
-                            fileName = "clipboard-${currentTimeMillis()}.png",
-                            bytes = bytes
+                        normalizePickedBinaryFile(
+                            rawFileName = "clipboard-${currentTimeMillis()}.png",
+                            bytes = bytes,
+                            explicitMimeType = "image/png",
+                            fallbackTimestamp = currentTimeMillis()
                         )
                     )
                 }
@@ -647,6 +681,12 @@ actual object PlatformBridge {
         }
 
         emptyList()
+    }.getOrDefault(emptyList())
+
+    actual fun readClipboardFiles(): List<PickedBinaryFile> = runCatching {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+        val contents = clipboard.getContents(null) ?: return@runCatching emptyList()
+        extractTransferableFiles(contents)
     }.getOrDefault(emptyList())
 
     actual fun registerFileDropCallbacks(
