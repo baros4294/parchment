@@ -1,9 +1,11 @@
 package io.parchment.ai
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -23,9 +25,12 @@ class MainActivity : ComponentActivity() {
     private var pendingImportDeferred: CompletableDeferred<PickedBinaryFile?>? = null
     private var pendingExportBytes: ByteArray? = null
     private var pendingExportDeferred: CompletableDeferred<String?>? = null
+    private var pendingVoiceCallback: ((String) -> Unit)? = null
+    private var pendingVoiceErrorCallback: ((String) -> Unit)? = null
 
     private lateinit var openDocumentLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var createDocumentLauncher: ActivityResultLauncher<String>
+    private lateinit var voiceRecognizerLauncher: ActivityResultLauncher<Intent>
 
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,6 +66,24 @@ class MainActivity : ComponentActivity() {
                 uri.toString()
             }.getOrNull()
             deferred.complete(pathResult)
+        }
+
+        voiceRecognizerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+            val cb = pendingVoiceCallback
+            val errCb = pendingVoiceErrorCallback
+            pendingVoiceCallback = null
+            pendingVoiceErrorCallback = null
+            if (res.resultCode == Activity.RESULT_OK && res.data != null) {
+                val matches = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                val topText = matches?.firstOrNull()?.trim().orEmpty()
+                if (topText.isNotEmpty()) {
+                    cb?.invoke(topText)
+                } else {
+                    errCb?.invoke("No speech detected.")
+                }
+            } else {
+                errCb?.invoke("Voice input cancelled.")
+            }
         }
 
         setContent {
@@ -163,5 +186,21 @@ class MainActivity : ComponentActivity() {
             deferred.complete(null)
         }
         return deferred.await()
+    }
+
+    fun launchVoiceRecognizer(onResult: (String) -> Unit, onError: (String) -> Unit) {
+        pendingVoiceCallback = onResult
+        pendingVoiceErrorCallback = onError
+        runCatching {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Parchment…")
+            }
+            voiceRecognizerLauncher.launch(intent)
+        }.onFailure { err ->
+            pendingVoiceCallback = null
+            pendingVoiceErrorCallback = null
+            onError("Speech recognition unavailable: ${err.message}")
+        }
     }
 }

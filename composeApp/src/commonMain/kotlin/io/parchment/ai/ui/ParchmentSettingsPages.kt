@@ -872,7 +872,7 @@ private fun PreferencesSubpage(
         }
 
         // 4. Behavior & Startup (Matching Screenshots 7 & 8)
-        if (matchesSearch("behavior", "startup", "thinking", "regenerate", "delete", "navigation", "minimap", "shortcut", "paste", "battery", "oneplus", "scroll")) {
+        if (matchesSearch("behavior", "startup", "thinking", "regenerate", "delete", "navigation", "minimap", "shortcut", "paste", "battery", "background", "scroll")) {
             SepiaSectionCard(title = "Behavior & startup") {
                 Column {
                     if (PlatformBridge.isAndroid) {
@@ -885,11 +885,11 @@ private fun PreferencesSubpage(
                         ) {
                             Column(modifier = Modifier.weight(1f, fill = false).padding(end = 10.dp)) {
                                 BasicText(
-                                    text = "OnePlus / Android Unrestricted Background Mode",
+                                    text = "Android Unrestricted Background Mode",
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = p.accent)
                                 )
                                 BasicText(
-                                    text = "Prevents ColorOS/OxygenOS from killing mid-generation streams when switching apps",
+                                    text = "Prevents the system from suspending active background generations when switching apps",
                                     style = p.uiLabelStyle
                                 )
                             }
@@ -2156,7 +2156,7 @@ private fun AssistantsSubpage(
                         value = editingAssistant.systemPrompt,
                         onValueChange = { sp -> updateCurrent { it.copy(systemPrompt = sp) } },
                         label = "System Prompt (Persisted independently of Topics/Chats)",
-                        placeholder = "Enter system prompt (leave blank for zero-shot)…",
+                        placeholder = "Enter system prompt (optional)…",
                         singleLine = false,
                         minHeight = 140.dp,
                         maxHeight = 360.dp,
@@ -2279,17 +2279,6 @@ private fun AssistantsSubpage(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (appState.activeAssistantId.isNotBlank()) {
-                    SepiaButton(
-                        text = "Use Pure Zero-Shot",
-                        compact = true,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = {
-                            onUpdateAssistants(appState.assistants, "")
-                            onNotify("Switched to pure zero-shot mode (no assistant bound).")
-                        }
-                    )
-                }
                 SepiaButton(
                     text = "+ New Assistant",
                     compact = true,
@@ -2310,8 +2299,8 @@ private fun AssistantsSubpage(
 
         if (appState.assistants.isEmpty()) {
             SepiaSectionCard(
-                title = "Pure Zero-Shot Mode Active",
-                subtitle = "No hardcoded assistants or system prompts are loaded. Click '+ New Assistant' above only if you want to save a reusable system prompt profile."
+                title = "Default Assistant Active",
+                subtitle = "Click '+ New Assistant' above to create additional assistant profiles."
             ) {}
         }
 
@@ -2345,7 +2334,7 @@ private fun AssistantsSubpage(
                             style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
                         )
                         BasicText(
-                            text = asst.systemPrompt.ifBlank { "Zero-shot (no system prompt) — click to configure" },
+                            text = asst.systemPrompt.ifBlank { "No system prompt configured — click to edit" },
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             style = p.uiLabelStyle.copy(color = p.narrationInk)

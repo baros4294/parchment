@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build-android-apk:
-    name: Build Android .APK (Universal / Android 16)
+    name: Build Android .APK (Universal)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository

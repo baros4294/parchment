@@ -14,7 +14,7 @@ import java.io.FileNotFoundException
 
 /**
  * Lightweight, zero-dependency ContentProvider for securely sharing local PDFs, videos,
- * audio, and images with Android's default external viewer apps on Android 7.0–16 (API 24–36)
+ * audio, and images with Android's default external viewer apps
  * without triggering FileUriExposedException.
  */
 class ParchmentFileProvider : ContentProvider() {

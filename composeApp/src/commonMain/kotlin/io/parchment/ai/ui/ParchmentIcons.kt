@@ -78,7 +78,13 @@ enum class KissIcon {
     WARNING,
     CIRCLE_DOT,
     CIRCLE_EMPTY,
-    MINUS
+    MINUS,
+    TARGET,
+    REWIND,
+    FILE_TEXT,
+    AUDIO,
+    TABS,
+    MIC
 }
 
 data class ParsedLabelWithIcons(
@@ -129,6 +135,15 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "☁" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
         "○" -> return ParsedLabelWithIcons(KissIcon.CIRCLE_EMPTY, "", null)
         "⋯" -> return ParsedLabelWithIcons(KissIcon.MORE_HORIZONTAL, "", null)
+        "🎯" -> return ParsedLabelWithIcons(KissIcon.TARGET, "", null)
+        "↺" -> return ParsedLabelWithIcons(KissIcon.REWIND, "", null)
+        "⟳" -> return ParsedLabelWithIcons(KissIcon.REFRESH, "", null)
+        "📄", "📝" -> return ParsedLabelWithIcons(KissIcon.FILE_TEXT, "", null)
+        "🎵" -> return ParsedLabelWithIcons(KissIcon.AUDIO, "", null)
+        "🎙" -> return ParsedLabelWithIcons(KissIcon.MIC, "", null)
+        "🗂" -> return ParsedLabelWithIcons(KissIcon.TABS, "", null)
+        "🔊" -> return ParsedLabelWithIcons(KissIcon.VOLUME_ON, "", null)
+        "🔇" -> return ParsedLabelWithIcons(KissIcon.VOLUME_OFF, "", null)
     }
 
     var working = trimmed
@@ -191,7 +206,15 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "🔊 " to KissIcon.VOLUME_ON,
         "🔇 " to KissIcon.VOLUME_OFF,
         "▶ " to KissIcon.PLAY,
-        "⚠ " to KissIcon.WARNING
+        "⚠ " to KissIcon.WARNING,
+        "🎯 " to KissIcon.TARGET,
+        "↺ " to KissIcon.REWIND,
+        "⟳ " to KissIcon.REFRESH,
+        "📄 " to KissIcon.FILE_TEXT,
+        "📝 " to KissIcon.FILE_TEXT,
+        "🎵 " to KissIcon.AUDIO,
+        "🎙 " to KissIcon.MIC,
+        "🗂 " to KissIcon.TABS
     )
 
     for ((prefix, icon) in prefixMappings) {
@@ -760,6 +783,78 @@ private fun DrawScope.drawKissIconPath(
         }
         KissIcon.CIRCLE_EMPTY -> {
             drawCircle(color, radius = 7f * s, center = pt(12f, 12f), style = stroke)
+        }
+        KissIcon.TARGET -> {
+            drawCircle(color, radius = 9f * s, center = pt(12f, 12f), style = stroke)
+            drawCircle(color, radius = 5f * s, center = pt(12f, 12f), style = stroke)
+            drawCircle(color, radius = 1.8f * s, center = pt(12f, 12f))
+        }
+        KissIcon.REWIND -> {
+            drawArc(
+                color = color,
+                startAngle = -145f,
+                sweepAngle = -290f,
+                useCenter = false,
+                topLeft = pt(4f, 4f),
+                size = Size(16f * s, 16f * s),
+                style = stroke
+            )
+            path {
+                moveTo(8f * s, 3.5f * s)
+                lineTo(4f * s, 7.5f * s)
+                lineTo(8.5f * s, 8.2f * s)
+            }
+        }
+        KissIcon.FILE_TEXT -> {
+            path {
+                moveTo(6f * s, 3f * s)
+                lineTo(14f * s, 3f * s)
+                lineTo(19f * s, 8f * s)
+                lineTo(19f * s, 21f * s)
+                lineTo(6f * s, 21f * s)
+                close()
+            }
+            path {
+                moveTo(14f * s, 3f * s)
+                lineTo(14f * s, 8f * s)
+                lineTo(19f * s, 8f * s)
+            }
+            line(9f, 12.5f, 16f, 12.5f)
+            line(9f, 16.5f, 14.5f, 16.5f)
+        }
+        KissIcon.AUDIO -> {
+            path {
+                moveTo(9f * s, 18f * s)
+                lineTo(9f * s, 6f * s)
+                lineTo(19f * s, 4f * s)
+                lineTo(19f * s, 16f * s)
+            }
+            drawCircle(color, radius = 2.6f * s, center = pt(6.5f, 18f), style = stroke)
+            drawCircle(color, radius = 2.6f * s, center = pt(16.5f, 16f), style = stroke)
+        }
+        KissIcon.TABS -> {
+            drawRoundRect(color, pt(3.5f, 6.5f), Size(14f * s, 14f * s), CornerRadius(2.5f * s), stroke)
+            path {
+                moveTo(7.5f * s, 6.5f * s)
+                lineTo(7.5f * s, 3.5f * s)
+                lineTo(20.5f * s, 3.5f * s)
+                lineTo(20.5f * s, 16.5f * s)
+                lineTo(17.5f * s, 16.5f * s)
+            }
+        }
+        KissIcon.MIC -> {
+            drawRoundRect(color, pt(9f, 3f), Size(6f * s, 11f * s), CornerRadius(3f * s), stroke)
+            drawArc(
+                color = color,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = pt(5.5f, 7.5f),
+                size = Size(13f * s, 11f * s),
+                style = stroke
+            )
+            line(12f, 18.5f, 12f, 21.5f)
+            line(8.5f, 21.5f, 15.5f, 21.5f)
         }
     }
 }

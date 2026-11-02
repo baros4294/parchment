@@ -976,8 +976,11 @@ fun SepiaContextGaugeRing(
             }
         }
 
-        val costTag = if (sessionCostUsd > 0.0) " • ${formatUsdCost(sessionCostUsd)}" else ""
-        val labelStr = if (isUnlimited) {
+        val win = LocalParchmentWindowSize.current
+        val costTag = if (sessionCostUsd > 0.0 && !win.isCompact) " • ${formatUsdCost(sessionCostUsd)}" else ""
+        val labelStr = if (win.isCompact) {
+            if (isUnlimited) formatCompactTokens(usedTokens) else "${formatCompactTokens(usedTokens)} ($percent%)"
+        } else if (isUnlimited) {
             "${formatCompactTokens(usedTokens)}/∞$costTag"
         } else {
             "${formatCompactTokens(usedTokens)}/${formatCompactTokens(safeLimit)} ($percent%)$costTag"

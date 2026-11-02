@@ -83,7 +83,7 @@ sealed class StreamUpdate {
 object AiProviderEngine {
 
     /**
-     * Long-horizon autonomous execution engine (inspired by Anthropic Claude Code & OpenAI Codex).
+     * Long-horizon autonomous execution engine.
      * Uses a Repeated-Failure Circuit Breaker + Stop-Hook Work-Check Gate instead of a brittle 64-step limit,
      * allowing tasks to run productively for hours, days, or weeks while halting repeated identical errors.
      */
@@ -3717,7 +3717,7 @@ object AiProviderEngine {
             }
         }
 
-        // Composable Context Fragments & Card Lorebook (Errata / SillyTavern character_book)
+        // Composable Context Fragments & Card Lorebook
         val allFragments = session.fragments + session.activeCard?.embeddedFragments.orEmpty()
         if (allFragments.isNotEmpty()) {
             val recentWindowText = session.messages.takeLast(8)
@@ -3743,7 +3743,7 @@ object AiProviderEngine {
             }
         }
 
-        // Rolling Story Summary / Continuity Memory (Errata Librarian / SillyBunny Mewmory)
+        // Rolling Story Summary / Continuity Memory
         if (session.storySummary.isNotBlank()) {
             sb.appendLine("### Story Summary & Continuity So Far")
             sb.appendLine(expandMacros(session.storySummary.trim()))
@@ -3751,7 +3751,7 @@ object AiProviderEngine {
         }
 
         if (session.workspaceMode != io.parchment.ai.model.WorkspaceMode.OFF && session.workspacePath.isNotBlank()) {
-            sb.appendLine("### Local Workspace Agent Harness (OpenCode / Claude Code / Codex Style)")
+            sb.appendLine("### Local Workspace Agent Harness")
             sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`, `agent_memory`, `shell_exec`" else ""}, `todo_write`, `goal_complete`, `dice_roll`). Inspect files with `fs_read` before editing, keep edits surgical with `fs_edit`, and record durable project/story conventions with `agent_memory`. For multi-step tasks, track your steps with `todo_write` and verify completion with `goal_complete`.")
             val discoveredContext = WorkspaceHarness.discoverWorkspaceContextFiles(session.workspacePath)
             if (discoveredContext.isNotBlank()) {
@@ -3762,7 +3762,7 @@ object AiProviderEngine {
 
         if (activeGoalState != null) {
             sb.appendLine()
-            sb.appendLine("### Autonomous Goal & Verification Mode (Claude Code / OpenAI Codex Protocol)")
+            sb.appendLine("### Autonomous Goal & Verification Mode")
             sb.appendLine("Active Goal Objective: ${activeGoalState.goalObjective}")
             sb.appendLine("1. Plan: Immediately call `todo_write` to break the objective into concrete, verifiable steps (mark step 1 `in_progress`).")
             sb.appendLine("2. Execute & Verify: Complete each step thoroughly. After verifying a step, call `todo_write` to mark it `completed` and set the next step `in_progress`.")

@@ -177,7 +177,7 @@ expect object PlatformBridge {
     fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String = ""): Result<String>
     fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int = 30): Result<String>
 
-    // Long Decode Lifecycle Hook (Android 16 Foreground Service / Desktop status)
+    // Long Decode Lifecycle Hook (Android Foreground Service / Desktop status)
     fun notifyLongDecodeStart(modelName: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
     fun notifyLongDecodeComplete()
@@ -197,4 +197,11 @@ expect object PlatformBridge {
         onDragHover: (Boolean) -> Unit,
         onFilesDropped: (List<PickedBinaryFile>) -> Unit
     )
+
+    // Native Text-to-Speech (TTS) & Live Voice Input (STT)
+    fun speakTextAloud(text: String, onFinished: () -> Unit = {})
+    fun stopSpeakingAloud()
+    fun isSpeakingAloud(): Boolean
+    fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit = {})
+    fun stopVoiceInput()
 }

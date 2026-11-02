@@ -578,6 +578,7 @@ data class AppStateSnapshot(
     val desktopWindow: DesktopWindowConfig = DesktopWindowConfig(),
     val sessions: List<ChatSession> = emptyList(),
     val activeSessionId: String = "",
+    val openTabSessionIds: List<String> = emptyList(),
     val systemPromptPresets: List<SystemPromptPreset> = emptyList(),
     val savedCards: List<CharacterOrScenarioCard> = emptyList(),
     val globalWorldBook: List<ContextFragment> = emptyList(),

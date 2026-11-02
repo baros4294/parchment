@@ -13,6 +13,8 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.ContentInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -56,6 +58,13 @@ actual object PlatformBridge {
 
     private var appContext: Context? = null
     private var mainActivityRef: WeakReference<MainActivity>? = null
+    private var ttsEngine: TextToSpeech? = null
+    @Volatile
+    private var ttsReady: Boolean = false
+    @Volatile
+    private var isCurrentlySpeaking: Boolean = false
+    @Volatile
+    private var pendingTtsFinishedCallback: (() -> Unit)? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
     private val imageCache = LinkedHashMap<String, ImageBitmap>()
     private val pendingSharedOrPastedFiles = mutableListOf<PickedBinaryFile>()
@@ -67,9 +76,31 @@ actual object PlatformBridge {
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
         mainActivityRef = WeakReference(activity)
-        // Ensure default local workspace folder exists inside noBackupFilesDir
+        // Ensure default local workspace folder exists
         val wsDir = File(resolveStorageDir(), "workspace")
         if (!wsDir.exists()) wsDir.mkdirs()
+        if (ttsEngine == null) {
+            runCatching {
+                ttsEngine = TextToSpeech(context.applicationContext) { status ->
+                    if (status == TextToSpeech.SUCCESS) {
+                        ttsReady = true
+                        ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(utteranceId: String?) {
+                                isCurrentlySpeaking = true
+                            }
+                            override fun onDone(utteranceId: String?) {
+                                isCurrentlySpeaking = false
+                                pendingTtsFinishedCallback?.invoke()
+                            }
+                            @Suppress("OVERRIDE_DEPRECATION")
+                            override fun onError(utteranceId: String?) {
+                                isCurrentlySpeaking = false
+                            }
+                        })
+                    }
+                }
+            }
+        }
     }
 
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
@@ -96,7 +127,10 @@ actual object PlatformBridge {
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
         val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
-        val hasNoAssistants = json.contains("\"assistants\":[]")
+        val hasNoAssistants = json.contains("\"assistants\":[]") || (
+            !Regex("\"id\":\"asst-(?!default\")").containsMatchIn(json) &&
+                !Regex("\"systemPrompt\":\"[^\"]+\"").containsMatchIn(json)
+            )
         val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
         val hasNoSavedCards = !json.contains("\"savedCards\":[{")
         val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
@@ -718,5 +752,38 @@ actual object PlatformBridge {
         if (drained.isNotEmpty()) {
             onFilesDropped(drained)
         }
+    }
+
+    actual fun speakTextAloud(text: String, onFinished: () -> Unit) {
+        runCatching {
+            val cleaned = text.trim()
+            if (cleaned.isEmpty()) return@runCatching
+            pendingTtsFinishedCallback = onFinished
+            isCurrentlySpeaking = true
+            ttsEngine?.speak(cleaned.take(3900), TextToSpeech.QUEUE_FLUSH, null, "utt-${currentTimeMillis()}")
+        }
+    }
+
+    actual fun stopSpeakingAloud() {
+        runCatching {
+            isCurrentlySpeaking = false
+            pendingTtsFinishedCallback = null
+            ttsEngine?.stop()
+        }
+    }
+
+    actual fun isSpeakingAloud(): Boolean = isCurrentlySpeaking || (runCatching { ttsEngine?.isSpeaking == true }.getOrDefault(false))
+
+    actual fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit) {
+        val act = mainActivityRef?.get()
+        if (act == null) {
+            onError("Activity context unavailable.")
+            return
+        }
+        act.launchVoiceRecognizer(onRecognizedText, onError)
+    }
+
+    actual fun stopVoiceInput() {
+        // Handled by system recognizer dialog
     }
 }

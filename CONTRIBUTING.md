@@ -19,7 +19,7 @@ Thank you for your interest in contributing to **Parchment**!
 
 ### Prerequisites
 * **JDK 21** (Temurin recommended)
-* **Android SDK** (API 35 / Android 16)
+* **Android SDK** (API 35)
 
 ### Build & Test Commands
 

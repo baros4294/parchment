@@ -111,7 +111,7 @@ android {
     }
 
     signingConfigs {
-        // Consistent OTA signing keystore so Android 16 upgrades in-place without signature conflicts
+        // Consistent OTA signing keystore so Android upgrades in-place without signature conflicts
         getByName("debug") {
             val otaKeystore = rootProject.file("keystore/parchment-ota-signing.jks")
             if (otaKeystore.exists()) {

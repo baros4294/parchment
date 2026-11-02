@@ -129,7 +129,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Process-wide supervisor scope so switching apps on Android (OnePlus ColorOS) or recomposing UI
+ * Process-wide supervisor scope so switching apps on Android or recomposing UI
  * never cancels an active generation stream.
  */
 private val appProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -168,6 +168,15 @@ sealed interface ActiveMediaViewerItem {
     ) : ActiveMediaViewerItem
 }
 
+data class SessionStreamRuntime(
+    val sessionId: String,
+    val targetNodeId: String = "",
+    val isThinkingPhase: Boolean = false,
+    val statusText: String = "",
+    val interactionId: String = "",
+    val job: Job? = null
+)
+
 private fun formatSecondsFromMs(ms: Long): String {
     val sec = (ms / 10L).toDouble() / 100.0
     return "${sec}s"
@@ -195,22 +204,16 @@ fun ParchmentApp() {
     var sidebarTab by remember { mutableStateOf(SidebarTab.TOPICS) }
     var showSessionInspector by remember { mutableStateOf(false) }
     var showQuickModelPopover by remember { mutableStateOf(false) }
+    var showMobileTabSwitcher by remember { mutableStateOf(false) }
     var bannerNotification by remember { mutableStateOf("") }
 
     // OTA Update state
     var otaState by remember { mutableStateOf<OtaUpdateState>(OtaUpdateState.Idle) }
     var dismissOtaBanner by remember { mutableStateOf(false) }
 
-    // Streaming & 60/120fps VSYNC Character Pacer state
-    var isStreaming by remember { mutableStateOf(false) }
-    var isCurrentlyThinkingPhase by remember { mutableStateOf(false) }
-    var streamingTargetNodeId by remember { mutableStateOf("") }
-    var streamingStatus by remember { mutableStateOf("") }
-    var streamingInteractionId by remember { mutableStateOf("") }
-    var activeStreamJob by remember { mutableStateOf<Job?>(null) }
-
-    // Queued follow-up prompts for `⏳ Queue` mode
-    var queuedPrompts by remember { mutableStateOf<List<QueuedPromptItem>>(emptyList()) }
+    // Concurrent Per-Session Multi-Tasking Stream & Queue State (allows multiple tabs to run simultaneously!)
+    var activeStreamsBySession by remember { mutableStateOf<Map<String, SessionStreamRuntime>>(emptyMap()) }
+    var queuedPromptsBySession by remember { mutableStateOf<Map<String, List<QueuedPromptItem>>>(emptyMap()) }
 
     val activeProfile = appState.profiles.find { it.id == appState.activeProfileId }
         ?: appState.profiles.first()
@@ -219,13 +222,31 @@ fun ParchmentApp() {
     val activeAssistant = appState.assistants.find { it.id == activeSession.assistantId && it.id.isNotBlank() }
         ?: appState.assistants.find { it.id == appState.activeAssistantId && it.id.isNotBlank() }
         ?: appState.assistants.firstOrNull()
-        ?: AssistantAgent(id = "", name = "Zero-Shot", iconEmoji = "✦", systemPrompt = "")
+        ?: AssistantAgent(id = "asst-default", name = "Default Assistant", iconEmoji = "💬", systemPrompt = "")
+
+    // Active tab's stream state
+    val currentTabStream = activeStreamsBySession[activeSession.id]
+    val isStreaming = currentTabStream != null
+    val isCurrentlyThinkingPhase = currentTabStream?.isThinkingPhase == true
+    val streamingTargetNodeId = currentTabStream?.targetNodeId.orEmpty()
+    val streamingStatus = currentTabStream?.statusText.orEmpty()
+    val streamingInteractionId = currentTabStream?.interactionId.orEmpty()
+    val activeStreamJob = currentTabStream?.job
+    val queuedPrompts = queuedPromptsBySession[activeSession.id].orEmpty()
+
+    // Open Browser Tabs list (always includes activeSession.id)
+    val openTabIds = remember(appState.openTabSessionIds, appState.sessions, activeSession.id) {
+        val validSaved = appState.openTabSessionIds.filter { id -> appState.sessions.any { it.id == id } }
+        if (activeSession.id in validSaved) validSaved else (validSaved + activeSession.id)
+    }
 
     // Per-session composer inputs (synced with activeSession.draftInput so switching chats preserves drafts!)
     var userPromptInput by remember(activeSession.id) { mutableStateOf(activeSession.draftInput) }
     var assistantPrefillInput by remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
     var showPrefillBox by remember { mutableStateOf(false) }
     var isGoalModeEnabled by remember { mutableStateOf(false) }
+    var isLiveVoiceMode by remember { mutableStateOf(false) }
+    var isVoiceListening by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
     var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
     var activeViewerItem by remember { mutableStateOf<ActiveMediaViewerItem?>(null) }
@@ -614,12 +635,23 @@ fun ParchmentApp() {
 
     /**
      * Core Generation Dispatcher with:
+     * - Concurrent Per-Session Multi-Tasking (multiple tabs run simultaneously in background)
      * - 60/120fps VSYNC Character Pacer (`withFrameNanos`)
      * - Auto-Open / Auto-Collapse Reasoning Phase tracking
-     * - 1.5s Atomic Disk Checkpoints + Cancellation/Close Preservation (Zero data loss on OnePlus!)
-     * - Automatic Queue Drain (`⏳ Queue`) and First-Turn Auto-Title Generation
+     * - 1.5s Atomic Disk Checkpoints + Cancellation/Close Preservation
+     * - Automatic Queue Drain (`⏳ Queue`), Live Voice TTS Readout, and First-Turn Auto-Title Generation
      */
     var dispatchNextQueuedItem: ((String, QueuedPromptItem) -> Unit)? = null
+
+    fun updateSessionStreamState(sessionId: String, updater: (SessionStreamRuntime?) -> SessionStreamRuntime?) {
+        val current = activeStreamsBySession[sessionId]
+        val next = updater(current)
+        activeStreamsBySession = if (next == null) {
+            activeStreamsBySession - sessionId
+        } else {
+            activeStreamsBySession + (sessionId to next)
+        }
+    }
 
     fun triggerGeneration(
         sessionId: String,
@@ -629,7 +661,8 @@ fun ParchmentApp() {
         continuePrefix: String = "",
         autoMuteNodeIdsOnFinish: Set<String> = emptySet()
     ) {
-        activeStreamJob?.cancel()
+        // Cancel only any prior job on THIS sessionId — never interrupt other running tabs!
+        activeStreamsBySession[sessionId]?.job?.cancel()
         val sessionSnap = appState.sessions.find { it.id == sessionId } ?: activeSession
         val assistantSnap = appState.assistants.find { it.id == sessionSnap.assistantId } ?: activeAssistant
         val profileSnap = appState.profiles.find { it.id == sessionSnap.profileId } ?: activeProfile
@@ -671,13 +704,7 @@ fun ParchmentApp() {
             }
         }
 
-        isStreaming = true
-        isCurrentlyThinkingPhase = false
-        streamingTargetNodeId = targetAssistantNodeId
-        streamingStatus = "Connecting to ${effectiveProfileForApi.name} ($modelName)…"
-        streamingInteractionId = ""
-
-        activeStreamJob = appProcessScope.launch {
+        val newJob = appProcessScope.launch {
             val networkContentTarget = StringBuilder(continuePrefix)
             val networkThinkingTarget = StringBuilder()
             val signatureSb = StringBuilder()
@@ -686,6 +713,7 @@ fun ParchmentApp() {
             val accumulatedTools = mutableListOf<ToolCallRecord>()
             var latestGoalTracker: GoalTrackerState? = null
             val accumulatedMedia = mutableListOf<GeneratedMediaItem>()
+            var localInteractionId = ""
             var rawReq = ""
             var rawResp = ""
             var networkDone = false
@@ -735,7 +763,7 @@ fun ParchmentApp() {
                                                 toolCalls = curTools,
                                                 goalTracker = curGoal ?: v.goalTracker,
                                                 mediaItems = curMedia,
-                                                pendingBackgroundInteractionId = if (isFinal) "" else streamingInteractionId,
+                                                pendingBackgroundInteractionId = if (isFinal) "" else localInteractionId,
                                                 isStreaming = !isFinal
                                             )
                                             if (finalUpdater != null) finalUpdater(base) else base
@@ -802,7 +830,7 @@ fun ParchmentApp() {
                             )
                         }
                     }
-                    // Atomic background disk checkpoint every 1.5 seconds so switching apps / OnePlus battery kill NEVER loses progress
+                    // Atomic background disk checkpoint every 1.5 seconds so switching apps NEVER loses progress
                     val now = PlatformBridge.currentTimeMillis()
                     if (now - lastDiskCheckpointMs >= 1500L) {
                         lastDiskCheckpointMs = now
@@ -820,56 +848,69 @@ fun ParchmentApp() {
                 ).collect { update ->
                     when (update) {
                         is StreamUpdate.Status -> {
-                            streamingStatus = update.message
                             if (update.interactionId.isNotBlank()) {
-                                streamingInteractionId = update.interactionId
+                                localInteractionId = update.interactionId
                                 flushCheckpointToDisk(isFinal = false)
+                            }
+                            updateSessionStreamState(sessionId) { cur ->
+                                cur?.copy(statusText = update.message, interactionId = localInteractionId)
                             }
                         }
                         is StreamUpdate.ThinkingDelta -> {
                             if (thinkingStartMs == 0L) thinkingStartMs = PlatformBridge.currentTimeMillis()
                             thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(100L)
-                            isCurrentlyThinkingPhase = true
                             networkThinkingTarget.append(update.delta)
                             signatureSb.append(update.signatureDelta)
                             val thinkWords = countWordsFast(networkThinkingTarget)
-                            streamingStatus = "Reasoning ($modelName • $thinkWords words • ${thinkingDurationMs / 1000.0}s)…"
+                            updateSessionStreamState(sessionId) { cur ->
+                                cur?.copy(
+                                    isThinkingPhase = true,
+                                    statusText = "Reasoning ($modelName • $thinkWords words • ${thinkingDurationMs / 1000.0}s)…"
+                                )
+                            }
                         }
                         is StreamUpdate.ContentDelta -> {
-                            if (isCurrentlyThinkingPhase) {
-                                if (thinkingStartMs > 0L) {
-                                    thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(thinkingDurationMs)
-                                }
-                                isCurrentlyThinkingPhase = false
+                            if (thinkingStartMs > 0L) {
+                                thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(thinkingDurationMs)
                             }
                             networkContentTarget.append(update.delta)
                             val wordCount = countWordsFast(networkContentTarget)
-                            streamingStatus = "Writing ($modelName • +$wordCount words)…"
+                            updateSessionStreamState(sessionId) { cur ->
+                                cur?.copy(
+                                    isThinkingPhase = false,
+                                    statusText = "Writing ($modelName • +$wordCount words)…"
+                                )
+                            }
                         }
                         is StreamUpdate.ToolCallEvent -> {
                             accumulatedTools.add(update.toolCall)
-                            streamingStatus = "Executed tool: ${update.toolCall.name}"
                             val toolsSnap = accumulatedTools.toList()
                             patchVariantMemory { v -> v.copy(toolCalls = toolsSnap) }
+                            updateSessionStreamState(sessionId) { cur ->
+                                cur?.copy(statusText = "Executed tool: ${update.toolCall.name}")
+                            }
                             flushCheckpointToDisk(isFinal = false)
                         }
                         is StreamUpdate.GoalProgress -> {
                             latestGoalTracker = update.goalTracker
                             val done = update.goalTracker.completedCount
                             val total = update.goalTracker.todos.size
-                            streamingStatus = if (total > 0) {
+                            val goalMsg = if (total > 0) {
                                 "Goal Progress ($done/$total steps done)…"
                             } else {
                                 "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
                             }
+                            updateSessionStreamState(sessionId) { cur -> cur?.copy(statusText = goalMsg) }
                             patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
                             flushCheckpointToDisk(isFinal = false)
                         }
                         is StreamUpdate.MediaGenerated -> {
                             accumulatedMedia.add(update.item)
-                            streamingStatus = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})"
                             val mediaSnap = accumulatedMedia.toList()
                             patchVariantMemory { v -> v.copy(mediaItems = mediaSnap) }
+                            updateSessionStreamState(sessionId) { cur ->
+                                cur?.copy(statusText = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})")
+                            }
                         }
                         is StreamUpdate.RawWireSnapshot -> {
                             if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
@@ -908,6 +949,9 @@ fun ParchmentApp() {
                                     rawResponsePreview = update.rawResponse.take(4096)
                                 )
                             }
+                            if (isLiveVoiceMode && sessionId == appState.activeSessionId && update.fullContent.isNotBlank()) {
+                                PlatformBridge.speakTextAloud(stripMarkdownToPlainText(update.fullContent))
+                            }
                         }
                         is StreamUpdate.Error -> {
                             networkDone = true
@@ -933,7 +977,6 @@ fun ParchmentApp() {
                     }
                 }
             } catch (c: kotlinx.coroutines.CancellationException) {
-                // User pressed Stop, Steer, or app closed mid-stream: ALWAYS save 100% of partial progress!
                 networkDone = true
                 pacerJob.cancel()
                 flushCheckpointToDisk(isFinal = true)
@@ -950,10 +993,7 @@ fun ParchmentApp() {
                 }
             } finally {
                 networkDone = true
-                isStreaming = false
-                isCurrentlyThinkingPhase = false
-                streamingStatus = ""
-                streamingTargetNodeId = ""
+                updateSessionStreamState(sessionId) { null }
 
                 // Auto-generate Topic Title after the first assistant turn completes with non-empty content
                 val updatedSess = appState.sessions.find { it.id == sessionId }
@@ -961,13 +1001,25 @@ fun ParchmentApp() {
                     generateTopicTitle(sessionId, forceRegenerate = false)
                 }
 
-                // If there are queued prompts (`⏳ Queue` mode), automatically dispatch the next one!
-                if (queuedPrompts.isNotEmpty()) {
-                    val nextItem = queuedPrompts.first()
-                    queuedPrompts = queuedPrompts.drop(1)
+                // If there are queued prompts for this session (`⏳ Queue` mode), automatically dispatch the next one!
+                val sessQueue = queuedPromptsBySession[sessionId].orEmpty()
+                if (sessQueue.isNotEmpty()) {
+                    val nextItem = sessQueue.first()
+                    queuedPromptsBySession = queuedPromptsBySession + (sessionId to sessQueue.drop(1))
                     dispatchNextQueuedItem?.invoke(sessionId, nextItem)
                 }
             }
+        }
+
+        updateSessionStreamState(sessionId) {
+            SessionStreamRuntime(
+                sessionId = sessionId,
+                targetNodeId = targetAssistantNodeId,
+                isThinkingPhase = false,
+                statusText = "Connecting to ${effectiveProfileForApi.name} ($modelName)…",
+                interactionId = "",
+                job = newJob
+            )
         }
     }
 
@@ -1070,7 +1122,8 @@ fun ParchmentApp() {
     }
 
     fun triggerAutoSummarizeStory(autoMuteOlderTurns: Boolean = false) {
-        if (isStreaming || activeSession.messages.isEmpty()) return
+        val targetSessId = activeSession.id
+        if (activeStreamsBySession.containsKey(targetSessId) || activeSession.messages.isEmpty()) return
         val now = PlatformBridge.currentTimeMillis()
         val dm = appState.defaultModels
         val summaryProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
@@ -1093,15 +1146,13 @@ fun ParchmentApp() {
         )
         val historyForCall = activeSession.messages + summarizeNode
 
-        activeStreamJob?.cancel()
-        isStreaming = true
-        streamingStatus = if (autoMuteOlderTurns) {
+        val sumStatus = if (autoMuteOlderTurns) {
             "Compacting context & summarizing continuity ($summaryModel)…"
         } else {
             "Summarizing story continuity into memory ($summaryModel)…"
         }
 
-        activeStreamJob = appProcessScope.launch {
+        val sumJob = appProcessScope.launch {
             val buf = StringBuilder()
             try {
                 AiProviderEngine.streamGeneration(
@@ -1112,11 +1163,11 @@ fun ParchmentApp() {
                     when (update) {
                         is StreamUpdate.ContentDelta -> {
                             buf.append(update.delta)
-                            updateActiveSession { it.copy(storySummary = buf.toString()) }
+                            updateSessionById(targetSessId) { it.copy(storySummary = buf.toString()) }
                         }
                         is StreamUpdate.Completed -> {
                             val summaryText = update.fullContent.trim()
-                            updateActiveSession(immediate = true) { sess ->
+                            updateSessionById(targetSessId, immediate = true) { sess ->
                                 val updatedMsgs = if (autoMuteOlderTurns && sess.messages.size > 4) {
                                     val keepStartIdx = sess.messages.size - 4
                                     sess.messages.mapIndexed { idx, node ->
@@ -1143,9 +1194,11 @@ fun ParchmentApp() {
                     }
                 }
             } finally {
-                isStreaming = false
-                streamingStatus = ""
+                updateSessionStreamState(targetSessId) { null }
             }
+        }
+        updateSessionStreamState(targetSessId) {
+            SessionStreamRuntime(sessionId = targetSessId, statusText = sumStatus, job = sumJob)
         }
     }
 
@@ -1234,10 +1287,11 @@ fun ParchmentApp() {
     }
 
     /**
-     * `⚡ Steer` Mode: Immediately stops the in-flight stream, keeps the partial AI output up to this exact millisecond,
-     * appends the user's new follow-up prompt, and immediately starts generating from the new prompt!
+     * `⚡ Steer` Mode: Immediately stops the in-flight stream on the active tab, keeps partial AI output,
+     * appends the user's new follow-up prompt, and starts generating from the new prompt!
      */
     fun triggerSteerNow() {
+        val targetSessId = activeSession.id
         val steerText = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
         val atts = pendingAttachments
@@ -1248,10 +1302,11 @@ fun ParchmentApp() {
         pendingAttachments = emptyList()
 
         uiScope.launch {
-            activeStreamJob?.cancel()
-            activeStreamJob?.join()
+            val runningJob = activeStreamsBySession[targetSessId]?.job
+            runningJob?.cancel()
+            runningJob?.join()
             dispatchPromptItem(
-                sessionId = activeSession.id,
+                sessionId = targetSessId,
                 text = steerText,
                 prefill = prefill,
                 attachments = atts,
@@ -1261,9 +1316,10 @@ fun ParchmentApp() {
     }
 
     /**
-     * `⏳ Queue` Mode: Adds the current prompt to the queue while the current reply finishes streaming.
+     * `⏳ Queue` Mode: Adds the current prompt to the active tab's queue while the current reply finishes streaming.
      */
     fun enqueueFollowUpPrompt() {
+        val targetSessId = activeSession.id
         val qText = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
         val atts = pendingAttachments
@@ -1275,7 +1331,8 @@ fun ParchmentApp() {
             prefill = prefill,
             attachments = atts
         )
-        queuedPrompts = queuedPrompts + item
+        val curList = queuedPromptsBySession[targetSessId].orEmpty()
+        queuedPromptsBySession = queuedPromptsBySession + (targetSessId to (curList + item))
         userPromptInput = ""
         assistantPrefillInput = ""
         pendingAttachments = emptyList()
@@ -1283,7 +1340,8 @@ fun ParchmentApp() {
     }
 
     fun triggerImpersonateDraft() {
-        if (isStreaming) return
+        val targetSessId = activeSession.id
+        if (activeStreamsBySession.containsKey(targetSessId)) return
         val now = PlatformBridge.currentTimeMillis()
         val seedHint = userPromptInput.trim()
         val instruction = if (seedHint.isNotEmpty()) {
@@ -1298,13 +1356,9 @@ fun ParchmentApp() {
             variants = listOf(MessageVariant(id = "var-imp-$now", content = instruction, createdAt = now))
         )
         val historyForCall = activeSession.messages + syntheticNode
-
-        activeStreamJob?.cancel()
-        isStreaming = true
-        streamingStatus = "Drafting ${activeSession.userName}'s turn…"
         userPromptInput = ""
 
-        activeStreamJob = appProcessScope.launch {
+        val impJob = appProcessScope.launch {
             val buf = StringBuilder()
             try {
                 AiProviderEngine.streamGeneration(
@@ -1315,25 +1369,64 @@ fun ParchmentApp() {
                     when (update) {
                         is StreamUpdate.ContentDelta -> {
                             buf.append(update.delta)
-                            userPromptInput = buf.toString()
+                            if (appState.activeSessionId == targetSessId) {
+                                userPromptInput = buf.toString()
+                            }
                         }
                         is StreamUpdate.Completed -> {
-                            userPromptInput = update.fullContent.trim()
+                            val drafted = update.fullContent.trim()
+                            if (appState.activeSessionId == targetSessId) {
+                                userPromptInput = drafted
+                            }
+                            updateSessionById(targetSessId) { it.copy(draftInput = drafted) }
                         }
                         is StreamUpdate.Error -> {
-                            bannerNotification = "Impersonate error: ${update.message}"
+                            bannerNotification = "Draft error: ${update.message}"
                         }
                         else -> {}
                     }
                 }
             } finally {
-                isStreaming = false
-                streamingStatus = ""
+                updateSessionStreamState(targetSessId) { null }
             }
+        }
+        updateSessionStreamState(targetSessId) {
+            SessionStreamRuntime(sessionId = targetSessId, statusText = "Drafting ${activeSession.userName}'s turn…", job = impJob)
         }
     }
 
-    fun createNewTopicForAssistant(assistant: AssistantAgent) {
+    fun triggerVoiceInput() {
+        if (isVoiceListening) {
+            PlatformBridge.stopVoiceInput()
+            isVoiceListening = false
+            return
+        }
+        PlatformBridge.stopSpeakingAloud()
+        isVoiceListening = true
+        bannerNotification = "Listening… Speak now."
+        PlatformBridge.startVoiceInput(
+            onRecognizedText = { recognized ->
+                uiScope.launch {
+                    isVoiceListening = false
+                    bannerNotification = ""
+                    val combined = if (userPromptInput.isBlank()) recognized else "${userPromptInput.trimEnd()} $recognized"
+                    userPromptInput = combined
+                    updateActiveSession { it.copy(draftInput = combined) }
+                    if (isLiveVoiceMode && !isStreaming) {
+                        sendUserTurn()
+                    }
+                }
+            },
+            onError = { errMsg ->
+                uiScope.launch {
+                    isVoiceListening = false
+                    bannerNotification = errMsg
+                }
+            }
+        )
+    }
+
+    fun createNewTopicForAssistant(assistant: AssistantAgent, openInNewTab: Boolean = true) {
         val now = PlatformBridge.currentTimeMillis()
         val profId = assistant.defaultProfileId.ifBlank { appState.defaultModels.globalProfileId.ifBlank { activeProfile.id } }
         val modId = assistant.defaultModelId.ifBlank {
@@ -1374,24 +1467,81 @@ fun ParchmentApp() {
             workspaceMode = assistant.workspaceMode,
             messages = initialMessages
         )
+        val updatedTabs = if (openInNewTab) {
+            (openTabIds + newSess.id).distinct()
+        } else {
+            openTabIds.map { if (it == activeSession.id) newSess.id else it }.ifEmpty { listOf(newSess.id) }
+        }
         persist(
             appState.copy(
                 activeAssistantId = assistant.id,
                 sessions = listOf(newSess) + appState.sessions,
-                activeSessionId = newSess.id
+                activeSessionId = newSess.id,
+                openTabSessionIds = updatedTabs
             ),
             immediateFlush = true
         )
     }
 
+    fun switchToTab(sessionId: String) {
+        val target = appState.sessions.find { it.id == sessionId } ?: return
+        val updatedTabs = if (sessionId in openTabIds) openTabIds else (openTabIds + sessionId)
+        persist(
+            appState.copy(
+                activeSessionId = sessionId,
+                activeAssistantId = target.assistantId.ifBlank { appState.activeAssistantId },
+                openTabSessionIds = updatedTabs
+            ),
+            immediateFlush = true
+        )
+        isSettingsOpen = false
+        showMobileTabSwitcher = false
+    }
+
+    fun closeChatTab(sessionId: String) {
+        val remainingTabs = openTabIds.filterNot { it == sessionId }
+        if (remainingTabs.isEmpty()) {
+            createNewTopicForAssistant(activeAssistant, openInNewTab = false)
+            showMobileTabSwitcher = false
+        } else {
+            val nextActiveId = if (appState.activeSessionId == sessionId) {
+                val closedIdx = openTabIds.indexOf(sessionId).coerceAtLeast(0)
+                remainingTabs.getOrElse((closedIdx - 1).coerceAtLeast(0)) { remainingTabs.first() }
+            } else {
+                appState.activeSessionId
+            }
+            val nextSess = appState.sessions.find { it.id == nextActiveId }
+            persist(
+                appState.copy(
+                    activeSessionId = nextActiveId,
+                    activeAssistantId = nextSess?.assistantId?.ifBlank { appState.activeAssistantId } ?: appState.activeAssistantId,
+                    openTabSessionIds = remainingTabs
+                ),
+                immediateFlush = true
+            )
+        }
+    }
+
     fun executeDeleteSingleSession(targetId: String) {
+        activeStreamsBySession[targetId]?.job?.cancel()
+        updateSessionStreamState(targetId) { null }
         val remaining = appState.sessions.filterNot { it.id == targetId }
+        val remainingTabs = openTabIds.filterNot { it == targetId }
         val remainingForAssistant = remaining.filter {
             it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
         }
         if (remainingForAssistant.isNotEmpty()) {
-            val nextActive = if (appState.activeSessionId == targetId) remainingForAssistant.first().id else appState.activeSessionId
-            persist(appState.copy(sessions = remaining, activeSessionId = nextActive), immediateFlush = true)
+            val nextActive = if (appState.activeSessionId == targetId) {
+                remainingTabs.firstOrNull() ?: remainingForAssistant.first().id
+            } else appState.activeSessionId
+            persist(
+                appState.copy(
+                    sessions = remaining,
+                    activeSessionId = nextActive,
+                    openTabSessionIds = if (remainingTabs.isNotEmpty()) remainingTabs else listOf(nextActive)
+                ),
+                immediateFlush = true
+            )
         } else {
             val now = PlatformBridge.currentTimeMillis()
             val fresh = ChatSession(
@@ -1404,7 +1554,14 @@ fun ParchmentApp() {
                 assistantId = activeAssistant.id,
                 viewMode = appState.preferences.defaultViewMode
             )
-            persist(appState.copy(sessions = listOf(fresh) + remaining, activeSessionId = fresh.id), immediateFlush = true)
+            persist(
+                appState.copy(
+                    sessions = listOf(fresh) + remaining,
+                    activeSessionId = fresh.id,
+                    openTabSessionIds = remainingTabs + fresh.id
+                ),
+                immediateFlush = true
+            )
         }
     }
 
@@ -1412,6 +1569,7 @@ fun ParchmentApp() {
         val otherSessions = appState.sessions.filterNot {
             it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
         }
+        val otherIds = otherSessions.map { it.id }.toSet()
         val now = PlatformBridge.currentTimeMillis()
         val fresh = ChatSession(
             id = "sess-$now",
@@ -1423,7 +1581,15 @@ fun ParchmentApp() {
             assistantId = activeAssistant.id,
             viewMode = appState.preferences.defaultViewMode
         )
-        persist(appState.copy(sessions = listOf(fresh) + otherSessions, activeSessionId = fresh.id), immediateFlush = true)
+        val keptTabs = openTabIds.filter { it in otherIds } + fresh.id
+        persist(
+            appState.copy(
+                sessions = listOf(fresh) + otherSessions,
+                activeSessionId = fresh.id,
+                openTabSessionIds = keptTabs
+            ),
+            immediateFlush = true
+        )
         bannerNotification = "Cleared all chats for '${activeAssistant.name}' (Assistant & System Prompt preserved)."
     }
 
@@ -1471,6 +1637,7 @@ fun ParchmentApp() {
                 ) {
                     // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
                     if (!isSettingsOpen) {
+                        val bgStreamingCount = activeStreamsBySession.keys.count { it != activeSession.id }
                         TopEditorialBar(
                             appState = appState,
                             activeSession = activeSession,
@@ -1480,6 +1647,10 @@ fun ParchmentApp() {
                             showSidebar = showSidebar,
                             showSessionInspector = showSessionInspector,
                             showQuickModelPopover = showQuickModelPopover,
+                            openTabCount = openTabIds.size,
+                            backgroundStreamingCount = bgStreamingCount,
+                            onOpenMobileTabSwitcher = { showMobileTabSwitcher = true },
+                            onNewChatTab = { createNewTopicForAssistant(activeAssistant, openInNewTab = true) },
                             onToggleSidebar = { showSidebar = !showSidebar },
                             onToggleSessionInspector = { showSessionInspector = !showSessionInspector },
                             onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
@@ -1503,9 +1674,23 @@ fun ParchmentApp() {
                         )
 
                         SepiaDivider()
+
+                        // Desktop Browser-Style Multi-Tasking Tab Bar
+                        if (!isCompactScreen) {
+                            DesktopBrowserTabBar(
+                                appState = appState,
+                                openTabIds = openTabIds,
+                                activeSessionId = activeSession.id,
+                                activeStreamsBySession = activeStreamsBySession,
+                                onSelectTab = ::switchToTab,
+                                onCloseTab = ::closeChatTab,
+                                onNewTab = { createNewTopicForAssistant(activeAssistant, openInNewTab = true) }
+                            )
+                            SepiaDivider()
+                        }
                     }
 
-                    // Top In-App OTA Banner
+                    // Top In-App OTA Banner (Available, Downloading Progress Bar, Installing, & Error)
                     when (val currentOta = otaState) {
                         is OtaUpdateState.Available -> {
                             if (!dismissOtaBanner && appState.preferences.showChatListDates) {
@@ -1530,6 +1715,116 @@ fun ParchmentApp() {
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { triggerOtaDownloadAndInstall(currentOta.release) }
+                                        )
+                                        SepiaButton(
+                                            text = "×",
+                                            compact = true,
+                                            style = SepiaButtonStyle.GHOST,
+                                            onClick = { dismissOtaBanner = true }
+                                        )
+                                    }
+                                }
+                                SepiaDivider()
+                            }
+                        }
+                        is OtaUpdateState.Downloading -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(p.cardBg)
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val dlMb = (currentOta.downloadedBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                                val totMb = (currentOta.totalBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.DOWNLOAD, tint = p.accent, size = 14.dp)
+                                        BasicText(
+                                            text = "Downloading ${currentOta.release.tagName} ($dlMb / $totMb MB)…",
+                                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                        )
+                                    }
+                                    BasicText(
+                                        text = "${currentOta.progressPercent}%",
+                                        style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(p.border.copy(alpha = 0.45f))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth((currentOta.progressPercent / 100f).coerceIn(0.02f, 1f))
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(p.accent)
+                                    )
+                                }
+                            }
+                            SepiaDivider()
+                        }
+                        is OtaUpdateState.Installing -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(p.cardBg)
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    KissStreamingPulseDot(color = p.accent)
+                                    BasicText(
+                                        text = currentOta.message,
+                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(p.accent)
+                                )
+                            }
+                            SepiaDivider()
+                        }
+                        is OtaUpdateState.Error -> {
+                            if (!dismissOtaBanner) {
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(p.cardBg)
+                                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    BasicText(
+                                        text = "OTA Update Error: ${currentOta.message}",
+                                        style = p.uiBodyStyle.copy(color = p.danger, fontWeight = FontWeight.Medium),
+                                        modifier = Modifier.weight(1f, fill = false).padding(top = 4.dp, end = 8.dp)
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        SepiaButton(
+                                            text = "↻ Retry",
+                                            compact = true,
+                                            style = SepiaButtonStyle.OUTLINE,
+                                            onClick = ::triggerOtaCheckManual
                                         )
                                         SepiaButton(
                                             text = "×",
@@ -1621,15 +1916,7 @@ fun ParchmentApp() {
                                 if (isCompactScreen) showSidebar = false
                             },
                             onSelectSession = { sessId ->
-                                val sess = appState.sessions.find { it.id == sessId }
-                                persist(
-                                    appState.copy(
-                                        activeSessionId = sessId,
-                                        activeAssistantId = sess?.assistantId ?: appState.activeAssistantId
-                                    ),
-                                    immediateFlush = true
-                                )
-                                isSettingsOpen = false
+                                switchToTab(sessId)
                                 if (isCompactScreen) showSidebar = false
                             },
                             onNewTopic = {
@@ -1786,14 +2073,20 @@ fun ParchmentApp() {
                                     streamingStatus = streamingStatus,
                                     streamingInteractionId = streamingInteractionId,
                                     queuedPrompts = queuedPrompts,
-                                    onRemoveQueuedPrompt = { qId -> queuedPrompts = queuedPrompts.filterNot { it.id == qId } },
+                                    onRemoveQueuedPrompt = { qId ->
+                                        val curList = queuedPromptsBySession[activeSession.id].orEmpty()
+                                        queuedPromptsBySession = queuedPromptsBySession + (activeSession.id to curList.filterNot { it.id == qId })
+                                    },
                                     onSteerQueuedPromptNow = { item ->
-                                        queuedPrompts = queuedPrompts.filterNot { it.id == item.id }
+                                        val targetSessId = activeSession.id
+                                        val curList = queuedPromptsBySession[targetSessId].orEmpty()
+                                        queuedPromptsBySession = queuedPromptsBySession + (targetSessId to curList.filterNot { it.id == item.id })
                                         uiScope.launch {
-                                            activeStreamJob?.cancel()
-                                            activeStreamJob?.join()
+                                            val runningJob = activeStreamsBySession[targetSessId]?.job
+                                            runningJob?.cancel()
+                                            runningJob?.join()
                                             dispatchPromptItem(
-                                                sessionId = activeSession.id,
+                                                sessionId = targetSessId,
                                                 text = item.text,
                                                 prefill = item.prefill,
                                                 attachments = item.attachments,
@@ -1815,6 +2108,15 @@ fun ParchmentApp() {
                                     onTogglePrefillBox = { showPrefillBox = !showPrefillBox },
                                     isGoalModeEnabled = isGoalModeEnabled,
                                     onToggleGoalMode = { isGoalModeEnabled = !isGoalModeEnabled },
+                                    isLiveVoiceMode = isLiveVoiceMode,
+                                    isVoiceListening = isVoiceListening,
+                                    onToggleLiveVoiceMode = {
+                                        isLiveVoiceMode = !isLiveVoiceMode
+                                        if (!isLiveVoiceMode) {
+                                            PlatformBridge.stopSpeakingAloud()
+                                        }
+                                    },
+                                    onTriggerVoiceInput = ::triggerVoiceInput,
                                     pendingAttachments = pendingAttachments,
                                     onAddAttachment = {
                                         uiScope.launch {
@@ -1921,21 +2223,23 @@ fun ParchmentApp() {
                                         persist(
                                             appState.copy(
                                                 sessions = listOf(forkedSession) + appState.sessions,
-                                                activeSessionId = forkedSession.id
+                                                activeSessionId = forkedSession.id,
+                                                openTabSessionIds = (openTabIds + forkedSession.id).distinct()
                                             ),
                                             immediateFlush = true
                                         )
                                         bannerNotification = "Forked topic at turn #${nodeIndex + 1}."
                                     },
                                     onStopStream = {
-                                        activeStreamJob?.cancel()
-                                        if (streamingInteractionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+                                        val targetSessId = activeSession.id
+                                        val curStream = activeStreamsBySession[targetSessId]
+                                        curStream?.job?.cancel()
+                                        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
                                             appProcessScope.launch {
-                                                AiProviderEngine.cancelBackgroundInteraction(activeProfile, streamingInteractionId)
+                                                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
                                             }
                                         }
-                                        isStreaming = false
-                                        streamingStatus = ""
+                                        updateSessionStreamState(targetSessId) { null }
                                     },
                                     onUpdateSession = { transform -> updateActiveSession(immediate = true, transform = transform) },
                                     onUpdateProfile = ::updateActiveProfile,
@@ -2168,6 +2472,294 @@ fun ParchmentApp() {
                                 onClose = { activeViewerItem = null }
                             )
                         }
+
+                        // Mobile Chromium / Firefox-Style Tab Switcher Grid Sheet
+                        if (showMobileTabSwitcher && isCompactScreen) {
+                            MobileTabSwitcherModal(
+                                appState = appState,
+                                openTabIds = openTabIds,
+                                activeSessionId = activeSession.id,
+                                activeStreamsBySession = activeStreamsBySession,
+                                onSelectTab = ::switchToTab,
+                                onCloseTab = ::closeChatTab,
+                                onNewTab = {
+                                    createNewTopicForAssistant(activeAssistant, openInNewTab = true)
+                                    showMobileTabSwitcher = false
+                                },
+                                onCloseModal = { showMobileTabSwitcher = false }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================================
+// DESKTOP BROWSER-STYLE MULTI-TASKING TAB BAR & MOBILE CHROMIUM/FIREFOX TAB SWITCHER GRID
+// ============================================================================================
+@Composable
+private fun DesktopBrowserTabBar(
+    appState: AppStateSnapshot,
+    openTabIds: List<String>,
+    activeSessionId: String,
+    activeStreamsBySession: Map<String, SessionStreamRuntime>,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onNewTab: () -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(p.sheetBg.copy(alpha = 0.88f))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            openTabIds.forEach { tabId ->
+                val sess = appState.sessions.find { it.id == tabId } ?: return@forEach
+                val isSelected = tabId == activeSessionId
+                val isTabStreaming = activeStreamsBySession.containsKey(tabId)
+                val tabShape = RoundedCornerShape(7.dp)
+
+                Row(
+                    modifier = Modifier
+                        .clip(tabShape)
+                        .background(if (isSelected) p.cardBg else p.elevatedBg.copy(alpha = 0.55f))
+                        .border(
+                            width = if (isSelected) 1.dp else 0.75.dp,
+                            color = if (isSelected) p.accent else p.border.copy(alpha = 0.65f),
+                            shape = tabShape
+                        )
+                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
+                        .padding(horizontal = 9.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (isTabStreaming) {
+                        KissStreamingPulseDot(color = p.accent)
+                    } else {
+                        KissVectorIcon(
+                            icon = KissIcon.MESSAGE_CIRCLE,
+                            tint = if (isSelected) p.accent else p.mutedInk,
+                            size = 12.dp
+                        )
+                    }
+                    BasicText(
+                        text = sess.title.ifBlank { "New Chat" },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = p.uiLabelStyle.copy(
+                            color = if (isSelected) p.primaryInk else p.narrationInk,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            fontSize = 12.sp
+                        ),
+                        modifier = Modifier.widthIn(max = 165.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .kissClickable { onCloseTab(tabId) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        KissVectorIcon(
+                            icon = KissIcon.CLOSE,
+                            tint = p.mutedInk,
+                            size = 10.dp
+                        )
+                    }
+                }
+            }
+        }
+
+        SepiaButton(
+            text = "+",
+            compact = true,
+            style = SepiaButtonStyle.GHOST,
+            onClick = onNewTab
+        )
+    }
+}
+
+@Composable
+private fun MobileTabSwitcherModal(
+    appState: AppStateSnapshot,
+    openTabIds: List<String>,
+    activeSessionId: String,
+    activeStreamsBySession: Map<String, SessionStreamRuntime>,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onNewTab: () -> Unit,
+    onCloseModal: () -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    val runningTotal = activeStreamsBySession.size
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.52f))
+            .clickable { onCloseModal() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                .background(p.sheetBg)
+                .border(1.dp, p.border, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                .clickable(enabled = false) {}
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    KissVectorIcon(icon = KissIcon.TABS, tint = p.accent, size = 16.dp)
+                    BasicText(
+                        text = "Open Tabs (${openTabIds.size})" + if (runningTotal > 0) " • $runningTotal active" else "",
+                        style = p.uiHeaderStyle.copy(fontSize = 16.sp)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaButton(
+                        text = "+ New Tab",
+                        compact = true,
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = onNewTab
+                    )
+                    SepiaButton(
+                        text = "×",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onCloseModal
+                    )
+                }
+            }
+
+            SepiaDivider()
+
+            val rows = remember(openTabIds) { openTabIds.chunked(2) }
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(rows) { _, rowPair ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        rowPair.forEach { tabId ->
+                            val sess = appState.sessions.find { it.id == tabId }
+                            if (sess != null) {
+                                val isSel = tabId == activeSessionId
+                                val streamInfo = activeStreamsBySession[tabId]
+                                val asstName = appState.assistants.find { it.id == sess.assistantId }?.name
+                                    ?.takeIf { it.isNotBlank() } ?: "Default Assistant"
+                                val lastMsgPreview = sess.messages.lastOrNull()?.activeVariant?.content
+                                    ?.take(90)?.replace('\n', ' ').orEmpty()
+                                    .ifBlank { "Empty chat — tap to start" }
+
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 118.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(p.cardBg)
+                                        .border(
+                                            width = if (isSel) 1.5.dp else 0.85.dp,
+                                            color = if (isSel) p.accent else p.border,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            BasicText(
+                                                text = sess.title.ifBlank { "New Chat" },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiBodyStyle.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    color = if (isSel) p.accent else p.primaryInk
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .clip(CircleShape)
+                                                    .kissClickable { onCloseTab(tabId) },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                KissVectorIcon(icon = KissIcon.CLOSE, tint = p.mutedInk, size = 11.dp)
+                                            }
+                                        }
+                                        BasicText(
+                                            text = asstName,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.accentSecondary)
+                                        )
+                                        BasicText(
+                                            text = lastMsgPreview,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.narrationInk)
+                                        )
+                                    }
+
+                                    Spacer(Modifier.height(6.dp))
+
+                                    if (streamInfo != null) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            KissStreamingPulseDot(color = p.accent)
+                                            BasicText(
+                                                text = streamInfo.statusText.ifBlank { "Running in background…" },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
+                                            )
+                                        }
+                                    } else {
+                                        BasicText(
+                                            text = "${sess.messages.size} messages",
+                                            style = p.uiLabelStyle.copy(fontSize = 10.sp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (rowPair.size == 1) {
+                            Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
             }
@@ -2188,6 +2780,10 @@ private fun TopEditorialBar(
     showSidebar: Boolean,
     showSessionInspector: Boolean,
     showQuickModelPopover: Boolean,
+    openTabCount: Int,
+    backgroundStreamingCount: Int,
+    onOpenMobileTabSwitcher: () -> Unit,
+    onNewChatTab: () -> Unit,
     onToggleSidebar: () -> Unit,
     onToggleSessionInspector: () -> Unit,
     onToggleQuickModelPopover: () -> Unit,
@@ -2313,6 +2909,49 @@ private fun TopEditorialBar(
                 val hasChatNotes = activeSession.systemPrompt.isNotBlank() ||
                     activeSession.authorsNote.isNotBlank() ||
                     activeSession.storySummary.isNotBlank()
+                if (win.isCompact) {
+                    // Chromium / Firefox Mobile-Style Rounded Square Tab Counter Button
+                    val tabBadgeShape = RoundedCornerShape(6.dp)
+                    Box(
+                        modifier = Modifier
+                            .height(27.dp)
+                            .widthIn(min = 27.dp)
+                            .clip(tabBadgeShape)
+                            .background(if (backgroundStreamingCount > 0) p.accent.copy(alpha = 0.16f) else p.cardBg)
+                            .border(
+                                width = if (backgroundStreamingCount > 0) 1.2.dp else 1.dp,
+                                color = if (backgroundStreamingCount > 0) p.accent else p.narrationInk.copy(alpha = 0.8f),
+                                shape = tabBadgeShape
+                            )
+                            .kissClickable { onOpenMobileTabSwitcher() }
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            if (backgroundStreamingCount > 0) {
+                                KissStreamingPulseDot(color = p.accent)
+                            }
+                            BasicText(
+                                text = openTabCount.toString(),
+                                style = p.monoStyle.copy(
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (backgroundStreamingCount > 0) p.accent else p.primaryInk
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    SepiaButton(
+                        text = "+ New Tab",
+                        compact = true,
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = onNewChatTab
+                    )
+                }
                 SepiaChip(
                     label = if (win.isCompact) "✎" else "✎ Notes",
                     selected = showSessionInspector || hasChatNotes,
@@ -2496,7 +3135,7 @@ private fun ParchmentSidebar(
                 if (filteredAssistants.isEmpty()) {
                     item {
                         BasicText(
-                            text = "Zero-shot mode (no custom assistants saved). Tap '+' above to create a reusable assistant.",
+                            text = "No matching assistants found. Tap '+' above to create a new assistant.",
                             style = p.uiLabelStyle,
                             modifier = Modifier.padding(8.dp)
                         )
@@ -2732,6 +3371,10 @@ private fun ManuscriptViewport(
     onTogglePrefillBox: () -> Unit,
     isGoalModeEnabled: Boolean,
     onToggleGoalMode: () -> Unit,
+    isLiveVoiceMode: Boolean,
+    isVoiceListening: Boolean,
+    onToggleLiveVoiceMode: () -> Unit,
+    onTriggerVoiceInput: () -> Unit,
     pendingAttachments: List<PromptAttachment>,
     onAddAttachment: () -> Unit,
     onPasteClipboardMedia: () -> Boolean,
@@ -3521,6 +4164,11 @@ private fun ManuscriptViewport(
                                 selected = isGoalModeEnabled,
                                 onClick = onToggleGoalMode
                             )
+                            SepiaChip(
+                                label = if (isLiveVoiceMode) "🔊 Live Voice: ON" else "🎙 Live Voice",
+                                selected = isLiveVoiceMode,
+                                onClick = onToggleLiveVoiceMode
+                            )
                             if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                 SepiaChip(
                                     label = "💻 Code Exec",
@@ -3596,12 +4244,12 @@ private fun ManuscriptViewport(
                             val mime = att.mimeType.lowercase()
                             val lowerName = att.fileName.lowercase()
                             val isImg = mime.startsWith("image/")
-                            val attIcon = when {
-                                isImg -> "🖼"
-                                mime.startsWith("video/") -> "🎬"
-                                mime.startsWith("audio/") -> "🎵"
-                                mime == "application/pdf" || lowerName.endsWith(".pdf") -> "📄"
-                                else -> "📎"
+                            val attKissIcon = when {
+                                isImg -> KissIcon.IMAGE
+                                mime.startsWith("video/") -> KissIcon.VIDEO
+                                mime.startsWith("audio/") -> KissIcon.AUDIO
+                                mime == "application/pdf" || lowerName.endsWith(".pdf") -> KissIcon.FILE_TEXT
+                                else -> KissIcon.PAPERCLIP
                             }
                             val thumbBmp = remember(att.localFilePath, isImg) {
                                 if (isImg && att.localFilePath.isNotBlank()) {
@@ -3629,9 +4277,15 @@ private fun ManuscriptViewport(
                                             .clip(RoundedCornerShape(5.dp))
                                             .border(0.6.dp, p.border, RoundedCornerShape(5.dp))
                                     )
+                                } else {
+                                    KissVectorIcon(
+                                        icon = attKissIcon,
+                                        tint = p.accent,
+                                        size = 13.5.dp
+                                    )
                                 }
                                 BasicText(
-                                    text = "$attIcon ${att.fileName}",
+                                    text = att.fileName,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold),
@@ -3701,7 +4355,7 @@ private fun ManuscriptViewport(
 
                 SepiaDivider()
 
-                // 5. Zen Composer Footer: 1 Clean Row (`[📎] [🧠] [⚙ Tools]` on left, `Context Ring + [Send ↵]` on right)
+                // 5. Zen Composer Footer: Dynamically scaled for both Mobile & Desktop (zero right-side whitespace!)
                 val hasActiveTools = activeProfile.enableWebSearch ||
                     activeProfile.enableImageGeneration ||
                     activeProfile.enableVideoGeneration ||
@@ -3709,6 +4363,7 @@ private fun ManuscriptViewport(
                     activeProfile.enableUrlContext ||
                     activeSession.workspaceMode != WorkspaceMode.OFF ||
                     isGoalModeEnabled ||
+                    isLiveVoiceMode ||
                     showPrefillBox
 
                 val thinkingLabel = if (preferences.showReasoningLevelOnButton) {
@@ -3717,14 +4372,15 @@ private fun ManuscriptViewport(
                     "🧠"
                 }
 
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+                val toolsChipLabel = if (win.isCompact) {
+                    if (hasActiveTools) "⚙ •" else "⚙"
+                } else {
+                    if (hasActiveTools) "⚙ Tools •" else "⚙ Tools"
+                }
+
+                val leftChipsComposable: @Composable () -> Unit = {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         SepiaChip(
@@ -3735,9 +4391,12 @@ private fun ManuscriptViewport(
                         SepiaChip(
                             label = "📋",
                             selected = false,
-                            onClick = {
-                                onPasteClipboardMedia()
-                            }
+                            onClick = { onPasteClipboardMedia() }
+                        )
+                        SepiaChip(
+                            label = "🎙",
+                            selected = isVoiceListening || isLiveVoiceMode,
+                            onClick = onTriggerVoiceInput
                         )
                         SepiaChip(
                             label = thinkingLabel,
@@ -3754,54 +4413,118 @@ private fun ManuscriptViewport(
                             }
                         )
                         SepiaChip(
-                            label = if (hasActiveTools) "⚙ Tools •" else "⚙ Tools",
+                            label = toolsChipLabel,
                             selected = showComposerToolsDrawer || hasActiveTools,
                             onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
                         )
                     }
+                }
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (win.isCompact && isStreaming) {
+                    // When streaming on compact mobile, use 2 full-width SpaceBetween rows so Stop/Queue/Steer never cramp or leave dead space
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
-                            SepiaContextGaugeRing(
-                                usedTokens = liveContextTokens,
-                                contextLimitTokens = activeProfile.contextWindowTokens,
-                                sessionCostUsd = sessionTotalCostUsd,
-                                onClick = onOpenPricingSettings
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            leftChipsComposable()
+                            if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                                SepiaContextGaugeRing(
+                                    usedTokens = liveContextTokens,
+                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    sessionCostUsd = sessionTotalCostUsd,
+                                    onClick = onOpenPricingSettings
+                                )
+                            }
                         }
-
-                        if (isStreaming) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             SepiaButton(
                                 text = "■ Stop",
                                 compact = true,
                                 style = SepiaButtonStyle.DANGER,
                                 onClick = onStopStream
                             )
-                            SepiaButton(
-                                text = "⏳ Queue",
-                                compact = true,
-                                enabled = hasTypedInput,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = onQueuePrompt
-                            )
-                            SepiaButton(
-                                text = "⚡ Steer ↵",
-                                compact = true,
-                                enabled = hasTypedInput,
-                                style = SepiaButtonStyle.PRIMARY,
-                                onClick = onSteerNow
-                            )
-                        } else {
-                            SepiaButton(
-                                text = "Send ↵",
-                                compact = true,
-                                enabled = hasTypedInput,
-                                style = SepiaButtonStyle.PRIMARY,
-                                onClick = onSend
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SepiaButton(
+                                    text = "⏳ Queue",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = onQueuePrompt
+                                )
+                                SepiaButton(
+                                    text = "⚡ Steer ↵",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = onSteerNow
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // Single full-width SpaceBetween row on both Mobile (idle) and Desktop!
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        leftChipsComposable()
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                                SepiaContextGaugeRing(
+                                    usedTokens = liveContextTokens,
+                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    sessionCostUsd = sessionTotalCostUsd,
+                                    onClick = onOpenPricingSettings
+                                )
+                            }
+
+                            if (isStreaming) {
+                                SepiaButton(
+                                    text = "■ Stop",
+                                    compact = true,
+                                    style = SepiaButtonStyle.DANGER,
+                                    onClick = onStopStream
+                                )
+                                SepiaButton(
+                                    text = "⏳ Queue",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = onQueuePrompt
+                                )
+                                SepiaButton(
+                                    text = "⚡ Steer ↵",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = onSteerNow
+                                )
+                            } else {
+                                SepiaButton(
+                                    text = "Send ↵",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = onSend
+                                )
+                            }
                         }
                     }
                 }
@@ -4122,15 +4845,20 @@ private fun MessageTurnItem(
 
         Spacer(Modifier.height(8.dp))
 
-        // Live Autonomous Goal & Todo Checklist Card (Claude Code / OpenAI Codex style)
+        // Live Autonomous Goal & Todo Checklist Card
         val goalTracker = activeVar.goalTracker
         if (goalTracker != null && (goalTracker.goalObjective.isNotBlank() || goalTracker.todos.isNotEmpty())) {
             val doneCount = goalTracker.completedCount
             val totalCount = goalTracker.todos.size
-            val statusBadge = when {
-                goalTracker.isCompleted -> "✓ COMPLETED ($doneCount/$totalCount)"
-                totalCount > 0 -> "⟳ IN PROGRESS ($doneCount/$totalCount)"
-                else -> "🎯 PLANNING GOAL"
+            val statusIcon = when {
+                goalTracker.isCompleted -> KissIcon.CHECK
+                totalCount > 0 -> KissIcon.REFRESH
+                else -> KissIcon.TARGET
+            }
+            val statusText = when {
+                goalTracker.isCompleted -> "COMPLETED ($doneCount/$totalCount)"
+                totalCount > 0 -> "IN PROGRESS ($doneCount/$totalCount)"
+                else -> "PLANNING GOAL"
             }
             Column(
                 modifier = Modifier
@@ -4152,53 +4880,81 @@ private fun MessageTurnItem(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    BasicText(
-                        text = "🎯 Goal: ${goalTracker.goalObjective.ifBlank { "Autonomous Task Checklist" }}",
-                        style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.sp),
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    BasicText(
-                        text = statusBadge,
-                        style = p.uiLabelStyle.copy(
-                            color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KissVectorIcon(icon = KissIcon.TARGET, tint = p.accent, size = 13.5.dp)
+                        BasicText(
+                            text = "Goal: ${goalTracker.goalObjective.ifBlank { "Autonomous Task Checklist" }}",
+                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         )
-                    )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        KissVectorIcon(
+                            icon = statusIcon,
+                            tint = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
+                            size = 12.dp
+                        )
+                        BasicText(
+                            text = statusText,
+                            style = p.uiLabelStyle.copy(
+                                color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
                 }
                 if (goalTracker.todos.isNotEmpty()) {
                     SepiaDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         goalTracker.todos.forEach { item ->
                             val st = item.status.lowercase()
-                            val iconStr = when (st) {
-                                "completed" -> "✓"
-                                "in_progress" -> "⟳"
-                                "cancelled" -> "—"
-                                else -> "○"
+                            val rowIcon = when (st) {
+                                "completed" -> KissIcon.CHECK
+                                "in_progress" -> KissIcon.REFRESH
+                                "cancelled" -> KissIcon.MINUS
+                                else -> KissIcon.CIRCLE_EMPTY
                             }
                             val itemColor = when (st) {
                                 "completed" -> p.mutedInk
                                 "in_progress" -> p.accent
                                 else -> p.primaryInk
                             }
-                            BasicText(
-                                text = "$iconStr [${item.id}] ${item.content}",
-                                style = p.uiBodyStyle.copy(
-                                    fontSize = 12.5.sp,
-                                    color = itemColor,
-                                    fontWeight = if (st == "in_progress") FontWeight.SemiBold else FontWeight.Normal
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                KissVectorIcon(icon = rowIcon, tint = itemColor, size = 12.5.dp)
+                                BasicText(
+                                    text = "[${item.id}] ${item.content}",
+                                    style = p.uiBodyStyle.copy(
+                                        fontSize = 12.5.sp,
+                                        color = itemColor,
+                                        fontWeight = if (st == "in_progress") FontWeight.SemiBold else FontWeight.Normal
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
                 if (goalTracker.verificationSummary.isNotBlank()) {
                     SepiaDivider()
-                    BasicText(
-                        text = "✓ Verified: ${goalTracker.verificationSummary}",
-                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Medium)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        KissVectorIcon(icon = KissIcon.CHECK, tint = p.accent, size = 12.dp)
+                        BasicText(
+                            text = "Verified: ${goalTracker.verificationSummary}",
+                            style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Medium)
+                        )
+                    }
                 }
             }
         }
@@ -4303,10 +5059,16 @@ private fun MessageTurnItem(
                                             .clip(RoundedCornerShape(6.dp))
                                     )
                                 } else {
-                                    BasicText(
-                                        text = "🖼 ${att.fileName}",
-                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 14.dp)
+                                        BasicText(
+                                            text = att.fileName,
+                                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                        )
+                                    }
                                 }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -4319,10 +5081,16 @@ private fun MessageTurnItem(
                                         style = p.uiLabelStyle,
                                         modifier = Modifier.weight(1f, fill = false)
                                     )
-                                    BasicText(
-                                        text = "🔍 Tap to Zoom",
-                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = 11.5.dp)
+                                        BasicText(
+                                            text = "Zoom",
+                                            style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -4345,14 +5113,14 @@ private fun MessageTurnItem(
                             val isAud = mime.startsWith("audio/") || lower.endsWith(".mp3") ||
                                 lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac")
                             val iconAndAction = when {
-                                isPdf -> "📄" to "Open PDF"
-                                isVid -> "🎬" to "▶ Play Video"
-                                isAud -> "🎵" to "▶ Play Audio"
+                                isPdf -> KissIcon.FILE_TEXT to "Open PDF"
+                                isVid -> KissIcon.VIDEO to "Play Video"
+                                isAud -> KissIcon.AUDIO to "Play Audio"
                                 else -> {
                                     val stats = if (att.textContent.isNotBlank()) {
                                         "${att.textContent.lines().size} lines"
                                     } else "File"
-                                    "📝" to "View ($stats)"
+                                    KissIcon.FILE_TEXT to "View ($stats)"
                                 }
                             }
                             Row(
@@ -4363,10 +5131,11 @@ private fun MessageTurnItem(
                                     .clickable { onInspectAttachment(att) }
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
+                                KissVectorIcon(icon = iconAndAction.first, tint = p.accent, size = 14.dp)
                                 BasicText(
-                                    text = "${iconAndAction.first} ${att.fileName}",
+                                    text = att.fileName,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium, fontSize = 13.sp),
@@ -4416,10 +5185,16 @@ private fun MessageTurnItem(
                                             }
                                     )
                                 } else {
-                                    BasicText(
-                                        text = "🖼 Generated Image (${media.localFilePath.ifBlank { media.remoteUrl }})",
-                                        style = p.uiBodyStyle.copy(color = p.accent)
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 14.5.dp)
+                                        BasicText(
+                                            text = "Generated Image (${media.localFilePath.ifBlank { media.remoteUrl }})",
+                                            style = p.uiBodyStyle.copy(color = p.accent)
+                                        )
+                                    }
                                 }
                                 @OptIn(ExperimentalLayoutApi::class)
                                 FlowRow(
@@ -4465,10 +5240,16 @@ private fun MessageTurnItem(
                                     .padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                BasicText(
-                                    text = "🎬 Generated Video (${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""})",
-                                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.VIDEO, tint = p.accent, size = 15.dp)
+                                    BasicText(
+                                        text = "Generated Video (${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""})",
+                                        style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
+                                    )
+                                }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
@@ -4504,7 +5285,9 @@ private fun MessageTurnItem(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // Zen-by-Default Primary Actions: Copy, Redo (for AI), & More (⋯)
+                    var isSpeakingThisTurn by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
+
+                    // Zen-by-Default Primary Actions: Copy, Speak (TTS), Redo (for AI), & More (⋯)
                     SepiaButton(
                         text = if (copiedBadge == "txt") "✓ Copied" else "📋 Copy",
                         compact = true,
@@ -4514,6 +5297,25 @@ private fun MessageTurnItem(
                             copiedBadge = "txt"
                         }
                     )
+                    if (activeVar.content.isNotBlank()) {
+                        SepiaButton(
+                            text = if (isSpeakingThisTurn) "🔇 Stop" else "🔊 Speak",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                if (isSpeakingThisTurn) {
+                                    PlatformBridge.stopSpeakingAloud()
+                                    isSpeakingThisTurn = false
+                                } else {
+                                    isSpeakingThisTurn = true
+                                    PlatformBridge.speakTextAloud(
+                                        text = stripMarkdownToPlainText(activeVar.content),
+                                        onFinished = { isSpeakingThisTurn = false }
+                                    )
+                                }
+                            }
+                        )
+                    }
                     if (isAssistant) {
                         SepiaButton(
                             text = "↻ Redo",
@@ -4688,12 +5490,18 @@ private fun ParchmentAttachmentViewerModal(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Column(modifier = Modifier.weight(1f, fill = false)) {
-                            BasicText(
-                                text = "🖼 ${item.title}",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 15.dp)
+                                BasicText(
+                                    text = item.title,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                                )
+                            }
                             val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
                             BasicText(
                                 text = "$dimInfo${item.mimeType} • Pinch, Scroll Wheel, or Double-Tap to Zoom",
@@ -4867,12 +5675,18 @@ private fun ParchmentAttachmentViewerModal(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Column(modifier = Modifier.weight(1f, fill = false)) {
-                            BasicText(
-                                text = "📝 ${item.title}",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                KissVectorIcon(icon = KissIcon.FILE_TEXT, tint = p.accent, size = 15.dp)
+                                BasicText(
+                                    text = item.title,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
+                                )
+                            }
                             BasicText(
                                 text = "$linesCount lines • ${item.textContent.length} chars • ${item.mimeType}",
                                 style = p.uiLabelStyle
@@ -4963,9 +5777,18 @@ private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
     val safeActiveProfileId = safeProfiles.find { it.id == loaded.activeProfileId }?.id ?: safeProfiles.first().id
     val safeActiveProfile = safeProfiles.first { it.id == safeActiveProfileId }
 
+    val safeAssistants = if (loaded.assistants.isNotEmpty()) {
+        loaded.assistants
+    } else {
+        defaultFallback.assistants
+    }
+    val safeActiveAssistantId = safeAssistants.find { it.id == loaded.activeAssistantId }?.id
+        ?: safeAssistants.first().id
+
     val recoveredSessions = if (loaded.sessions.isNotEmpty()) {
         loaded.sessions.map { sess ->
             sess.copy(
+                assistantId = sess.assistantId.ifBlank { safeActiveAssistantId },
                 messages = sess.messages.map { node ->
                     node.copy(
                         variants = node.variants.map { v ->
@@ -4985,12 +5808,14 @@ private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
                 updatedAt = now,
                 profileId = safeActiveProfile.id,
                 modelOverride = safeActiveProfile.defaultModel,
-                assistantId = loaded.activeAssistantId
+                assistantId = safeActiveAssistantId
             )
         )
     }
 
     val safeActiveSessionId = recoveredSessions.find { it.id == loaded.activeSessionId }?.id ?: recoveredSessions.first().id
+    val validSessionIdSet = recoveredSessions.map { it.id }.toSet()
+    val safeOpenTabs = (loaded.openTabSessionIds.filter { it in validSessionIdSet } + safeActiveSessionId).distinct()
 
     val migratedTheme = if (loaded.theme.name.endsWith("Warm Ivory (Light)") && !loaded.theme.name.startsWith("Parchment ")) {
         loaded.theme.copy(name = "Parchment Warm Ivory (Light)")
@@ -5001,8 +5826,11 @@ private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
     return loaded.copy(
         profiles = safeProfiles,
         activeProfileId = safeActiveProfileId,
+        assistants = safeAssistants,
+        activeAssistantId = safeActiveAssistantId,
         sessions = recoveredSessions,
         activeSessionId = safeActiveSessionId,
+        openTabSessionIds = safeOpenTabs,
         theme = migratedTheme
     )
 }
@@ -5020,7 +5848,7 @@ private fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
 
     val profiles = decodeListItems("profiles", ProviderProfile.serializer()).ifEmpty { fallback.profiles }
     val activeProfileId = root["activeProfileId"]?.jsonPrimitive?.contentOrNull ?: profiles.first().id
-    val assistants = decodeListItems("assistants", AssistantAgent.serializer())
+    val assistants = decodeListItems("assistants", AssistantAgent.serializer()).ifEmpty { fallback.assistants }
     val activeAssistantId = root["activeAssistantId"]?.jsonPrimitive?.contentOrNull ?: assistants.firstOrNull()?.id.orEmpty()
     val defaultModels = root["defaultModels"]?.let {
         runCatching { compactStateJson.decodeFromJsonElement(DefaultModelConfig.serializer(), it) }.getOrNull()
@@ -5033,6 +5861,7 @@ private fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
     } ?: fallback.desktopWindow
     val sessions = decodeListItems("sessions", ChatSession.serializer())
     val activeSessionId = root["activeSessionId"]?.jsonPrimitive?.contentOrNull ?: sessions.firstOrNull()?.id.orEmpty()
+    val openTabs = (root["openTabSessionIds"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
     val presets = decodeListItems("systemPromptPresets", SystemPromptPreset.serializer())
     val savedCards = decodeListItems("savedCards", CharacterOrScenarioCard.serializer())
     val globalWorldBook = decodeListItems("globalWorldBook", ContextFragment.serializer())
@@ -5052,6 +5881,7 @@ private fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
         desktopWindow = desktopWindow,
         sessions = sessions,
         activeSessionId = activeSessionId,
+        openTabSessionIds = openTabs,
         systemPromptPresets = presets,
         savedCards = savedCards,
         globalWorldBook = globalWorldBook,
@@ -5088,22 +5918,30 @@ private fun createDefaultAppState(): AppStateSnapshot {
         enableImageGeneration = true
     )
 
+    val defaultAssistant = AssistantAgent(
+        id = "asst-default",
+        name = "Default Assistant",
+        iconEmoji = "💬",
+        systemPrompt = ""
+    )
+
     val initialSession = ChatSession(
         id = "sess-initial",
         title = "New Chat",
         createdAt = now,
         updatedAt = now,
         profileId = geminiProfile.id,
-        assistantId = ""
+        assistantId = defaultAssistant.id
     )
 
     return AppStateSnapshot(
         profiles = listOf(geminiProfile, openAiProfile, anthropicProfile, byteDanceProfile),
         activeProfileId = geminiProfile.id,
-        assistants = emptyList(),
-        activeAssistantId = "",
+        assistants = listOf(defaultAssistant),
+        activeAssistantId = defaultAssistant.id,
         sessions = listOf(initialSession),
         activeSessionId = initialSession.id,
+        openTabSessionIds = listOf(initialSession.id),
         theme = ThemeConfig()
     )
 }

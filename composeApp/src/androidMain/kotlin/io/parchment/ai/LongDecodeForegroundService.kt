@@ -14,7 +14,7 @@ import android.os.PowerManager
 
 /**
  * Lightweight Android Foreground Service that keeps long-horizon AI streams and background polls
- * alive when switching apps or locking the screen on Android 16 (including aggressive OnePlus ColorOS/OxygenOS).
+ * alive when switching apps or locking the screen on Android.
  */
 class LongDecodeForegroundService : Service() {
 

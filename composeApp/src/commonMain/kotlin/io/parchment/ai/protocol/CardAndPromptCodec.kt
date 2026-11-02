@@ -131,7 +131,7 @@ object CardAndPromptCodec {
             return emptyList()
         }
 
-        // Extract character_book lore entries (Errata / V2 / V3 card format) into Composable Fragments
+        // Extract character_book lore entries (V2 / V3 card format) into Composable Fragments
         val parsedFragments = mutableListOf<ContextFragment>()
         val charBookObj = (dataObj["character_book"] as? JsonObject) ?: (root["character_book"] as? JsonObject)
         val entriesArr = (charBookObj?.get("entries") as? JsonArray) ?: (charBookObj?.get("entries") as? JsonObject)?.values?.let { JsonArray(it.toList()) }

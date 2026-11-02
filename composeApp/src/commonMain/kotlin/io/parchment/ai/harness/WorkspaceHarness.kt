@@ -22,8 +22,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * Self-contained, pure-API Local File System & Long-Horizon Goal Agent Harness
- * (inspired by Anthropic Claude Code `/goal` + `TodoWrite` & OpenAI Codex).
+ * Self-contained, pure-API Local File System & Long-Horizon Goal Agent Harness.
  * Zero external CLI bridge required. Works directly with Gemini Interactions, OpenAI Responses,
  * and Anthropic Messages tool loops.
  */
@@ -178,7 +177,7 @@ object WorkspaceHarness {
         ),
         ToolDefinition(
             name = "todo_write",
-            description = "Create or update the structured task checklist for multi-step or long-horizon goals (Claude Code TodoWrite / Codex style). Always keep one current step 'in_progress' and mark steps 'completed' as you verify them.",
+            description = "Create or update the structured task checklist for multi-step or long-horizon goals. Always keep one current step 'in_progress' and mark steps 'completed' as you verify them.",
             requiresWritePermission = false,
             requiresWorkspaceFolder = false,
             parametersSchema = buildJsonObject {
@@ -244,7 +243,7 @@ object WorkspaceHarness {
         ),
         ToolDefinition(
             name = "agent_memory",
-            description = "Read or update persistent project/story memory (PARCHMENT_MEMORY.md in workspace) across sessions (Hermes Agent style).",
+            description = "Read or update persistent project/story memory (PARCHMENT_MEMORY.md in workspace) across sessions.",
             requiresWritePermission = false,
             parametersSchema = buildJsonObject {
                 put("type", "object")
@@ -265,7 +264,7 @@ object WorkspaceHarness {
         ),
         ToolDefinition(
             name = "shell_exec",
-            description = "Execute a shell command inside the mounted workspace directory and return stdout/stderr (OpenCode / Oh-My-Pi style).",
+            description = "Execute a shell command inside the mounted workspace directory and return stdout/stderr.",
             requiresWritePermission = true,
             requiresShellPermission = true,
             parametersSchema = buildJsonObject {
@@ -307,8 +306,7 @@ object WorkspaceHarness {
     }
 
     /**
-     * Auto-discovers AGENTS.md, CLAUDE.md, PARCHMENT.md, and PARCHMENT_MEMORY.md in the workspace root
-     * (inspired by OpenCode, Hermes Agent, and Oh My Pi).
+     * Auto-discovers AGENTS.md, CLAUDE.md, PARCHMENT.md, and PARCHMENT_MEMORY.md in the workspace root.
      */
     fun discoverWorkspaceContextFiles(workspaceRoot: String): String {
         if (workspaceRoot.isBlank()) return ""
@@ -638,7 +636,7 @@ object WorkspaceHarness {
     }
 
     /**
-     * 3-Layer Rolling Context Compactor (Claude Code s06_context_compact / OpenAI Codex style).
+     * 3-Layer Rolling Context Compactor.
      * Keeps the most recent `keepRecentCount` tool outputs verbatim, while compacting older verbose
      * tool outputs (>850 chars) into concise 1-line receipts so multi-day runs never overflow context.
      */
@@ -657,7 +655,7 @@ object WorkspaceHarness {
     }
 
     /**
-     * Repeated-Failure Circuit Breaker & Stop-Hook Work-Check Gate (Claude Code & OpenAI Codex style).
+     * Repeated-Failure Circuit Breaker & Stop-Hook Work-Check Gate.
      * - Replaces the arbitrary 64-step ceiling with intelligent progress vs. stagnation tracking.
      * - Allows unlimited productive steps over hours/days/weeks while halting repeated identical error loops.
      */

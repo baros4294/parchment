@@ -85,7 +85,10 @@ actual object PlatformBridge {
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
         val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
-        val hasNoAssistants = json.contains("\"assistants\":[]")
+        val hasNoAssistants = json.contains("\"assistants\":[]") || (
+            !Regex("\"id\":\"asst-(?!default\")").containsMatchIn(json) &&
+                !Regex("\"systemPrompt\":\"[^\"]+\"").containsMatchIn(json)
+            )
         val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
         val hasNoSavedCards = !json.contains("\"savedCards\":[{")
         val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
@@ -418,7 +421,7 @@ actual object PlatformBridge {
         val existingRaw = target.readText(Charsets.UTF_8)
         require(oldText.isNotEmpty()) { "old_text must not be empty." }
 
-        // Normalize CRLF/LF for reliable matching (OpenCode / Oh-My-Pi style)
+        // Normalize CRLF/LF for reliable matching
         val usesCrlf = existingRaw.contains("\r\n")
         val existing = existingRaw.replace("\r\n", "\n")
         val normOld = oldText.replace("\r\n", "\n")
@@ -517,7 +520,7 @@ actual object PlatformBridge {
             if (keepAwakeProcess?.isAlive == true) return@runCatching
             val parentPid = runCatching { ProcessHandle.current().pid() }.getOrDefault(0L)
             // Holds Win32 SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED = 0x80000041)
-            // while the active generation/goal is running so Windows 11 never suspends CPU/network during multi-day runs.
+            // while the active generation/goal is running so Windows never suspends CPU/network during multi-day runs.
             val psCmd = buildString {
                 append("\$code = '[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint esFlags);'; ")
                 append("\$ste = Add-Type -MemberDefinition \$code -Name 'Win32Ste' -Namespace 'Parchment' -PassThru; ")
@@ -743,5 +746,102 @@ actual object PlatformBridge {
     ) {
         dragHoverCallback = onDragHover
         filesDroppedCallback = onFilesDropped
+    }
+
+    @Volatile
+    private var activeTtsProcess: Process? = null
+    @Volatile
+    private var activeSttProcess: Process? = null
+
+    actual fun speakTextAloud(text: String, onFinished: () -> Unit) {
+        stopSpeakingAloud()
+        val cleaned = text.trim()
+        if (cleaned.isEmpty()) return
+        Thread {
+            runCatching {
+                val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+                if (isWin) {
+                    val tempTextFile = File(System.getProperty("java.io.tmpdir"), "parchment-tts-${currentTimeMillis()}.txt")
+                    tempTextFile.writeText(cleaned.take(6000), Charsets.UTF_8)
+                    val ps = """
+                        Add-Type -AssemblyName System.Speech
+                        ${'$'}synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+                        ${'$'}synth.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::NotSet)
+                        ${'$'}txt = Get-Content -LiteralPath '${tempTextFile.absolutePath.replace("'", "''")}' -Raw -Encoding UTF8
+                        ${'$'}synth.Speak(${'$'}txt)
+                        Remove-Item -LiteralPath '${tempTextFile.absolutePath.replace("'", "''")}' -Force -ErrorAction SilentlyContinue
+                    """.trimIndent()
+                    val proc = ProcessBuilder(
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-WindowStyle", "Hidden",
+                        "-Command", ps
+                    ).start()
+                    activeTtsProcess = proc
+                    proc.waitFor()
+                    tempTextFile.delete()
+                }
+            }
+            activeTtsProcess = null
+            onFinished()
+        }.apply { isDaemon = true }.start()
+    }
+
+    actual fun stopSpeakingAloud() {
+        runCatching {
+            activeTtsProcess?.destroyForcibly()
+            activeTtsProcess = null
+        }
+    }
+
+    actual fun isSpeakingAloud(): Boolean = activeTtsProcess?.isAlive == true
+
+    actual fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit) {
+        stopVoiceInput()
+        Thread {
+            runCatching {
+                val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+                if (!isWin) {
+                    onError("Native voice recognition is supported on Windows and Android.")
+                    return@Thread
+                }
+                val ps = """
+                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                    Add-Type -AssemblyName System.Speech
+                    ${'$'}rec = New-Object System.Speech.Recognition.SpeechRecognitionEngine
+                    ${'$'}rec.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
+                    ${'$'}rec.SetInputToDefaultAudioDevice()
+                    ${'$'}res = ${'$'}rec.Recognize([TimeSpan]::FromSeconds(12))
+                    if (${'$'}res -ne ${'$'}null -and ${'$'}res.Text) { Write-Output ${'$'}res.Text }
+                """.trimIndent()
+                val proc = ProcessBuilder(
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle", "Hidden",
+                    "-Command", ps
+                ).start()
+                activeSttProcess = proc
+                val output = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
+                proc.waitFor()
+                activeSttProcess = null
+                if (output.isNotEmpty()) {
+                    onRecognizedText(output)
+                } else {
+                    onError("No speech detected from microphone.")
+                }
+            }.onFailure { err ->
+                activeSttProcess = null
+                onError("Microphone voice input error: ${err.message}")
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    actual fun stopVoiceInput() {
+        runCatching {
+            activeSttProcess?.destroyForcibly()
+            activeSttProcess = null
+        }
     }
 }
