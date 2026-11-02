@@ -530,8 +530,9 @@ fun ParchmentApp() {
 
     fun triggerOtaDownloadAndInstall(release: OtaReleaseInfo) {
         dismissOtaBanner = false
+        isSettingsOpen = false
         PlatformBridge.flushPendingStateNow()
-        uiScope.launch {
+        appProcessScope.launch {
             OtaUpdateEngine.downloadAndInstall(release).collect { st ->
                 otaState = st
             }
@@ -1693,7 +1694,7 @@ fun ParchmentApp() {
                     // Top In-App OTA Banner (Available, Downloading Progress Bar, Installing, & Error)
                     when (val currentOta = otaState) {
                         is OtaUpdateState.Available -> {
-                            if (!dismissOtaBanner && appState.preferences.showChatListDates) {
+                            if (!dismissOtaBanner) {
                                 @OptIn(ExperimentalLayoutApi::class)
                                 FlowRow(
                                     modifier = Modifier
@@ -1767,7 +1768,7 @@ fun ParchmentApp() {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth((currentOta.progressPercent / 100f).coerceIn(0.02f, 1f))
-                                            .fillMaxHeight()
+                                            .height(6.dp)
                                             .clip(RoundedCornerShape(999.dp))
                                             .background(p.accent)
                                     )
@@ -4366,8 +4367,19 @@ private fun ManuscriptViewport(
                     isLiveVoiceMode ||
                     showPrefillBox
 
+                val rawEffort = activeProfile.thinkingEffort.ifBlank { "default" }.lowercase()
+                val compactEffortCode = when (rawEffort) {
+                    "minimal" -> "MIN"
+                    "none" -> "NONE"
+                    "low" -> "LOW"
+                    "medium" -> "MED"
+                    "high" -> "HI"
+                    "xhigh" -> "XHI"
+                    "max" -> "MAX"
+                    else -> "DEF"
+                }
                 val thinkingLabel = if (preferences.showReasoningLevelOnButton) {
-                    "🧠 ${activeProfile.thinkingEffort.ifBlank { "default" }.uppercase()}"
+                    if (win.isCompact) "🧠 $compactEffortCode" else "🧠 ${rawEffort.uppercase()}"
                 } else {
                     "🧠"
                 }
@@ -4378,8 +4390,9 @@ private fun ManuscriptViewport(
                     if (hasActiveTools) "⚙ Tools •" else "⚙ Tools"
                 }
 
-                val leftChipsComposable: @Composable () -> Unit = {
+                val leftChipsComposable: @Composable (Modifier) -> Unit = { rowMod ->
                     Row(
+                        modifier = rowMod,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -4431,8 +4444,9 @@ private fun ManuscriptViewport(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            leftChipsComposable()
+                            leftChipsComposable(Modifier.weight(1f).horizontalScroll(rememberScrollState()))
                             if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                                Spacer(Modifier.width(6.dp))
                                 SepiaContextGaugeRing(
                                     usedTokens = liveContextTokens,
                                     contextLimitTokens = activeProfile.contextWindowTokens,
@@ -4475,12 +4489,16 @@ private fun ManuscriptViewport(
                     }
                 } else {
                     // Single full-width SpaceBetween row on both Mobile (idle) and Desktop!
+                    // Passing Modifier.weight(1f) to the left row forces Compose to measure the unweighted right row (Context Ring + Send) FIRST,
+                    // guaranteeing the Send button can NEVER overflow or clip off the right edge!
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        leftChipsComposable()
+                        leftChipsComposable(Modifier.weight(1f).horizontalScroll(rememberScrollState()))
+
+                        Spacer(Modifier.width(6.dp))
 
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(5.dp),

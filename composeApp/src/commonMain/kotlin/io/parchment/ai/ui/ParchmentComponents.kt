@@ -372,6 +372,7 @@ fun SepiaChip(
     )
 
     val parsed = remember(label) { parseKissLabelIcons(label) }
+    val win = LocalParchmentWindowSize.current
 
     Box(
         modifier = modifier
@@ -379,7 +380,7 @@ fun SepiaChip(
             .clip(shape)
             .background(bg)
             .border(if (selected || isHovered) 1.dp else 0.85.dp, borderCol, shape)
-            .padding(horizontal = 9.dp, vertical = 5.dp),
+            .padding(horizontal = if (win.isCompact) 7.dp else 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -979,7 +980,7 @@ fun SepiaContextGaugeRing(
         val win = LocalParchmentWindowSize.current
         val costTag = if (sessionCostUsd > 0.0 && !win.isCompact) " • ${formatUsdCost(sessionCostUsd)}" else ""
         val labelStr = if (win.isCompact) {
-            if (isUnlimited) formatCompactTokens(usedTokens) else "${formatCompactTokens(usedTokens)} ($percent%)"
+            formatCompactTokens(usedTokens)
         } else if (isUnlimited) {
             "${formatCompactTokens(usedTokens)}/∞$costTag"
         } else {

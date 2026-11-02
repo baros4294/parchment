@@ -2913,6 +2913,21 @@ private fun BackupAndOtaSubpage(
                             text = "Downloading ${otaState.release.assetName}: $downMb MB / $totalMb MB (${otaState.progressPercent}%)…",
                             style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                         )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(p.border.copy(alpha = 0.45f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth((otaState.progressPercent / 100f).coerceIn(0.02f, 1f))
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(p.accent)
+                            )
+                        }
                     }
                     is OtaUpdateState.Installing -> {
                         BasicText(text = otaState.message, style = p.uiBodyStyle.copy(color = p.accentSecondary))

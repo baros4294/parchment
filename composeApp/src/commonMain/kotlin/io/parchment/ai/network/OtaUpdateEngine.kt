@@ -12,8 +12,10 @@ import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import io.parchment.ai.ParchmentBuildConfig
 import io.parchment.ai.platform.PlatformBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -161,11 +163,13 @@ object OtaUpdateEngine {
                     error("Failed to download ${release.assetName}: HTTP ${response.status.value}")
                 }
 
-                val total = response.contentLength() ?: release.assetSizeBytes
+                val total = (response.contentLength() ?: release.assetSizeBytes).coerceAtLeast(release.assetSizeBytes)
                 val channel = response.bodyAsChannel()
                 val buffer = ByteArray(64 * 1024)
                 val outList = ArrayList<ByteArray>()
                 var totalRead = 0L
+                var lastEmittedPercent = -1
+                var lastEmitTimeMs = 0L
 
                 while (!channel.isClosedForRead) {
                     val read = channel.readAvailable(buffer, 0, buffer.size)
@@ -173,8 +177,16 @@ object OtaUpdateEngine {
                     val chunk = buffer.copyOf(read)
                     outList.add(chunk)
                     totalRead += read
-                    emit(OtaUpdateState.Downloading(release, totalRead, total))
+                    val now = PlatformBridge.currentTimeMillis()
+                    val pct = if (total > 0L) ((totalRead * 100L) / total).toInt().coerceIn(0, 100) else 0
+                    if (pct != lastEmittedPercent || now - lastEmitTimeMs >= 80L || totalRead >= total) {
+                        lastEmittedPercent = pct
+                        lastEmitTimeMs = now
+                        emit(OtaUpdateState.Downloading(release, totalRead, total))
+                    }
                 }
+
+                emit(OtaUpdateState.Downloading(release, totalRead, total.coerceAtLeast(totalRead)))
 
                 val combined = ByteArray(totalRead.toInt())
                 var offset = 0
@@ -198,7 +210,7 @@ object OtaUpdateEngine {
         } catch (t: Throwable) {
             emit(OtaUpdateState.Error(t.message ?: t::class.simpleName ?: "OTA update failed"))
         }
-    }
+    }.flowOn(Dispatchers.Default)
 
     fun compareVersions(remote: String, local: String): Int {
         val rParts = remote.split('.', '-').mapNotNull { it.toIntOrNull() }
