@@ -6,7 +6,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +63,7 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
+import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
@@ -67,6 +73,7 @@ import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 enum class SettingsCategory(val icon: String, val label: String) {
     PREFERENCES("🖥", "Preferences"),
@@ -158,25 +165,40 @@ fun KelivoSettingsScreen(
                         val isSelected = selectedCategory == cat
                         val shape = RoundedCornerShape(10.dp)
                         val catIcon = remember(cat.icon) { parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS }
+                        val interactionSource = remember { MutableInteractionSource() }
+                        val isHovered by interactionSource.collectIsHoveredAsState()
+                        val isPressed by interactionSource.collectIsPressedAsState()
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .kissClickable(
+                                    pressScale = 0.97f,
+                                    hoverScale = 1.01f,
+                                    interactionSource = interactionSource,
+                                    onClick = { selectedCategory = cat }
+                                )
                                 .clip(shape)
-                                .background(if (isSelected) p.accent.copy(alpha = 0.15f) else Color.Transparent)
-                                .clickable { selectedCategory = cat }
+                                .background(
+                                    when {
+                                        isSelected -> p.accent.copy(alpha = 0.16f)
+                                        isPressed -> p.accent.copy(alpha = 0.12f)
+                                        isHovered -> p.accent.copy(alpha = 0.08f)
+                                        else -> Color.Transparent
+                                    }
+                                )
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             KissVectorIcon(
                                 icon = catIcon,
-                                tint = if (isSelected) p.accent else p.narrationInk,
+                                tint = if (isSelected || isHovered || isPressed) p.accent else p.narrationInk,
                                 size = 15.dp
                             )
                             BasicText(
                                 text = cat.label,
                                 style = p.uiBodyStyle.copy(
-                                    color = if (isSelected) p.accent else p.primaryInk,
+                                    color = if (isSelected || isHovered || isPressed) p.accent else p.primaryInk,
                                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                     fontSize = 13.5.sp
                                 )
@@ -229,8 +251,24 @@ fun KelivoSettingsScreen(
                 }
             }
         } else {
-            // Compact / Portrait Mobile Layout: Clean top category bar + full-width subpage
-            Column(modifier = Modifier.fillMaxSize()) {
+            // Compact / Portrait Mobile Layout: Clean top category bar + full-width subpage + swipe-right-to-return-to-chat
+            var dragX by remember { mutableStateOf(0f) }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragX = 0f },
+                            onHorizontalDrag = { _, dragAmount -> dragX += dragAmount },
+                            onDragEnd = {
+                                if (dragX > 72.dp.toPx()) {
+                                    onClose()
+                                }
+                                dragX = 0f
+                            }
+                        )
+                    }
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -343,9 +381,11 @@ private fun SettingsSubpageContent(
         SettingsCategory.PREFERENCES -> PreferencesSubpage(
             prefs = appState.preferences,
             theme = appState.theme,
+            activeSession = activeSession,
             searchQuery = searchQuery,
             onUpdatePreferences = onUpdatePreferences,
             onUpdateTheme = onUpdateTheme,
+            onUpdateSession = onUpdateSession,
             onNotify = onNotify
         )
         SettingsCategory.PROVIDERS -> ProvidersSubpage(
@@ -411,9 +451,11 @@ private fun SettingsSubpageContent(
 private fun PreferencesSubpage(
     prefs: PreferencesConfig,
     theme: ThemeConfig,
+    activeSession: ChatSession,
     searchQuery: String,
     onUpdatePreferences: (PreferencesConfig) -> Unit,
     onUpdateTheme: (ThemeConfig) -> Unit,
+    onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
@@ -670,9 +712,28 @@ private fun PreferencesSubpage(
         }
 
         // 2. Chat Item Display (Matching Screenshots 4 & 5)
-        if (matchesSearch("chat item display", "avatar", "timestamp", "tokens", "thinking cards", "tool cards", "model name", "provider")) {
+        if (matchesSearch("chat item display", "layout", "bubble", "page", "avatar", "timestamp", "tokens", "thinking cards", "tool cards", "model name", "provider")) {
             SepiaSectionCard(title = "Chat item display") {
                 Column {
+                    SepiaAdaptiveRow(label = "Message Layout Style") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            SepiaChip(
+                                label = "Card Bubbles",
+                                selected = activeSession.viewMode == ViewMode.EDITORIAL_TURNS,
+                                onClick = { onUpdateSession { it.copy(viewMode = ViewMode.EDITORIAL_TURNS) } }
+                            )
+                            SepiaChip(
+                                label = "Clean Page",
+                                selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
+                                onClick = { onUpdateSession { it.copy(viewMode = ViewMode.MANUSCRIPT) } }
+                            )
+                        }
+                    }
+                    SepiaDivider()
                     SepiaToggleRow(
                         title = "Show provider in model capsule",
                         checked = prefs.showProviderInModelCapsule,
@@ -810,12 +871,13 @@ private fun PreferencesSubpage(
                 Column {
                     if (PlatformBridge.isAndroid) {
                         val isUnrestricted = remember { PlatformBridge.isIgnoringBatteryOptimizations() }
-                        Row(
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                            Column(modifier = Modifier.weight(1f, fill = false).padding(end = 10.dp)) {
                                 BasicText(
                                     text = "OnePlus / Android Unrestricted Background Mode",
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = p.accent)
@@ -1434,38 +1496,58 @@ private fun ProvidersSubpage(
                             val isSelectedModel = activeProfile.defaultModel == modelId
                             val customSpec = activeProfile.customModelSpecs[modelId]
                             val ctxTokens = customSpec?.contextWindowTokens ?: activeProfile.contextWindowTokens
-                            Row(
+                            val rowInteraction = remember { MutableInteractionSource() }
+                            val rowHovered by rowInteraction.collectIsHoveredAsState()
+                            val rowPressed by rowInteraction.collectIsPressedAsState()
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .kissClickable(
+                                        pressScale = 0.985f,
+                                        hoverScale = 1.008f,
+                                        interactionSource = rowInteraction,
+                                        onClick = {
+                                            onUpdateProfile { it.copy(defaultModel = modelId) }
+                                            onUpdateSession { it.copy(modelOverride = modelId, profileId = activeProfile.id) }
+                                        }
+                                    )
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelectedModel) p.accent.copy(alpha = 0.12f) else p.elevatedBg.copy(alpha = 0.35f))
-                                    .border(0.8.dp, if (isSelectedModel) p.accent else Color.Transparent, RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        onUpdateProfile { it.copy(defaultModel = modelId) }
-                                        onUpdateSession { it.copy(modelOverride = modelId, profileId = activeProfile.id) }
-                                    }
+                                    .background(
+                                        when {
+                                            isSelectedModel -> p.accent.copy(alpha = 0.14f)
+                                            rowPressed -> p.accent.copy(alpha = 0.12f)
+                                            rowHovered -> p.accent.copy(alpha = 0.08f)
+                                            else -> p.elevatedBg.copy(alpha = 0.35f)
+                                        }
+                                    )
+                                    .border(
+                                        0.85.dp,
+                                        if (isSelectedModel || rowHovered) p.accent.copy(alpha = if (isSelectedModel) 1f else 0.55f) else Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    )
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     KissVectorIcon(
                                         icon = if (isSelectedModel) KissIcon.SPARKLES else KissIcon.CIRCLE_EMPTY,
-                                        tint = if (isSelectedModel) p.accent else p.mutedInk,
+                                        tint = if (isSelectedModel || rowHovered) p.accent else p.mutedInk,
                                         size = 13.dp
                                     )
                                     BasicText(
                                         text = modelId,
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                         style = p.uiBodyStyle.copy(
                                             fontFamily = p.codeFontFamily,
                                             fontWeight = if (isSelectedModel) FontWeight.SemiBold else FontWeight.Normal,
-                                            color = if (isSelectedModel) p.accent else p.primaryInk
+                                            color = if (isSelectedModel || rowHovered) p.accent else p.primaryInk
                                         )
                                     )
                                 }
@@ -1530,12 +1612,17 @@ private fun ProviderProtocolSubpage(
     var budgetText by remember(profile.id, profile.thinkingBudgetTokens) { mutableStateOf(profile.thinkingBudgetTokens?.toString() ?: "") }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Row(
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            BasicText(text = "Protocol & Request Shaping — ${profile.name}", style = p.uiHeaderStyle)
+            BasicText(
+                text = "Protocol & Request Shaping — ${profile.name}",
+                style = p.uiHeaderStyle,
+                modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+            )
             SepiaButton(text = "← Back to Provider", compact = true, style = SepiaButtonStyle.PRIMARY, onClick = onBack)
         }
 
@@ -1811,12 +1898,17 @@ private fun ModelConfigSubpage(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Row(
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            BasicText(text = "Model Settings — $modelId", style = p.uiHeaderStyle)
+            BasicText(
+                text = "Model Settings — $modelId",
+                style = p.uiHeaderStyle,
+                modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+            )
             SepiaButton(
                 text = "← Back to Models",
                 compact = true,

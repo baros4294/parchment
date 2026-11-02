@@ -128,6 +128,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "📂" -> return ParsedLabelWithIcons(KissIcon.FOLDER, "", null)
         "☁" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
         "○" -> return ParsedLabelWithIcons(KissIcon.CIRCLE_EMPTY, "", null)
+        "⋯" -> return ParsedLabelWithIcons(KissIcon.MORE_HORIZONTAL, "", null)
     }
 
     var working = trimmed
@@ -184,6 +185,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "🤖 " to KissIcon.BOT,
         "💬 " to KissIcon.MESSAGE_CIRCLE,
         "🧪 " to KissIcon.FLASK,
+        "🧭 " to KissIcon.COMPASS,
         "✓ " to KissIcon.CHECK,
         "⋯ " to KissIcon.MORE_HORIZONTAL,
         "🔊 " to KissIcon.VOLUME_ON,

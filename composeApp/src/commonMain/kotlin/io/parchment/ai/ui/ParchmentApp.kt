@@ -16,7 +16,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -58,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -85,6 +90,7 @@ import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.QueuedPromptItem
+import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
@@ -1070,6 +1076,8 @@ fun ParchmentApp() {
             val isCompactScreen = maxWidth < 760.dp
 
             CompositionLocalProvider(LocalParchmentWindowSize provides windowSize) {
+                var horizontalSwipeDelta by remember { mutableStateOf(0f) }
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1077,9 +1085,29 @@ fun ParchmentApp() {
                         .navigationBarsPadding()
                         .imePadding()
                         .background(p.canvasBg)
+                        .then(
+                            if (isCompactScreen && !isSettingsOpen) {
+                                Modifier.pointerInput(showSidebar, isSettingsOpen) {
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { horizontalSwipeDelta = 0f },
+                                        onHorizontalDrag = { _, dragAmount ->
+                                            horizontalSwipeDelta += dragAmount
+                                        },
+                                        onDragEnd = {
+                                            if (!showSidebar && horizontalSwipeDelta > 56.dp.toPx()) {
+                                                showSidebar = true
+                                            } else if (showSidebar && horizontalSwipeDelta < -48.dp.toPx()) {
+                                                showSidebar = false
+                                            }
+                                            horizontalSwipeDelta = 0f
+                                        }
+                                    )
+                                }
+                            } else Modifier
+                        )
                 ) {
-                    // 1. Top Editorial Header Bar (Hidden on mobile when Settings is open so there's only ONE `← Chat` button!)
-                    if (!isSettingsOpen || !isCompactScreen) {
+                    // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
+                    if (!isSettingsOpen) {
                         TopEditorialBar(
                             appState = appState,
                             activeSession = activeSession,
@@ -1087,9 +1115,10 @@ fun ParchmentApp() {
                             activeProfile = activeProfile,
                             isCompactScreen = isCompactScreen,
                             showSidebar = showSidebar,
-                            isSettingsOpen = isSettingsOpen,
+                            showSessionInspector = showSessionInspector,
                             showQuickModelPopover = showQuickModelPopover,
                             onToggleSidebar = { showSidebar = !showSidebar },
+                            onToggleSessionInspector = { showSessionInspector = !showSessionInspector },
                             onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
                             onSelectModelQuick = { profId, modId ->
                                 updateProfileById(profId) { it.copy(defaultModel = modId) }
@@ -1103,190 +1132,162 @@ fun ParchmentApp() {
                                 }
                             },
                             onRegenerateTitleAi = { generateTopicTitle(activeSession.id, forceRegenerate = true) },
-                            onToggleViewMode = {
-                                val next = if (activeSession.viewMode == ViewMode.MANUSCRIPT) ViewMode.EDITORIAL_TURNS else ViewMode.MANUSCRIPT
-                                updateActiveSession(immediate = true) { it.copy(viewMode = next) }
-                            },
                             onOpenSettings = { cat ->
-                                if (isSettingsOpen && activeSettingsCategory == cat) {
-                                    isSettingsOpen = false
-                                } else {
-                                    activeSettingsCategory = cat
-                                    isSettingsOpen = true
-                                    if (isCompactScreen) showSidebar = false
-                                }
+                                activeSettingsCategory = cat
+                                isSettingsOpen = true
+                                if (isCompactScreen) showSidebar = false
                             }
                         )
 
                         SepiaDivider()
                     }
 
-                // Top In-App OTA Banner
-                when (val currentOta = otaState) {
-                    is OtaUpdateState.Available -> {
-                        if (!dismissOtaBanner && appState.preferences.showChatListDates) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(p.cardBg)
-                                    .padding(horizontal = 16.dp, vertical = 7.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val sizeMb = (currentOta.release.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
-                                BasicText(
-                                    text = "✦ OTA Update Available: ${currentOta.release.tagName} ($sizeMb MB)",
-                                    style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    SepiaButton(
-                                        text = "⬇ Update Now",
-                                        compact = true,
-                                        style = SepiaButtonStyle.PRIMARY,
-                                        onClick = { triggerOtaDownloadAndInstall(currentOta.release) }
+                    // Top In-App OTA Banner
+                    when (val currentOta = otaState) {
+                        is OtaUpdateState.Available -> {
+                            if (!dismissOtaBanner && appState.preferences.showChatListDates) {
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(p.cardBg)
+                                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val sizeMb = (currentOta.release.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
+                                    BasicText(
+                                        text = "✦ OTA Update Available: ${currentOta.release.tagName} ($sizeMb MB)",
+                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold),
+                                        modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                                     )
-                                    SepiaButton(
-                                        text = "×",
-                                        compact = true,
-                                        style = SepiaButtonStyle.GHOST,
-                                        onClick = { dismissOtaBanner = true }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        SepiaButton(
+                                            text = "⬇ Update Now",
+                                            compact = true,
+                                            style = SepiaButtonStyle.PRIMARY,
+                                            onClick = { triggerOtaDownloadAndInstall(currentOta.release) }
+                                        )
+                                        SepiaButton(
+                                            text = "×",
+                                            compact = true,
+                                            style = SepiaButtonStyle.GHOST,
+                                            onClick = { dismissOtaBanner = true }
+                                        )
+                                    }
+                                }
+                                SepiaDivider()
+                            }
+                        }
+                        else -> {}
+                    }
+
+                    if (bannerNotification.isNotBlank()) {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(p.elevatedBg)
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            BasicText(
+                                text = bannerNotification,
+                                style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.Medium),
+                                modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                            )
+                            SepiaButton(
+                                text = "Dismiss",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = { bannerNotification = "" }
+                            )
+                        }
+                        SepiaDivider()
+                    }
+
+                    // 2. Main Content Area:
+                    // - On Desktop: Side-by-side Sidebar + Chat/Settings
+                    // - On Mobile: Chat/Settings underneath + 86%-width Slide-Over Drawer with Scrim!
+                    val sidebarComposable: @Composable (Modifier) -> Unit = { mod ->
+                        KelivoSidebar(
+                            appState = appState,
+                            activeAssistant = activeAssistant,
+                            activeSession = activeSession,
+                            selectedTab = sidebarTab,
+                            isCompactScreen = isCompactScreen,
+                            onSelectTab = { sidebarTab = it },
+                            modifier = mod,
+                            onSelectAssistant = { asst ->
+                                val assistantSessions = appState.sessions.filter { it.assistantId == asst.id }
+                                if (appState.preferences.newChatWhenSwitchingAssistants || assistantSessions.isEmpty()) {
+                                    createNewTopicForAssistant(asst)
+                                } else {
+                                    val nextSess = assistantSessions.first()
+                                    persist(
+                                        appState.copy(
+                                            activeAssistantId = asst.id,
+                                            activeSessionId = nextSess.id
+                                        ),
+                                        immediateFlush = true
                                     )
                                 }
-                            }
-                            SepiaDivider()
-                        }
-                    }
-                    else -> {}
-                }
-
-                if (bannerNotification.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(p.elevatedBg)
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(
-                            text = bannerNotification,
-                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.Medium),
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaButton(
-                            text = "Dismiss",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { bannerNotification = "" }
-                        )
-                    }
-                    SepiaDivider()
-                }
-
-                // 2. Main Content Area: Kelivo `[ Assistants | Topics ]` Sidebar + Settings OR Chat Viewport
-                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    AnimatedVisibility(
-                        visible = showSidebar && (!isCompactScreen || !isSettingsOpen),
-                        enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
-                        exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
-                    ) {
-                        Row(modifier = if (isCompactScreen) Modifier.fillMaxSize() else Modifier.fillMaxHeight()) {
-                            KelivoSidebar(
-                                appState = appState,
-                                activeAssistant = activeAssistant,
-                                activeSession = activeSession,
-                                selectedTab = sidebarTab,
-                                onSelectTab = { sidebarTab = it },
-                                modifier = if (isCompactScreen) {
-                                    Modifier.fillMaxSize()
+                                if (appState.preferences.autoSwitchToTopics) {
+                                    sidebarTab = SidebarTab.TOPICS
+                                }
+                            },
+                            onEditAssistantInSettings = { asstId ->
+                                persist(appState.copy(activeAssistantId = asstId), immediateFlush = true)
+                                activeSettingsCategory = SettingsCategory.ASSISTANTS
+                                isSettingsOpen = true
+                                if (isCompactScreen) showSidebar = false
+                            },
+                            onCreateNewAssistant = {
+                                val now = PlatformBridge.currentTimeMillis()
+                                val newAsst = AssistantAgent(id = "asst-$now", name = "New Assistant", iconEmoji = "🤖")
+                                persist(
+                                    appState.copy(
+                                        assistants = appState.assistants + newAsst,
+                                        activeAssistantId = newAsst.id
+                                    ),
+                                    immediateFlush = true
+                                )
+                                activeSettingsCategory = SettingsCategory.ASSISTANTS
+                                isSettingsOpen = true
+                                if (isCompactScreen) showSidebar = false
+                            },
+                            onSelectSession = { sessId ->
+                                val sess = appState.sessions.find { it.id == sessId }
+                                persist(
+                                    appState.copy(
+                                        activeSessionId = sessId,
+                                        activeAssistantId = sess?.assistantId ?: appState.activeAssistantId
+                                    ),
+                                    immediateFlush = true
+                                )
+                                isSettingsOpen = false
+                                if (isCompactScreen) showSidebar = false
+                            },
+                            onNewTopic = {
+                                createNewTopicForAssistant(activeAssistant)
+                                isSettingsOpen = false
+                                if (isCompactScreen) showSidebar = false
+                            },
+                            onTogglePinSession = { sessId ->
+                                updateSessionById(sessId, immediate = true) { it.copy(isPinned = !it.isPinned) }
+                            },
+                            onRegenerateSessionTitle = { sessId ->
+                                generateTopicTitle(sessId, forceRegenerate = true)
+                            },
+                            onDeleteSession = { targetId ->
+                                val remaining = appState.sessions.filterNot { it.id == targetId }
+                                val remainingForAssistant = remaining.filter { it.assistantId == activeAssistant.id }
+                                if (remainingForAssistant.isNotEmpty()) {
+                                    val nextActive = if (appState.activeSessionId == targetId) remainingForAssistant.first().id else appState.activeSessionId
+                                    persist(appState.copy(sessions = remaining, activeSessionId = nextActive), immediateFlush = true)
                                 } else {
-                                    Modifier.width(285.dp).fillMaxHeight()
-                                },
-                                onSelectAssistant = { asst ->
-                                    val assistantSessions = appState.sessions.filter { it.assistantId == asst.id }
-                                    if (appState.preferences.newChatWhenSwitchingAssistants || assistantSessions.isEmpty()) {
-                                        createNewTopicForAssistant(asst)
-                                    } else {
-                                        val nextSess = assistantSessions.first()
-                                        persist(
-                                            appState.copy(
-                                                activeAssistantId = asst.id,
-                                                activeSessionId = nextSess.id
-                                            ),
-                                            immediateFlush = true
-                                        )
-                                    }
-                                    if (appState.preferences.autoSwitchToTopics) {
-                                        sidebarTab = SidebarTab.TOPICS
-                                    }
-                                },
-                                onEditAssistantInSettings = { asstId ->
-                                    persist(appState.copy(activeAssistantId = asstId), immediateFlush = true)
-                                    activeSettingsCategory = SettingsCategory.ASSISTANTS
-                                    isSettingsOpen = true
-                                    if (isCompactScreen) showSidebar = false
-                                },
-                                onCreateNewAssistant = {
-                                    val now = PlatformBridge.currentTimeMillis()
-                                    val newAsst = AssistantAgent(id = "asst-$now", name = "New Assistant", iconEmoji = "🤖")
-                                    persist(
-                                        appState.copy(
-                                            assistants = appState.assistants + newAsst,
-                                            activeAssistantId = newAsst.id
-                                        ),
-                                        immediateFlush = true
-                                    )
-                                    activeSettingsCategory = SettingsCategory.ASSISTANTS
-                                    isSettingsOpen = true
-                                    if (isCompactScreen) showSidebar = false
-                                },
-                                onSelectSession = { sessId ->
-                                    val sess = appState.sessions.find { it.id == sessId }
-                                    persist(
-                                        appState.copy(
-                                            activeSessionId = sessId,
-                                            activeAssistantId = sess?.assistantId ?: appState.activeAssistantId
-                                        ),
-                                        immediateFlush = true
-                                    )
-                                    isSettingsOpen = false
-                                    if (isCompactScreen) showSidebar = false
-                                },
-                                onNewTopic = {
-                                    createNewTopicForAssistant(activeAssistant)
-                                    isSettingsOpen = false
-                                    if (isCompactScreen) showSidebar = false
-                                },
-                                onTogglePinSession = { sessId ->
-                                    updateSessionById(sessId, immediate = true) { it.copy(isPinned = !it.isPinned) }
-                                },
-                                onRegenerateSessionTitle = { sessId ->
-                                    generateTopicTitle(sessId, forceRegenerate = true)
-                                },
-                                onDeleteSession = { targetId ->
-                                    val remaining = appState.sessions.filterNot { it.id == targetId }
-                                    val remainingForAssistant = remaining.filter { it.assistantId == activeAssistant.id }
-                                    if (remainingForAssistant.isNotEmpty()) {
-                                        val nextActive = if (appState.activeSessionId == targetId) remainingForAssistant.first().id else appState.activeSessionId
-                                        persist(appState.copy(sessions = remaining, activeSessionId = nextActive), immediateFlush = true)
-                                    } else {
-                                        // Deleting the last topic for this Assistant creates a fresh empty topic while keeping all Assistants intact!
-                                        val now = PlatformBridge.currentTimeMillis()
-                                        val fresh = ChatSession(
-                                            id = "sess-$now",
-                                            title = "New Chat",
-                                            createdAt = now,
-                                            updatedAt = now,
-                                            profileId = activeProfile.id,
-                                            modelOverride = activeProfile.defaultModel,
-                                            assistantId = activeAssistant.id
-                                        )
-                                        persist(appState.copy(sessions = listOf(fresh) + remaining, activeSessionId = fresh.id), immediateFlush = true)
-                                    }
-                                },
-                                onDeleteAllTopicsForAssistant = {
-                                    val otherSessions = appState.sessions.filterNot { it.assistantId == activeAssistant.id }
+                                    // Deleting the last topic for this Assistant creates a fresh empty topic while keeping all Assistants intact!
                                     val now = PlatformBridge.currentTimeMillis()
                                     val fresh = ChatSession(
                                         id = "sess-$now",
@@ -1297,31 +1298,54 @@ fun ParchmentApp() {
                                         modelOverride = activeProfile.defaultModel,
                                         assistantId = activeAssistant.id
                                     )
-                                    persist(appState.copy(sessions = listOf(fresh) + otherSessions, activeSessionId = fresh.id), immediateFlush = true)
-                                    bannerNotification = "Cleared all topics for '${activeAssistant.name}' (Assistant & System Prompt kept)."
-                                },
-                                onOpenSettings = {
-                                    isSettingsOpen = true
-                                    if (isCompactScreen) showSidebar = false
+                                    persist(appState.copy(sessions = listOf(fresh) + remaining, activeSessionId = fresh.id), immediateFlush = true)
                                 }
-                            )
-                            if (!isCompactScreen) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(0.85.dp)
-                                        .fillMaxHeight()
-                                        .background(p.border.copy(alpha = 0.7f))
+                            },
+                            onDeleteAllTopicsForAssistant = {
+                                val otherSessions = appState.sessions.filterNot { it.assistantId == activeAssistant.id }
+                                val now = PlatformBridge.currentTimeMillis()
+                                val fresh = ChatSession(
+                                    id = "sess-$now",
+                                    title = "New Chat",
+                                    createdAt = now,
+                                    updatedAt = now,
+                                    profileId = activeProfile.id,
+                                    modelOverride = activeProfile.defaultModel,
+                                    assistantId = activeAssistant.id
                                 )
+                                persist(appState.copy(sessions = listOf(fresh) + otherSessions, activeSessionId = fresh.id), immediateFlush = true)
+                                bannerNotification = "Cleared all topics for '${activeAssistant.name}' (Assistant & System Prompt kept)."
+                            },
+                            onOpenSettings = {
+                                isSettingsOpen = true
+                                if (isCompactScreen) showSidebar = false
                             }
-                        }
+                        )
                     }
 
-                    if (!isCompactScreen || !showSidebar || isSettingsOpen) {
-                        Crossfade(
-                            targetState = isSettingsOpen,
-                            animationSpec = tween(180),
-                            modifier = Modifier.weight(1f).fillMaxHeight()
-                        ) { settingsMode ->
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            AnimatedVisibility(
+                                visible = !isCompactScreen && showSidebar && !isSettingsOpen,
+                                enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                                exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                            ) {
+                                Row(modifier = Modifier.fillMaxHeight()) {
+                                    sidebarComposable(Modifier.width(285.dp).fillMaxHeight())
+                                    Box(
+                                        modifier = Modifier
+                                            .width(0.85.dp)
+                                            .fillMaxHeight()
+                                            .background(p.border.copy(alpha = 0.7f))
+                                    )
+                                }
+                            }
+
+                            Crossfade(
+                                targetState = isSettingsOpen,
+                                animationSpec = tween(180),
+                                modifier = Modifier.weight(1f).fillMaxHeight()
+                            ) { settingsMode ->
                             if (settingsMode) {
                                 KelivoSettingsScreen(
                                     appState = appState,
@@ -1611,12 +1635,51 @@ fun ParchmentApp() {
                                 )
                             }
                         }
+
+                        // Mobile 86%-Width Slide-Over Sidebar Drawer + Dimmed Tap-to-Dismiss Backdrop Scrim
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            AnimatedVisibility(
+                                visible = isCompactScreen && showSidebar && !isSettingsOpen,
+                                enter = fadeIn(tween(150)),
+                                exit = fadeOut(tween(130))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.34f))
+                                        .clickable { showSidebar = false }
+                                )
+                            }
+                        }
+
+                        Row(modifier = Modifier.fillMaxHeight()) {
+                            AnimatedVisibility(
+                                visible = isCompactScreen && showSidebar && !isSettingsOpen,
+                                enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
+                                exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                            ) {
+                                Row(modifier = Modifier.fillMaxHeight()) {
+                                    sidebarComposable(
+                                        Modifier
+                                            .fillMaxWidth(0.86f)
+                                            .fillMaxHeight()
+                                            .clickable(enabled = false) {}
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .width(1.dp)
+                                            .fillMaxHeight()
+                                            .background(p.border)
+                                    )
+                                }
+                            }
+                        }
                     }
-                }
                 }
             }
         }
     }
+}
 }
 
 // ============================================================================================
@@ -1630,14 +1693,14 @@ private fun TopEditorialBar(
     activeProfile: ProviderProfile,
     isCompactScreen: Boolean,
     showSidebar: Boolean,
-    isSettingsOpen: Boolean,
+    showSessionInspector: Boolean,
     showQuickModelPopover: Boolean,
     onToggleSidebar: () -> Unit,
+    onToggleSessionInspector: () -> Unit,
     onToggleQuickModelPopover: () -> Unit,
     onSelectModelQuick: (String, String) -> Unit,
     onRenameTopicInline: (String) -> Unit,
     onRegenerateTitleAi: () -> Unit,
-    onToggleViewMode: () -> Unit,
     onOpenSettings: (SettingsCategory) -> Unit
 ) {
     val p = LocalParchmentPalette.current
@@ -1676,7 +1739,7 @@ private fun TopEditorialBar(
                         symbol = activeAssistant.iconEmoji,
                         selected = true,
                         sizeDp = 28.dp,
-                        modifier = Modifier.clickable { onOpenSettings(SettingsCategory.ASSISTANTS) }
+                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }
                     )
                 }
 
@@ -1712,20 +1775,20 @@ private fun TopEditorialBar(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
-                                modifier = Modifier.weight(1f, fill = false).clickable { isEditingTitle = true }
+                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }
                             )
                             KissVectorIcon(
                                 icon = KissIcon.EDIT,
                                 tint = p.mutedInk,
                                 size = 12.dp,
-                                modifier = Modifier.clickable { isEditingTitle = true }
+                                modifier = Modifier.kissClickable { isEditingTitle = true }
                             )
                             if (activeSession.messages.isNotEmpty()) {
                                 KissVectorIcon(
                                     icon = KissIcon.SPARKLES,
                                     tint = p.accent,
                                     size = 13.dp,
-                                    modifier = Modifier.clickable { onRegenerateTitleAi() }
+                                    modifier = Modifier.kissClickable { onRegenerateTitleAi() }
                                 )
                             }
                         }
@@ -1742,7 +1805,7 @@ private fun TopEditorialBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.sp),
-                        modifier = Modifier.clickable { onToggleQuickModelPopover() }
+                        modifier = Modifier.kissClickable(hoverScale = 1.01f) { onToggleQuickModelPopover() }
                     )
                 }
             }
@@ -1754,21 +1817,18 @@ private fun TopEditorialBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val win = LocalParchmentWindowSize.current
-                if (!isSettingsOpen) {
-                    SepiaChip(
-                        label = if (win.isCompact) {
-                            if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖" else "▤"
-                        } else {
-                            if (activeSession.viewMode == ViewMode.MANUSCRIPT) "📖 Manuscript" else "▤ Turns"
-                        },
-                        selected = activeSession.viewMode == ViewMode.MANUSCRIPT,
-                        onClick = onToggleViewMode
-                    )
-                }
+                val hasChatNotes = activeSession.systemPrompt.isNotBlank() ||
+                    activeSession.authorsNote.isNotBlank() ||
+                    activeSession.storySummary.isNotBlank()
+                SepiaChip(
+                    label = if (win.isCompact) "✎" else "✎ Notes",
+                    selected = showSessionInspector || hasChatNotes,
+                    onClick = onToggleSessionInspector
+                )
                 SepiaButton(
-                    text = if (isSettingsOpen) "← Chat" else if (win.isCompact) "⚙" else "⚙ Settings",
+                    text = if (win.isCompact) "⚙" else "⚙ Settings",
                     compact = true,
-                    style = if (isSettingsOpen) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.OUTLINE,
+                    style = SepiaButtonStyle.OUTLINE,
                     onClick = { onOpenSettings(SettingsCategory.PREFERENCES) }
                 )
             }
@@ -1834,6 +1894,7 @@ private fun KelivoSidebar(
     activeAssistant: AssistantAgent,
     activeSession: ChatSession,
     selectedTab: SidebarTab,
+    isCompactScreen: Boolean,
     onSelectTab: (SidebarTab) -> Unit,
     modifier: Modifier = Modifier,
     onSelectAssistant: (AssistantAgent) -> Unit,
@@ -1852,11 +1913,11 @@ private fun KelivoSidebar(
 
     Column(
         modifier = modifier
-            .background(p.sheetBg.copy(alpha = 0.65f))
+            .background(p.sheetBg.copy(alpha = if (isCompactScreen) 0.98f else 0.65f))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 1. Top Search Pill Bar (Matching Screenshot 1: `🔍 Search assistants` / `🔍 Search topics`)
+        // 1. Top Search Pill Bar (`🔍 Search assistants` / `🔍 Search topics`) + Single `+` Action
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1865,7 +1926,7 @@ private fun KelivoSidebar(
             SepiaTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = if (selectedTab == SidebarTab.ASSISTANTS) "🔍 Search assistants…" else "🔍 Search topics…",
+                placeholder = if (selectedTab == SidebarTab.ASSISTANTS) "🔍 Search assistants…" else "🔍 Search chats…",
                 minHeight = 36.dp,
                 modifier = Modifier.weight(1f)
             )
@@ -1879,7 +1940,7 @@ private fun KelivoSidebar(
             )
         }
 
-        // 2. Kelivo 2-Tab Pill Switcher (`[ Assistants | Topics ]` — Matching Screenshots 1 & 2)
+        // 2. Kelivo 2-Tab Pill Switcher (`[ Assistants | Chats ]`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1889,14 +1950,27 @@ private fun KelivoSidebar(
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Topics").forEach { (tab, label) ->
+            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats").forEach { (tab, label) ->
                 val isSel = selectedTab == tab
+                val tabInteraction = remember { MutableInteractionSource() }
+                val tabHovered by tabInteraction.collectIsHoveredAsState()
                 Box(
                     modifier = Modifier
                         .weight(1f)
+                        .kissClickable(
+                            pressScale = 0.96f,
+                            hoverScale = 1.01f,
+                            interactionSource = tabInteraction,
+                            onClick = { onSelectTab(tab) }
+                        )
                         .clip(RoundedCornerShape(999.dp))
-                        .background(if (isSel) p.sheetBg else Color.Transparent)
-                        .clickable { onSelectTab(tab) }
+                        .background(
+                            when {
+                                isSel -> p.sheetBg
+                                tabHovered -> p.accent.copy(alpha = 0.08f)
+                                else -> Color.Transparent
+                            }
+                        )
                         .padding(vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1905,7 +1979,7 @@ private fun KelivoSidebar(
                         style = p.uiBodyStyle.copy(
                             fontSize = 13.sp,
                             fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSel) p.accent else p.narrationInk
+                            color = if (isSel || tabHovered) p.accent else p.narrationInk
                         )
                     )
                 }
@@ -1929,7 +2003,7 @@ private fun KelivoSidebar(
                 if (filteredAssistants.isEmpty()) {
                     item {
                         BasicText(
-                            text = "Pure zero-shot mode (no assistants saved). Tap '+' above to create a custom assistant.",
+                            text = "Zero-shot mode (no custom assistants saved). Tap '+' above to create a reusable assistant.",
                             style = p.uiLabelStyle,
                             modifier = Modifier.padding(8.dp)
                         )
@@ -1938,12 +2012,27 @@ private fun KelivoSidebar(
                 itemsIndexed(filteredAssistants, key = { _, a -> a.id }) { _, asst ->
                     val isSel = asst.id == activeAssistant.id
                     val shape = RoundedCornerShape(999.dp)
+                    val rowInteraction = remember { MutableInteractionSource() }
+                    val rowHovered by rowInteraction.collectIsHoveredAsState()
+                    val rowPressed by rowInteraction.collectIsPressedAsState()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .kissClickable(
+                                pressScale = 0.98f,
+                                hoverScale = 1.01f,
+                                interactionSource = rowInteraction,
+                                onClick = { onSelectAssistant(asst) }
+                            )
                             .clip(shape)
-                            .background(if (isSel) p.sheetBg else Color.Transparent)
-                            .clickable { onSelectAssistant(asst) }
+                            .background(
+                                when {
+                                    isSel -> p.sheetBg
+                                    rowPressed -> p.accent.copy(alpha = 0.14f)
+                                    rowHovered -> p.accent.copy(alpha = 0.08f)
+                                    else -> Color.Transparent
+                                }
+                            )
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -1965,7 +2054,7 @@ private fun KelivoSidebar(
                                 style = p.uiBodyStyle.copy(
                                     fontSize = 14.sp,
                                     fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = p.primaryInk
+                                    color = if (isSel || rowHovered) p.accent else p.primaryInk
                                 )
                             )
                         }
@@ -1979,7 +2068,7 @@ private fun KelivoSidebar(
                 }
             }
         } else {
-            // TOPICS TAB (Filtered by active Assistant, Pinned first, sorted by updatedAt)
+            // CHATS / TOPICS TAB (Filtered by active Assistant, Pinned first, sorted by updatedAt)
             val assistantTopics = remember(appState.sessions, activeAssistant.id, searchQuery) {
                 val q = searchQuery.trim()
                 val forAsst = appState.sessions.filter { it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId } }
@@ -2007,21 +2096,13 @@ private fun KelivoSidebar(
                         style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (assistantTopics.size > 1) {
                     SepiaButton(
-                        text = "+ New",
+                        text = "Clear All",
                         compact = true,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = onNewTopic
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onDeleteAllTopicsForAssistant
                     )
-                    if (assistantTopics.size > 1) {
-                        SepiaButton(
-                            text = "Clear All",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onDeleteAllTopicsForAssistant
-                        )
-                    }
                 }
             }
 
@@ -2032,13 +2113,32 @@ private fun KelivoSidebar(
                 itemsIndexed(assistantTopics, key = { _, s -> s.id }) { _, sess ->
                     val selected = sess.id == activeSession.id
                     val shape = RoundedCornerShape(10.dp)
+                    val rowInteraction = remember { MutableInteractionSource() }
+                    val rowHovered by rowInteraction.collectIsHoveredAsState()
+                    val rowPressed by rowInteraction.collectIsPressedAsState()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .kissClickable(
+                                pressScale = 0.98f,
+                                hoverScale = 1.008f,
+                                interactionSource = rowInteraction,
+                                onClick = { onSelectSession(sess.id) }
+                            )
                             .clip(shape)
-                            .background(if (selected) p.cardBg else p.elevatedBg.copy(alpha = 0.35f))
-                            .border(0.8.dp, if (selected) p.accent else Color.Transparent, shape)
-                            .clickable { onSelectSession(sess.id) }
+                            .background(
+                                when {
+                                    selected -> p.cardBg
+                                    rowPressed -> p.accent.copy(alpha = 0.14f)
+                                    rowHovered -> p.accent.copy(alpha = 0.08f)
+                                    else -> p.elevatedBg.copy(alpha = 0.35f)
+                                }
+                            )
+                            .border(
+                                0.85.dp,
+                                if (selected || rowHovered) p.accent.copy(alpha = if (selected) 1f else 0.55f) else Color.Transparent,
+                                shape
+                            )
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -2057,14 +2157,17 @@ private fun KelivoSidebar(
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(
                                         fontSize = 13.5.sp,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selected || rowHovered) p.accent else p.primaryInk
                                     )
                                 )
                             }
-                            BasicText(
-                                text = "${sess.messages.size} turns",
-                                style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
-                            )
+                            if (sess.messages.isNotEmpty()) {
+                                BasicText(
+                                    text = "${sess.messages.size} messages",
+                                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
+                                )
+                            }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                             SepiaButton(
@@ -2093,15 +2196,17 @@ private fun KelivoSidebar(
             }
         }
 
-        SepiaDivider()
+        if (isCompactScreen) {
+            SepiaDivider()
 
-        // Bottom Sidebar Footer: Quick Settings Button
-        SepiaButton(
-            text = "⚙ Settings & Providers",
-            style = SepiaButtonStyle.OUTLINE,
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onOpenSettings
-        )
+            // Mobile Drawer Footer: Quick Settings Button
+            SepiaButton(
+                text = "⚙ Settings & Providers",
+                style = SepiaButtonStyle.OUTLINE,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpenSettings
+            )
+        }
     }
 }
 
@@ -2215,73 +2320,41 @@ private fun ManuscriptViewport(
         maxOf(baseChars / 4, lastReportedContext + typedDraftTokens)
     }
 
+    // 5-Second Minimap Linger Timer (`5000ms` after scrolling stops or after any minimap button tap!)
+    var isMinimapScrollLingering by remember { mutableStateOf(false) }
+    var minimapInteractionTick by remember { mutableStateOf(0) }
+
+    LaunchedEffect(listState.isScrollInProgress, minimapInteractionTick, showMinimapTreeModal) {
+        if (listState.isScrollInProgress || showMinimapTreeModal || minimapInteractionTick > 0) {
+            isMinimapScrollLingering = true
+            if (!listState.isScrollInProgress && !showMinimapTreeModal) {
+                delay(5000L)
+                isMinimapScrollLingering = false
+            }
+        }
+    }
+
+    val isScrolledUpFromBottom by remember {
+        derivedStateOf {
+            activeSession.messages.size > 2 && listState.canScrollForward
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Subtle Context & Memory Ribbon
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(p.elevatedBg.copy(alpha = 0.5f))
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Row(
-                modifier = Modifier.widthIn(max = p.maxReadingWidth).fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        // Collapsible Chat Notes & Memory Drawer (Toggled via `✎ Notes` in the Top Bar — zero duplicate sub-header ribbon!)
+        AnimatedVisibility(visible = showSessionInspector) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(p.elevatedBg.copy(alpha = 0.45f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                val cardName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
-                    ?: activeAssistant.name.takeIf { activeAssistant.id.isNotBlank() }
-                    ?: activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { activeProfile.name }
-                val statsStr = if (sessionTotalTokens > 0 && preferences.showTokenAndContextStats) {
-                    " • ${formatCompactTokens(sessionTotalTokens)} tok (${formatUsdCost(sessionTotalCostUsd)})"
-                } else ""
-                Row(
-                    modifier = Modifier.weight(1f).clickable { onToggleSessionInspector() },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    val ribIcon = remember(activeAssistant.iconEmoji) {
-                        parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
-                    }
-                    KissVectorIcon(icon = ribIcon, tint = p.accent, size = 12.dp)
-                    BasicText(
-                        text = "$cardName$statsStr",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (activeSession.messages.isNotEmpty()) {
-                        SepiaButton(
-                            text = "Export .MD",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onExportChatMarkdown
-                        )
-                        SepiaButton(
-                            text = "Clear",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { onUpdateSession { it.copy(messages = emptyList()) } }
-                        )
-                    }
-                    SepiaButton(
-                        text = if (showSessionInspector) "▲ Scene & Memory" else "▾ Scene & Memory",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = onToggleSessionInspector
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = showSessionInspector) {
                 Column(
                     modifier = Modifier
-                        .padding(top = 6.dp, bottom = 4.dp)
                         .widthIn(max = p.maxReadingWidth)
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
@@ -2290,17 +2363,54 @@ private fun ManuscriptViewport(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        BasicText(
+                            text = "Chat Notes & Memory",
+                            style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (activeSession.messages.isNotEmpty()) {
+                                SepiaButton(
+                                    text = "Export .MD",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = onExportChatMarkdown
+                                )
+                                SepiaButton(
+                                    text = "Clear Chat",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { onUpdateSession { it.copy(messages = emptyList()) } }
+                                )
+                            }
+                            SepiaButton(
+                                text = "×",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onToggleSessionInspector
+                            )
+                        }
+                    }
+                    SepiaDivider()
                     SepiaTextField(
                         value = activeSession.systemPrompt,
                         onValueChange = { sp -> onUpdateSession { it.copy(systemPrompt = sp) } },
-                        label = "Topic-Specific System Prompt Addendum (Appended to '${activeAssistant.name}' prompt)",
+                        label = "Extra Instructions for This Chat",
+                        placeholder = "Optional instructions added specifically to this conversation…",
                         singleLine = false,
                         modifier = Modifier.fillMaxWidth()
                     )
                     SepiaTextField(
                         value = activeSession.authorsNote,
                         onValueChange = { note -> onUpdateSession { it.copy(authorsNote = note) } },
-                        label = "Dynamic Author's Note / Current Scene Pacing",
+                        label = "Style & Tone Reminder",
+                        placeholder = "Optional reminder kept near the end of the conversation…",
                         singleLine = false,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2311,12 +2421,12 @@ private fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         BasicText(
-                            text = "Rolling Continuity Memory",
+                            text = "Chat Summary & Memory",
                             style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
                             modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                         )
                         SepiaButton(
-                            text = if (isStreaming) "Summarizing…" else "✦ Auto-Summarize Chat",
+                            text = if (isStreaming) "Summarizing…" else "✦ Summarize So Far",
                             compact = true,
                             enabled = !isStreaming && activeSession.messages.isNotEmpty(),
                             style = SepiaButtonStyle.SECONDARY,
@@ -2326,6 +2436,7 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = activeSession.storySummary,
                         onValueChange = { sum -> onUpdateSession { it.copy(storySummary = sum) } },
+                        placeholder = "Key facts or summary remembered across long chats…",
                         singleLine = false,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2333,9 +2444,8 @@ private fun ManuscriptViewport(
             }
         }
 
-        SepiaDivider()
-
         // Main Chat Area + Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
+        val win = LocalParchmentWindowSize.current
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -2348,7 +2458,7 @@ private fun ManuscriptViewport(
                     .fillMaxHeight()
                     .widthIn(max = p.maxReadingWidth)
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp),
+                    .padding(horizontal = if (win.isCompact) 12.dp else 18.dp),
                 verticalArrangement = Arrangement.spacedBy(
                     if (activeSession.viewMode == ViewMode.MANUSCRIPT) 16.dp else 18.dp
                 )
@@ -2359,44 +2469,33 @@ private fun ManuscriptViewport(
                     item {
                         val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
                         val card = activeSession.activeCard ?: activeAssistant.activeCard
+                        val displayName = card?.name?.takeIf { it.isNotBlank() }
+                            ?: activeAssistant.name.takeIf { it.isNotBlank() }
+                            ?: "Ready"
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 18.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(p.cardBg.copy(alpha = 0.85f))
-                                .border(0.85.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
-                                .padding(20.dp),
+                                .padding(vertical = 36.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val welcomeIcon = remember(activeAssistant.iconEmoji) {
-                                    parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
-                                }
-                                KissVectorIcon(icon = welcomeIcon, tint = p.accent, size = 18.dp)
-                                BasicText(
-                                    text = card?.name?.takeIf { it.isNotBlank() } ?: activeAssistant.name,
-                                    style = p.uiHeaderStyle.copy(fontSize = 18.sp)
-                                )
-                            }
-                            BasicText(
-                                text = "${activeProfile.name} • ${activeModel.ifBlank { "No model selected" }} • Stateful Chain: ${if (activeProfile.useStatefulChaining) "ON" else "OFF"} • Background Poll: ${if (activeProfile.useBackgroundLongDecode) "ON" else "OFF"}",
-                                style = p.uiLabelStyle.copy(color = p.accent)
+                            SepiaAvatarCircle(
+                                symbol = activeAssistant.iconEmoji,
+                                selected = true,
+                                sizeDp = 46.dp
                             )
-                            if (activeAssistant.systemPrompt.isNotBlank()) {
-                                BasicText(
-                                    text = activeAssistant.systemPrompt,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = p.uiBodyStyle.copy(color = p.narrationInk, fontSize = 12.5.sp)
-                                )
-                            }
+                            BasicText(
+                                text = displayName,
+                                style = p.uiHeaderStyle.copy(fontSize = 19.sp)
+                            )
+                            BasicText(
+                                text = "${activeProfile.name} • ${activeModel.ifBlank { "Select a model in Settings" }}",
+                                style = p.uiLabelStyle.copy(color = p.mutedInk)
+                            )
                             if (card != null && card.firstMessage.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
                                 SepiaButton(
-                                    text = "Insert Opening Scene from '${card.name}'",
+                                    text = "Start Opening Scene",
                                     compact = true,
                                     style = SepiaButtonStyle.PRIMARY,
                                     onClick = {
@@ -2493,26 +2592,55 @@ private fun ManuscriptViewport(
                 item { Spacer(Modifier.height(16.dp)) }
             }
 
-            // Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
+            // Floating `↓ Latest` Pill when scrolled up
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 10.dp)
+            ) {
+                AnimatedVisibility(
+                    visible = isScrolledUpFromBottom,
+                    enter = fadeIn(tween(150)),
+                    exit = fadeOut(tween(150))
+                ) {
+                    SepiaChip(
+                        label = "↓ Latest",
+                        selected = true,
+                        onClick = {
+                            scope.launch {
+                                listState.animateScrollToItem(activeSession.messages.size.coerceAtLeast(0))
+                            }
+                        }
+                    )
+                }
+            }
+
+            // Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`) with 5-Second Linger!
             val showNavButtons = when (preferences.messageNavButtons) {
                 MessageNavVisibility.ALWAYS -> activeSession.messages.isNotEmpty()
-                MessageNavVisibility.WHILE_SCROLLING -> activeSession.messages.isNotEmpty() && listState.isScrollInProgress
+                MessageNavVisibility.WHILE_SCROLLING -> activeSession.messages.isNotEmpty() && isMinimapScrollLingering
                 MessageNavVisibility.HIDDEN -> false
             }
 
-            if (showNavButtons || showMinimapTreeModal) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 8.dp)
+            ) {
+                AnimatedVisibility(
+                    visible = showNavButtons || showMinimapTreeModal,
+                    enter = fadeIn(tween(160)),
+                    exit = fadeOut(tween(240))
                 ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                     // Expandable Interactive Tree & Swipe Minimap Modal
                     AnimatedVisibility(visible = showMinimapTreeModal) {
                         Column(
                             modifier = Modifier
-                                .width(290.dp)
+                                .width(if (win.isCompact) 255.dp else 290.dp)
                                 .heightIn(max = 380.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(p.cardBg)
@@ -2531,7 +2659,7 @@ private fun ManuscriptViewport(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = 13.5.dp)
                                     BasicText(
-                                        text = "Message & Swipe Tree (${activeSession.messages.size})",
+                                        text = "Message Map (${activeSession.messages.size})",
                                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
                                     )
                                 }
@@ -2555,7 +2683,8 @@ private fun ManuscriptViewport(
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(7.dp))
                                             .background(if (isAsst) p.sheetBg.copy(alpha = 0.65f) else p.elevatedBg.copy(alpha = 0.45f))
-                                            .clickable {
+                                            .kissClickable(pressScale = 0.98f) {
+                                                minimapInteractionTick++
                                                 scope.launch {
                                                     listState.animateScrollToItem(idx + 1)
                                                 }
@@ -2584,7 +2713,8 @@ private fun ManuscriptViewport(
                                                             modifier = Modifier
                                                                 .clip(RoundedCornerShape(4.dp))
                                                                 .background(if (vSel) p.accent else p.cardBg)
-                                                                .clickable {
+                                                                .kissClickable {
+                                                                    minimapInteractionTick++
                                                                     onUpdateSession { sess ->
                                                                         sess.copy(
                                                                             messages = sess.messages.mapIndexed { i, n ->
@@ -2625,7 +2755,7 @@ private fun ManuscriptViewport(
                     Column(
                         modifier = Modifier
                             .clip(RoundedCornerShape(999.dp))
-                            .background(p.cardBg.copy(alpha = 0.92f))
+                            .background(p.cardBg.copy(alpha = 0.94f))
                             .border(0.85.dp, p.border, RoundedCornerShape(999.dp))
                             .padding(vertical = 4.dp, horizontal = 3.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -2636,7 +2766,10 @@ private fun ManuscriptViewport(
                             text = "⤒",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
-                            onClick = { scope.launch { listState.animateScrollToItem(0) } }
+                            onClick = {
+                                minimapInteractionTick++
+                                scope.launch { listState.animateScrollToItem(0) }
+                            }
                         )
                         // Jump Previous Message
                         SepiaButton(
@@ -2644,6 +2777,7 @@ private fun ManuscriptViewport(
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
+                                minimapInteractionTick++
                                 scope.launch {
                                     val cur = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
                                     listState.animateScrollToItem(cur)
@@ -2655,7 +2789,10 @@ private fun ManuscriptViewport(
                             text = "🗺",
                             compact = true,
                             style = if (showMinimapTreeModal) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.GHOST,
-                            onClick = { showMinimapTreeModal = !showMinimapTreeModal }
+                            onClick = {
+                                minimapInteractionTick++
+                                showMinimapTreeModal = !showMinimapTreeModal
+                            }
                         )
                         // Jump Next Message
                         SepiaButton(
@@ -2663,6 +2800,7 @@ private fun ManuscriptViewport(
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
+                                minimapInteractionTick++
                                 scope.launch {
                                     val next = (listState.firstVisibleItemIndex + 1).coerceAtMost(activeSession.messages.size)
                                     listState.animateScrollToItem(next)
@@ -2675,6 +2813,7 @@ private fun ManuscriptViewport(
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
+                                minimapInteractionTick++
                                 scope.launch {
                                     listState.animateScrollToItem(activeSession.messages.size.coerceAtLeast(0))
                                 }
@@ -2682,19 +2821,21 @@ private fun ManuscriptViewport(
                         )
                     }
                 }
+                }
             }
         }
 
         // ========================================================================================
-        // UNIFIED FLOATING "COMMAND DECK" COMPOSER WITH STEER / QUEUE & FIXED MOBILE SCALING
+        // ZEN-BY-DEFAULT FLOATING COMPOSER WITH DESKTOP ENTER-TO-SEND & STEER / QUEUE
         // ========================================================================================
         var showComposerToolsDrawer by remember { mutableStateOf(false) }
+        val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(p.canvasBg)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+                .padding(horizontal = if (win.isCompact) 10.dp else 14.dp, vertical = 7.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             val deckShape = RoundedCornerShape(14.dp)
@@ -2713,36 +2854,23 @@ private fun ManuscriptViewport(
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                // 1. Live Streaming Status Strip
+                // 1. Subtle Live Streaming Status Strip (No duplicate Stop button here — Stop is in the action bar below!)
                 AnimatedVisibility(visible = isStreaming) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(p.sheetBg.copy(alpha = 0.8f))
-                            .border(0.8.dp, p.accent.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .background(p.sheetBg.copy(alpha = 0.75f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            KissStreamingPulseDot(color = p.accent)
-                            BasicText(
-                                text = streamingStatus.ifBlank { "Streaming response…" },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(color = p.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            )
-                        }
-                        SepiaButton(
-                            text = "■ Stop",
-                            compact = true,
-                            style = SepiaButtonStyle.DANGER,
-                            onClick = onStopStream
+                        KissStreamingPulseDot(color = p.accent)
+                        BasicText(
+                            text = streamingStatus.ifBlank { "Generating reply…" },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiBodyStyle.copy(color = p.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         )
                     }
                 }
@@ -2759,21 +2887,22 @@ private fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         BasicText(
-                            text = "⏳ Queued Follow-Up Prompts (${queuedPrompts.size} — auto-sends when current reply finishes):",
+                            text = "Queued Follow-Up (${queuedPrompts.size} — auto-sends when current reply finishes):",
                             style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
                         )
                         queuedPrompts.forEach { qItem ->
-                            Row(
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 BasicText(
                                     text = "• ${qItem.text}",
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(fontSize = 12.sp),
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp)
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     SepiaButton(
@@ -2794,7 +2923,7 @@ private fun ManuscriptViewport(
                     }
                 }
 
-                // 3. Collapsible Capabilities Tray
+                // 3. Collapsible Capabilities & Co-Writing Tray (`⚙ Tools`)
                 AnimatedVisibility(visible = showComposerToolsDrawer) {
                     Column(
                         modifier = Modifier
@@ -2824,20 +2953,12 @@ private fun ManuscriptViewport(
                                 )
                             }
                         }
-                        SepiaTextField(
-                            value = activeProfile.thinkingEffort,
-                            onValueChange = { custom -> onUpdateProfile { it.copy(thinkingEffort = custom) } },
-                            placeholder = "Custom thinking level (e.g. minimal, none, low, medium, high, xhigh, max)…",
-                            monospace = true,
-                            minHeight = 34.dp,
-                            modifier = Modifier.fillMaxWidth()
-                        )
                         SepiaDivider()
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             SepiaChip(
                                 label = "🌐 Web Search",
@@ -2872,17 +2993,7 @@ private fun ManuscriptViewport(
                                     selected = activeProfile.enableUrlContext,
                                     onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                                 )
-                                SepiaChip(
-                                    label = "⚡ Background Poll",
-                                    selected = activeProfile.useBackgroundLongDecode,
-                                    onClick = { onUpdateProfile { it.copy(useBackgroundLongDecode = !it.useBackgroundLongDecode) } }
-                                )
                             }
-                            SepiaChip(
-                                label = "⛓ Stateful Chain",
-                                selected = activeProfile.useStatefulChaining,
-                                onClick = { onUpdateProfile { it.copy(useStatefulChaining = !it.useStatefulChaining) } }
-                            )
                             SepiaChip(
                                 label = activeSession.workspaceMode.label,
                                 selected = activeSession.workspaceMode != WorkspaceMode.OFF,
@@ -2896,9 +3007,41 @@ private fun ManuscriptViewport(
                                 }
                             )
                             SepiaChip(
-                                label = if (showPrefillBox) "▾ Prefill: ON" else "▸ Prefill",
+                                label = if (showPrefillBox) "▾ Start AI Reply With: ON" else "▸ Start AI Reply With…",
                                 selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
                                 onClick = onTogglePrefillBox
+                            )
+                        }
+                        SepiaDivider()
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            BasicText(
+                                text = "Co-Writing Helpers:",
+                                style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
+                                modifier = Modifier.padding(top = 5.dp, end = 4.dp)
+                            )
+                            SepiaButton(
+                                text = "✍ Draft My Reply",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    showComposerToolsDrawer = false
+                                    onImpersonateDraft()
+                                }
+                            )
+                            SepiaButton(
+                                text = "🧭 Guide Next Reply",
+                                compact = true,
+                                enabled = hasTypedInput,
+                                style = SepiaButtonStyle.SECONDARY,
+                                onClick = {
+                                    showComposerToolsDrawer = false
+                                    onSendGuidedDirection()
+                                }
                             )
                         }
                     }
@@ -2923,7 +3066,7 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = assistantPrefillInput,
                         onValueChange = onAssistantPrefillChange,
-                        placeholder = "Optional Assistant Opening Line / Prefill…",
+                        placeholder = "Start the AI's reply with these exact words…",
                         singleLine = false,
                         maxLines = 3,
                         minHeight = 36.dp,
@@ -2932,26 +3075,46 @@ private fun ManuscriptViewport(
                     )
                 }
 
-                // 4. Clean Borderless Prompt Input Area (Always editable even while streaming so you can Steer or Queue!)
+                // 4. Clean Borderless Prompt Input Area with Desktop Enter-to-Send & Shift+Enter Newline!
+                val targetName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
+                    ?: activeAssistant.name.takeIf { it.isNotBlank() }
+                    ?: activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { "AI" }
                 SepiaTextField(
                     value = userPromptInput,
                     onValueChange = onUserPromptChange,
                     placeholder = if (isStreaming) {
-                        "Type a follow-up to 'Steer' immediately or 'Queue' after current reply…"
+                        "Type a follow-up to Steer immediately or Queue next…"
                     } else {
-                        "Write dialogue, prose, or instructions (or type scene guidance and tap 'Direct')…"
+                        "Message $targetName…"
                     },
                     singleLine = false,
                     borderless = true,
                     maxLines = 6,
-                    minHeight = 42.dp,
+                    minHeight = 40.dp,
                     maxHeight = 148.dp,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    onEnterKeySend = if (!PlatformBridge.isAndroid) {
+                        { isCtrlOrMeta, isShift ->
+                            val shouldTrigger = when (preferences.sendShortcut) {
+                                SendShortcutMode.ENTER -> !isShift && !isCtrlOrMeta
+                                SendShortcutMode.CTRL_ENTER -> isCtrlOrMeta && !isShift
+                                SendShortcutMode.SHIFT_ENTER -> isShift && !isCtrlOrMeta
+                            }
+                            if (shouldTrigger) {
+                                if (hasTypedInput) {
+                                    if (isStreaming) onSteerNow() else onSend()
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    } else null
                 )
 
                 SepiaDivider()
 
-                // 5. Command Deck Footer: Fixed-Width Non-Overlapping Utility Chips + Context Ring + Action/Steer/Queue Buttons
+                // 5. Zen Composer Footer: 1 Clean Row (`[📎] [🧠] [⚙ Tools]` on left, `Context Ring + [Send ↵]` on right)
                 val hasActiveTools = activeProfile.enableWebSearch ||
                     activeProfile.enableImageGeneration ||
                     activeProfile.enableVideoGeneration ||
@@ -2966,193 +3129,84 @@ private fun ManuscriptViewport(
                     "🧠"
                 }
 
-                val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
-
-                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                    val isNarrowViewport = maxWidth < 620.dp
-
-                    val utilityCluster: @Composable () -> Unit = {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SepiaChip(
-                                label = "📎",
-                                selected = pendingAttachments.isNotEmpty(),
-                                onClick = onAddAttachment
-                            )
-                            SepiaChip(
-                                label = thinkingLabel,
-                                selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
-                                onClick = {
-                                    val cur = activeProfile.thinkingEffort.lowercase()
-                                    val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
-                                    val next = if (idx >= 0) {
-                                        THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
-                                    } else {
-                                        "medium"
-                                    }
-                                    onUpdateProfile { it.copy(thinkingEffort = next) }
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SepiaChip(
+                            label = "📎",
+                            selected = pendingAttachments.isNotEmpty(),
+                            onClick = onAddAttachment
+                        )
+                        SepiaChip(
+                            label = thinkingLabel,
+                            selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
+                            onClick = {
+                                val cur = activeProfile.thinkingEffort.lowercase()
+                                val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
+                                val next = if (idx >= 0) {
+                                    THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
+                                } else {
+                                    "medium"
                                 }
-                            )
-                            // Fixed compact label so enabling search/tools NEVER expands width or overlaps the Context Gauge Ring!
-                            SepiaChip(
-                                label = if (hasActiveTools) "⚙ Tools •" else "⚙ Tools",
-                                selected = showComposerToolsDrawer || hasActiveTools,
-                                onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
-                            )
-                        }
+                                onUpdateProfile { it.copy(thinkingEffort = next) }
+                            }
+                        )
+                        SepiaChip(
+                            label = if (hasActiveTools) "⚙ Tools •" else "⚙ Tools",
+                            selected = showComposerToolsDrawer || hasActiveTools,
+                            onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
+                        )
                     }
 
-                    if (isNarrowViewport) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(7.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(modifier = Modifier.weight(1f, fill = false)) {
-                                    utilityCluster()
-                                }
-                                Spacer(Modifier.width(4.dp))
-                                if (preferences.showTokenAndContextStats) {
-                                    SepiaContextGaugeRing(
-                                        usedTokens = liveContextTokens,
-                                        contextLimitTokens = activeProfile.contextWindowTokens,
-                                        sessionCostUsd = sessionTotalCostUsd,
-                                        onClick = onOpenPricingSettings
-                                    )
-                                }
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (isStreaming) {
-                                    SepiaButton(
-                                        text = "■ Stop",
-                                        compact = true,
-                                        style = SepiaButtonStyle.DANGER,
-                                        modifier = Modifier.weight(0.9f),
-                                        onClick = onStopStream
-                                    )
-                                    SepiaButton(
-                                        text = "⏳ Queue",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.OUTLINE,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = onQueuePrompt
-                                    )
-                                    SepiaButton(
-                                        text = "⚡ Steer ↵",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.PRIMARY,
-                                        modifier = Modifier.weight(1.1f),
-                                        onClick = onSteerNow
-                                    )
-                                } else {
-                                    SepiaButton(
-                                        text = "✍ Impersonate",
-                                        compact = true,
-                                        style = SepiaButtonStyle.OUTLINE,
-                                        modifier = Modifier.weight(1.18f),
-                                        onClick = onImpersonateDraft
-                                    )
-                                    SepiaButton(
-                                        text = "🎬 Direct",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.SECONDARY,
-                                        modifier = Modifier.weight(0.85f),
-                                        onClick = onSendGuidedDirection
-                                    )
-                                    SepiaButton(
-                                        text = "Inscribe ↵",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.PRIMARY,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = onSend
-                                    )
-                                }
-                            }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                            SepiaContextGaugeRing(
+                                usedTokens = liveContextTokens,
+                                contextLimitTokens = activeProfile.contextWindowTokens,
+                                sessionCostUsd = sessionTotalCostUsd,
+                                onClick = onOpenPricingSettings
+                            )
                         }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                utilityCluster()
-                                if (preferences.showTokenAndContextStats) {
-                                    SepiaContextGaugeRing(
-                                        usedTokens = liveContextTokens,
-                                        contextLimitTokens = activeProfile.contextWindowTokens,
-                                        sessionCostUsd = sessionTotalCostUsd,
-                                        onClick = onOpenPricingSettings
-                                    )
-                                }
-                            }
 
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (isStreaming) {
-                                    SepiaButton(
-                                        text = "■ Stop",
-                                        compact = true,
-                                        style = SepiaButtonStyle.DANGER,
-                                        onClick = onStopStream
-                                    )
-                                    SepiaButton(
-                                        text = "⏳ Queue",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.OUTLINE,
-                                        onClick = onQueuePrompt
-                                    )
-                                    SepiaButton(
-                                        text = "⚡ Steer ↵",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.PRIMARY,
-                                        onClick = onSteerNow
-                                    )
-                                } else {
-                                    SepiaButton(
-                                        text = "✍ Impersonate",
-                                        compact = true,
-                                        style = SepiaButtonStyle.OUTLINE,
-                                        onClick = onImpersonateDraft
-                                    )
-                                    SepiaButton(
-                                        text = "🎬 Direct",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.SECONDARY,
-                                        onClick = onSendGuidedDirection
-                                    )
-                                    SepiaButton(
-                                        text = "Inscribe ↵",
-                                        compact = true,
-                                        enabled = hasTypedInput,
-                                        style = SepiaButtonStyle.PRIMARY,
-                                        onClick = onSend
-                                    )
-                                }
-                            }
+                        if (isStreaming) {
+                            SepiaButton(
+                                text = "■ Stop",
+                                compact = true,
+                                style = SepiaButtonStyle.DANGER,
+                                onClick = onStopStream
+                            )
+                            SepiaButton(
+                                text = "⏳ Queue",
+                                compact = true,
+                                enabled = hasTypedInput,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = onQueuePrompt
+                            )
+                            SepiaButton(
+                                text = "⚡ Steer ↵",
+                                compact = true,
+                                enabled = hasTypedInput,
+                                style = SepiaButtonStyle.PRIMARY,
+                                onClick = onSteerNow
+                            )
+                        } else {
+                            SepiaButton(
+                                text = "Send ↵",
+                                compact = true,
+                                enabled = hasTypedInput,
+                                style = SepiaButtonStyle.PRIMARY,
+                                onClick = onSend
+                            )
                         }
                     }
                 }
@@ -3211,7 +3265,9 @@ private fun MessageTurnItem(
         userName.ifBlank { "User" }
     }
 
-    val containerModifier = if (viewMode == ViewMode.MANUSCRIPT) {
+    var variantSwipeDelta by remember(node.id, node.activeVariantIndex) { mutableStateOf(0f) }
+
+    val baseContainerModifier = if (viewMode == ViewMode.MANUSCRIPT) {
         Modifier
             .fillMaxWidth()
             .then(
@@ -3232,15 +3288,35 @@ private fun MessageTurnItem(
             .padding(14.dp)
     }
 
+    val containerModifier = if (node.variants.size > 1) {
+        baseContainerModifier.pointerInput(node.id, node.activeVariantIndex, node.variants.size) {
+            detectHorizontalDragGestures(
+                onDragStart = { variantSwipeDelta = 0f },
+                onHorizontalDrag = { _, dragAmount -> variantSwipeDelta += dragAmount },
+                onDragEnd = {
+                    if (variantSwipeDelta < -52.dp.toPx() && node.activeVariantIndex < node.variants.lastIndex) {
+                        onSelectVariant(node.activeVariantIndex + 1)
+                    } else if (variantSwipeDelta > 52.dp.toPx() && node.activeVariantIndex > 0) {
+                        onSelectVariant(node.activeVariantIndex - 1)
+                    }
+                    variantSwipeDelta = 0f
+                }
+            )
+        }
+    } else {
+        baseContainerModifier
+    }
+
     Column(modifier = containerModifier) {
-        // Turn Header & Branch/Swipe Bar
-        Row(
+        // Turn Header & Branch/Swipe Bar (FlowRow so Speaker/Model and Swipe/Thought pills never overlap on mobile!)
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.padding(top = 2.dp, end = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -3366,22 +3442,27 @@ private fun MessageTurnItem(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()) {
-                    Row(
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp, end = 6.dp)
+                        ) {
                             if (isActivelyThinkingThisNode) {
                                 KissStreamingPulseDot(color = p.accent)
                             }
                             BasicText(
-                                text = if (isActivelyThinkingThisNode) "Reasoning in progress…" else "Reasoning Trace (${countWordsFast(activeVar.thinkingSummary)} words)",
+                                text = if (isActivelyThinkingThisNode) "Thinking…" else "Thought (${countWordsFast(activeVar.thinkingSummary)} words)",
                                 style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                             )
                         }
                         SepiaButton(
-                            text = "Collapse ▲",
+                            text = "Hide ▲",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { manualThinkingToggle = false }
@@ -3452,9 +3533,13 @@ private fun MessageTurnItem(
                     minHeight = 120.dp,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     SepiaButton(
-                        text = "Save In-Place",
+                        text = "Save",
                         compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
@@ -3463,7 +3548,7 @@ private fun MessageTurnItem(
                         }
                     )
                     SepiaButton(
-                        text = "Save as Branch",
+                        text = "Save as New Version",
                         compact = true,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
@@ -3534,14 +3619,16 @@ private fun MessageTurnItem(
                                         style = p.uiBodyStyle.copy(color = p.accent)
                                     )
                                 }
-                                Row(
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     BasicText(
-                                        text = "🖼 ${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
-                                        style = p.uiLabelStyle
+                                        text = "${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
+                                        style = p.uiLabelStyle,
+                                        modifier = Modifier.padding(top = 4.dp)
                                     )
                                     val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (openTarget.isNotBlank()) {
@@ -3605,23 +3692,14 @@ private fun MessageTurnItem(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // 1-Tap Copy (Clean Text) & Copy MD (Raw Markdown)
+                    // Zen-by-Default Primary Actions: Copy, Redo (for AI), & More (⋯)
                     SepiaButton(
-                        text = if (copiedBadge == "txt") "✓ Copied Text" else "📋 Copy",
+                        text = if (copiedBadge == "txt") "✓ Copied" else "📋 Copy",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
                             clipboard.setText(AnnotatedString(stripMarkdownToPlainText(activeVar.content)))
                             copiedBadge = "txt"
-                        }
-                    )
-                    SepiaButton(
-                        text = if (copiedBadge == "md") "✓ Copied MD" else "📋 MD",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = {
-                            clipboard.setText(AnnotatedString(activeVar.content))
-                            copiedBadge = "md"
                         }
                     )
                     if (isAssistant) {
@@ -3631,24 +3709,9 @@ private fun MessageTurnItem(
                             style = SepiaButtonStyle.GHOST,
                             onClick = onRegenerate
                         )
-                        SepiaButton(
-                            text = "→ Continue",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onContinue
-                        )
                     }
                     SepiaButton(
-                        text = "✎ Edit",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = {
-                            editBuffer = activeVar.content
-                            isEditing = !isEditing
-                        }
-                    )
-                    SepiaButton(
-                        text = if (showMoreActions) "▾ Less" else "⋯ More",
+                        text = if (showMoreActions) "▾ Less" else "⋯",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showMoreActions = !showMoreActions }
@@ -3656,7 +3719,33 @@ private fun MessageTurnItem(
 
                     if (showMoreActions) {
                         SepiaButton(
-                            text = "⑂ Fork",
+                            text = if (copiedBadge == "md") "✓ Copied MD" else "📋 MD",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                clipboard.setText(AnnotatedString(activeVar.content))
+                                copiedBadge = "md"
+                            }
+                        )
+                        if (isAssistant) {
+                            SepiaButton(
+                                text = "→ Continue",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onContinue
+                            )
+                        }
+                        SepiaButton(
+                            text = "✎ Edit",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                editBuffer = activeVar.content
+                                isEditing = !isEditing
+                            }
+                        )
+                        SepiaButton(
+                            text = "⑂ Branch",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onForkHere

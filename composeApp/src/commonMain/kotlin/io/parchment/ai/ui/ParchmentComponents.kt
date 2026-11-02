@@ -17,6 +17,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,7 +40,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +51,19 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -119,33 +135,58 @@ enum class SepiaButtonStyle {
 }
 
 /**
- * Tactile KISS press-scale modifier using Compose Foundation spring physics.
+ * 2026 Tactile KISS Interactive Modifier:
+ * - Desktop Hover: Hand cursor, subtle micro-lift (`1.018f` scale, `-0.75.dp` Y-shift).
+ * - Mobile & Desktop Press: Spring compression (`0.945f` scale with bouncy return) + native Haptic Feedback.
  */
 @Composable
 fun Modifier.kissClickable(
     enabled: Boolean = true,
-    pressScale: Float = 0.96f,
+    pressScale: Float = 0.945f,
+    hoverScale: Float = 1.018f,
+    strongHaptic: Boolean = false,
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     onClick: () -> Unit
 ): Modifier {
-    val interactionSource = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
     val isPressed by interactionSource.collectIsPressedAsState()
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val targetScale = when {
+        !enabled -> 1f
+        isPressed -> pressScale
+        isHovered -> hoverScale
+        else -> 1f
+    }
     val scale by animateFloatAsState(
-        targetValue = if (isPressed && enabled) pressScale else 1f,
+        targetValue = targetScale,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMedium
         )
     )
+    val liftY by animateFloatAsState(
+        targetValue = if (isHovered && !isPressed && enabled) -1.2f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+    )
     return this
+        .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
+            translationY = liftY
         }
         .clickable(
             interactionSource = interactionSource,
             indication = null,
             enabled = enabled,
-            onClick = onClick
+            onClick = {
+                runCatching {
+                    haptics.performHapticFeedback(
+                        if (strongHaptic) HapticFeedbackType.LongPress else HapticFeedbackType.TextHandleMove
+                    )
+                }
+                onClick()
+            }
         )
 }
 
@@ -159,9 +200,12 @@ fun SepiaButton(
     compact: Boolean = false
 ) {
     val p = LocalParchmentPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isPressed by interactionSource.collectIsPressedAsState()
     val shape = RoundedCornerShape(if (compact) 7.dp else 8.dp)
 
-    val targetBg = when (style) {
+    val baseBg = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else p.border.copy(alpha = 0.55f)
         SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else p.border.copy(alpha = 0.55f)
         SepiaButtonStyle.OUTLINE -> if (enabled) p.cardBg else p.elevatedBg.copy(alpha = 0.4f)
@@ -169,24 +213,52 @@ fun SepiaButton(
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else p.border.copy(alpha = 0.55f)
     }
 
+    val targetBg = when {
+        !enabled -> baseBg
+        isPressed -> when (style) {
+            SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER -> baseBg.copy(alpha = 0.82f)
+            SepiaButtonStyle.OUTLINE -> p.accent.copy(alpha = 0.18f)
+            SepiaButtonStyle.GHOST -> p.accent.copy(alpha = 0.16f)
+        }
+        isHovered -> when (style) {
+            SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER -> baseBg.copy(alpha = 0.91f)
+            SepiaButtonStyle.OUTLINE -> p.accent.copy(alpha = 0.09f)
+            SepiaButtonStyle.GHOST -> p.accent.copy(alpha = 0.09f)
+        }
+        else -> baseBg
+    }
+
     val targetText = when (style) {
         SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER ->
             if (enabled) Color(0xFFFAF6EB) else p.mutedInk
-        SepiaButtonStyle.OUTLINE -> if (enabled) p.primaryInk else p.mutedInk.copy(alpha = 0.6f)
-        SepiaButtonStyle.GHOST -> if (enabled) p.narrationInk else p.mutedInk.copy(alpha = 0.5f)
+        SepiaButtonStyle.OUTLINE -> when {
+            !enabled -> p.mutedInk.copy(alpha = 0.6f)
+            isPressed || isHovered -> p.accent
+            else -> p.primaryInk
+        }
+        SepiaButtonStyle.GHOST -> when {
+            !enabled -> p.mutedInk.copy(alpha = 0.5f)
+            isPressed || isHovered -> p.accent
+            else -> p.narrationInk
+        }
     }
 
     val targetBorder = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else Color.Transparent
         SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else Color.Transparent
-        SepiaButtonStyle.OUTLINE -> p.border.copy(alpha = if (enabled) 0.8f else 0.4f)
-        SepiaButtonStyle.GHOST -> Color.Transparent
+        SepiaButtonStyle.OUTLINE -> when {
+            !enabled -> p.border.copy(alpha = 0.4f)
+            isPressed -> p.accent
+            isHovered -> p.accent.copy(alpha = 0.7f)
+            else -> p.border.copy(alpha = 0.8f)
+        }
+        SepiaButtonStyle.GHOST -> if (enabled && (isPressed || isHovered)) p.accent.copy(alpha = 0.35f) else Color.Transparent
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else Color.Transparent
     }
 
-    val bgColor by animateColorAsState(targetBg, tween(140))
-    val textColor by animateColorAsState(targetText, tween(140))
-    val borderColor by animateColorAsState(targetBorder, tween(140))
+    val bgColor by animateColorAsState(targetBg, tween(if (isPressed) 40 else 130))
+    val textColor by animateColorAsState(targetText, tween(if (isPressed) 40 else 130))
+    val borderColor by animateColorAsState(targetBorder, tween(if (isPressed) 40 else 130))
 
     val win = LocalParchmentWindowSize.current
     val parsed = remember(text) { parseKissLabelIcons(text) }
@@ -205,12 +277,17 @@ fun SepiaButton(
 
     Box(
         modifier = modifier
-            .kissClickable(enabled = enabled, onClick = onClick)
+            .kissClickable(
+                enabled = enabled,
+                strongHaptic = style == SepiaButtonStyle.PRIMARY || style == SepiaButtonStyle.DANGER,
+                interactionSource = interactionSource,
+                onClick = onClick
+            )
             .clip(shape)
             .background(bgColor)
             .then(
                 if (borderColor != Color.Transparent) {
-                    Modifier.border(0.85.dp, borderColor, shape)
+                    Modifier.border(if (isPressed || isHovered) 1.dp else 0.85.dp, borderColor, shape)
                 } else Modifier
             )
             .padding(
@@ -266,28 +343,40 @@ fun SepiaChip(
     modifier: Modifier = Modifier
 ) {
     val p = LocalParchmentPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isPressed by interactionSource.collectIsPressedAsState()
     val shape = RoundedCornerShape(7.dp)
     val bg by animateColorAsState(
-        targetValue = if (selected) p.accent.copy(alpha = 0.14f) else p.cardBg.copy(alpha = 0.75f),
-        animationSpec = tween(150)
+        targetValue = when {
+            isPressed -> p.accent.copy(alpha = 0.24f)
+            selected -> p.accent.copy(alpha = 0.15f)
+            isHovered -> p.accent.copy(alpha = 0.09f)
+            else -> p.cardBg.copy(alpha = 0.78f)
+        },
+        animationSpec = tween(if (isPressed) 40 else 140)
     )
     val borderCol by animateColorAsState(
-        targetValue = if (selected) p.accent else p.border.copy(alpha = 0.65f),
-        animationSpec = tween(150)
+        targetValue = when {
+            selected || isPressed -> p.accent
+            isHovered -> p.accent.copy(alpha = 0.65f)
+            else -> p.border.copy(alpha = 0.65f)
+        },
+        animationSpec = tween(if (isPressed) 40 else 140)
     )
     val txtCol by animateColorAsState(
-        targetValue = if (selected) p.accent else p.narrationInk,
-        animationSpec = tween(150)
+        targetValue = if (selected || isPressed || isHovered) p.accent else p.narrationInk,
+        animationSpec = tween(if (isPressed) 40 else 140)
     )
 
     val parsed = remember(label) { parseKissLabelIcons(label) }
 
     Box(
         modifier = modifier
-            .kissClickable(onClick = onClick)
+            .kissClickable(interactionSource = interactionSource, onClick = onClick)
             .clip(shape)
             .background(bg)
-            .border(0.85.dp, borderCol, shape)
+            .border(if (selected || isHovered) 1.dp else 0.85.dp, borderCol, shape)
             .padding(horizontal = 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -401,13 +490,15 @@ fun SepiaTextField(
     borderless: Boolean = false,
     minHeight: Dp = 36.dp,
     maxHeight: Dp = 220.dp,
-    maxLines: Int = if (singleLine) 1 else 8
+    maxLines: Int = if (singleLine) 1 else 8,
+    onEnterKeySend: ((isCtrlOrMetaPressed: Boolean, isShiftPressed: Boolean) -> Boolean)? = null
 ) {
     val p = LocalParchmentPalette.current
     val shape = RoundedCornerShape(8.dp)
     val textStyle = if (monospace) p.monoStyle else p.uiBodyStyle
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
+    var consumeNextEnterKeyUp by remember { mutableStateOf(false) }
 
     val borderColor by animateColorAsState(
         targetValue = when {
@@ -436,7 +527,35 @@ fun SepiaTextField(
             textStyle = textStyle,
             interactionSource = interactionSource,
             cursorBrush = SolidColor(p.accent),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (onEnterKeySend != null) {
+                        Modifier.onPreviewKeyEvent { keyEvent ->
+                            val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                            if (!isEnter || keyEvent.isAltPressed) return@onPreviewKeyEvent false
+                            when (keyEvent.type) {
+                                KeyEventType.KeyDown -> {
+                                    val consumed = onEnterKeySend(
+                                        keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
+                                        keyEvent.isShiftPressed
+                                    )
+                                    consumeNextEnterKeyUp = consumed
+                                    consumed
+                                }
+                                KeyEventType.KeyUp -> {
+                                    if (consumeNextEnterKeyUp) {
+                                        consumeNextEnterKeyUp = false
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                else -> false
+                            }
+                        }
+                    } else Modifier
+                ),
             decorationBox = { innerTextField ->
                 Box(
                     modifier = Modifier
@@ -687,18 +806,41 @@ fun SepiaToggleRow(
     modifier: Modifier = Modifier
 ) {
     val p = LocalParchmentPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val rowBg by animateColorAsState(
+        targetValue = when {
+            isPressed -> p.accent.copy(alpha = 0.12f)
+            isHovered -> p.accent.copy(alpha = 0.06f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(if (isPressed) 40 else 130)
+    )
+    val shape = RoundedCornerShape(7.dp)
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 8.dp),
+            .clip(shape)
+            .background(rowBg)
+            .kissClickable(
+                pressScale = 0.99f,
+                hoverScale = 1f,
+                interactionSource = interactionSource,
+                onClick = { onCheckedChange(!checked) }
+            )
+            .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
             BasicText(
                 text = title,
-                style = p.uiBodyStyle.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                style = p.uiBodyStyle.copy(
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isHovered || isPressed) p.accent else p.primaryInk
+                )
             )
             if (subtitle.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
