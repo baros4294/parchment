@@ -2,12 +2,25 @@ package io.parchment.ai
 
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.CharacterOrScenarioCard
+import io.parchment.ai.model.ChatSession
+import io.parchment.ai.model.MessageNode
+import io.parchment.ai.model.MessageRole
+import io.parchment.ai.model.MessageVariant
+import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
+import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
+import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -237,5 +250,180 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(compactedOld.startsWith("[Compacted step #1"), "Old verbose tool output (>8 steps ago) must be compacted")
         val recentUnchanged = WorkspaceHarness.compactStaleToolOutputText(12, 15, "fs_read", longOutput)
         assertEquals(longOutput, recentUnchanged, "Recent tool output (<=8 steps ago) must remain verbatim")
+    }
+
+    @Test
+    fun testInterruptedThinkingAndToolTurnPreservationAcrossAllProtocols() {
+        val session = ChatSession(
+            id = "sess-test-proto",
+            title = "Protocol Test",
+            createdAt = 1L,
+            updatedAt = 2L,
+            profileId = "prof-1"
+        )
+
+        val userTurn1 = MessageNode(
+            id = "u1",
+            role = MessageRole.USER,
+            variants = listOf(
+                MessageVariant(
+                    id = "v-u1",
+                    content = "Inspect the project structure.",
+                    attachments = listOf(
+                        PromptAttachment(
+                            id = "att-pdf",
+                            fileName = "spec.pdf",
+                            mimeType = "application/pdf",
+                            base64Data = "JVBERi0xLjcK"
+                        )
+                    )
+                )
+            )
+        )
+
+        // Assistant turn interrupted after thinking & executing a tool (content has an inline interruption notice, no prose yet)
+        val interruptedAssistantTurn = MessageNode(
+            id = "a1",
+            role = MessageRole.ASSISTANT,
+            variants = listOf(
+                MessageVariant(
+                    id = "v-a1",
+                    content = "*[Stream paused/interrupted: socket timeout — tap '→ Continue' or reply 'continue' to resume seamlessly]*",
+                    thinkingSummary = "I should list the workspace directory first to see the project layout.",
+                    thinkingSignature = "sig_argon_crypto_991",
+                    toolCalls = listOf(
+                        ToolCallRecord(
+                            id = "call_fs_1",
+                            name = "fs_list",
+                            argumentsJson = """{"path":""}""",
+                            resultText = "composeApp/\nbuild.gradle.kts",
+                            isError = false,
+                            thoughtSignature = "sig_argon_crypto_991"
+                        )
+                    )
+                )
+            )
+        )
+
+        val userTurn2 = MessageNode(
+            id = "u2",
+            role = MessageRole.USER,
+            variants = listOf(
+                MessageVariant(
+                    id = "v-u2",
+                    content = "continue"
+                )
+            )
+        )
+
+        val rawHistory = listOf(userTurn1, interruptedAssistantTurn, userTurn2)
+        val sanitized = AiProviderEngine.sanitizeContextNodes(rawHistory)
+        assertEquals(3, sanitized.size, "Interrupted assistant turn with thinking/tools MUST NOT be dropped by sanitizeContextNodes")
+        assertEquals("", AiProviderEngine.stripInlineErrorNotices(interruptedAssistantTurn.activeVariant.content))
+
+        // 1. Verify Gemini Interactions API stateless steps array
+        val interactionsSteps = AiProviderEngine.buildGeminiInteractionsTurnsArray(sanitized, session, "")
+        val stepTypes = interactionsSteps.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull }
+        assertEquals(
+            listOf("user_input", "thought", "function_call", "function_result", "user_input"),
+            stepTypes,
+            "Gemini Interactions input must contain user_input -> thought -> function_call -> function_result -> user_input"
+        )
+        // Check PDF attachment is mapped to "document", not "image"
+        val firstUserContent = interactionsSteps[0].jsonObject["content"]!!.jsonArray
+        assertEquals("document", firstUserContent[1].jsonObject["type"]?.jsonPrimitive?.contentOrNull)
+        // Check thought step preserves both signature and summary
+        val thoughtStep = interactionsSteps[1].jsonObject
+        assertEquals("sig_argon_crypto_991", thoughtStep["signature"]?.jsonPrimitive?.contentOrNull)
+        assertTrue(thoughtStep["summary"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content.contains("project layout"))
+        // Check function_result step wraps result in {"result": ...}
+        val fnResultStep = interactionsSteps[3].jsonObject
+        assertEquals("call_fs_1", fnResultStep["call_id"]?.jsonPrimitive?.contentOrNull)
+        assertEquals(
+            "composeApp/\nbuild.gradle.kts",
+            fnResultStep["result"]?.jsonObject?.get("result")?.jsonPrimitive?.contentOrNull
+        )
+
+        // 2. Verify Google GenerateContent (:streamGenerateContent) contents
+        val genContents = AiProviderEngine.buildGeminiGenerateContentContents(sanitized, session, "")
+        assertTrue(genContents.size >= 3, "GenerateContent must keep user1, model thought+functionCall, and user functionResponse+continue separated")
+        val firstUserText = genContents[0].jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
+        assertEquals("Inspect the project structure.", firstUserText, "First user prompt must not be concatenated with 'continue'")
+
+        // 3. Verify OpenAI Responses API (/v1/responses) input items
+        val responsesItems = AiProviderEngine.buildOpenAiResponsesInputArray(sanitized, session, "")
+        val respTypes = responsesItems.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: it.jsonObject["role"]?.jsonPrimitive?.contentOrNull }
+        assertEquals(listOf("user", "function_call", "function_call_output", "user"), respTypes)
+        val firstRespUserContent = responsesItems[0].jsonObject["content"]!!.jsonArray
+        assertEquals("input_file", firstRespUserContent[1].jsonObject["type"]?.jsonPrimitive?.contentOrNull)
+
+        // 4. Verify OpenAI Chat Completions (/v1/chat/completions) messages
+        val chatMsgs = AiProviderEngine.buildOpenAiChatCompletionsMessages(sanitized, session, "Sys", "")
+        val chatRoles = chatMsgs.map { it.jsonObject["role"]?.jsonPrimitive?.contentOrNull }
+        assertEquals(listOf("system", "user", "assistant", "tool", "user"), chatRoles)
+
+        // 5. Verify Anthropic Messages (/v1/messages) base messages
+        val anthropicMsgs = AiProviderEngine.buildAnthropicBaseMessages(sanitized, session, "")
+        assertEquals(listOf("user", "assistant", "user"), anthropicMsgs.map { it.first })
+        assertEquals("document", anthropicMsgs[0].second[0]["type"]?.jsonPrimitive?.contentOrNull)
+        assertEquals("thinking", anthropicMsgs[1].second[0]["type"]?.jsonPrimitive?.contentOrNull)
+        assertEquals("tool_use", anthropicMsgs[1].second[1]["type"]?.jsonPrimitive?.contentOrNull)
+        assertEquals("tool_result", anthropicMsgs[2].second[0]["type"]?.jsonPrimitive?.contentOrNull)
+
+        // 6. Verify adjacent user messages are always separated by \n\n if an assistant message between them is muted
+        val mutedHistory = AiProviderEngine.sanitizeContextNodes(
+            listOf(userTurn1, interruptedAssistantTurn.copy(includedInContext = false), userTurn2)
+        )
+        val mergedInteractions = AiProviderEngine.buildGeminiInteractionsTurnsArray(mutedHistory, session, "")
+        val mergedUserTxt = mergedInteractions[0].jsonObject["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
+        assertEquals("Inspect the project structure.\n\ncontinue", mergedUserTxt)
+
+        // 7. Verify omp-inspired 10x 60s patient auto-retry configuration, error classification, and tool intent telemetry
+        assertEquals(10, AiProviderEngine.MAX_PRE_TOKEN_RETRIES, "omp-inspired patient retry must allow 10 attempts")
+        assertEquals(60, AiProviderEngine.RETRY_WAIT_SECONDS, "omp-inspired patient retry must wait 60s per attempt")
+        assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 429: Too Many Requests")))
+        assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 524: A timeout occurred")))
+        assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("Upstream proxy reset connection")))
+        assertFalse(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 401: invalid_api_key")))
+        assertFalse(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 403: permission_denied")))
+        assertEquals(
+            "Reading src/Main.kt (lines 10..59)",
+            WorkspaceHarness.describeToolCallIntent("fs_read", """{"path":"src/Main.kt","start_line":10,"max_lines":50}""")
+        )
+    }
+
+    @Test
+    fun testShellExecLargeOutputAndStdinEofNoDeadlock() {
+        val tempRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-shell-${PlatformBridge.currentTimeMillis()}"
+        // Ensure workspace directory exists
+        WorkspaceHarness.executeToolCall(
+            workspaceRoot = tempRoot,
+            mode = WorkspaceMode.READ_WRITE,
+            callId = "call_init",
+            toolName = "fs_write",
+            argumentsJson = """{"path":"marker.txt","content":"ok"}"""
+        )
+        try {
+            // Emit >80 KB of stdout lines (>20x the 4 KB Windows pipe buffer) to prove concurrent pipe draining never deadlocks
+            val isWin = !PlatformBridge.isAndroid && PlatformBridge.platformName.lowercase().contains("win")
+            val cmd = if (isWin) {
+                "1..2200 | ForEach-Object { \"Line_\" + ${'$'}_ + \"_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\" }"
+            } else {
+                "seq 1 2200 | while read i; do echo \"Line_${'$'}{i}_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\"; done"
+            }
+            val res = PlatformBridge.workspaceShellExec(tempRoot, cmd, timeoutSeconds = 15)
+            assertTrue(res.isSuccess, "workspaceShellExec must not deadlock on >64 KB stdout: ${res.exceptionOrNull()?.message}")
+            val out = res.getOrThrow()
+            assertTrue(out.startsWith("Exit Code: 0"), "Expected Exit Code: 0, got: ${out.take(120)}")
+            assertTrue(out.contains("Line_1_"), "Output should contain initial lines")
+        } finally {
+            WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_clean",
+                toolName = "fs_write",
+                argumentsJson = """{"path":"marker.txt","content":""}"""
+            )
+        }
     }
 }

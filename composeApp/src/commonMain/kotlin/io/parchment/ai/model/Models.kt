@@ -132,7 +132,8 @@ data class ToolCallRecord(
     val name: String,
     val argumentsJson: String,
     val resultText: String = "",
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val thoughtSignature: String = ""
 )
 
 @Serializable

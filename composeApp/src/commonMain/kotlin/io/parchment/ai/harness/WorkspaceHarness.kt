@@ -401,6 +401,36 @@ object WorkspaceHarness {
         }
     }
 
+
+    /**
+     * Formats a concise, present-participle intent description (inspired by `omp`) for live UI status telemetry
+     * while a workspace or goal tool is executing.
+     */
+    fun describeToolCallIntent(toolName: String, argumentsJson: String): String {
+        val args = runCatching {
+            json.parseToJsonElement(argumentsJson.ifBlank { "{}" }).jsonObject
+        }.getOrElse { JsonObject(emptyMap()) }
+        fun strArg(key: String): String = args[key]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+
+        return when (toolName) {
+            "fs_read" -> {
+                val path = strArg("path").ifBlank { "file" }
+                val start = args["start_line"]?.jsonPrimitive?.intOrNull ?: 1
+                val max = args["max_lines"]?.jsonPrimitive?.intOrNull ?: 250
+                "Reading $path (lines $start..${start + max - 1})"
+            }
+            "fs_edit" -> "Editing ${strArg("path").ifBlank { "file" }}"
+            "fs_write" -> "Writing ${strArg("path").ifBlank { "file" }}"
+            "fs_list" -> "Listing workspace ${strArg("path").ifBlank { "root" }}"
+            "fs_search" -> "Searching workspace for '${strArg("query").take(36)}'"
+            "shell_exec" -> "Running shell: ${strArg("command").lineSequence().firstOrNull()?.take(52).orEmpty()}"
+            "todo_write" -> "Updating task checklist"
+            "goal_complete" -> "Verifying & completing goal"
+            "agent_memory" -> "Updating PARCHMENT_MEMORY.md (${strArg("action").ifBlank { "read" }})"
+            "dice_roll" -> "Rolling ${strArg("expression").ifBlank { "1d20" }}"
+            else -> "Executing $toolName"
+        }
+    }
     /**
      * Executes a single tool call requested by the model inside the sandboxed workspace directory
      * (or executes workspace-independent goal/dice tools even when no folder is mounted).
@@ -746,11 +776,11 @@ object WorkspaceHarness {
                 }
                 "[Harness Work-Check — Goal Incomplete (${gs.completedCount}/${gs.todos.size} done)]:\n" +
                     "You paused before completing all items in your checklist:\n$remainingList\n\n" +
-                    "Continue executing the next incomplete step now, update statuses with `todo_write` as you verify each step, and call `goal_complete` once everything is finished."
+                    "Continue executing the next incomplete step now. Verify your work (e.g. inspect modified files or run checks) before marking each step `completed` with `todo_write`, and call `goal_complete` only once 100% of acceptance criteria are verified."
             } else {
                 "[Harness Work-Check — Goal Active]:\n" +
                     "Objective: \"${gs.goalObjective}\"\n" +
-                    "Break this goal into verifiable steps using `todo_write`, execute each step thoroughly, and call `goal_complete` when 100% finished."
+                    "Break this goal into verifiable steps using `todo_write` (mark step 1 `in_progress`), execute and verify each step thoroughly, and call `goal_complete` when 100% finished."
             }
         }
     }

@@ -392,12 +392,42 @@ actual object PlatformBridge {
         pb.directory(rootDir)
         pb.redirectErrorStream(true)
         val proc = pb.start()
+        runCatching { proc.outputStream.close() }
+
+        val outputBuf = StringBuilder()
+        val readerThread = Thread {
+            runCatching {
+                proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    val chunk = CharArray(4096)
+                    while (true) {
+                        val readCount = reader.read(chunk)
+                        if (readCount < 0) break
+                        synchronized(outputBuf) {
+                            if (outputBuf.length < 48_000) {
+                                val allowed = (48_000 - outputBuf.length).coerceAtMost(readCount)
+                                outputBuf.append(chunk, 0, allowed)
+                            }
+                        }
+                    }
+                }
+            }
+        }.apply {
+            isDaemon = true
+            name = "parchment-android-shell-reader"
+            start()
+        }
+
         val finished = proc.waitFor(timeoutSeconds.coerceIn(1, 120).toLong(), java.util.concurrent.TimeUnit.SECONDS)
         if (!finished) {
             proc.destroyForcibly()
-            error("Command timed out after $timeoutSeconds seconds.")
+            runCatching { proc.inputStream.close() }
+            runCatching { readerThread.join(1000L) }
+            val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
+            val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(3000)}" else ""
+            error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
         }
-        val output = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
+        runCatching { readerThread.join(1500L) }
+        val output = synchronized(outputBuf) { outputBuf.toString().trim() }
         "Exit Code: ${proc.exitValue()}\n${output.take(6000)}"
     }
 

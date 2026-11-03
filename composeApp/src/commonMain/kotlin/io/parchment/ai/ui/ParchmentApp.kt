@@ -717,23 +717,33 @@ fun ParchmentApp() {
             }
         }
 
+        val existingTargetVariant = sessionSnap.messages
+            .find { it.id == targetAssistantNodeId }
+            ?.variants
+            ?.find { it.id == targetVariantId }
+        val cleanContinuePrefix = AiProviderEngine.stripInlineErrorNotices(continuePrefix)
+        val initialThinking = existingTargetVariant?.thinkingSummary.orEmpty()
+        val initialSignature = existingTargetVariant?.thinkingSignature.orEmpty()
+        val initialTools = existingTargetVariant?.toolCalls.orEmpty()
+        val initialMedia = existingTargetVariant?.mediaItems.orEmpty()
+        val initialDurationMs = existingTargetVariant?.thinkingDurationMs ?: 0L
+
         val newJob = appProcessScope.launch {
-            val networkContentTarget = StringBuilder(continuePrefix)
-            val networkThinkingTarget = StringBuilder()
-            val signatureSb = StringBuilder()
-            var displayedContentLen = continuePrefix.length
-            var displayedThinkingLen = 0
-            val accumulatedTools = mutableListOf<ToolCallRecord>()
-            var latestGoalTracker: GoalTrackerState? = null
-            val accumulatedMedia = mutableListOf<GeneratedMediaItem>()
-            var localInteractionId = ""
+            val networkContentTarget = StringBuilder(cleanContinuePrefix)
+            val networkThinkingTarget = StringBuilder(initialThinking)
+            val signatureSb = StringBuilder(initialSignature)
+            var displayedContentLen = cleanContinuePrefix.length
+            var displayedThinkingLen = initialThinking.length
+            val accumulatedTools = initialTools.toMutableList()
+            var latestGoalTracker: GoalTrackerState? = existingTargetVariant?.goalTracker
+            val accumulatedMedia = initialMedia.toMutableList()
+            var localInteractionId = existingTargetVariant?.providerInteractionId.orEmpty()
             var rawReq = ""
             var rawResp = ""
             var networkDone = false
             var thinkingStartMs = 0L
-            var thinkingDurationMs = 0L
+            var thinkingDurationMs = initialDurationMs
             var lastDiskCheckpointMs = PlatformBridge.currentTimeMillis()
-
             fun patchVariantMemory(updater: (MessageVariant) -> MessageVariant) {
                 updateActiveSessionInMemoryOnly(sessionId) { sess ->
                     sess.copy(
@@ -857,7 +867,11 @@ fun ParchmentApp() {
                     profile = effectiveProfileForApi,
                     session = mergedSessionForApi,
                     historyNodes = effectiveHistory,
-                    continueFromAssistantPrefix = continuePrefix
+                    continueFromAssistantPrefix = cleanContinuePrefix,
+                    initialThinking = initialThinking,
+                    initialSignature = initialSignature,
+                    initialToolCalls = initialTools,
+                    initialMediaItems = initialMedia
                 ).collect { update ->
                     when (update) {
                         is StreamUpdate.Status -> {
@@ -970,17 +984,27 @@ fun ParchmentApp() {
                             networkDone = true
                             pacerJob.cancel()
                             val partialProse = networkContentTarget.toString()
+                            val hasPartialReasoningOrTools = networkThinkingTarget.isNotEmpty() || accumulatedTools.isNotEmpty()
                             flushCheckpointToDisk(isFinal = true) { v ->
-                                val errorNotice = if (partialProse.isBlank()) {
-                                    "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL (`${effectiveProfileForApi.baseUrl}`), or Model ID (`$modelName`) in **⚙ Settings → Providers**."
-                                } else {
-                                    "$partialProse\n\n*[Stream paused/interrupted: ${update.message} — tap '→ Continue' to resume seamlessly]*"
+                                val errorNotice = when {
+                                    partialProse.isNotBlank() -> {
+                                        "$partialProse\n\n*[Stream paused/interrupted: ${update.message} — tap '→ Continue' to resume seamlessly]*"
+                                    }
+                                    hasPartialReasoningOrTools -> {
+                                        "*[Stream paused/interrupted: ${update.message} — tap '→ Continue' or reply 'continue' to resume seamlessly]*"
+                                    }
+                                    else -> {
+                                        "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL (`${effectiveProfileForApi.baseUrl}`), or Model ID (`$modelName`) in **⚙ Settings → Providers**."
+                                    }
                                 }
                                 v.copy(
                                     content = errorNotice,
                                     thinkingSummary = networkThinkingTarget.toString(),
                                     thinkingSignature = signatureSb.toString(),
                                     thinkingDurationMs = thinkingDurationMs,
+                                    toolCalls = accumulatedTools.toList(),
+                                    goalTracker = latestGoalTracker ?: v.goalTracker,
+                                    mediaItems = accumulatedMedia.toList(),
                                     isStreaming = false,
                                     rawRequestPreview = rawReq,
                                     rawResponsePreview = update.rawDetails.ifBlank { rawResp }.take(4096)
@@ -998,9 +1022,22 @@ fun ParchmentApp() {
                 networkDone = true
                 pacerJob.cancel()
                 val partialProse = networkContentTarget.toString()
+                val hasPartialReasoningOrTools = networkThinkingTarget.isNotEmpty() || accumulatedTools.isNotEmpty()
                 flushCheckpointToDisk(isFinal = true) { v ->
+                    val errLabel = t.message ?: t::class.simpleName ?: "Unknown error"
+                    val notice = when {
+                        partialProse.isNotBlank() -> "$partialProse\n\n*[Interrupted: $errLabel]*"
+                        hasPartialReasoningOrTools -> "*[Interrupted: $errLabel — tap '→ Continue' or reply 'continue' to resume]*"
+                        else -> "**[Stream Error: $errLabel]**"
+                    }
                     v.copy(
-                        content = if (partialProse.isBlank()) "**[Stream Error: ${t.message ?: t::class.simpleName}]**" else "$partialProse\n\n*[Interrupted: ${t.message}]*",
+                        content = notice,
+                        thinkingSummary = networkThinkingTarget.toString(),
+                        thinkingSignature = signatureSb.toString(),
+                        thinkingDurationMs = thinkingDurationMs,
+                        toolCalls = accumulatedTools.toList(),
+                        goalTracker = latestGoalTracker ?: v.goalTracker,
+                        mediaItems = accumulatedMedia.toList(),
                         isStreaming = false
                     )
                 }
@@ -2300,7 +2337,7 @@ fun ParchmentApp() {
                                         val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return@ManuscriptViewport
                                         if (targetNode.role != MessageRole.ASSISTANT) return@ManuscriptViewport
                                         val historyBefore = activeSession.messages.subList(0, nodeIndex)
-                                        val existingText = targetNode.activeVariant.content
+                                        val existingText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content)
                                         triggerGeneration(
                                             sessionId = activeSession.id,
                                             historyForCall = historyBefore,

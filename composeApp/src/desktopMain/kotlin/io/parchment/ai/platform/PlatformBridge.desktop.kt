@@ -452,19 +452,53 @@ actual object PlatformBridge {
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
         val pb = if (isWin) {
-            ProcessBuilder("powershell.exe", "-NoProfile", "-Command", command)
+            val utf16LeBytes = command.toByteArray(Charsets.UTF_16LE)
+            val encodedCommand = java.util.Base64.getEncoder().encodeToString(utf16LeBytes)
+            ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
         } else {
             ProcessBuilder("sh", "-c", command)
         }
         pb.directory(rootDir)
         pb.redirectErrorStream(true)
         val proc = pb.start()
+        // Close stdin immediately so child CLI processes checking piped stdin never hang waiting for EOF
+        runCatching { proc.outputStream.close() }
+
+        val outputBuf = StringBuilder()
+        val readerThread = Thread {
+            runCatching {
+                proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    val chunk = CharArray(4096)
+                    while (true) {
+                        val readCount = reader.read(chunk)
+                        if (readCount < 0) break
+                        synchronized(outputBuf) {
+                            if (outputBuf.length < 64_000) {
+                                val allowed = (64_000 - outputBuf.length).coerceAtMost(readCount)
+                                outputBuf.append(chunk, 0, allowed)
+                            }
+                        }
+                    }
+                }
+            }
+        }.apply {
+            isDaemon = true
+            name = "parchment-shell-exec-reader"
+            start()
+        }
+
         val finished = proc.waitFor(timeoutSeconds.coerceIn(1, 300).toLong(), java.util.concurrent.TimeUnit.SECONDS)
         if (!finished) {
+            runCatching { proc.descendants().forEach { it.destroyForcibly() } }
             proc.destroyForcibly()
-            error("Command timed out after $timeoutSeconds seconds.")
+            runCatching { proc.inputStream.close() }
+            runCatching { readerThread.join(1500L) }
+            val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
+            val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(4000)}" else ""
+            error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
         }
-        val output = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
+        runCatching { readerThread.join(2000L) }
+        val output = synchronized(outputBuf) { outputBuf.toString().trim() }
         "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
     }
 
@@ -779,6 +813,8 @@ actual object PlatformBridge {
                         "-Command", ps
                     ).start()
                     activeTtsProcess = proc
+                    runCatching { proc.outputStream.close() }
+                    runCatching { proc.inputStream.bufferedReader(Charsets.UTF_8).readText() }
                     proc.waitFor()
                     tempTextFile.delete()
                 }
@@ -823,8 +859,9 @@ actual object PlatformBridge {
                     "-Command", ps
                 ).start()
                 activeSttProcess = proc
+                runCatching { proc.outputStream.close() }
                 val output = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
-                proc.waitFor()
+                proc.waitFor(18L, java.util.concurrent.TimeUnit.SECONDS)
                 activeSttProcess = null
                 if (output.isNotEmpty()) {
                     onRecognizedText(output)
