@@ -213,14 +213,22 @@ object OtaUpdateEngine {
     }.flowOn(Dispatchers.Default)
 
     fun compareVersions(remote: String, local: String): Int {
-        val rParts = remote.split('.', '-').mapNotNull { it.toIntOrNull() }
-        val lParts = local.split('.', '-').mapNotNull { it.toIntOrNull() }
+        val rMain = remote.substringBefore('-').trim()
+        val lMain = local.substringBefore('-').trim()
+        val rPre = remote.substringAfter('-', "").trim()
+        val lPre = local.substringAfter('-', "").trim()
+
+        val rParts = rMain.split('.').mapNotNull { it.toIntOrNull() }
+        val lParts = lMain.split('.').mapNotNull { it.toIntOrNull() }
         val maxLen = maxOf(rParts.size, lParts.size)
         for (i in 0 until maxLen) {
             val r = rParts.getOrElse(i) { 0 }
             val l = lParts.getOrElse(i) { 0 }
             if (r != l) return r.compareTo(l)
         }
-        return remote.compareTo(local)
+        // In SemVer, a stable release (no pre-release suffix) is newer than a pre-release of the same version
+        if (rPre.isEmpty() && lPre.isNotEmpty()) return 1
+        if (rPre.isNotEmpty() && lPre.isEmpty()) return -1
+        return rPre.compareTo(lPre)
     }
 }

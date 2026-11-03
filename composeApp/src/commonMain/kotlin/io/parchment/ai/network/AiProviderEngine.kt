@@ -67,6 +67,7 @@ sealed class StreamUpdate {
     data class Completed(
         val fullContent: String,
         val fullThinking: String,
+        val trailingThinking: String = "",
         val thinkingSignature: String,
         val toolCalls: List<ToolCallRecord>,
         val goalTracker: GoalTrackerState?,
@@ -105,10 +106,10 @@ object AiProviderEngine {
     ) {
         val cleanReason = reasonSummary.lineSequence().firstOrNull()?.trim()?.take(90).orEmpty()
         for (remaining in waitSeconds downTo 1) {
-            onStatus("⏳ Auto-retrying ($attempt/$maxAttempts in ${remaining}s) — $cleanReason")
+            onStatus("Auto-retrying ($attempt/$maxAttempts in ${remaining}s) — $cleanReason")
             delay(1000L)
         }
-        onStatus("↻ Retrying now (attempt $attempt/$maxAttempts)…")
+        onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
     }
     private val json = Json {
         ignoreUnknownKeys = true
@@ -164,6 +165,7 @@ object AiProviderEngine {
         val cleanInitialPrefix = stripInlineErrorNotices(continueFromAssistantPrefix)
         val contentBuilder = StringBuilder(cleanInitialPrefix)
         val thinkingBuilder = StringBuilder(initialThinking)
+        val currentStepThinkingBuilder = StringBuilder()
         val signatureBuilder = StringBuilder(initialSignature)
         val executedTools = initialToolCalls.toMutableList()
         val generatedMedia = initialMediaItems.toMutableList()
@@ -181,6 +183,16 @@ object AiProviderEngine {
             if (current == sig || current.endsWith(sig)) return ""
             signatureBuilder.append(sig)
             return sig
+        }
+
+        fun attachStepThinkingToToolCall(tc: ToolCallRecord): ToolCallRecord {
+            val stepThink = currentStepThinkingBuilder.toString().trim()
+            currentStepThinkingBuilder.clear()
+            return if (tc.precedingThinking.isBlank() && stepThink.isNotEmpty()) {
+                tc.copy(precedingThinking = stepThink)
+            } else {
+                tc
+            }
         }
         val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
         val circuitBreaker = WorkspaceHarness.LoopCircuitBreaker(
@@ -259,6 +271,7 @@ object AiProviderEngine {
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                     onThinking = { delta, sig ->
                                         thinkingBuilder.append(delta)
+                                        currentStepThinkingBuilder.append(delta)
                                         val uniqueSig = appendSignatureIfUnique(sig)
                                         if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
                                             emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
@@ -277,8 +290,9 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        executedTools.add(tc)
-                                        emit(StreamUpdate.ToolCallEvent(tc))
+                                        val enriched = attachStepThinkingToToolCall(tc)
+                                        executedTools.add(enriched)
+                                        emit(StreamUpdate.ToolCallEvent(enriched))
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -313,6 +327,7 @@ object AiProviderEngine {
                                         onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                         onThinking = { delta, sig ->
                                             thinkingBuilder.append(delta)
+                                            currentStepThinkingBuilder.append(delta)
                                             val uniqueSig = appendSignatureIfUnique(sig)
                                             if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
                                                 emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
@@ -331,8 +346,9 @@ object AiProviderEngine {
                                             emit(StreamUpdate.MediaGenerated(item))
                                         },
                                         onToolCall = { tc ->
-                                            executedTools.add(tc)
-                                            emit(StreamUpdate.ToolCallEvent(tc))
+                                            val enriched = attachStepThinkingToToolCall(tc)
+                                            executedTools.add(enriched)
+                                            emit(StreamUpdate.ToolCallEvent(enriched))
                                         },
                                         onRawWire = { req, resp ->
                                             lastRawReq = req
@@ -391,6 +407,7 @@ object AiProviderEngine {
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                     onThinking = { delta ->
                                         thinkingBuilder.append(delta)
+                                        currentStepThinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onContent = { delta ->
@@ -406,8 +423,9 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        executedTools.add(tc)
-                                        emit(StreamUpdate.ToolCallEvent(tc))
+                                        val enriched = attachStepThinkingToToolCall(tc)
+                                        executedTools.add(enriched)
+                                        emit(StreamUpdate.ToolCallEvent(enriched))
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -491,6 +509,7 @@ object AiProviderEngine {
                                         onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                         onThinking = { delta ->
                                             thinkingBuilder.append(delta)
+                                            currentStepThinkingBuilder.append(delta)
                                             emit(StreamUpdate.ThinkingDelta(delta))
                                         },
                                         onContent = { delta ->
@@ -506,8 +525,9 @@ object AiProviderEngine {
                                             emit(StreamUpdate.MediaGenerated(item))
                                         },
                                         onToolCall = { tc ->
-                                            executedTools.add(tc)
-                                            emit(StreamUpdate.ToolCallEvent(tc))
+                                            val enriched = attachStepThinkingToToolCall(tc)
+                                            executedTools.add(enriched)
+                                            emit(StreamUpdate.ToolCallEvent(enriched))
                                         },
                                         onRawWire = { req, resp ->
                                             lastRawReq = req
@@ -548,6 +568,7 @@ object AiProviderEngine {
                                 onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                 onThinking = { delta, sig ->
                                     thinkingBuilder.append(delta)
+                                    currentStepThinkingBuilder.append(delta)
                                     val uniqueSig = appendSignatureIfUnique(sig)
                                     if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
                                         emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
@@ -561,8 +582,9 @@ object AiProviderEngine {
                                     emit(StreamUpdate.ContentDelta(delta))
                                 },
                                 onToolCall = { tc ->
-                                    executedTools.add(tc)
-                                    emit(StreamUpdate.ToolCallEvent(tc))
+                                    val enriched = attachStepThinkingToToolCall(tc)
+                                    executedTools.add(enriched)
+                                    emit(StreamUpdate.ToolCallEvent(enriched))
                                 },
                                 onRawWire = { req, resp ->
                                     lastRawReq = req
@@ -628,6 +650,7 @@ object AiProviderEngine {
                                     onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
                                     onThinking = { delta ->
                                         thinkingBuilder.append(delta)
+                                        currentStepThinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onContent = { delta ->
@@ -643,8 +666,9 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        executedTools.add(tc)
-                                        emit(StreamUpdate.ToolCallEvent(tc))
+                                        val enriched = attachStepThinkingToToolCall(tc)
+                                        executedTools.add(enriched)
+                                        emit(StreamUpdate.ToolCallEvent(enriched))
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -741,6 +765,7 @@ object AiProviderEngine {
                 StreamUpdate.Completed(
                     fullContent = contentBuilder.toString(),
                     fullThinking = thinkingBuilder.toString(),
+                    trailingThinking = if (executedTools.isNotEmpty()) currentStepThinkingBuilder.toString().trim() else "",
                     thinkingSignature = signatureBuilder.toString(),
                     toolCalls = executedTools,
                     goalTracker = circuitBreaker.goalState,
@@ -1749,7 +1774,7 @@ object AiProviderEngine {
                     put("arguments", parsedArgs)
                 })
 
-                onStatus("⚙ ${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…", currentPrevInteractionId)
+                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…", currentPrevInteractionId)
                 val rawRecord = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
@@ -1757,8 +1782,12 @@ object AiProviderEngine {
                     toolName = fnPair.first,
                     argumentsJson = fnPair.second
                 )
-                val signedRecord = if (idx == 0 && stepSigString.isNotEmpty()) {
-                    rawRecord.copy(thoughtSignature = stepSigString)
+                val stepThoughtTxt = roundThoughtText.toString().trim()
+                val signedRecord = if (idx == 0 && (stepSigString.isNotEmpty() || stepThoughtTxt.isNotEmpty())) {
+                    rawRecord.copy(
+                        thoughtSignature = stepSigString,
+                        precedingThinking = stepThoughtTxt
+                    )
                 } else {
                     rawRecord
                 }
@@ -1963,11 +1992,13 @@ object AiProviderEngine {
                 val cleanText = stripInlineErrorNotices(text)
                 val sig = nodeVar?.thinkingSignature.orEmpty()
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
+                val trailingThink = nodeVar?.trailingThinking.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
+                val hasAnyPrecedingThinking = toolCalls.any { it.precedingThinking.isNotBlank() }
                 var emittedThoughtForTurn = false
                 var emittedAnyStepForTurn = false
 
-                if (sig.isNotBlank()) {
+                if (toolCalls.isEmpty() && sig.isNotBlank()) {
                     stepsList.add(buildJsonObject {
                         put("type", "thought")
                         put("signature", sig)
@@ -1984,16 +2015,18 @@ object AiProviderEngine {
                     emittedAnyStepForTurn = true
                 }
 
-                for (tc in toolCalls) {
-                    if (!emittedThoughtForTurn && tc.thoughtSignature.isNotBlank()) {
+                for ((tcIdx, tc) in toolCalls.withIndex()) {
+                    val stepSig = tc.thoughtSignature.ifBlank { if (tcIdx == 0) sig else "" }
+                    val stepSummary = tc.precedingThinking.ifBlank { if (tcIdx == 0 && !hasAnyPrecedingThinking) thinkSummary else "" }
+                    if (stepSig.isNotBlank()) {
                         stepsList.add(buildJsonObject {
                             put("type", "thought")
-                            put("signature", tc.thoughtSignature)
-                            if (thinkSummary.isNotBlank()) {
+                            put("signature", stepSig)
+                            if (stepSummary.isNotBlank()) {
                                 putJsonArray("summary") {
                                     add(buildJsonObject {
                                         put("type", "text")
-                                        put("text", thinkSummary)
+                                        put("text", stepSummary)
                                     })
                                 }
                             }
@@ -2022,6 +2055,22 @@ object AiProviderEngine {
                     emittedAnyStepForTurn = true
                 }
 
+                if (toolCalls.isNotEmpty() && trailingThink.isNotBlank() && sig.isNotBlank() &&
+                    toolCalls.none { it.thoughtSignature == sig }
+                ) {
+                    stepsList.add(buildJsonObject {
+                        put("type", "thought")
+                        put("signature", sig)
+                        putJsonArray("summary") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", trailingThink)
+                            })
+                        }
+                    })
+                    emittedThoughtForTurn = true
+                    emittedAnyStepForTurn = true
+                }
                 val outputText = when {
                     cleanText.isNotBlank() -> cleanText
                     !emittedThoughtForTurn && thinkSummary.isNotBlank() && toolCalls.isEmpty() -> {
@@ -2428,7 +2477,7 @@ object AiProviderEngine {
             val responseParts = mutableListOf<JsonObject>()
             for ((idx, triple) in roundToolCalls.withIndex()) {
                 val (callId, fnName, argsJson) = triple
-                onStatus("⚙ ${WorkspaceHarness.describeToolCallIntent(fnName, argsJson)}…")
+                onStatus("${WorkspaceHarness.describeToolCallIntent(fnName, argsJson)}…")
                 val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
@@ -3071,7 +3120,7 @@ object AiProviderEngine {
                     put("arguments", fnPair.second)
                     put("status", "completed")
                 })
-                onStatus("⚙ ${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
+                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
                 val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
@@ -3541,7 +3590,7 @@ object AiProviderEngine {
 
             for ((callId, fnName, argsSb) in validCalls) {
                 val cleanArgs = argsSb.toString().ifBlank { "{}" }
-                onStatus("⚙ ${WorkspaceHarness.describeToolCallIntent(fnName, cleanArgs)}…")
+                onStatus("${WorkspaceHarness.describeToolCallIntent(fnName, cleanArgs)}…")
                 val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
@@ -4192,7 +4241,7 @@ object AiProviderEngine {
                 .firstOrNull { it.signature.isNotEmpty() }?.signature?.toString().orEmpty()
             for ((idx, callEntry) in turnToolCalls.withIndex()) {
                 val (callId, fnPair) = callEntry
-                onStatus("⚙ ${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
+                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
                 val rawRec = WorkspaceHarness.executeToolCall(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,

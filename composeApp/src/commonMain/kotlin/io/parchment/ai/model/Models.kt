@@ -133,7 +133,8 @@ data class ToolCallRecord(
     val argumentsJson: String,
     val resultText: String = "",
     val isError: Boolean = false,
-    val thoughtSignature: String = ""
+    val thoughtSignature: String = "",
+    val precedingThinking: String = ""
 )
 
 @Serializable
@@ -191,6 +192,7 @@ data class MessageVariant(
     val id: String,
     val content: String,
     val thinkingSummary: String = "",
+    val trailingThinking: String = "",
     val thinkingSignature: String = "",
     val thinkingDurationMs: Long = 0L,
     val toolCalls: List<ToolCallRecord> = emptyList(),

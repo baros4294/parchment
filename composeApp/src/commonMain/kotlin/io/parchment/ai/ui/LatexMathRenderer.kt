@@ -17,7 +17,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -205,16 +208,20 @@ object LatexMathRenderer {
                 }
             }
 
+            var copiedTex by remember(cleaned) { mutableStateOf(false) }
             Spacer(Modifier.height(6.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
                 SepiaButton(
-                    text = "Copy TeX",
+                    text = if (copiedTex) "✓ Copied TeX" else "📋 Copy TeX",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
-                    onClick = { clipboard.setText(AnnotatedString(cleaned)) }
+                    onClick = {
+                        clipboard.setText(AnnotatedString(cleaned))
+                        copiedTex = true
+                    }
                 )
             }
         }
@@ -358,6 +365,38 @@ object LatexMathRenderer {
                             } else {
                                 i = endCmd
                             }
+                        }
+                        "binom", "dbinom", "tbinom" -> {
+                            val g1 = extractBracedGroup(src, endCmd)
+                            val g2 = if (g1 != null) extractBracedGroup(src, g1.second) else null
+                            if (g1 != null && g2 != null) {
+                                builder.append("(")
+                                appendLatexSegment(builder, g1.first, palette, scaleFactor * 0.92f)
+                                builder.append(" choose ")
+                                appendLatexSegment(builder, g2.first, palette, scaleFactor * 0.92f)
+                                builder.append(")")
+                                i = g2.second
+                            } else {
+                                i = endCmd
+                            }
+                        }
+                        "boxed" -> {
+                            val g = extractBracedGroup(src, endCmd)
+                            if (g != null) {
+                                builder.append("[")
+                                appendLatexSegment(builder, g.first, palette, scaleFactor)
+                                builder.append("]")
+                                i = g.second
+                            } else i = endCmd
+                        }
+                        "pmod" -> {
+                            val g = extractBracedGroup(src, endCmd)
+                            if (g != null) {
+                                builder.append(" (mod ")
+                                appendLatexSegment(builder, g.first, palette, scaleFactor)
+                                builder.append(")")
+                                i = g.second
+                            } else i = endCmd
                         }
                         "sqrt" -> {
                             var cursor = endCmd

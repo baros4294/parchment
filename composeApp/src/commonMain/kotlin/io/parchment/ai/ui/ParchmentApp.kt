@@ -723,6 +723,7 @@ fun ParchmentApp() {
             ?.find { it.id == targetVariantId }
         val cleanContinuePrefix = AiProviderEngine.stripInlineErrorNotices(continuePrefix)
         val initialThinking = existingTargetVariant?.thinkingSummary.orEmpty()
+        val initialTrailingThinking = existingTargetVariant?.trailingThinking.orEmpty()
         val initialSignature = existingTargetVariant?.thinkingSignature.orEmpty()
         val initialTools = existingTargetVariant?.toolCalls.orEmpty()
         val initialMedia = existingTargetVariant?.mediaItems.orEmpty()
@@ -731,9 +732,11 @@ fun ParchmentApp() {
         val newJob = appProcessScope.launch {
             val networkContentTarget = StringBuilder(cleanContinuePrefix)
             val networkThinkingTarget = StringBuilder(initialThinking)
+            val currentStepThinkingTarget = StringBuilder(initialTrailingThinking)
             val signatureSb = StringBuilder(initialSignature)
             var displayedContentLen = cleanContinuePrefix.length
             var displayedThinkingLen = initialThinking.length
+            var displayedStepThinkingLen = initialTrailingThinking.length
             val accumulatedTools = initialTools.toMutableList()
             var latestGoalTracker: GoalTrackerState? = existingTargetVariant?.goalTracker
             val accumulatedMedia = initialMedia.toMutableList()
@@ -762,6 +765,7 @@ fun ParchmentApp() {
             fun flushCheckpointToDisk(isFinal: Boolean, finalUpdater: ((MessageVariant) -> MessageVariant)? = null) {
                 val curContent = if (isFinal) networkContentTarget.toString() else networkContentTarget.substring(0, displayedContentLen.coerceAtMost(networkContentTarget.length))
                 val curThink = if (isFinal) networkThinkingTarget.toString() else networkThinkingTarget.substring(0, displayedThinkingLen.coerceAtMost(networkThinkingTarget.length))
+                val curStepThink = if (accumulatedTools.isEmpty()) "" else if (isFinal) currentStepThinkingTarget.toString() else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
                 val curSig = signatureSb.toString()
                 val curTools = accumulatedTools.toList()
                 val curGoal = latestGoalTracker
@@ -781,6 +785,7 @@ fun ParchmentApp() {
                                             val base = v.copy(
                                                 content = curContent,
                                                 thinkingSummary = curThink,
+                                                trailingThinking = curStepThink,
                                                 thinkingSignature = curSig,
                                                 thinkingDurationMs = thinkingDurationMs,
                                                 toolCalls = curTools,
@@ -822,14 +827,23 @@ fun ParchmentApp() {
                         lastFrameNanos = 0L
                         8L
                     }
-
-                    val frameScale = (dtMs / 8f).coerceIn(0.4f, 3.0f)
+                    val frameScale = (dtMs / 8.0f).coerceIn(0.4f, 3.5f)
                     var changed = false
                     val targetThinkLen = networkThinkingTarget.length
                     if (displayedThinkingLen < targetThinkLen) {
                         val diff = targetThinkLen - displayedThinkingLen
                         val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
                         displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
+                        changed = true
+                    }
+                    val targetStepThinkLen = currentStepThinkingTarget.length
+                    if (displayedStepThinkingLen < targetStepThinkLen) {
+                        val diff = targetStepThinkLen - displayedStepThinkingLen
+                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
+                        displayedStepThinkingLen = (displayedStepThinkingLen + step).coerceAtMost(targetStepThinkLen)
+                        changed = true
+                    } else if (displayedStepThinkingLen > targetStepThinkLen) {
+                        displayedStepThinkingLen = targetStepThinkLen
                         changed = true
                     }
                     val targetContLen = networkContentTarget.length
@@ -842,11 +856,13 @@ fun ParchmentApp() {
                     if (changed) {
                         val visibleCont = networkContentTarget.substring(0, displayedContentLen)
                         val visibleThink = networkThinkingTarget.substring(0, displayedThinkingLen)
+                        val visibleStepThink = if (accumulatedTools.isEmpty()) "" else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
                         val curSig = signatureSb.toString()
                         patchVariantMemory { v ->
                             v.copy(
                                 content = visibleCont,
                                 thinkingSummary = visibleThink,
+                                trailingThinking = visibleStepThink,
                                 thinkingSignature = curSig,
                                 thinkingDurationMs = thinkingDurationMs,
                                 isStreaming = true
@@ -887,6 +903,7 @@ fun ParchmentApp() {
                             if (thinkingStartMs == 0L) thinkingStartMs = PlatformBridge.currentTimeMillis()
                             thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(100L)
                             networkThinkingTarget.append(update.delta)
+                            currentStepThinkingTarget.append(update.delta)
                             signatureSb.append(update.signatureDelta)
                             val thinkWords = countWordsFast(networkThinkingTarget)
                             updateSessionStreamState(sessionId) { cur ->
@@ -910,11 +927,24 @@ fun ParchmentApp() {
                             }
                         }
                         is StreamUpdate.ToolCallEvent -> {
-                            accumulatedTools.add(update.toolCall)
+                            val stepThinkFallback = currentStepThinkingTarget.toString().trim()
+                            currentStepThinkingTarget.clear()
+                            displayedStepThinkingLen = 0
+                            val enrichedTool = if (update.toolCall.precedingThinking.isBlank() && stepThinkFallback.isNotEmpty()) {
+                                update.toolCall.copy(precedingThinking = stepThinkFallback)
+                            } else {
+                                update.toolCall
+                            }
+                            accumulatedTools.add(enrichedTool)
                             val toolsSnap = accumulatedTools.toList()
-                            patchVariantMemory { v -> v.copy(toolCalls = toolsSnap) }
+                            patchVariantMemory { v ->
+                                v.copy(
+                                    toolCalls = toolsSnap,
+                                    trailingThinking = ""
+                                )
+                            }
                             updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(statusText = "Executed tool: ${update.toolCall.name}")
+                                cur?.copy(statusText = "Executed tool: ${enrichedTool.name}")
                             }
                             flushCheckpointToDisk(isFinal = false)
                         }
@@ -961,6 +991,7 @@ fun ParchmentApp() {
                                 v.copy(
                                     content = update.fullContent,
                                     thinkingSummary = update.fullThinking,
+                                    trailingThinking = update.trailingThinking,
                                     thinkingSignature = update.thinkingSignature,
                                     thinkingDurationMs = thinkingDurationMs,
                                     toolCalls = update.toolCalls,
@@ -1000,6 +1031,7 @@ fun ParchmentApp() {
                                 v.copy(
                                     content = errorNotice,
                                     thinkingSummary = networkThinkingTarget.toString(),
+                                    trailingThinking = if (accumulatedTools.isNotEmpty()) currentStepThinkingTarget.toString().trim() else "",
                                     thinkingSignature = signatureSb.toString(),
                                     thinkingDurationMs = thinkingDurationMs,
                                     toolCalls = accumulatedTools.toList(),
@@ -1033,6 +1065,7 @@ fun ParchmentApp() {
                     v.copy(
                         content = notice,
                         thinkingSummary = networkThinkingTarget.toString(),
+                        trailingThinking = if (accumulatedTools.isNotEmpty()) currentStepThinkingTarget.toString().trim() else "",
                         thinkingSignature = signatureSb.toString(),
                         thinkingDurationMs = thinkingDurationMs,
                         toolCalls = accumulatedTools.toList(),
@@ -2935,17 +2968,28 @@ private fun TopEditorialBar(
 
                     val asstPrefix = if (activeAssistant.id.isNotBlank()) "${activeAssistant.name} • " else ""
                     val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
-                        "$asstPrefix${activeProfile.name} • $modelLabel ▾"
+                        "$asstPrefix${activeProfile.name} • $modelLabel"
                     } else {
-                        "$asstPrefix$modelLabel ▾"
+                        "$asstPrefix$modelLabel"
                     }
-                    BasicText(
-                        text = capsuleText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.sp),
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.kissClickable(hoverScale = 1.01f) { onToggleQuickModelPopover() }
-                    )
+                    ) {
+                        BasicText(
+                            text = capsuleText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.sp),
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        KissVectorIcon(
+                            icon = if (showQuickModelPopover) KissIcon.CHEVRON_UP else KissIcon.CHEVRON_DOWN,
+                            tint = p.accent,
+                            size = 11.dp
+                        )
+                    }
                 }
             }
 
@@ -3016,52 +3060,73 @@ private fun TopEditorialBar(
             }
         }
 
-        // Quick Inline Model Switcher Popover
+        // Quick Inline Searchable Vertical Model Switcher Popover
         AnimatedVisibility(visible = showQuickModelPopover) {
+            val totalModelsCount = remember(appState.profiles) {
+                appState.profiles.sumOf { prof ->
+                    if (prof.savedModels.isNotEmpty()) prof.savedModels.size
+                    else if (prof.defaultModel.isNotBlank()) 1
+                    else 0
+                }
+            }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(p.cardBg)
-                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .border(0.95.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .padding(11.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BasicText(text = "Quick Switch Model", style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold))
-                    SepiaButton(
-                        text = "⚙ Manage Providers & Models",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = {
-                            onToggleQuickModelPopover()
-                            onOpenSettings(SettingsCategory.PROVIDERS)
-                        }
-                    )
-                }
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    appState.profiles.forEach { prof ->
-                        val models = if (prof.savedModels.isNotEmpty()) prof.savedModels
-                        else if (prof.defaultModel.isNotBlank()) listOf(prof.defaultModel)
-                        else emptyList()
-                        models.forEach { m ->
-                            val isSel = prof.id == activeProfile.id && m == activeModel
-                            SepiaChip(
-                                label = "${prof.name} • $m",
-                                selected = isSel,
-                                onClick = { onSelectModelQuick(prof.id, m) }
-                            )
-                        }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
+                        BasicText(
+                            text = "Quick Switch Model",
+                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                        )
+                        BasicText(
+                            text = "($totalModelsCount)",
+                            style = p.monoStyle.copy(color = p.mutedInk, fontSize = 11.sp)
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        SepiaButton(
+                            text = "⚙ Manage Providers & Models",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                onToggleQuickModelPopover()
+                                onOpenSettings(SettingsCategory.PROVIDERS)
+                            }
+                        )
+                        SepiaButton(
+                            text = "×",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = onToggleQuickModelPopover
+                        )
                     }
                 }
+                SepiaSearchableModelPicker(
+                    profiles = appState.profiles,
+                    selectedProfileId = activeProfile.id,
+                    selectedModelId = activeModel,
+                    onSelectModel = { profId, modelId ->
+                        onSelectModelQuick(profId, modelId)
+                    },
+                    maxListHeight = 280.dp
+                )
             }
         }
     }
@@ -4830,81 +4895,213 @@ private fun MessageTurnItem(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()) {
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                // Header Row for Reasoning & Tool Timeline Drawer
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 2.dp, end = 6.dp)
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 2.dp, end = 6.dp)
-                        ) {
-                            if (isActivelyThinkingThisNode) {
-                                KissStreamingPulseDot(color = p.accent)
-                            }
-                            BasicText(
-                                text = if (isActivelyThinkingThisNode) "Thinking…" else "Thought (${countWordsFast(activeVar.thinkingSummary)} words)",
-                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
-                            )
+                        if (isActivelyThinkingThisNode) {
+                            KissStreamingPulseDot(color = p.accent)
+                        } else {
+                            KissVectorIcon(icon = KissIcon.BRAIN, tint = p.accent, size = 13.5.dp)
                         }
-                        SepiaButton(
-                            text = "Hide ▲",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { manualThinkingToggle = false }
-                        )
-                    }
-
-                    // Render Reasoning with full Markdown (**bold**, *italic*, code blocks) & LaTeX ($...$, $$...$$)!
-                    LiteraryProseRenderer(
-                        text = activeVar.thinkingSummary,
-                        compactReasoningMode = true,
-                        enableMarkdown = preferences.renderReasoningWithMarkdown,
-                        enableMath = preferences.mathFormulaRendering,
-                        enableInlineDollarMath = preferences.inlineDollarMathRendering,
-                        autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
-                    )
-
-                    if (activeVar.thinkingSignature.isNotBlank()) {
+                        val wordCount = countWordsFast(activeVar.thinkingSummary)
+                        val toolCount = activeVar.toolCalls.size
+                        val headerSummary = buildString {
+                            if (isActivelyThinkingThisNode) {
+                                append("Thinking")
+                            } else {
+                                append("Reasoning & Tool Timeline")
+                            }
+                            if (wordCount > 0) append(" ($wordCount words")
+                            if (toolCount > 0) {
+                                if (wordCount > 0) append(" • $toolCount tools)") else append(" ($toolCount tools)")
+                            } else if (wordCount > 0) {
+                                append(")")
+                            }
+                        }
                         BasicText(
-                            text = "✓ Cryptographic Thought Signature Preserved (${activeVar.thinkingSignature.length} chars)",
-                            style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                            text = headerSummary,
+                            style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                         )
                     }
+                    SepiaButton(
+                        text = "Hide ▲",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = { manualThinkingToggle = false }
+                    )
                 }
 
-                if (preferences.showToolCards && activeVar.toolCalls.isNotEmpty()) {
-                    BasicText(
-                        text = "Workspace Agent Tool Executions (${activeVar.toolCalls.size})",
-                        style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
-                    )
-                    activeVar.toolCalls.forEach { tc ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(p.cardBg)
-                                .border(0.8.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            BasicText(
-                                text = "⚙ ${tc.name}(${tc.argumentsJson})",
-                                style = p.monoStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.5.sp)
+                val hasInterleavedSteps = activeVar.toolCalls.isNotEmpty() &&
+                    (activeVar.toolCalls.any { it.precedingThinking.isNotBlank() } || activeVar.trailingThinking.isNotBlank())
+
+                @Composable
+                fun RenderToolExecutionCard(tc: ToolCallRecord) {
+                    var isToolResultExpanded by remember(tc.id) { mutableStateOf(false) }
+                    val toolIcon = remember(tc.name) { resolveToolKissIcon(tc.name) }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(p.cardBg)
+                            .border(
+                                0.85.dp,
+                                if (tc.isError) p.danger.copy(alpha = 0.7f) else p.border.copy(alpha = 0.75f),
+                                RoundedCornerShape(7.dp)
                             )
-                            if (preferences.showToolResultSummary && tc.resultText.isNotBlank()) {
-                                Spacer(Modifier.height(4.dp))
+                            .padding(9.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f).padding(end = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                KissVectorIcon(
+                                    icon = toolIcon,
+                                    tint = if (tc.isError) p.danger else p.accentSecondary,
+                                    size = 13.dp
+                                )
                                 BasicText(
-                                    text = tc.resultText.take(1200),
-                                    style = p.monoStyle.copy(
-                                        color = if (tc.isError) p.danger else p.narrationInk,
-                                        fontSize = 11.sp
-                                    )
+                                    text = "${tc.name}(${tc.argumentsJson})",
+                                    maxLines = if (isToolResultExpanded) 6 else 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.monoStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.5.sp)
+                                )
+                            }
+                            if (tc.resultText.length > 260) {
+                                SepiaButton(
+                                    text = if (isToolResultExpanded) "▾ Less" else "▸ Full",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { isToolResultExpanded = !isToolResultExpanded }
                                 )
                             }
                         }
+                        if (preferences.showToolResultSummary && tc.resultText.isNotBlank()) {
+                            val shownResult = if (isToolResultExpanded) tc.resultText.take(4000) else tc.resultText.take(360)
+                            BasicText(
+                                text = if (!isToolResultExpanded && tc.resultText.length > 360) "$shownResult…" else shownResult,
+                                style = p.monoStyle.copy(
+                                    color = if (tc.isError) p.danger else p.narrationInk,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
+                }
+
+                if (hasInterleavedSteps) {
+                    // Chronological Interleaved Timeline: think1 -> tool1 -> think2 -> tool2 -> think3 -> tool3
+                    var thoughtStepCounter = 0
+                    activeVar.toolCalls.forEach { tc ->
+                        if (preferences.showThinkingCards && tc.precedingThinking.isNotBlank()) {
+                            thoughtStepCounter++
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
+                                    BasicText(
+                                        text = "Thought #$thoughtStepCounter",
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp)
+                                    )
+                                }
+                                LiteraryProseRenderer(
+                                    text = tc.precedingThinking,
+                                    compactReasoningMode = true,
+                                    enableMarkdown = preferences.renderReasoningWithMarkdown,
+                                    enableMath = preferences.mathFormulaRendering,
+                                    enableInlineDollarMath = preferences.inlineDollarMathRendering,
+                                    autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
+                                )
+                            }
+                        }
+                        if (preferences.showToolCards) {
+                            RenderToolExecutionCard(tc)
+                        }
+                    }
+
+                    if (preferences.showThinkingCards && activeVar.trailingThinking.isNotBlank()) {
+                        thoughtStepCounter++
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
+                                BasicText(
+                                    text = "Thought #$thoughtStepCounter",
+                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp)
+                                )
+                            }
+                            LiteraryProseRenderer(
+                                text = activeVar.trailingThinking,
+                                compactReasoningMode = true,
+                                enableMarkdown = preferences.renderReasoningWithMarkdown,
+                                enableMath = preferences.mathFormulaRendering,
+                                enableInlineDollarMath = preferences.inlineDollarMathRendering,
+                                autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
+                            )
+                        }
+                    }
+                } else {
+                    // Single-step thinking or legacy turn format
+                    if (preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()) {
+                        LiteraryProseRenderer(
+                            text = activeVar.thinkingSummary,
+                            compactReasoningMode = true,
+                            enableMarkdown = preferences.renderReasoningWithMarkdown,
+                            enableMath = preferences.mathFormulaRendering,
+                            enableInlineDollarMath = preferences.inlineDollarMathRendering,
+                            autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
+                        )
+                    }
+                    if (preferences.showToolCards && activeVar.toolCalls.isNotEmpty()) {
+                        activeVar.toolCalls.forEach { tc ->
+                            RenderToolExecutionCard(tc)
+                        }
+                    }
+                }
+
+                if (activeVar.thinkingSignature.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        KissVectorIcon(
+                            icon = KissIcon.SHIELD_CHECK,
+                            tint = p.accent,
+                            size = 12.dp
+                        )
+                        BasicText(
+                            text = "Cryptographic Thought Signature Preserved (${activeVar.thinkingSignature.length} chars)",
+                            style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                        )
                     }
                 }
             }

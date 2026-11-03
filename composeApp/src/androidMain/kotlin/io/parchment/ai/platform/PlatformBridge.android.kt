@@ -336,12 +336,25 @@ actual object PlatformBridge {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         val rootPath = File(workspaceRoot).canonicalFile.toPath().normalize()
         require(target.exists() && target.isDirectory) { "Directory not found: $relativePath" }
-        val entries = (target.listFiles()?.toList() ?: emptyList())
-            .sortedBy { it.name.lowercase() }
-            .map { f ->
-                val rel = rootPath.relativize(f.canonicalFile.toPath()).toString()
-                if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-            }
+        val entries = if (recursive) {
+            target.walkTopDown()
+                .maxDepth(5)
+                .filter { it != target && !it.name.startsWith(".git") && !it.name.equals("build", ignoreCase = true) }
+                .take(400)
+                .map { f ->
+                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
+                }
+                .toList()
+        } else {
+            (target.listFiles()?.toList() ?: emptyList())
+                .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                .take(300)
+                .map { f ->
+                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
+                }
+        }
         if (entries.isEmpty()) "(Empty workspace directory)" else entries.joinToString("\n")
     }
 
@@ -376,12 +389,36 @@ actual object PlatformBridge {
     ): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        val existing = target.readText(Charsets.UTF_8).replace("\r\n", "\n")
+        require(oldText.isNotEmpty()) { "old_text must not be empty." }
+        val existingRaw = target.readText(Charsets.UTF_8)
+        val usesCrlf = existingRaw.contains("\r\n")
+        val existing = existingRaw.replace("\r\n", "\n")
         val normOld = oldText.replace("\r\n", "\n")
         val normNew = newText.replace("\r\n", "\n")
-        require(existing.contains(normOld)) { "old_text not found in '$relativePath'." }
-        val updated = if (replaceAll) existing.replace(normOld, normNew) else existing.replaceFirst(normOld, normNew)
-        target.writeText(updated, Charsets.UTF_8)
+        if (!existing.contains(normOld)) {
+            error("old_text was not found in '$relativePath' (${existing.lines().size} lines). Use fs_read to inspect the exact lines before editing.")
+        }
+        val updatedLf = if (replaceAll) {
+            existing.replace(normOld, normNew)
+        } else {
+            val firstIdx = existing.indexOf(normOld)
+            val secondIdx = existing.indexOf(normOld, startIndex = firstIdx + normOld.length)
+            if (secondIdx != -1) {
+                val matchLines = mutableListOf<Int>()
+                var searchIdx = 0
+                while (true) {
+                    val hit = existing.indexOf(normOld, startIndex = searchIdx)
+                    if (hit == -1) break
+                    val lineNum = existing.substring(0, hit).count { it == '\n' } + 1
+                    matchLines.add(lineNum)
+                    searchIdx = hit + normOld.length.coerceAtLeast(1)
+                }
+                error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
+            }
+            existing.replaceFirst(normOld, normNew)
+        }
+        val finalContent = if (usesCrlf) updatedLf.replace("\n", "\r\n") else updatedLf
+        target.writeText(finalContent, Charsets.UTF_8)
         "Edited '$relativePath' (+${normNew.lines().size} / -${normOld.lines().size} lines)."
     }
 
@@ -434,18 +471,34 @@ actual object PlatformBridge {
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
         val rootFile = File(workspaceRoot).canonicalFile
         val rootPath = rootFile.toPath().normalize()
+        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
+        require(query.isNotBlank()) { "Search query must not be blank." }
+        val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
         val matches = mutableListOf<String>()
-        rootFile.walkTopDown().maxDepth(5).filter { it.isFile && it.length() < 1_500_000L }.forEach { f ->
-            if (matches.size >= 100) return@forEach
-            val rel = rootPath.relativize(f.canonicalFile.toPath()).toString()
-            f.useLines(Charsets.UTF_8) { seq ->
-                seq.forEachIndexed { idx, line ->
-                    if (matches.size < 100 && line.contains(query, ignoreCase = true)) {
-                        matches.add("$rel:${idx + 1}: ${line.trim().take(160)}")
+        rootFile.walkTopDown()
+            .maxDepth(5)
+            .filter { f ->
+                f.isFile &&
+                    !f.path.contains(".git") &&
+                    f.length() < 1_500_000L &&
+                    (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
+            }
+            .forEach { f ->
+                if (matches.size >= 100) return@forEach
+                runCatching {
+                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                    f.useLines(Charsets.UTF_8) { seq ->
+                        seq.forEachIndexed { idx, line ->
+                            if (matches.size < 100) {
+                                val hit = regex?.containsMatchIn(line) ?: line.contains(query, ignoreCase = true)
+                                if (hit) {
+                                    matches.add("$rel:${idx + 1}: ${line.trim().take(180)}")
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
         if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
     }
 

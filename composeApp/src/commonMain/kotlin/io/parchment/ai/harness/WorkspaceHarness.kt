@@ -551,7 +551,7 @@ object WorkspaceHarness {
                                 .getOrDefault("")
                                 .lines()
                                 .drop(1) // drop header line from workspaceRead
-                                .joinToString("\n") { it.substringAfter(": ") }
+                                .joinToString("\n") { it.replaceFirst(Regex("^\\d+:\\s?"), "") }
                             val combined = if (existing.isBlank()) content else "$existing\n\n$content"
                             PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", combined)
                         }

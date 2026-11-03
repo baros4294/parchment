@@ -84,9 +84,25 @@ enum class KissIcon {
     FILE_TEXT,
     AUDIO,
     TABS,
-    MIC
+    MIC,
+    TERMINAL,
+    SLIDERS,
+    SHIELD_CHECK,
+    CPU
 }
 
+fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()) {
+    "fs_read" -> KissIcon.FILE_TEXT
+    "fs_edit", "fs_write" -> KissIcon.EDIT
+    "fs_list" -> KissIcon.FOLDER
+    "fs_search" -> KissIcon.SEARCH
+    "shell_exec" -> KissIcon.TERMINAL
+    "todo_write" -> KissIcon.TARGET
+    "goal_complete" -> KissIcon.CHECK
+    "agent_memory" -> KissIcon.BOOK_OPEN
+    "dice_roll" -> KissIcon.COMPASS
+    else -> KissIcon.SETTINGS
+}
 data class ParsedLabelWithIcons(
     val leadingIcon: KissIcon?,
     val cleanText: String,
@@ -855,6 +871,51 @@ private fun DrawScope.drawKissIconPath(
             )
             line(12f, 18.5f, 12f, 21.5f)
             line(8.5f, 21.5f, 15.5f, 21.5f)
+        }
+        KissIcon.TERMINAL -> {
+            drawRoundRect(color, pt(3f, 4f), Size(18f * s, 16f * s), CornerRadius(2.5f * s), stroke)
+            path {
+                moveTo(7f * s, 9f * s)
+                lineTo(10.5f * s, 12f * s)
+                lineTo(7f * s, 15f * s)
+            }
+            line(12.5f, 15f, 17f, 15f)
+        }
+        KissIcon.SLIDERS -> {
+            line(4f, 6f, 20f, 6f)
+            line(4f, 12f, 20f, 12f)
+            line(4f, 18f, 20f, 18f)
+            drawCircle(color, radius = 2.2f * s, center = pt(9f, 6f), style = stroke)
+            drawCircle(color, radius = 2.2f * s, center = pt(15f, 12f), style = stroke)
+            drawCircle(color, radius = 2.2f * s, center = pt(10f, 18f), style = stroke)
+        }
+        KissIcon.SHIELD_CHECK -> {
+            path {
+                moveTo(12f * s, 2.5f * s)
+                lineTo(19.5f * s, 5.5f * s)
+                lineTo(19.5f * s, 11.5f * s)
+                lineTo(12f * s, 21.5f * s)
+                lineTo(4.5f * s, 11.5f * s)
+                lineTo(4.5f * s, 5.5f * s)
+                close()
+            }
+            path {
+                moveTo(8.5f * s, 12f * s)
+                lineTo(11f * s, 14.5f * s)
+                lineTo(15.8f * s, 9.5f * s)
+            }
+        }
+        KissIcon.CPU -> {
+            drawRoundRect(color, pt(6f, 6f), Size(12f * s, 12f * s), CornerRadius(2f * s), stroke)
+            drawRoundRect(color, pt(9.5f, 9.5f), Size(5f * s, 5f * s), CornerRadius(1f * s), stroke)
+            line(9f, 3f, 9f, 6f)
+            line(15f, 3f, 15f, 6f)
+            line(9f, 18f, 9f, 21f)
+            line(15f, 18f, 15f, 21f)
+            line(3f, 9f, 6f, 9f)
+            line(3f, 15f, 6f, 15f)
+            line(18f, 9f, 21f, 9f)
+            line(18f, 15f, 21f, 15f)
         }
     }
 }

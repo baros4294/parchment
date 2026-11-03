@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -33,10 +34,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
+import io.parchment.ai.model.ProviderProfile
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -1087,4 +1092,314 @@ fun formatUsdCost(costUsd: Double): String {
         if (it.length < 2) it.padEnd(2, '0') else it
     }
     return "$$whole.$frac"
+}
+
+data class SearchableModelOption(
+    val profileId: String,
+    val profileName: String,
+    val modelId: String,
+    val vendorGroup: String,
+    val contextWindowTokens: Int
+)
+
+/**
+ * Universal Searchable Vertical Model Selector (`SepiaSearchableModelPicker`):
+ * - Search filter input at top (`Enter` immediately selects top match, `Clear` resets).
+ * - Provider filter pills (when >1 provider has models) + automatic vendor-family filter pills (`deepseek-ai`, `Qwen`, `zai-org`, `google`, etc.).
+ * - Bounded `LazyColumn` vertical list (`heightIn(max = maxListHeight)`) with active model pinned first when unfiltered,
+ *   clean monospace model ID on the left, and provider + context window badges on the right.
+ */
+@Composable
+fun SepiaSearchableModelPicker(
+    profiles: List<ProviderProfile>,
+    selectedProfileId: String,
+    selectedModelId: String,
+    onSelectModel: (profileId: String, modelId: String) -> Unit,
+    modifier: Modifier = Modifier,
+    maxListHeight: Dp = 280.dp,
+    placeholder: String = "🔍 Search models (e.g. deepseek, qwen, 32b, flash)…"
+) {
+    val p = LocalParchmentPalette.current
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedProviderFilter by remember { mutableStateOf("") } // "" = All providers
+    var selectedVendorFilter by remember { mutableStateOf("") }   // "" = All vendors
+
+    val allOptions = remember(profiles) {
+        profiles.flatMap { prof ->
+            val models = if (prof.savedModels.isNotEmpty()) prof.savedModels
+            else if (prof.defaultModel.isNotBlank()) listOf(prof.defaultModel)
+            else emptyList()
+            models.map { m ->
+                val vendor = if (m.contains('/')) m.substringBefore('/').trim() else ""
+                val ctx = prof.customModelSpecs[m]?.contextWindowTokens ?: prof.contextWindowTokens
+                SearchableModelOption(
+                    profileId = prof.id,
+                    profileName = prof.name,
+                    modelId = m,
+                    vendorGroup = vendor,
+                    contextWindowTokens = ctx
+                )
+            }
+        }
+    }
+
+    val providerCounts = remember(allOptions) {
+        allOptions.groupBy { it.profileId to it.profileName }
+            .map { (pair, list) -> Triple(pair.first, pair.second, list.size) }
+    }
+
+    val vendorCounts = remember(allOptions, selectedProviderFilter) {
+        val scoped = if (selectedProviderFilter.isEmpty()) allOptions else allOptions.filter { it.profileId == selectedProviderFilter }
+        scoped.filter { it.vendorGroup.isNotEmpty() }
+            .groupBy { it.vendorGroup }
+            .map { (vendor, list) -> vendor to list.size }
+            .sortedByDescending { it.second }
+    }
+
+    val filteredOptions = remember(allOptions, searchQuery, selectedProviderFilter, selectedVendorFilter, selectedProfileId, selectedModelId) {
+        val tokens = searchQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val matching = allOptions.filter { opt ->
+            val provOk = selectedProviderFilter.isEmpty() || opt.profileId == selectedProviderFilter
+            val vendOk = selectedVendorFilter.isEmpty() || opt.vendorGroup.equals(selectedVendorFilter, ignoreCase = true)
+            val searchOk = tokens.isEmpty() || tokens.all { tok ->
+                opt.modelId.lowercase().contains(tok) ||
+                    opt.profileName.lowercase().contains(tok) ||
+                    opt.vendorGroup.lowercase().contains(tok)
+            }
+            provOk && vendOk && searchOk
+        }
+        if (tokens.isEmpty()) {
+            // Pin the currently active model at the top when unfiltered so it is immediately visible
+            val activeList = matching.filter { it.profileId == selectedProfileId && it.modelId == selectedModelId }
+            val restList = matching.filterNot { it.profileId == selectedProfileId && it.modelId == selectedModelId }
+            activeList + restList
+        } else {
+            matching
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        // 1. Search Bar + Clear Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SepiaTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = placeholder,
+                minHeight = 34.dp,
+                modifier = Modifier.weight(1f),
+                onEnterKeySend = { _, _ ->
+                    val firstHit = filteredOptions.firstOrNull()
+                    if (firstHit != null) {
+                        onSelectModel(firstHit.profileId, firstHit.modelId)
+                        true
+                    } else false
+                }
+            )
+            if (searchQuery.isNotEmpty() || selectedProviderFilter.isNotEmpty() || selectedVendorFilter.isNotEmpty()) {
+                SepiaButton(
+                    text = "× Reset",
+                    compact = true,
+                    style = SepiaButtonStyle.GHOST,
+                    onClick = {
+                        searchQuery = ""
+                        selectedProviderFilter = ""
+                        selectedVendorFilter = ""
+                    }
+                )
+            }
+        }
+
+        // 2. Provider Filter Pills (shown when >1 provider has models)
+        if (providerCounts.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SepiaChip(
+                    label = "All Providers (${allOptions.size})",
+                    selected = selectedProviderFilter.isEmpty(),
+                    onClick = {
+                        selectedProviderFilter = ""
+                        selectedVendorFilter = ""
+                    }
+                )
+                providerCounts.forEach { (profId, profName, count) ->
+                    SepiaChip(
+                        label = "$profName ($count)",
+                        selected = selectedProviderFilter == profId,
+                        onClick = {
+                            selectedProviderFilter = if (selectedProviderFilter == profId) "" else profId
+                            selectedVendorFilter = ""
+                        }
+                    )
+                }
+            }
+        }
+
+        // 3. Vendor Family Filter Pills (shown when >= 2 vendor families exist, e.g. deepseek-ai, Qwen, zai-org)
+        if (vendorCounts.size >= 2) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SepiaChip(
+                    label = "All Families",
+                    selected = selectedVendorFilter.isEmpty(),
+                    onClick = { selectedVendorFilter = "" }
+                )
+                vendorCounts.forEach { (vendor, count) ->
+                    SepiaChip(
+                        label = "$vendor ($count)",
+                        selected = selectedVendorFilter.equals(vendor, ignoreCase = true),
+                        onClick = {
+                            selectedVendorFilter = if (selectedVendorFilter.equals(vendor, ignoreCase = true)) "" else vendor
+                        }
+                    )
+                }
+            }
+        }
+
+        // 4. Bounded Vertical Scrollable Model List
+        if (filteredOptions.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(p.elevatedBg.copy(alpha = 0.4f))
+                    .padding(12.dp)
+            ) {
+                BasicText(
+                    text = if (allOptions.isEmpty()) {
+                        "No models configured yet. Open 'Manage Providers & Models' to fetch or add models."
+                    } else {
+                        "No models match '$searchQuery'."
+                    },
+                    style = p.uiLabelStyle
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxListHeight)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(p.sheetBg.copy(alpha = 0.45f))
+                    .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                    .padding(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(
+                    items = filteredOptions,
+                    key = { "${it.profileId}::${it.modelId}" }
+                ) { opt ->
+                    val isSel = opt.profileId == selectedProfileId && opt.modelId == selectedModelId
+                    val rowInteraction = remember { MutableInteractionSource() }
+                    val isHovered by rowInteraction.collectIsHoveredAsState()
+                    val isPressed by rowInteraction.collectIsPressedAsState()
+                    val rowShape = RoundedCornerShape(7.dp)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .kissClickable(
+                                pressScale = 0.99f,
+                                hoverScale = 1.005f,
+                                interactionSource = rowInteraction,
+                                onClick = { onSelectModel(opt.profileId, opt.modelId) }
+                            )
+                            .clip(rowShape)
+                            .background(
+                                when {
+                                    isSel -> p.accent.copy(alpha = 0.15f)
+                                    isPressed -> p.accent.copy(alpha = 0.12f)
+                                    isHovered -> p.accent.copy(alpha = 0.08f)
+                                    else -> p.cardBg.copy(alpha = 0.85f)
+                                }
+                            )
+                            .border(
+                                width = if (isSel) 1.dp else 0.7.dp,
+                                color = when {
+                                    isSel -> p.accent
+                                    isHovered -> p.accent.copy(alpha = 0.55f)
+                                    else -> p.border.copy(alpha = 0.5f)
+                                },
+                                shape = rowShape
+                            )
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f).padding(end = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            KissVectorIcon(
+                                icon = if (isSel) KissIcon.SPARKLES else KissIcon.CPU,
+                                tint = if (isSel || isHovered) p.accent else p.mutedInk,
+                                size = 13.dp
+                            )
+                            BasicText(
+                                text = opt.modelId,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.monoStyle.copy(
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSel || isHovered) p.accent else p.primaryInk
+                                )
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (providerCounts.size > 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(p.sheetBg)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    BasicText(
+                                        text = opt.profileName,
+                                        maxLines = 1,
+                                        style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.narrationInk)
+                                    )
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(p.elevatedBg)
+                                    .padding(horizontal = 5.dp, vertical = 2.dp)
+                            ) {
+                                BasicText(
+                                    text = if (opt.contextWindowTokens <= 0) "∞" else formatCompactTokens(opt.contextWindowTokens),
+                                    style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                                )
+                            }
+                            if (isSel) {
+                                KissVectorIcon(
+                                    icon = KissIcon.CHECK,
+                                    tint = p.accent,
+                                    size = 13.dp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

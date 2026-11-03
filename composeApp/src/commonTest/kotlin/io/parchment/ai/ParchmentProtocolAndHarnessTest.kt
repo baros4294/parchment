@@ -12,10 +12,10 @@ import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
+import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -151,6 +151,49 @@ class ParchmentProtocolAndHarnessTest {
                 argumentsJson = """{"path":"chapter1.md","content":"overwritten"}"""
             )
             assertTrue(blockedWrite.isError, "fs_write must be blocked in READ_ONLY mode")
+
+            // Verify fs_edit reports exact 1-based line numbers when old_text matches multiple locations
+            WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_dup_write",
+                toolName = "fs_write",
+                argumentsJson = """{"path":"chapter1.md","content":"token_alpha\nmiddle_line\ntoken_alpha"}"""
+            )
+            val dupEdit = WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_dup_edit",
+                toolName = "fs_edit",
+                argumentsJson = """{"path":"chapter1.md","old_text":"token_alpha","new_text":"token_beta","replace_all":false}"""
+            )
+            assertTrue(dupEdit.isError)
+            assertTrue(dupEdit.resultText.contains("lines 1, 3"), "fs_edit must report exact matching line numbers (1, 3): ${dupEdit.resultText}")
+
+            // Verify agent_memory append preserves blank lines without injecting 'N:' line numbers
+            WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_mem_1",
+                toolName = "agent_memory",
+                argumentsJson = """{"action":"overwrite","content":"Rule 1\n\nRule 2"}"""
+            )
+            WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_WRITE,
+                callId = "call_mem_2",
+                toolName = "agent_memory",
+                argumentsJson = """{"action":"append","content":"Rule 3"}"""
+            )
+            val memRead = WorkspaceHarness.executeToolCall(
+                workspaceRoot = tempRoot,
+                mode = WorkspaceMode.READ_ONLY,
+                callId = "call_mem_3",
+                toolName = "agent_memory",
+                argumentsJson = """{"action":"read"}"""
+            )
+            assertFalse(memRead.resultText.contains("2: 2:"), "agent_memory append must not corrupt blank lines with line prefixes: ${memRead.resultText}")
+            assertTrue(memRead.resultText.contains("Rule 3"))
         } finally {
             // Never call wipeAllLocalData() in tests; only clean up the isolated test file
             WorkspaceHarness.executeToolCall(
@@ -390,6 +433,46 @@ class ParchmentProtocolAndHarnessTest {
             "Reading src/Main.kt (lines 10..59)",
             WorkspaceHarness.describeToolCallIntent("fs_read", """{"path":"src/Main.kt","start_line":10,"max_lines":50}""")
         )
+
+        // 8. Verify chronological interleaved multi-step replay (think1 -> tool1 -> think2 -> tool2)
+        val interleavedTurn = MessageNode(
+            id = "a-interleaved",
+            role = MessageRole.ASSISTANT,
+            variants = listOf(
+                MessageVariant(
+                    id = "v-interleaved",
+                    content = "Both steps finished.",
+                    thinkingSummary = "Think step 1\nThink step 2",
+                    thinkingSignature = "sig_2",
+                    toolCalls = listOf(
+                        ToolCallRecord(
+                            id = "c1",
+                            name = "fs_list",
+                            argumentsJson = """{"path":""}""",
+                            resultText = "src/",
+                            thoughtSignature = "sig_1",
+                            precedingThinking = "Think step 1"
+                        ),
+                        ToolCallRecord(
+                            id = "c2",
+                            name = "fs_read",
+                            argumentsJson = """{"path":"src/Main.kt"}""",
+                            resultText = "fun main() {}",
+                            thoughtSignature = "sig_2",
+                            precedingThinking = "Think step 2"
+                        )
+                    )
+                )
+            )
+        )
+        val interleavedSteps = AiProviderEngine.buildGeminiInteractionsTurnsArray(listOf(userTurn1, interleavedTurn), session, "")
+        val interleavedTypes = interleavedSteps.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull }
+        assertEquals(
+            listOf("user_input", "thought", "function_call", "function_result", "thought", "function_call", "function_result", "model_output"),
+            interleavedTypes,
+            "Multi-step tool turn must replay in chronological interleaved order: thought1 -> call1 -> result1 -> thought2 -> call2 -> result2 -> model_output"
+        )
+        assertTrue(OtaUpdateEngine.compareVersions("1.2.0", "1.2.0-beta.1") > 0, "Stable release 1.2.0 must be newer than 1.2.0-beta.1")
     }
 
     @Test

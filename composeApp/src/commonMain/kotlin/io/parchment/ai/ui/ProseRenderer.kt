@@ -3,6 +3,7 @@ package io.parchment.ai.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -28,6 +30,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -51,8 +54,10 @@ fun stripMarkdownToPlainText(raw: String): String {
         .replace(Regex("```[a-zA-Z0-9_-]*\\n?"), "")
         .replace("```", "")
         .replace(Regex("(?m)^#{1,6}\\s+"), "")
+        .replace(Regex("\\[([^\\]]+)\\]\\([^)]+\\)"), "$1")
         .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
         .replace(Regex("__([^_]+)__"), "$1")
+        .replace(Regex("~~([^~]+)~~"), "$1")
         .replace(Regex("(?<!\\*)\\*([^*\n]+)\\*(?!\\*)"), "$1")
         .replace(Regex("`([^`]+)`"), "$1")
         .trim()
@@ -183,9 +188,10 @@ fun LiteraryProseRenderer(
                     }
 
                     is ProseBlock.CodeFence -> {
-                        var isCollapsed by remember(block.code, autoCollapseCodeBlocks) {
+                        var isCollapsed by remember(index, block.language, autoCollapseCodeBlocks) {
                             mutableStateOf(autoCollapseCodeBlocks)
                         }
+                        var copiedCode by remember(index) { mutableStateOf(false) }
                         val shape = RoundedCornerShape(8.dp)
                         Column(
                             modifier = Modifier
@@ -215,21 +221,30 @@ fun LiteraryProseRenderer(
                                         onClick = { isCollapsed = !isCollapsed }
                                     )
                                     SepiaButton(
-                                        text = "Copy",
+                                        text = if (copiedCode) "✓ Copied" else "📋 Copy",
                                         compact = true,
                                         style = SepiaButtonStyle.OUTLINE,
-                                        onClick = { clipboard.setText(AnnotatedString(block.code)) }
+                                        onClick = {
+                                            clipboard.setText(AnnotatedString(block.code))
+                                            copiedCode = true
+                                        }
                                     )
                                 }
                             }
                             AnimatedVisibility(visible = !isCollapsed) {
                                 Column {
                                     SepiaDivider()
-                                    BasicText(
-                                        text = block.code,
-                                        style = p.monoStyle,
-                                        modifier = Modifier.padding(11.dp)
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(11.dp)
+                                    ) {
+                                        BasicText(
+                                            text = block.code,
+                                            style = p.monoStyle
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -574,6 +589,59 @@ private fun styleLiteraryParagraph(
                     append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
                     pop()
                     i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Bold with underscores: __...__
+            i + 1 < n && ch == '_' && text[i + 1] == '_' -> {
+                val endIdx = text.indexOf("__", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 2, endIdx)
+                    pushStyle(SpanStyle(color = palette.primaryInk, fontWeight = FontWeight.SemiBold))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Strikethrough: ~~...~~
+            i + 1 < n && ch == '~' && text[i + 1] == '~' -> {
+                val endIdx = text.indexOf("~~", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 2, endIdx)
+                    pushStyle(SpanStyle(color = palette.mutedInk, textDecoration = TextDecoration.LineThrough))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Markdown Link: [label](url)
+            ch == '[' -> {
+                val closeBracket = text.indexOf(']', startIndex = i + 1)
+                val openParen = if (closeBracket != -1 && closeBracket + 1 < n && text[closeBracket + 1] == '(') closeBracket + 1 else -1
+                val closeParen = if (openParen != -1) text.indexOf(')', startIndex = openParen + 1) else -1
+                if (closeBracket != -1 && openParen != -1 && closeParen != -1 && !text.substring(i + 1, closeBracket).contains('\n')) {
+                    val linkLabel = text.substring(i + 1, closeBracket)
+                    pushStyle(
+                        SpanStyle(
+                            color = palette.accent,
+                            fontWeight = FontWeight.Medium,
+                            textDecoration = TextDecoration.Underline
+                        )
+                    )
+                    append(linkLabel)
+                    pop()
+                    i = closeParen + 1
                 } else {
                     append(ch)
                     i++

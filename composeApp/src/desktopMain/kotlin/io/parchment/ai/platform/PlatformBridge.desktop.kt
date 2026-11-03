@@ -427,15 +427,26 @@ actual object PlatformBridge {
         val normOld = oldText.replace("\r\n", "\n")
         val normNew = newText.replace("\r\n", "\n")
 
-        require(existing.contains(normOld)) { "old_text was not found in '$relativePath'." }
+        if (!existing.contains(normOld)) {
+            error("old_text was not found in '$relativePath' (${existing.lines().size} lines). Use fs_read to inspect the exact lines before editing.")
+        }
 
         val updatedLf = if (replaceAll) {
             existing.replace(normOld, normNew)
         } else {
             val firstIdx = existing.indexOf(normOld)
             val secondIdx = existing.indexOf(normOld, startIndex = firstIdx + normOld.length)
-            require(secondIdx == -1) {
-                "old_text matched multiple locations in '$relativePath'. Include more surrounding context or set replace_all=true."
+            if (secondIdx != -1) {
+                val matchLines = mutableListOf<Int>()
+                var searchIdx = 0
+                while (true) {
+                    val hit = existing.indexOf(normOld, startIndex = searchIdx)
+                    if (hit == -1) break
+                    val lineNum = existing.substring(0, hit).count { it == '\n' } + 1
+                    matchLines.add(lineNum)
+                    searchIdx = hit + normOld.length.coerceAtLeast(1)
+                }
+                error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
             }
             existing.replaceFirst(normOld, normNew)
         }
