@@ -64,7 +64,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -504,6 +506,22 @@ fun SepiaTextField(
     val isFocused by interactionSource.collectIsFocusedAsState()
     var consumeNextEnterKeyUp by remember { mutableStateOf(false) }
 
+    var textFieldValueState by remember {
+        mutableStateOf(TextFieldValue(text = value, selection = TextRange(value.length)))
+    }
+    val textFieldValue = if (textFieldValueState.text != value) {
+        textFieldValueState.copy(
+            text = value,
+            selection = TextRange(
+                textFieldValueState.selection.start.coerceIn(0, value.length),
+                textFieldValueState.selection.end.coerceIn(0, value.length)
+            )
+        )
+    } else {
+        textFieldValueState
+    }
+    var lastTextValue by remember(value) { mutableStateOf(value) }
+
     val borderColor by animateColorAsState(
         targetValue = when {
             borderless -> Color.Transparent
@@ -524,8 +542,15 @@ fun SepiaTextField(
             Spacer(Modifier.height(4.dp))
         }
         BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = textFieldValue,
+            onValueChange = { newTextFieldValue ->
+                textFieldValueState = newTextFieldValue
+                val textChanged = lastTextValue != newTextFieldValue.text
+                lastTextValue = newTextFieldValue.text
+                if (textChanged) {
+                    onValueChange(newTextFieldValue.text)
+                }
+            },
             singleLine = singleLine,
             maxLines = maxLines,
             textStyle = textStyle,
@@ -534,7 +559,7 @@ fun SepiaTextField(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
-                    if (onEnterKeySend != null || onClipboardPaste != null) {
+                    if (!singleLine || onEnterKeySend != null || onClipboardPaste != null) {
                         Modifier.onPreviewKeyEvent { keyEvent ->
                             // 1. Check Ctrl+V / Cmd+V / Shift+Insert for Clipboard Image / Video / File Paste
                             if (onClipboardPaste != null &&
@@ -548,18 +573,40 @@ fun SepiaTextField(
                                 }
                             }
 
-                            // 2. Check Enter / Shift+Enter for Send vs Newline
-                            if (onEnterKeySend != null) {
-                                val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
-                                if (!isEnter || keyEvent.isAltPressed) return@onPreviewKeyEvent false
+                            // 2. Check Enter / Shift+Enter / Ctrl+Enter for Send vs Newline
+                            val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                            if (isEnter && !keyEvent.isAltPressed) {
+                                val isCtrlOrMeta = keyEvent.isCtrlPressed || keyEvent.isMetaPressed
+                                val isShift = keyEvent.isShiftPressed
                                 return@onPreviewKeyEvent when (keyEvent.type) {
                                     KeyEventType.KeyDown -> {
-                                        val consumed = onEnterKeySend(
-                                            keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
-                                            keyEvent.isShiftPressed
-                                        )
-                                        consumeNextEnterKeyUp = consumed
-                                        consumed
+                                        val consumedBySend = onEnterKeySend?.invoke(isCtrlOrMeta, isShift) == true
+                                        if (consumedBySend) {
+                                            consumeNextEnterKeyUp = true
+                                            true
+                                        } else if (!singleLine && (isShift || isCtrlOrMeta)) {
+                                            // Compose Foundation's defaultKeyMapping only maps unmodified Enter to NEW_LINE
+                                            // and ignores Shift+Enter / Ctrl+Enter. Insert '\n' directly at the active selection.
+                                            val curText = textFieldValue.text
+                                            val start = textFieldValue.selection.min.coerceIn(0, curText.length)
+                                            val end = textFieldValue.selection.max.coerceIn(0, curText.length)
+                                            val newText = curText.substring(0, start) + "\n" + curText.substring(end)
+                                            val nextCursor = start + 1
+                                            val updatedValue = TextFieldValue(
+                                                text = newText,
+                                                selection = TextRange(nextCursor)
+                                            )
+                                            textFieldValueState = updatedValue
+                                            if (lastTextValue != newText) {
+                                                lastTextValue = newText
+                                                onValueChange(newText)
+                                            }
+                                            consumeNextEnterKeyUp = true
+                                            true
+                                        } else {
+                                            consumeNextEnterKeyUp = false
+                                            false
+                                        }
                                     }
                                     KeyEventType.KeyUp -> {
                                         if (consumeNextEnterKeyUp) {

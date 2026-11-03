@@ -868,7 +868,7 @@ object AiProviderEngine {
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit
     ) {
-        val activeNodes = historyNodes.filter { it.includedInContext }
+        val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
         // Check if we can use stateful previous_interaction_id chaining
@@ -891,476 +891,577 @@ object AiProviderEngine {
 
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
-            val baseInputSteps = if (currentPrevInteractionId.isNotBlank() && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
-                val trailingNodes = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
-                buildGeminiInteractionsTurnsArray(trailingNodes, session, continuePrefix)
-            } else {
-                buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix)
-            }
+            val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>() // callId -> (name, argsJson)
+            val roundThoughtSig = StringBuilder()
+            val roundModelText = StringBuilder()
+            var receivedAnyStreamContent = false
+            var stepRetryAttempt = 0
 
-            // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps
-            val compactedExtraSteps = compactGeminiInteractionsExtraSteps(extraLoopSteps)
-
-            val payloadObj = buildJsonObject {
-                put("model", model.trim().removePrefix("models/"))
-                if (systemInstruction.isNotBlank()) {
-                    put("system_instruction", systemInstruction)
-                }
-
-                if (!profile.useStatefulChaining) {
-                    put("store", false)
-                }
-
-                // Always stream SSE in real time so tokens & reasoning flow smoothly at 60/120fps;
-                // if `useBackgroundLongDecode` is enabled and the stream drops, we seamlessly poll `/interactions/{id}`!
-                put("stream", true)
-
-                if (currentPrevInteractionId.isNotBlank()) {
-                    put("previous_interaction_id", currentPrevInteractionId)
-                }
-
-                // Build `input` using official Interactions API Steps schema
-                if (pendingToolResults.isNotEmpty() && currentPrevInteractionId.isNotBlank()) {
-                    putJsonArray("input") {
-                        for (tr in pendingToolResults) {
-                            add(buildJsonObject {
-                                put("type", "function_result")
-                                put("name", tr.name)
-                                put("call_id", tr.id)
-                                put("result", tr.resultText)
-                            })
-                        }
-                    }
-                } else if (pendingStopHookPrompt.isNotBlank() && currentPrevInteractionId.isNotBlank()) {
-                    putJsonArray("input") {
-                        add(buildJsonObject {
-                            put("type", "user_input")
-                            putJsonArray("content") {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", pendingStopHookPrompt)
-                                })
-                            }
-                        })
+            fun addUniqueToolCall(callId: String, fnName: String, argsStr: String) {
+                if (fnName.isBlank()) return
+                val cleanArgs = argsStr.ifBlank { "{}" }
+                val existingIdx = turnToolCalls.indexOfFirst { it.first == callId && callId.isNotBlank() }
+                if (existingIdx >= 0) {
+                    val prev = turnToolCalls[existingIdx]
+                    if ((prev.second.second == "{}" || prev.second.second.isBlank()) && cleanArgs != "{}") {
+                        turnToolCalls[existingIdx] = callId to (fnName to cleanArgs)
                     }
                 } else {
-                    putJsonArray("input") {
-                        baseInputSteps.forEach { add(it) }
-                        compactedExtraSteps.forEach { add(it) }
-                    }
-                }
-
-                if (profile.enableImageGeneration) {
-                    putJsonArray("response_modalities") {
-                        add(JsonPrimitive("TEXT"))
-                        add(JsonPrimitive("IMAGE"))
-                    }
-                }
-
-                // Generation config (nullable parameters are stripped when null or <= 0)
-                putJsonObject("generation_config") {
-                    if (!isGemini4) {
-                        profile.temperature?.let { put("temperature", it) }
-                        profile.topP?.let { put("top_p", it) }
-                    }
-                    val maxOut = profile.maxOutputTokens
-                    if (maxOut != null && maxOut > 0) {
-                        put("max_output_tokens", maxOut)
-                    }
-                    val rawEffort = profile.thinkingEffort.trim()
-                    val lowerEffort = rawEffort.lowercase()
-                    if (rawEffort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
-                        val mappedLevel = if (isGemini4) {
-                            when (lowerEffort) {
-                                "minimal", "low" -> "low"
-                                "medium" -> "medium"
-                                "high", "xhigh", "max" -> "high"
-                                else -> rawEffort
-                            }
-                        } else {
-                            when (lowerEffort) {
-                                "xhigh", "max" -> "high"
-                                else -> rawEffort
-                            }
-                        }
-                        put("thinking_level", mappedLevel)
-                        put("thinking_summaries", "auto")
-                    }
-                    if (profile.enableImageGeneration && profile.mediaAspectRatio.isNotBlank()) {
-                        putJsonObject("image_config") {
-                            put("aspect_ratio", profile.mediaAspectRatio)
-                            if (profile.mediaResolution in listOf("1K", "2K", "4K")) {
-                                put("image_size", profile.mediaResolution)
-                            }
-                        }
-                    }
-                }
-
-                // Built-in Tools + Local Workspace Harness Tools
-                val toolsArray = buildJsonArray {
-                    if (profile.enableWebSearch) {
-                        add(buildJsonObject { put("type", "google_search") })
-                    }
-                    if (profile.enableCodeExecution) {
-                        add(buildJsonObject { put("type", "code_execution") })
-                    }
-                    if (profile.enableUrlContext) {
-                        add(buildJsonObject { put("type", "url_context") })
-                    }
-                    val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
-                        session.workspaceMode,
-                        session.workspacePath,
-                        profile.allowShellExecution,
-                        goalModeActive = circuitBreaker.goalState != null
-                    )
-                    workspaceTools.forEach { add(it) }
-                }
-                if (toolsArray.isNotEmpty()) {
-                    put("tools", toolsArray)
+                    turnToolCalls.add(callId to (fnName to cleanArgs))
                 }
             }
 
-            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val requestJsonStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+            while (true) {
+                turnToolCalls.clear()
+                roundThoughtSig.clear()
+                roundModelText.clear()
+                receivedAnyStreamContent = false
 
-            val base = profile.baseUrl.trimEnd('/')
-            val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
-            val path = profile.endpointPathOverride.ifBlank { defaultPath }
-            val rawUrl = "$base$path"
-            val finalUrl = buildUrlWithAuthQuery(profile, rawUrl)
+                val useChainedId = profile.useStatefulChaining && currentPrevInteractionId.isNotBlank()
+                val baseInputSteps = if (useChainedId && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
+                    val trailingNodes = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
+                    buildGeminiInteractionsTurnsArray(trailingNodes, session, continuePrefix)
+                } else {
+                    buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix)
+                }
 
-            onRawWire(requestJsonStr, "Dispatching to $finalUrl ...")
+                // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps
+                val compactedExtraSteps = compactGeminiInteractionsExtraSteps(extraLoopSteps)
 
-            val turnToolCalls = mutableListOf< Pair<String, Pair<String, String>> >() // callId -> (name, argsJson)
-            val roundThoughtSig = StringBuilder()
-            var receivedAnyStreamContent = false
+                val payloadObj = buildJsonObject {
+                    put("model", model.trim().removePrefix("models/"))
+                    if (systemInstruction.isNotBlank()) {
+                        put("system_instruction", systemInstruction)
+                    }
 
-            suspend fun pollInteractionUntilComplete(interactionIdToPoll: String) {
-                var pollCount = 0
-                var status = "in_progress"
-                var interactionObj = JsonObject(emptyMap())
-                while ((status == "in_progress" || status == "queued" || status == "processing") && interactionIdToPoll.isNotBlank()) {
-                    pollCount++
-                    onStatus("Background Poll Recovery ($status • poll #$pollCount)…", interactionIdToPoll)
-                    delay(2000L)
-                    val pollUrl = buildUrlWithAuthQuery(profile, "$base${path.substringBefore("?")}/$interactionIdToPoll")
-                    val pollResp = httpClient.get(pollUrl) {
+                    if (!profile.useStatefulChaining) {
+                        put("store", false)
+                    }
+
+                    // Always stream SSE in real time so tokens & reasoning flow smoothly at 60/120fps;
+                    // if `useBackgroundLongDecode` is enabled and the stream drops, we seamlessly poll `/interactions/{id}`!
+                    put("stream", true)
+
+                    if (useChainedId) {
+                        put("previous_interaction_id", currentPrevInteractionId)
+                    }
+
+                    // Build `input` using official Interactions API Steps schema
+                    if (pendingToolResults.isNotEmpty() && useChainedId) {
+                        putJsonArray("input") {
+                            for (tr in pendingToolResults) {
+                                add(buildJsonObject {
+                                    put("type", "function_result")
+                                    put("name", tr.name)
+                                    put("call_id", tr.id)
+                                    put("result", tr.resultText)
+                                    if (tr.isError) put("is_error", true)
+                                })
+                            }
+                        }
+                    } else if (pendingStopHookPrompt.isNotBlank() && useChainedId) {
+                        putJsonArray("input") {
+                            add(buildJsonObject {
+                                put("type", "user_input")
+                                putJsonArray("content") {
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", pendingStopHookPrompt)
+                                    })
+                                }
+                            })
+                        }
+                    } else {
+                        putJsonArray("input") {
+                            baseInputSteps.forEach { add(it) }
+                            compactedExtraSteps.forEach { add(it) }
+                        }
+                    }
+
+                    if (profile.enableImageGeneration) {
+                        putJsonArray("response_modalities") {
+                            add(JsonPrimitive("TEXT"))
+                            add(JsonPrimitive("IMAGE"))
+                        }
+                    }
+
+                    // Generation config (nullable parameters are stripped when null or <= 0)
+                    putJsonObject("generation_config") {
+                        if (!isGemini4) {
+                            profile.temperature?.let { put("temperature", it) }
+                            profile.topP?.let { put("top_p", it) }
+                        }
+                        val maxOut = profile.maxOutputTokens
+                        if (maxOut != null && maxOut > 0) {
+                            put("max_output_tokens", maxOut)
+                        }
+                        val rawEffort = profile.thinkingEffort.trim()
+                        val lowerEffort = rawEffort.lowercase()
+                        if (rawEffort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
+                            val mappedLevel = if (isGemini4) {
+                                when (lowerEffort) {
+                                    "minimal", "low" -> "low"
+                                    "medium" -> "medium"
+                                    "high", "xhigh", "max" -> "high"
+                                    else -> rawEffort
+                                }
+                            } else {
+                                when (lowerEffort) {
+                                    "xhigh", "max" -> "high"
+                                    else -> rawEffort
+                                }
+                            }
+                            put("thinking_level", mappedLevel)
+                            put("thinking_summaries", "auto")
+                        }
+                        if (profile.enableImageGeneration && profile.mediaAspectRatio.isNotBlank()) {
+                            putJsonObject("image_config") {
+                                put("aspect_ratio", profile.mediaAspectRatio)
+                                if (profile.mediaResolution in listOf("1K", "2K", "4K")) {
+                                    put("image_size", profile.mediaResolution)
+                                }
+                            }
+                        }
+                    }
+
+                    // Built-in Tools + Local Workspace Harness Tools
+                    val toolsArray = buildJsonArray {
+                        if (profile.enableWebSearch) {
+                            add(buildJsonObject { put("type", "google_search") })
+                        }
+                        if (profile.enableCodeExecution) {
+                            add(buildJsonObject { put("type", "code_execution") })
+                        }
+                        if (profile.enableUrlContext) {
+                            add(buildJsonObject { put("type", "url_context") })
+                        }
+                        val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
+                            session.workspaceMode,
+                            session.workspacePath,
+                            profile.allowShellExecution,
+                            goalModeActive = circuitBreaker.goalState != null
+                        )
+                        workspaceTools.forEach { add(it) }
+                    }
+                    if (toolsArray.isNotEmpty()) {
+                        put("tools", toolsArray)
+                    }
+                }
+
+                val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
+                val requestJsonStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+
+                val base = profile.baseUrl.trimEnd('/')
+                val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
+                val path = profile.endpointPathOverride.ifBlank { defaultPath }
+                val rawUrl = "$base$path"
+                val finalUrl = buildUrlWithAuthQuery(profile, rawUrl)
+
+                onRawWire(requestJsonStr, "Dispatching to $finalUrl ...")
+
+                suspend fun pollInteractionUntilComplete(interactionIdToPoll: String) {
+                    var pollCount = 0
+                    var status = "in_progress"
+                    var interactionObj = JsonObject(emptyMap())
+                    while ((status == "in_progress" || status == "queued" || status == "processing") && interactionIdToPoll.isNotBlank()) {
+                        pollCount++
+                        onStatus("Background Poll Recovery ($status • poll #$pollCount)…", interactionIdToPoll)
+                        delay(2000L)
+                        val pollUrl = buildUrlWithAuthQuery(profile, "$base${path.substringBefore("?")}/$interactionIdToPoll")
+                        val pollResp = httpClient.get(pollUrl) {
+                            applyAuthAndCustomHeaders(profile)
+                        }
+                        val pollText = pollResp.bodyAsText()
+                        onRawWire(requestJsonStr, pollText)
+                        if (!pollResp.status.isSuccess()) {
+                            error("Gemini Interactions Poll HTTP ${pollResp.status.value}: $pollText")
+                        }
+                        interactionObj = json.parseToJsonElement(pollText).jsonObject
+                        status = interactionObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
+                    }
+                    if (!receivedAnyStreamContent && interactionObj.isNotEmpty()) {
+                        parseCompletedGeminiInteractionObject(
+                            interactionObj = interactionObj,
+                            onFirstToken = onFirstToken,
+                            onThinking = { th, sig ->
+                                if (sig.isNotEmpty()) roundThoughtSig.append(sig)
+                                onThinking(th, sig)
+                            },
+                            onContent = { txt ->
+                                receivedAnyStreamContent = true
+                                roundModelText.append(txt)
+                                onContent(txt)
+                            },
+                            onMedia = onMedia,
+                            onFunctionCall = { callId, fnName, argsStr ->
+                                addUniqueToolCall(callId, fnName, argsStr)
+                            },
+                            onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
+                                onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                            }
+                        )
+                    }
+                }
+
+                try {
+                    // Live SSE Streaming Mode (`stream = true`) with automatic Background Poll Recovery
+                    httpClient.preparePost(finalUrl) {
                         applyAuthAndCustomHeaders(profile)
-                    }
-                    val pollText = pollResp.bodyAsText()
-                    onRawWire(requestJsonStr, pollText)
-                    if (!pollResp.status.isSuccess()) {
-                        error("Gemini Interactions Poll HTTP ${pollResp.status.value}: $pollText")
-                    }
-                    interactionObj = json.parseToJsonElement(pollText).jsonObject
-                    status = interactionObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
-                }
-                if (!receivedAnyStreamContent && interactionObj.isNotEmpty()) {
-                    parseCompletedGeminiInteractionObject(
-                        interactionObj = interactionObj,
-                        onFirstToken = onFirstToken,
-                        onThinking = { th, sig ->
-                            if (sig.isNotEmpty()) roundThoughtSig.append(sig)
-                            onThinking(th, sig)
-                        },
-                        onContent = { txt ->
-                            receivedAnyStreamContent = true
-                            onContent(txt)
-                        },
-                        onMedia = onMedia,
-                        onFunctionCall = { callId, fnName, argsStr ->
-                            turnToolCalls.add(callId to (fnName to argsStr))
-                        },
-                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                            if (id.isNotBlank()) currentPrevInteractionId = id
-                            onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                        header("Accept", "text/event-stream")
+                        contentType(ContentType.Application.Json)
+                        setBody(requestJsonStr)
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            val errText = response.bodyAsText()
+                            onRawWire(requestJsonStr, errText)
+                            error("Gemini Interactions HTTP ${response.status.value}: $errText")
                         }
-                    )
-                }
-            }
 
-            try {
-                // Live SSE Streaming Mode (`stream = true`) with automatic Background Poll Recovery
-                httpClient.preparePost(finalUrl) {
-                    applyAuthAndCustomHeaders(profile)
-                    header("Accept", "text/event-stream")
-                    contentType(ContentType.Application.Json)
-                    setBody(requestJsonStr)
-                }.execute { response ->
-                    if (!response.status.isSuccess()) {
-                        val errText = response.bodyAsText()
-                        onRawWire(requestJsonStr, errText)
-                        error("Gemini Interactions HTTP ${response.status.value}: $errText")
-                    }
+                        val channel = response.bodyAsChannel()
+                        val pendingFnArgsByIndex = mutableMapOf<Int, Pair<String, Pair<String, StringBuilder>>>()
+                        var currentStreamStepType = ""
 
-                    val channel = response.bodyAsChannel()
-                    val pendingFnArgsByIndex = mutableMapOf<Int, Pair<String, Pair<String, StringBuilder>>>()
-                    var currentStreamStepType = ""
+                        readSseOrJsonFallback(
+                            channel = channel,
+                            onSseEvent = { eventType, dataLine ->
+                                if (dataLine == "[DONE]") return@readSseOrJsonFallback
+                                onRawWire(requestJsonStr, dataLine)
+                                val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val type = evObj["event_type"]?.jsonPrimitive?.contentOrNull
+                                    ?: evObj["type"]?.jsonPrimitive?.contentOrNull
+                                    ?: eventType
 
-                    readSseOrJsonFallback(
-                        channel = channel,
-                        onSseEvent = { eventType, dataLine ->
-                            if (dataLine == "[DONE]") return@readSseOrJsonFallback
-                            onRawWire(requestJsonStr, dataLine)
-                            val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                            val type = evObj["event_type"]?.jsonPrimitive?.contentOrNull
-                                ?: evObj["type"]?.jsonPrimitive?.contentOrNull
-                                ?: eventType
-
-                            // Extract interaction ID if present
-                            val interactionSub = evObj["interaction"] as? JsonObject
-                            val idCandidate = interactionSub?.get("id")?.jsonPrimitive?.contentOrNull
-                                ?: evObj["id"]?.jsonPrimitive?.contentOrNull
-                            if (!idCandidate.isNullOrBlank()) {
-                                currentPrevInteractionId = idCandidate
-                            }
-
-                            when (type) {
-                                "interaction.start", "interaction.created", "interaction.status_update" -> {
-                                    val st = interactionSub?.get("status")?.jsonPrimitive?.contentOrNull
-                                        ?: evObj["status"]?.jsonPrimitive?.contentOrNull ?: "streaming"
-                                    onStatus("Interaction $st", currentPrevInteractionId)
+                                // Extract interaction ID if present and stateful chaining is enabled
+                                val interactionSub = evObj["interaction"] as? JsonObject
+                                val idCandidate = interactionSub?.get("id")?.jsonPrimitive?.contentOrNull
+                                    ?: evObj["id"]?.jsonPrimitive?.contentOrNull
+                                if (profile.useStatefulChaining && !idCandidate.isNullOrBlank()) {
+                                    currentPrevInteractionId = idCandidate
                                 }
-                                "content.start", "step.start" -> {
-                                    val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val contentObj = (evObj["content"] as? JsonObject) ?: (evObj["step"] as? JsonObject)
-                                    val cType = contentObj?.get("type")?.jsonPrimitive?.contentOrNull ?: ""
-                                    if (cType.isNotBlank()) currentStreamStepType = cType
-                                    if (cType == "function_call") {
-                                        val callId = contentObj?.get("id")?.jsonPrimitive?.contentOrNull
-                                            ?: contentObj?.get("call_id")?.jsonPrimitive?.contentOrNull
-                                            ?: "call_$idx"
-                                        val fnName = contentObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
-                                        val argEl = contentObj?.get("arguments")
-                                        val initialArgs = when {
-                                            argEl is JsonPrimitive -> argEl.content
-                                            argEl is JsonObject && argEl.isNotEmpty() -> argEl.toString()
-                                            else -> ""
-                                        }
-                                        pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(initialArgs))
-                                    } else if (cType == "thought") {
-                                        val sig = contentObj?.get("signature")?.jsonPrimitive?.contentOrNull ?: ""
-                                        if (sig.isNotEmpty()) {
-                                            roundThoughtSig.append(sig)
-                                            onThinking("", sig)
-                                        }
-                                        val summaryArr = (contentObj?.get("summary") as? JsonArray)
-                                            ?: (contentObj?.get("content") as? JsonArray)
-                                        summaryArr?.forEach { sEl ->
-                                            val txt = (sEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
-                                            if (txt.isNotEmpty()) {
-                                                onFirstToken()
-                                                onThinking(txt, "")
+
+                                when (type) {
+                                    "interaction.start", "interaction.created", "interaction.status_update" -> {
+                                        val st = interactionSub?.get("status")?.jsonPrimitive?.contentOrNull
+                                            ?: evObj["status"]?.jsonPrimitive?.contentOrNull ?: "streaming"
+                                        onStatus("Interaction $st", currentPrevInteractionId)
+                                    }
+                                    "content.start", "step.start" -> {
+                                        val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
+                                        val contentObj = (evObj["content"] as? JsonObject) ?: (evObj["step"] as? JsonObject)
+                                        val cType = contentObj?.get("type")?.jsonPrimitive?.contentOrNull ?: ""
+                                        if (cType.isNotBlank()) currentStreamStepType = cType
+                                        if (cType == "function_call") {
+                                            val callId = contentObj?.get("id")?.jsonPrimitive?.contentOrNull
+                                                ?: contentObj?.get("call_id")?.jsonPrimitive?.contentOrNull
+                                                ?: "call_$idx"
+                                            val fnName = contentObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
+                                            val argEl = contentObj?.get("arguments") ?: contentObj?.get("arguments_delta")
+                                            val initialArgs = when {
+                                                argEl is JsonPrimitive -> argEl.content
+                                                argEl is JsonObject && argEl.isNotEmpty() -> argEl.toString()
+                                                else -> ""
                                             }
-                                        }
-                                    } else if (cType == "model_output") {
-                                        val contentArr = contentObj?.get("content") as? JsonArray
-                                        contentArr?.forEach { cEl ->
-                                            val txt = (cEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
-                                            if (txt.isNotEmpty()) {
-                                                onFirstToken()
-                                                receivedAnyStreamContent = true
-                                                onContent(txt)
+                                            pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(initialArgs))
+                                        } else if (cType == "thought") {
+                                            val sig = contentObj?.get("signature")?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (sig.isNotEmpty()) {
+                                                roundThoughtSig.append(sig)
+                                                onThinking("", sig)
+                                            }
+                                            val summaryArr = (contentObj?.get("summary") as? JsonArray)
+                                                ?: (contentObj?.get("content") as? JsonArray)
+                                            summaryArr?.forEach { sEl ->
+                                                val txt = (sEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (txt.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    onThinking(txt, "")
+                                                }
+                                            }
+                                        } else if (cType == "model_output") {
+                                            val contentArr = contentObj?.get("content") as? JsonArray
+                                            contentArr?.forEach { cEl ->
+                                                val txt = (cEl as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (txt.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    receivedAnyStreamContent = true
+                                                    roundModelText.append(txt)
+                                                    onContent(txt)
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                "content.delta", "step.delta" -> {
-                                    val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val deltaObj = evObj["delta"] as? JsonObject ?: evObj
-                                    val deltaType = deltaObj["type"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val sigDelta = deltaObj["signature"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    if (sigDelta.isNotEmpty()) {
-                                        roundThoughtSig.append(sigDelta)
-                                        onThinking("", sigDelta)
-                                    }
-                                    val deltaContentArr = deltaObj["content"] as? JsonArray
-                                    if (deltaContentArr != null) {
-                                        deltaContentArr.forEach { partEl ->
-                                            val partObj = partEl as? JsonObject ?: return@forEach
-                                            val partType = partObj["type"]?.jsonPrimitive?.contentOrNull ?: "text"
-                                            when (partType) {
-                                                "text" -> {
-                                                    val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    "content.delta", "step.delta" -> {
+                                        val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
+                                        val deltaObj = evObj["delta"] as? JsonObject ?: evObj
+                                        val deltaType = deltaObj["type"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        val sigDelta = deltaObj["signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        if (sigDelta.isNotEmpty()) {
+                                            roundThoughtSig.append(sigDelta)
+                                            onThinking("", sigDelta)
+                                        }
+                                        val deltaContentArr = deltaObj["content"] as? JsonArray
+                                        if (deltaContentArr != null) {
+                                            deltaContentArr.forEach { partEl ->
+                                                val partObj = partEl as? JsonObject ?: return@forEach
+                                                val partType = partObj["type"]?.jsonPrimitive?.contentOrNull ?: "text"
+                                                when (partType) {
+                                                    "text" -> {
+                                                        val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                        if (txt.isNotEmpty()) {
+                                                            onFirstToken()
+                                                            if (currentStreamStepType == "thought") {
+                                                                onThinking(txt, "")
+                                                            } else {
+                                                                receivedAnyStreamContent = true
+                                                                roundModelText.append(txt)
+                                                                onContent(txt)
+                                                            }
+                                                        }
+                                                    }
+                                                    "image" -> {
+                                                        val b64 = partObj["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                        val uri = partObj["uri"]?.jsonPrimitive?.contentOrNull
+                                                            ?: partObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                        val mime = partObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
+                                                        saveAndEmitImage(b64, uri, mime, profile.mediaAspectRatio, "", onMedia)
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            val hasArgsDelta = deltaObj.containsKey("arguments_delta") ||
+                                                deltaObj.containsKey("arguments") ||
+                                                deltaObj.containsKey("partial_json")
+                                            when {
+                                                deltaType == "text" -> {
+                                                    val txt = deltaObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
                                                     if (txt.isNotEmpty()) {
                                                         onFirstToken()
                                                         if (currentStreamStepType == "thought") {
                                                             onThinking(txt, "")
                                                         } else {
                                                             receivedAnyStreamContent = true
+                                                            roundModelText.append(txt)
                                                             onContent(txt)
                                                         }
                                                     }
                                                 }
-                                                "image" -> {
-                                                    val b64 = partObj["data"]?.jsonPrimitive?.contentOrNull ?: ""
-                                                    val uri = partObj["uri"]?.jsonPrimitive?.contentOrNull
-                                                        ?: partObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
-                                                    val mime = partObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
+                                                deltaType == "thought_summary" || deltaType == "thought" || deltaType == "thinking" -> {
+                                                    val thoughtTxt = (deltaObj["content"] as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull
+                                                        ?: deltaObj["text"]?.jsonPrimitive?.contentOrNull
+                                                        ?: deltaObj["thought"]?.jsonPrimitive?.contentOrNull
+                                                        ?: ""
+                                                    if (thoughtTxt.isNotEmpty()) {
+                                                        onFirstToken()
+                                                        onThinking(thoughtTxt, "")
+                                                    }
+                                                }
+                                                deltaType == "thought_signature" -> {
+                                                    // Already handled via sigDelta above
+                                                }
+                                                deltaType == "image" -> {
+                                                    val b64 = deltaObj["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                    val uri = deltaObj["uri"]?.jsonPrimitive?.contentOrNull
+                                                        ?: deltaObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                    val mime = deltaObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
                                                     saveAndEmitImage(b64, uri, mime, profile.mediaAspectRatio, "", onMedia)
                                                 }
-                                            }
-                                        }
-                                    } else {
-                                        when (deltaType) {
-                                            "text" -> {
-                                                val txt = deltaObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                                                if (txt.isNotEmpty()) {
-                                                    onFirstToken()
-                                                    if (currentStreamStepType == "thought") {
-                                                        onThinking(txt, "")
+                                                deltaType == "function_call" || deltaType == "arguments_delta" ||
+                                                    (currentStreamStepType == "function_call" && hasArgsDelta) -> {
+                                                    val callId = deltaObj["id"]?.jsonPrimitive?.contentOrNull
+                                                        ?: deltaObj["call_id"]?.jsonPrimitive?.contentOrNull
+                                                        ?: pendingFnArgsByIndex[idx]?.first
+                                                        ?: "call_$idx"
+                                                    val fnName = deltaObj["name"]?.jsonPrimitive?.contentOrNull
+                                                        ?: pendingFnArgsByIndex[idx]?.second?.first
+                                                        ?: ""
+                                                    val rawArgEl = deltaObj["arguments_delta"]
+                                                        ?: deltaObj["arguments"]
+                                                        ?: deltaObj["partial_json"]
+                                                    val argChunk = rawArgEl?.let {
+                                                        if (it is JsonPrimitive) it.content else it.toString()
+                                                    } ?: ""
+                                                    val existing = pendingFnArgsByIndex[idx]
+                                                    if (existing == null) {
+                                                        pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(argChunk))
                                                     } else {
-                                                        receivedAnyStreamContent = true
-                                                        onContent(txt)
+                                                        val updatedName = fnName.ifBlank { existing.second.first }
+                                                        existing.second.second.append(argChunk)
+                                                        pendingFnArgsByIndex[idx] = callId to (updatedName to existing.second.second)
+                                                    }
+                                                }
+                                                else -> {
+                                                    val fallbackTxt = deltaObj["text"]?.jsonPrimitive?.contentOrNull
+                                                    if (!fallbackTxt.isNullOrEmpty()) {
+                                                        onFirstToken()
+                                                        if (currentStreamStepType == "thought") {
+                                                            onThinking(fallbackTxt, "")
+                                                        } else {
+                                                            receivedAnyStreamContent = true
+                                                            roundModelText.append(fallbackTxt)
+                                                            onContent(fallbackTxt)
+                                                        }
                                                     }
                                                 }
                                             }
-                                            "thought_summary", "thought", "thinking" -> {
-                                                val thoughtTxt = (deltaObj["content"] as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull
-                                                    ?: deltaObj["text"]?.jsonPrimitive?.contentOrNull
-                                                    ?: deltaObj["thought"]?.jsonPrimitive?.contentOrNull
-                                                    ?: ""
-                                                if (thoughtTxt.isNotEmpty()) {
-                                                    onFirstToken()
-                                                    onThinking(thoughtTxt, "")
-                                                }
+                                        }
+                                    }
+                                    "content.stop", "step.stop", "content.complete", "step.complete" -> {
+                                        val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
+                                        val contentObj = (evObj["content"] as? JsonObject) ?: (evObj["step"] as? JsonObject)
+                                        if (contentObj?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
+                                            val callId = contentObj["id"]?.jsonPrimitive?.contentOrNull
+                                                ?: contentObj["call_id"]?.jsonPrimitive?.contentOrNull
+                                                ?: pendingFnArgsByIndex[idx]?.first
+                                                ?: "call_$idx"
+                                            val fnName = contentObj["name"]?.jsonPrimitive?.contentOrNull
+                                                ?: pendingFnArgsByIndex[idx]?.second?.first
+                                                ?: ""
+                                            val argEl = contentObj["arguments"]
+                                            val argsStr = when {
+                                                argEl is JsonPrimitive -> argEl.content
+                                                argEl is JsonObject && argEl.isNotEmpty() -> argEl.toString()
+                                                else -> pendingFnArgsByIndex[idx]?.second?.second?.toString().orEmpty()
                                             }
-                                            "thought_signature" -> {
-                                                // Already handled via sigDelta above
+                                            if (fnName.isNotBlank()) {
+                                                pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(argsStr))
                                             }
-                                            "image" -> {
-                                                val b64 = deltaObj["data"]?.jsonPrimitive?.contentOrNull ?: ""
-                                                val uri = deltaObj["uri"]?.jsonPrimitive?.contentOrNull
-                                                    ?: deltaObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
-                                                val mime = deltaObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
-                                                saveAndEmitImage(b64, uri, mime, profile.mediaAspectRatio, "", onMedia)
-                                            }
-                                            "function_call", "arguments_delta" -> {
-                                                val callId = deltaObj["id"]?.jsonPrimitive?.contentOrNull
-                                                    ?: deltaObj["call_id"]?.jsonPrimitive?.contentOrNull
-                                                    ?: pendingFnArgsByIndex[idx]?.first
-                                                    ?: "call_$idx"
-                                                val fnName = deltaObj["name"]?.jsonPrimitive?.contentOrNull
-                                                    ?: pendingFnArgsByIndex[idx]?.second?.first
-                                                    ?: ""
-                                                val argChunk = deltaObj["arguments"]?.let {
+                                        }
+                                    }
+                                    "interaction.complete", "interaction.completed" -> {
+                                        val completedObj = interactionSub ?: evObj
+                                        for ((_, pair) in pendingFnArgsByIndex.entries.sortedBy { it.key }) {
+                                            addUniqueToolCall(pair.first, pair.second.first, pair.second.second.toString())
+                                        }
+                                        val itemsArray = (completedObj["steps"] as? JsonArray)
+                                            ?: (completedObj["outputs"] as? JsonArray)
+                                        itemsArray?.forEach { itemEl ->
+                                            val item = itemEl as? JsonObject ?: return@forEach
+                                            val itemType = item["type"]?.jsonPrimitive?.contentOrNull
+                                            if (itemType == "function_call") {
+                                                val callId = item["id"]?.jsonPrimitive?.contentOrNull
+                                                    ?: item["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val args = item["arguments"]?.let {
                                                     if (it is JsonPrimitive) it.content else it.toString()
-                                                } ?: ""
-                                                val existing = pendingFnArgsByIndex[idx]
-                                                if (existing == null) {
-                                                    pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(argChunk))
-                                                } else {
-                                                    val updatedName = fnName.ifBlank { existing.second.first }
-                                                    existing.second.second.append(argChunk)
-                                                    pendingFnArgsByIndex[idx] = callId to (updatedName to existing.second.second)
-                                                }
-                                            }
-                                            else -> {
-                                                val fallbackTxt = deltaObj["text"]?.jsonPrimitive?.contentOrNull
-                                                if (!fallbackTxt.isNullOrEmpty()) {
-                                                    onFirstToken()
-                                                    if (currentStreamStepType == "thought") {
-                                                        onThinking(fallbackTxt, "")
-                                                    } else {
-                                                        onContent(fallbackTxt)
-                                                    }
+                                                } ?: "{}"
+                                                addUniqueToolCall(callId, name, args)
+                                            } else if (itemType == "thought" || itemType == "thought_summary") {
+                                                val sig = item["signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (sig.isNotEmpty() && roundThoughtSig.isEmpty()) {
+                                                    roundThoughtSig.append(sig)
+                                                    onThinking("", sig)
                                                 }
                                             }
                                         }
+                                        val usageObj = completedObj["usage"] as? JsonObject
+                                        if (usageObj != null) {
+                                            val inTok = usageObj["total_input_tokens"]?.jsonPrimitive?.intOrNull
+                                                ?: usageObj["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val cacheTok = usageObj["total_cached_tokens"]?.jsonPrimitive?.intOrNull
+                                                ?: usageObj["cached_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val thinkTok = usageObj["total_thought_tokens"]?.jsonPrimitive?.intOrNull
+                                                ?: usageObj["total_reasoning_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val outTok = usageObj["total_output_tokens"]?.jsonPrimitive?.intOrNull
+                                                ?: usageObj["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            onUsage(currentPrevInteractionId, inTok, cacheTok, thinkTok, outTok)
+                                        }
+                                    }
+                                    "error" -> {
+                                        val errObj = evObj["error"] as? JsonObject
+                                        val msg = errObj?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
+                                        error("Gemini Interactions Stream Error: $msg")
+                                    }
+                                    else -> {
+                                        if (evObj.containsKey("outputs") || evObj.containsKey("steps")) {
+                                            parseCompletedGeminiInteractionObject(
+                                                interactionObj = evObj,
+                                                onFirstToken = onFirstToken,
+                                                onThinking = { th, sig ->
+                                                    if (sig.isNotEmpty()) roundThoughtSig.append(sig)
+                                                    onThinking(th, sig)
+                                                },
+                                                onContent = { txt ->
+                                                    receivedAnyStreamContent = true
+                                                    roundModelText.append(txt)
+                                                    onContent(txt)
+                                                },
+                                                onMedia = onMedia,
+                                                onFunctionCall = { callId, fnName, argsStr ->
+                                                    addUniqueToolCall(callId, fnName, argsStr)
+                                                },
+                                                onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                                    if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
+                                                    onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                                                }
+                                            )
+                                        }
                                     }
                                 }
-                                "interaction.complete", "interaction.completed" -> {
-                                    val completedObj = interactionSub ?: evObj
-                                    val usageObj = completedObj["usage"] as? JsonObject
-                                    if (usageObj != null) {
-                                        val inTok = usageObj["total_input_tokens"]?.jsonPrimitive?.intOrNull
-                                            ?: usageObj["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                        val cacheTok = usageObj["total_cached_tokens"]?.jsonPrimitive?.intOrNull
-                                            ?: usageObj["cached_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                        val thinkTok = usageObj["total_thought_tokens"]?.jsonPrimitive?.intOrNull
-                                            ?: usageObj["total_reasoning_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                        val outTok = usageObj["total_output_tokens"]?.jsonPrimitive?.intOrNull
-                                            ?: usageObj["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                        onUsage(currentPrevInteractionId, inTok, cacheTok, thinkTok, outTok)
-                                    }
-                                }
-                                "error" -> {
-                                    val errObj = evObj["error"] as? JsonObject
-                                    val msg = errObj?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
-                                    error("Gemini Interactions Stream Error: $msg")
-                                }
-                                else -> {
-                                    if (evObj.containsKey("outputs") || evObj.containsKey("steps")) {
-                                        parseCompletedGeminiInteractionObject(
-                                            interactionObj = evObj,
-                                            onFirstToken = onFirstToken,
-                                            onThinking = { th, sig ->
-                                                if (sig.isNotEmpty()) roundThoughtSig.append(sig)
-                                                onThinking(th, sig)
-                                            },
-                                            onContent = onContent,
-                                            onMedia = onMedia,
-                                            onFunctionCall = { callId, fnName, argsStr ->
-                                                turnToolCalls.add(callId to (fnName to argsStr))
-                                            },
-                                            onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                                if (id.isNotBlank()) currentPrevInteractionId = id
-                                                onUsage(id, inTok, cacheTok, thinkTok, outTok)
-                                            }
-                                        )
-                                    }
+                            },
+                            onPlainJsonFallback = { fullBody ->
+                                onRawWire(requestJsonStr, fullBody)
+                                val rootObj = json.parseToJsonElement(fullBody).jsonObject
+                                val id = rootObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
+                                val st = rootObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
+                                if ((st == "in_progress" || st == "queued" || st == "processing") && currentPrevInteractionId.isNotBlank()) {
+                                    pollInteractionUntilComplete(currentPrevInteractionId)
+                                } else {
+                                    parseCompletedGeminiInteractionObject(
+                                        interactionObj = rootObj,
+                                        onFirstToken = onFirstToken,
+                                        onThinking = { th, sig ->
+                                            if (sig.isNotEmpty()) roundThoughtSig.append(sig)
+                                            onThinking(th, sig)
+                                        },
+                                        onContent = { txt ->
+                                            receivedAnyStreamContent = true
+                                            roundModelText.append(txt)
+                                            onContent(txt)
+                                        },
+                                        onMedia = onMedia,
+                                        onFunctionCall = { callId, fnName, argsStr ->
+                                            addUniqueToolCall(callId, fnName, argsStr)
+                                        },
+                                        onUsage = { uId, inTok, cacheTok, thinkTok, outTok ->
+                                            if (profile.useStatefulChaining && uId.isNotBlank()) currentPrevInteractionId = uId
+                                            onUsage(uId, inTok, cacheTok, thinkTok, outTok)
+                                        }
+                                    )
                                 }
                             }
-                        },
-                        onPlainJsonFallback = { fullBody ->
-                            onRawWire(requestJsonStr, fullBody)
-                            val rootObj = json.parseToJsonElement(fullBody).jsonObject
-                            val id = rootObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                            if (id.isNotBlank()) currentPrevInteractionId = id
-                            val st = rootObj["status"]?.jsonPrimitive?.contentOrNull ?: "completed"
-                            if ((st == "in_progress" || st == "queued" || st == "processing") && currentPrevInteractionId.isNotBlank()) {
-                                pollInteractionUntilComplete(currentPrevInteractionId)
-                            } else {
-                                parseCompletedGeminiInteractionObject(
-                                    interactionObj = rootObj,
-                                    onFirstToken = onFirstToken,
-                                    onThinking = { th, sig ->
-                                        if (sig.isNotEmpty()) roundThoughtSig.append(sig)
-                                        onThinking(th, sig)
-                                    },
-                                    onContent = { txt ->
-                                        receivedAnyStreamContent = true
-                                        onContent(txt)
-                                    },
-                                    onMedia = onMedia,
-                                    onFunctionCall = { callId, fnName, argsStr ->
-                                        turnToolCalls.add(callId to (fnName to argsStr))
-                                    },
-                                    onUsage = { uId, inTok, cacheTok, thinkTok, outTok ->
-                                        if (uId.isNotBlank()) currentPrevInteractionId = uId
-                                        onUsage(uId, inTok, cacheTok, thinkTok, outTok)
-                                    }
-                                )
-                            }
-                        }
-                    )
+                        )
 
-                    for ((_, pair) in pendingFnArgsByIndex.entries.sortedBy { it.key }) {
-                        val callId = pair.first
-                        val fnName = pair.second.first
-                        val argsStr = pair.second.second.toString().ifBlank { "{}" }
-                        if (fnName.isNotBlank()) {
-                            turnToolCalls.add(callId to (fnName to argsStr))
+                        for ((_, pair) in pendingFnArgsByIndex.entries.sortedBy { it.key }) {
+                            addUniqueToolCall(pair.first, pair.second.first, pair.second.second.toString())
                         }
                     }
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                if (profile.useBackgroundLongDecode && currentPrevInteractionId.isNotBlank() && isTransientOrProxyTimeoutError(e)) {
-                    pollInteractionUntilComplete(currentPrevInteractionId)
-                } else {
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
+                } catch (e: Throwable) {
+                    val errMsg = (e.message ?: e.toString()).lowercase()
+                    if (useChainedId && !receivedAnyStreamContent &&
+                        (errMsg.contains("http 400") || errMsg.contains("http 404") || errMsg.contains("previous_interaction_id") || errMsg.contains("function response turn") || errMsg.contains("function_result"))
+                    ) {
+                        currentPrevInteractionId = ""
+                        onStatus("Stateful interaction chain rejected — retrying step with full conversation history…", "")
+                        continue
+                    }
+                    if (!receivedAnyStreamContent && turnToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e) && stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        stepRetryAttempt++
+                        val backoffMs = 1500L * stepRetryAttempt
+                        onStatus("Transient API error in step $loopStep — auto-retrying ($stepRetryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000.0}s)…", currentPrevInteractionId)
+                        delay(backoffMs)
+                        continue
+                    }
+                    if (profile.useBackgroundLongDecode && currentPrevInteractionId.isNotBlank() && isTransientOrProxyTimeoutError(e)) {
+                        pollInteractionUntilComplete(currentPrevInteractionId)
+                        break
+                    } else {
+                        throw e
+                    }
                 }
             }
 
@@ -1385,11 +1486,22 @@ object AiProviderEngine {
             }
             pendingStopHookPrompt = ""
 
-            // Record thought + function_call + function_result steps for next round
+            // Record thought + model_output + function_call + function_result steps for next round
             if (roundThoughtSig.isNotEmpty()) {
                 extraLoopSteps.add(buildJsonObject {
                     put("type", "thought")
                     put("signature", roundThoughtSig.toString())
+                })
+            }
+            if (roundModelText.isNotEmpty()) {
+                extraLoopSteps.add(buildJsonObject {
+                    put("type", "model_output")
+                    putJsonArray("content") {
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", roundModelText.toString())
+                        })
+                    }
                 })
             }
 
@@ -1421,6 +1533,7 @@ object AiProviderEngine {
                     put("name", record.name)
                     put("call_id", record.id)
                     put("result", record.resultText)
+                    if (record.isError) put("is_error", true)
                 })
             }
             pendingToolResults = results
@@ -1629,49 +1742,64 @@ object AiProviderEngine {
         val isThinkingLevelDialect = isGemini4 || isGemini3 || isGemma4
         val supportsMixedTools = isGemini4 || isGemini3
 
-        val activeNodes = historyNodes.filter { it.includedInContext }
+        val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
 
-        // Rolling conversation contents for multi-round tool execution
+        // Rolling conversation contents for multi-round tool execution (coalescing consecutive same-role turns)
         val rollingContents = mutableListOf<JsonObject>()
+        fun appendOrMergeContentTurn(roleStr: String, newParts: List<JsonObject>) {
+            if (newParts.isEmpty()) return
+            val last = rollingContents.lastOrNull()
+            if (last != null && last["role"]?.jsonPrimitive?.contentOrNull == roleStr) {
+                val existingParts = (last["parts"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+                rollingContents[rollingContents.lastIndex] = buildJsonObject {
+                    put("role", roleStr)
+                    put("parts", JsonArray(existingParts + newParts))
+                }
+            } else {
+                rollingContents.add(buildJsonObject {
+                    put("role", roleStr)
+                    put("parts", JsonArray(newParts))
+                })
+            }
+        }
+
         for ((idx, pair) in turns.withIndex()) {
             val (role, text) = pair
             val nodeVar = activeNodes.getOrNull(idx)?.activeVariant
             val imageAttachments = resolveImageAttachments(nodeVar)
             val savedSig = nodeVar?.thinkingSignature.orEmpty()
-
-            rollingContents.add(buildJsonObject {
-                put("role", if (role == MessageRole.ASSISTANT) "model" else "user")
-                putJsonArray("parts") {
-                    if (text.isNotBlank() || imageAttachments.isEmpty()) {
-                        add(buildJsonObject {
-                            put("text", text.ifBlank { "..." })
-                            if (role == MessageRole.ASSISTANT && savedSig.isNotBlank()) {
-                                put("thoughtSignature", savedSig)
-                            }
-                        })
-                    }
-                    for ((mime, b64) in imageAttachments) {
-                        add(buildJsonObject {
-                            putJsonObject("inline_data") {
-                                put("mime_type", mime)
-                                put("data", b64)
-                            }
-                        })
-                    }
-                }
-            })
-        }
-        if (continuePrefix.isNotBlank()) {
-            rollingContents.add(buildJsonObject {
-                put("role", "user")
-                putJsonArray("parts") {
+            val roleStr = if (role == MessageRole.ASSISTANT) "model" else "user"
+            val turnParts = buildList {
+                if (text.isNotBlank() || imageAttachments.isEmpty()) {
                     add(buildJsonObject {
-                        put("text", "Continue seamlessly from this exact text without repeating it:\n$continuePrefix")
+                        put("text", text.ifBlank { "..." })
+                        if (role == MessageRole.ASSISTANT && savedSig.isNotBlank()) {
+                            put("thoughtSignature", savedSig)
+                        }
                     })
                 }
-            })
+                for ((mime, b64) in imageAttachments) {
+                    add(buildJsonObject {
+                        putJsonObject("inline_data") {
+                            put("mime_type", mime)
+                            put("data", b64)
+                        }
+                    })
+                }
+            }
+            appendOrMergeContentTurn(roleStr, turnParts)
+        }
+        if (continuePrefix.isNotBlank()) {
+            appendOrMergeContentTurn(
+                "user",
+                listOf(
+                    buildJsonObject {
+                        put("text", "Continue seamlessly from this exact text without repeating it:\n$continuePrefix")
+                    }
+                )
+            )
         }
 
         val hasBuiltInTools = profile.enableWebSearch || profile.enableCodeExecution || profile.enableUrlContext
@@ -1816,47 +1944,44 @@ object AiProviderEngine {
             }
             val url = buildUrlWithAuthQuery(profile, rawUrl)
 
-            onRawWire(reqStr, "Dispatching to $url ...")
-
             val roundModelParts = mutableListOf<JsonObject>()
             val roundToolCalls = mutableListOf<Triple<String, String, String>>() // (callId, name, argsJson)
+            val roundThoughtSig = StringBuilder()
+            var stepEmittedOutput = false
+            var stepRetryAttempt = 0
 
-            httpClient.preparePost(url) {
-                applyAuthAndCustomHeaders(profile)
-                header("Accept", "text/event-stream")
-                contentType(ContentType.Application.Json)
-                setBody(reqStr)
-            }.execute { response ->
-                if (!response.status.isSuccess()) {
-                    val err = response.bodyAsText()
-                    onRawWire(reqStr, err)
-                    error("Gemini streamGenerateContent HTTP ${response.status.value}: $err")
-                }
+            while (true) {
+                roundModelParts.clear()
+                roundToolCalls.clear()
+                roundThoughtSig.clear()
+                stepEmittedOutput = false
 
-                readSseOrJsonFallback(
-                    channel = response.bodyAsChannel(),
-                    onSseEvent = { _, dataLine ->
-                        if (dataLine == "[DONE]") return@readSseOrJsonFallback
-                        onRawWire(reqStr, dataLine)
-                        val obj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                onRawWire(reqStr, "Dispatching to $url ...")
 
-                        // Check for in-band error object
-                        val errObj = obj["error"] as? JsonObject
-                        if (errObj != null) {
-                            val msg = errObj["message"]?.jsonPrimitive?.contentOrNull ?: dataLine
-                            error("Gemini Stream Error: $msg")
+                try {
+                    httpClient.preparePost(url) {
+                        applyAuthAndCustomHeaders(profile)
+                        header("Accept", "text/event-stream")
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            val err = response.bodyAsText()
+                            onRawWire(reqStr, err)
+                            error("Gemini streamGenerateContent HTTP ${response.status.value}: $err")
                         }
 
-                        val candidates = obj["candidates"] as? JsonArray
-                        val firstCand = candidates?.firstOrNull() as? JsonObject
-                        val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
-                        if (parts != null) {
+                        suspend fun processCandidateParts(parts: JsonArray) {
                             for (p in parts) {
                                 val partObj = p as? JsonObject ?: continue
                                 val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull == "true"
                                 val sig = partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull
                                     ?: partObj["thought_signature"]?.jsonPrimitive?.contentOrNull ?: ""
                                 val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+
+                                if (sig.isNotEmpty() && roundThoughtSig.isEmpty()) {
+                                    roundThoughtSig.append(sig)
+                                }
 
                                 if (!isThought) {
                                     roundModelParts.add(partObj)
@@ -1868,14 +1993,17 @@ object AiProviderEngine {
                                         onThinking(txt, sig)
                                     } else {
                                         if (sig.isNotEmpty()) onThinking("", sig)
-                                        if (txt.isNotEmpty()) onContent(txt)
+                                        if (txt.isNotEmpty()) {
+                                            stepEmittedOutput = true
+                                            onContent(txt)
+                                        }
                                     }
                                 }
 
                                 val fcObj = partObj["functionCall"] as? JsonObject
                                 if (fcObj != null) {
                                     val callId = fcObj["id"]?.jsonPrimitive?.contentOrNull
-                                        ?: "call_${roundToolCalls.size + 1}"
+                                        ?: "synth_call_${roundToolCalls.size + 1}"
                                     val fnName = fcObj["name"]?.jsonPrimitive?.contentOrNull ?: ""
                                     val argsStr = fcObj["args"]?.toString() ?: "{}"
                                     if (fnName.isNotBlank()) {
@@ -1890,38 +2018,68 @@ object AiProviderEngine {
                                         ?: inlineData["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
                                     val b64 = inlineData["data"]?.jsonPrimitive?.contentOrNull ?: ""
                                     if (b64.isNotBlank()) {
+                                        stepEmittedOutput = true
                                         saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
                                     }
                                 }
                             }
                         }
 
-                        val usage = obj["usageMetadata"] as? JsonObject
-                        if (usage != null) {
-                            val inTok = usage["promptTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                            val cacheTok = usage["cachedContentTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                            val thinkTok = usage["thoughtsTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                            val outTok = usage["candidatesTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                            onUsage(inTok, cacheTok, thinkTok, outTok)
-                        }
-                    },
-                    onPlainJsonFallback = { body ->
-                        onRawWire(reqStr, body)
-                        val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                        val candidates = obj["candidates"] as? JsonArray
-                        val firstCand = candidates?.firstOrNull() as? JsonObject
-                        val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
-                        parts?.forEach { p ->
-                            val partObj = p as? JsonObject ?: return@forEach
-                            val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull == "true"
-                            val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                            if (txt.isNotEmpty()) {
-                                onFirstToken()
-                                if (isThought) onThinking(txt, "") else onContent(txt)
+                        readSseOrJsonFallback(
+                            channel = response.bodyAsChannel(),
+                            onSseEvent = { _, dataLine ->
+                                if (dataLine == "[DONE]") return@readSseOrJsonFallback
+                                onRawWire(reqStr, dataLine)
+                                val obj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+
+                                // Check for in-band error object
+                                val errObj = obj["error"] as? JsonObject
+                                if (errObj != null) {
+                                    val msg = errObj["message"]?.jsonPrimitive?.contentOrNull ?: dataLine
+                                    error("Gemini Stream Error: $msg")
+                                }
+
+                                val candidates = obj["candidates"] as? JsonArray
+                                val firstCand = candidates?.firstOrNull() as? JsonObject
+                                val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
+                                if (parts != null) {
+                                    processCandidateParts(parts)
+                                }
+
+                                val usage = obj["usageMetadata"] as? JsonObject
+                                if (usage != null) {
+                                    val inTok = usage["promptTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val cacheTok = usage["cachedContentTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val thinkTok = usage["thoughtsTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val outTok = usage["candidatesTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
+                                    onUsage(inTok, cacheTok, thinkTok, outTok)
+                                }
+                            },
+                            onPlainJsonFallback = { body ->
+                                onRawWire(reqStr, body)
+                                val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val candidates = obj["candidates"] as? JsonArray
+                                val firstCand = candidates?.firstOrNull() as? JsonObject
+                                val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
+                                if (parts != null) {
+                                    processCandidateParts(parts)
+                                }
                             }
-                        }
+                        )
                     }
-                )
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    if (!stepEmittedOutput && roundToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e) && stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        stepRetryAttempt++
+                        val backoffMs = 1500L * stepRetryAttempt
+                        onStatus("Transient API error in step $loopStep — auto-retrying ($stepRetryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000.0}s)…")
+                        delay(backoffMs)
+                        continue
+                    }
+                    throw e
+                }
             }
 
             if (roundToolCalls.isEmpty()) {
@@ -1945,11 +2103,13 @@ object AiProviderEngine {
                 break
             }
 
-            // Ensure at least the first functionCall part has a thoughtSignature (required by Gemini 3+ / 4)
+            // Ensure the first functionCall part has a thoughtSignature (required by Gemini 3+ / 4 even when preceded by text parts!)
+            val firstFunctionCallIdx = roundModelParts.indexOfFirst { it.containsKey("functionCall") }
+            val fallbackSig = roundThoughtSig.toString().ifBlank { "context_engineering_is_the_way_to_go" }
             val signedModelParts = roundModelParts.mapIndexed { idx, part ->
-                if (idx == 0 && part.containsKey("functionCall") && !part.containsKey("thoughtSignature") && !part.containsKey("thought_signature")) {
+                if (idx == firstFunctionCallIdx && !part.containsKey("thoughtSignature") && !part.containsKey("thought_signature")) {
                     val mutable = part.toMutableMap()
-                    mutable["thoughtSignature"] = JsonPrimitive("context_engineering_is_the_way_to_go")
+                    mutable["thoughtSignature"] = JsonPrimitive(fallbackSig)
                     JsonObject(mutable)
                 } else part
             }
@@ -1973,7 +2133,7 @@ object AiProviderEngine {
                 responseParts.add(buildJsonObject {
                     putJsonObject("functionResponse") {
                         put("name", fnName)
-                        if (!callId.startsWith("call_")) {
+                        if (!callId.startsWith("synth_call_")) {
                             put("id", callId)
                         }
                         putJsonObject("response") {
@@ -2016,7 +2176,7 @@ object AiProviderEngine {
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit
     ) {
-        val activeNodes = historyNodes.filter { it.includedInContext }
+        val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
         val previousAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
@@ -2034,240 +2194,331 @@ object AiProviderEngine {
 
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
-            val baseInputItems = if (currentPrevResponseId.isNotBlank() && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
-                val trailing = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
-                buildOpenAiResponsesInputArray(trailing, session, continuePrefix)
-            } else {
-                buildOpenAiResponsesInputArray(activeNodes, session, continuePrefix)
+            val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>()
+            val roundTextBuilder = StringBuilder()
+            var stepEmittedOutput = false
+            var stepRetryAttempt = 0
+
+            fun addUniqueToolCall(callId: String, fnName: String, argsStr: String) {
+                if (fnName.isBlank()) return
+                val cleanArgs = argsStr.ifBlank { "{}" }
+                val existingIdx = turnToolCalls.indexOfFirst { it.first == callId && callId.isNotBlank() }
+                if (existingIdx >= 0) {
+                    val prev = turnToolCalls[existingIdx]
+                    if ((prev.second.second == "{}" || prev.second.second.isBlank()) && cleanArgs != "{}") {
+                        turnToolCalls[existingIdx] = callId to (fnName to cleanArgs)
+                    }
+                } else {
+                    turnToolCalls.add(callId to (fnName to cleanArgs))
+                }
             }
 
-            val compactedLoopItems = compactOpenAiResponsesExtraItems(extraResponsesLoopItems)
+            while (true) {
+                turnToolCalls.clear()
+                roundTextBuilder.clear()
+                stepEmittedOutput = false
 
-            val payloadObj = buildJsonObject {
-                put("model", model)
-                put("stream", true)
-                put("store", profile.useStatefulChaining)
-
-                if (systemInstruction.isNotBlank()) {
-                    put("instructions", systemInstruction)
+                val useChainedId = profile.useStatefulChaining && currentPrevResponseId.isNotBlank()
+                val baseInputItems = if (useChainedId && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
+                    val trailing = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
+                    buildOpenAiResponsesInputArray(trailing, session, continuePrefix)
+                } else {
+                    buildOpenAiResponsesInputArray(activeNodes, session, continuePrefix)
                 }
 
-                if (currentPrevResponseId.isNotBlank()) {
-                    put("previous_response_id", currentPrevResponseId)
-                }
+                val compactedLoopItems = compactOpenAiResponsesExtraItems(extraResponsesLoopItems)
 
-                if (pendingToolResults.isNotEmpty() && currentPrevResponseId.isNotBlank()) {
-                    putJsonArray("input") {
-                        for (tr in pendingToolResults) {
+                val payloadObj = buildJsonObject {
+                    put("model", model)
+                    put("stream", true)
+                    put("store", profile.useStatefulChaining)
+
+                    if (systemInstruction.isNotBlank()) {
+                        put("instructions", systemInstruction)
+                    }
+
+                    if (useChainedId) {
+                        put("previous_response_id", currentPrevResponseId)
+                    }
+
+                    if (pendingToolResults.isNotEmpty() && useChainedId) {
+                        putJsonArray("input") {
+                            for (tr in pendingToolResults) {
+                                add(buildJsonObject {
+                                    put("type", "function_call_output")
+                                    put("call_id", tr.id)
+                                    put("output", tr.resultText)
+                                })
+                            }
+                        }
+                    } else if (pendingStopHookPrompt.isNotBlank() && useChainedId) {
+                        putJsonArray("input") {
                             add(buildJsonObject {
-                                put("type", "function_call_output")
-                                put("call_id", tr.id)
-                                put("output", tr.resultText)
+                                put("role", "user")
+                                put("content", pendingStopHookPrompt)
                             })
                         }
-                    }
-                } else if (pendingStopHookPrompt.isNotBlank() && currentPrevResponseId.isNotBlank()) {
-                    putJsonArray("input") {
-                        add(buildJsonObject {
-                            put("role", "user")
-                            put("content", pendingStopHookPrompt)
-                        })
-                    }
-                } else {
-                    putJsonArray("input") {
-                        baseInputItems.forEach { add(it) }
-                        compactedLoopItems.forEach { add(it) }
-                    }
-                }
-
-                val maxOut = profile.maxOutputTokens
-                if (maxOut != null && maxOut > 0) {
-                    put("max_output_tokens", maxOut)
-                }
-
-                val effort = profile.thinkingEffort.trim()
-                if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
-                    putJsonObject("reasoning") {
-                        put("effort", effort)
-                        put("summary", "auto")
-                    }
-                } else {
-                    profile.temperature?.let { put("temperature", it) }
-                    profile.topP?.let { put("top_p", it) }
-                }
-
-                val toolsArr = buildJsonArray {
-                    if (profile.enableWebSearch) {
-                        add(buildJsonObject { put("type", "web_search_preview") })
-                    }
-                    if (profile.enableImageGeneration) {
-                        add(buildJsonObject {
-                            put("type", "image_generation")
-                            val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
-                            if (size != "auto") put("size", size)
-                        })
-                    }
-                    val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(
-                        session.workspaceMode,
-                        session.workspacePath,
-                        profile.allowShellExecution,
-                        goalModeActive = circuitBreaker.goalState != null
-                    )
-                    wsTools.forEach { add(it) }
-                }
-                if (toolsArr.isNotEmpty()) {
-                    put("tools", toolsArr)
-                    put("tool_choice", "auto")
-                }
-            }
-
-            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
-            val base = profile.baseUrl.trimEnd('/')
-            val defaultPath = when {
-                base.endsWith("/v1") || base.endsWith("/api/v3") -> "/responses"
-                else -> "/v1/responses"
-            }
-            val path = profile.endpointPathOverride.ifBlank { defaultPath }
-            val url = buildUrlWithAuthQuery(profile, "$base$path")
-
-            onRawWire(reqStr, "Dispatching to $url ...")
-
-            val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>()
-
-            httpClient.preparePost(url) {
-                applyAuthAndCustomHeaders(profile)
-                header("Accept", "text/event-stream")
-                contentType(ContentType.Application.Json)
-                setBody(reqStr)
-            }.execute { response ->
-                if (!response.status.isSuccess()) {
-                    val err = response.bodyAsText()
-                    onRawWire(reqStr, err)
-                    error("OpenAI Responses HTTP ${response.status.value}: $err")
-                }
-
-                val fnBuildersByItemId = mutableMapOf<String, Pair<String, Pair<String, StringBuilder>>>()
-
-                readSseOrJsonFallback(
-                    channel = response.bodyAsChannel(),
-                    onSseEvent = { eventType, dataLine ->
-                        if (dataLine == "[DONE]") return@readSseOrJsonFallback
-                        onRawWire(reqStr, dataLine)
-                        val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                        val type = evObj["type"]?.jsonPrimitive?.contentOrNull ?: eventType
-
-                        when (type) {
-                            "response.created", "response.in_progress" -> {
-                                val respSub = evObj["response"] as? JsonObject
-                                val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
-                                if (id.isNotBlank()) currentPrevResponseId = id
-                            }
-                            "response.output_text.delta" -> {
-                                val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
-                                if (delta.isNotEmpty()) {
-                                    onFirstToken()
-                                    onContent(delta)
-                                }
-                            }
-                            "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
-                                val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
-                                if (delta.isNotEmpty()) {
-                                    onFirstToken()
-                                    onThinking(delta)
-                                }
-                            }
-                            "response.output_item.added" -> {
-                                val item = evObj["item"] as? JsonObject
-                                if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
-                                    val itemId = item["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val callId = item["call_id"]?.jsonPrimitive?.contentOrNull ?: itemId
-                                    val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    fnBuildersByItemId[itemId] = callId to (name to StringBuilder())
-                                }
-                            }
-                            "response.function_call_arguments.delta" -> {
-                                val itemId = evObj["item_id"]?.jsonPrimitive?.contentOrNull ?: ""
-                                val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
-                                fnBuildersByItemId[itemId]?.second?.second?.append(delta)
-                            }
-                            "response.output_item.done" -> {
-                                val item = evObj["item"] as? JsonObject
-                                val itemType = item?.get("type")?.jsonPrimitive?.contentOrNull
-                                if (itemType == "function_call") {
-                                    val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
-                                        ?: item["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
-                                    if (name.isNotBlank()) {
-                                        turnToolCalls.add(callId to (name to args))
-                                    }
-                                } else if (itemType == "image_generation_call") {
-                                    val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    if (b64.isNotBlank()) {
-                                        saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
-                                    }
-                                }
-                            }
-                            "response.completed" -> {
-                                val respSub = evObj["response"] as? JsonObject
-                                val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: currentPrevResponseId
-                                if (id.isNotBlank()) currentPrevResponseId = id
-                                val usage = respSub?.get("usage") as? JsonObject
-                                if (usage != null) {
-                                    val inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val cacheTok = (usage["input_tokens_details"] as? JsonObject)
-                                        ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                    val thinkTok = (usage["output_tokens_details"] as? JsonObject)
-                                        ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                    val outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    onUsage(currentPrevResponseId, inTok, cacheTok, thinkTok, outTok)
-                                }
-                            }
-                            "error" -> {
-                                val msg = (evObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
-                                error("OpenAI Responses Error: $msg")
-                            }
+                    } else {
+                        putJsonArray("input") {
+                            baseInputItems.forEach { add(it) }
+                            compactedLoopItems.forEach { add(it) }
                         }
-                    },
-                    onPlainJsonFallback = { fullBody ->
-                        onRawWire(reqStr, fullBody)
-                        val root = json.parseToJsonElement(fullBody).jsonObject
-                        val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                        if (id.isNotBlank()) currentPrevResponseId = id
-                        val outputArr = root["output"] as? JsonArray
-                        outputArr?.forEach { itemEl ->
-                            val item = itemEl as? JsonObject ?: return@forEach
-                            when (item["type"]?.jsonPrimitive?.contentOrNull) {
-                                "message" -> {
-                                    val contentArr = item["content"] as? JsonArray
-                                    contentArr?.forEach { cEl ->
-                                        val cObj = cEl as? JsonObject ?: return@forEach
-                                        val txt = cObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        if (txt.isNotEmpty()) {
+                    }
+
+                    val maxOut = profile.maxOutputTokens
+                    if (maxOut != null && maxOut > 0) {
+                        put("max_output_tokens", maxOut)
+                    }
+
+                    val effort = profile.thinkingEffort.trim()
+                    val lowerEffort = effort.lowercase()
+                    if (effort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
+                        val normalizedEffort = when (lowerEffort) {
+                            "max" -> "high"
+                            else -> lowerEffort
+                        }
+                        putJsonObject("reasoning") {
+                            put("effort", normalizedEffort)
+                            put("summary", "auto")
+                        }
+                    } else {
+                        profile.temperature?.let { put("temperature", it) }
+                        profile.topP?.let { put("top_p", it) }
+                    }
+
+                    val toolsArr = buildJsonArray {
+                        if (profile.enableWebSearch) {
+                            add(buildJsonObject { put("type", "web_search_preview") })
+                        }
+                        if (profile.enableImageGeneration) {
+                            add(buildJsonObject {
+                                put("type", "image_generation")
+                                val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+                                if (size != "auto") put("size", size)
+                            })
+                        }
+                        val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(
+                            session.workspaceMode,
+                            session.workspacePath,
+                            profile.allowShellExecution,
+                            goalModeActive = circuitBreaker.goalState != null
+                        )
+                        wsTools.forEach { add(it) }
+                    }
+                    if (toolsArr.isNotEmpty()) {
+                        put("tools", toolsArr)
+                        put("tool_choice", "auto")
+                    }
+                }
+
+                val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
+                val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val base = profile.baseUrl.trimEnd('/')
+                val defaultPath = when {
+                    base.endsWith("/v1") || base.endsWith("/api/v3") -> "/responses"
+                    else -> "/v1/responses"
+                }
+                val path = profile.endpointPathOverride.ifBlank { defaultPath }
+                val url = buildUrlWithAuthQuery(profile, "$base$path")
+
+                onRawWire(reqStr, "Dispatching to $url ...")
+
+                try {
+                    httpClient.preparePost(url) {
+                        applyAuthAndCustomHeaders(profile)
+                        header("Accept", "text/event-stream")
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            val err = response.bodyAsText()
+                            onRawWire(reqStr, err)
+                            error("OpenAI Responses HTTP ${response.status.value}: $err")
+                        }
+
+                        val fnBuildersByItemId = mutableMapOf<String, Pair<String, Pair<String, StringBuilder>>>()
+
+                        readSseOrJsonFallback(
+                            channel = response.bodyAsChannel(),
+                            onSseEvent = { eventType, dataLine ->
+                                if (dataLine == "[DONE]") return@readSseOrJsonFallback
+                                onRawWire(reqStr, dataLine)
+                                val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val type = evObj["type"]?.jsonPrimitive?.contentOrNull ?: eventType
+
+                                when (type) {
+                                    "response.created", "response.in_progress" -> {
+                                        val respSub = evObj["response"] as? JsonObject
+                                        val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
+                                        if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id
+                                    }
+                                    "response.output_text.delta" -> {
+                                        val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        if (delta.isNotEmpty()) {
                                             onFirstToken()
-                                            onContent(txt)
+                                            stepEmittedOutput = true
+                                            roundTextBuilder.append(delta)
+                                            onContent(delta)
+                                        }
+                                    }
+                                    "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
+                                        val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        if (delta.isNotEmpty()) {
+                                            onFirstToken()
+                                            onThinking(delta)
+                                        }
+                                    }
+                                    "response.output_item.added" -> {
+                                        val item = evObj["item"] as? JsonObject
+                                        if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
+                                            val itemId = item["id"]?.jsonPrimitive?.contentOrNull
+                                                ?: item["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val callId = item["call_id"]?.jsonPrimitive?.contentOrNull ?: itemId
+                                            val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val initArgs = item["arguments"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            fnBuildersByItemId[itemId] = callId to (name to StringBuilder(initArgs))
+                                        }
+                                    }
+                                    "response.function_call_arguments.delta" -> {
+                                        val itemId = evObj["item_id"]?.jsonPrimitive?.contentOrNull
+                                            ?: evObj["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        fnBuildersByItemId[itemId]?.second?.second?.append(delta)
+                                    }
+                                    "response.function_call_arguments.done" -> {
+                                        val itemId = evObj["item_id"]?.jsonPrimitive?.contentOrNull
+                                            ?: evObj["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        val fullArgs = evObj["arguments"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        val existing = fnBuildersByItemId[itemId]
+                                        if (existing != null && fullArgs.isNotBlank()) {
+                                            val name = evObj["name"]?.jsonPrimitive?.contentOrNull?.ifBlank { existing.second.first } ?: existing.second.first
+                                            fnBuildersByItemId[itemId] = existing.first to (name to StringBuilder(fullArgs))
+                                        }
+                                    }
+                                    "response.output_item.done" -> {
+                                        val item = evObj["item"] as? JsonObject
+                                        val itemType = item?.get("type")?.jsonPrimitive?.contentOrNull
+                                        if (itemType == "function_call") {
+                                            val itemId = item["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val existing = fnBuildersByItemId[itemId]
+                                            val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
+                                                ?: existing?.first
+                                                ?: itemId
+                                            val name = item["name"]?.jsonPrimitive?.contentOrNull
+                                                ?.ifBlank { existing?.second?.first.orEmpty() }
+                                                ?: existing?.second?.first.orEmpty()
+                                            val args = item["arguments"]?.jsonPrimitive?.contentOrNull
+                                                ?.takeIf { it.isNotBlank() }
+                                                ?: existing?.second?.second?.toString().orEmpty().ifBlank { "{}" }
+                                            addUniqueToolCall(callId, name, args)
+                                        } else if (itemType == "image_generation_call") {
+                                            val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (b64.isNotBlank()) {
+                                                stepEmittedOutput = true
+                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
+                                            }
+                                        }
+                                    }
+                                    "response.completed" -> {
+                                        val respSub = evObj["response"] as? JsonObject
+                                        val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: currentPrevResponseId
+                                        if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id
+                                        val outputArr = respSub?.get("output") as? JsonArray
+                                        outputArr?.forEach { itemEl ->
+                                            val item = itemEl as? JsonObject ?: return@forEach
+                                            if (item["type"]?.jsonPrimitive?.contentOrNull == "function_call") {
+                                                val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
+                                                    ?: item["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
+                                                addUniqueToolCall(callId, name, args)
+                                            }
+                                        }
+                                        val usage = respSub?.get("usage") as? JsonObject
+                                        if (usage != null) {
+                                            val inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val cacheTok = (usage["input_tokens_details"] as? JsonObject)
+                                                ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
+                                            val thinkTok = (usage["output_tokens_details"] as? JsonObject)
+                                                ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
+                                            val outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            onUsage(currentPrevResponseId, inTok, cacheTok, thinkTok, outTok)
+                                        }
+                                    }
+                                    "error" -> {
+                                        val msg = (evObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
+                                        error("OpenAI Responses Error: $msg")
+                                    }
+                                }
+                            },
+                            onPlainJsonFallback = { fullBody ->
+                                onRawWire(reqStr, fullBody)
+                                val root = json.parseToJsonElement(fullBody).jsonObject
+                                val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id
+                                val outputArr = root["output"] as? JsonArray
+                                outputArr?.forEach { itemEl ->
+                                    val item = itemEl as? JsonObject ?: return@forEach
+                                    when (item["type"]?.jsonPrimitive?.contentOrNull) {
+                                        "message" -> {
+                                            val contentArr = item["content"] as? JsonArray
+                                            contentArr?.forEach { cEl ->
+                                                val cObj = cEl as? JsonObject ?: return@forEach
+                                                val txt = cObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (txt.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    stepEmittedOutput = true
+                                                    roundTextBuilder.append(txt)
+                                                    onContent(txt)
+                                                }
+                                            }
+                                        }
+                                        "function_call" -> {
+                                            val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
+                                                ?: item["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
+                                            addUniqueToolCall(callId, name, args)
+                                        }
+                                        "image_generation_call" -> {
+                                            val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (b64.isNotBlank()) {
+                                                stepEmittedOutput = true
+                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
+                                            }
                                         }
                                     }
                                 }
-                                "function_call" -> {
-                                    val callId = item["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val name = item["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
-                                    if (name.isNotBlank()) turnToolCalls.add(callId to (name to args))
-                                }
-                                "image_generation_call" -> {
-                                    val b64 = item["result"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    if (b64.isNotBlank()) {
-                                        saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
-                                    }
-                                }
                             }
+                        )
+
+                        for ((_, pair) in fnBuildersByItemId) {
+                            addUniqueToolCall(pair.first, pair.second.first, pair.second.second.toString())
                         }
                     }
-                )
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    val errMsg = (e.message ?: e.toString()).lowercase()
+                    if (useChainedId && !stepEmittedOutput &&
+                        (errMsg.contains("http 400") || errMsg.contains("http 404") || errMsg.contains("previous_response_id") || errMsg.contains("no tool call found"))
+                    ) {
+                        currentPrevResponseId = ""
+                        onStatus("Stateful response chain rejected — retrying step with full history…")
+                        continue
+                    }
+                    if (!stepEmittedOutput && turnToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e) && stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        stepRetryAttempt++
+                        val backoffMs = 1500L * stepRetryAttempt
+                        onStatus("Transient API error in step $loopStep — auto-retrying ($stepRetryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000.0}s)…")
+                        delay(backoffMs)
+                        continue
+                    }
+                    throw e
+                }
             }
 
             if (turnToolCalls.isEmpty()) {
@@ -2275,6 +2526,19 @@ object AiProviderEngine {
                 if (stopHookPrompt != null) {
                     pendingToolResults = emptyList()
                     pendingStopHookPrompt = stopHookPrompt
+                    if (roundTextBuilder.isNotEmpty()) {
+                        extraResponsesLoopItems.add(buildJsonObject {
+                            put("type", "message")
+                            put("role", "assistant")
+                            put("status", "completed")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "output_text")
+                                    put("text", roundTextBuilder.toString())
+                                })
+                            }
+                        })
+                    }
                     extraResponsesLoopItems.add(buildJsonObject {
                         put("role", "user")
                         put("content", stopHookPrompt)
@@ -2285,6 +2549,20 @@ object AiProviderEngine {
                 break
             }
             pendingStopHookPrompt = ""
+
+            if (roundTextBuilder.isNotEmpty()) {
+                extraResponsesLoopItems.add(buildJsonObject {
+                    put("type", "message")
+                    put("role", "assistant")
+                    put("status", "completed")
+                    putJsonArray("content") {
+                        add(buildJsonObject {
+                            put("type", "output_text")
+                            put("text", roundTextBuilder.toString())
+                        })
+                    }
+                })
+            }
 
             val results = mutableListOf<ToolCallRecord>()
             for ((callId, fnPair) in turnToolCalls) {
@@ -2404,7 +2682,7 @@ object AiProviderEngine {
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (Int, Int, Int, Int) -> Unit
     ) {
-        val activeNodes = historyNodes.filter { it.includedInContext }
+        val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
         val extraToolMessages = mutableListOf<JsonObject>()
@@ -2427,8 +2705,13 @@ object AiProviderEngine {
                     put("max_tokens", maxOut)
                 }
                 val effort = profile.thinkingEffort.trim()
-                if (effort.isNotEmpty() && !effort.equals("none", ignoreCase = true) && !effort.equals("default", ignoreCase = true)) {
-                    put("reasoning_effort", effort)
+                val lowerEffort = effort.lowercase()
+                if (effort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
+                    val normalizedEffort = when (lowerEffort) {
+                        "max" -> "high"
+                        else -> lowerEffort
+                    }
+                    put("reasoning_effort", normalizedEffort)
                 }
                 if (profile.enableImageGeneration) {
                     putJsonArray("modalities") {
@@ -2501,108 +2784,157 @@ object AiProviderEngine {
             val path = profile.endpointPathOverride.ifBlank { defaultPath }
             val url = buildUrlWithAuthQuery(profile, "$base$path")
 
-            onRawWire(reqStr, "Dispatching to $url ...")
             val roundContentBuilder = StringBuilder()
+            val roundReasoningBuilder = StringBuilder()
             // index -> Triple(id, name, argsBuilder)
             val roundToolCalls = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
+            var stepEmittedOutput = false
+            var stepRetryAttempt = 0
 
-            httpClient.preparePost(url) {
-                applyAuthAndCustomHeaders(profile)
-                header("Accept", "text/event-stream")
-                contentType(ContentType.Application.Json)
-                setBody(reqStr)
-            }.execute { response ->
-                if (!response.status.isSuccess()) {
-                    val err = response.bodyAsText()
-                    onRawWire(reqStr, err)
-                    error("Chat Completions HTTP ${response.status.value}: $err")
-                }
+            while (true) {
+                roundContentBuilder.clear()
+                roundReasoningBuilder.clear()
+                roundToolCalls.clear()
+                stepEmittedOutput = false
 
-                readSseOrJsonFallback(
-                    channel = response.bodyAsChannel(),
-                    onSseEvent = { _, dataLine ->
-                        if (dataLine == "[DONE]") return@readSseOrJsonFallback
-                        onRawWire(reqStr, dataLine)
-                        val obj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                        val errObj = obj["error"] as? JsonObject
-                        if (errObj != null && errObj.isNotEmpty()) {
-                            val msg = errObj["message"]?.jsonPrimitive?.contentOrNull ?: dataLine
-                            error("Chat Completions Stream Error: $msg")
+                onRawWire(reqStr, "Dispatching to $url ...")
+
+                try {
+                    httpClient.preparePost(url) {
+                        applyAuthAndCustomHeaders(profile)
+                        header("Accept", "text/event-stream")
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            val err = response.bodyAsText()
+                            onRawWire(reqStr, err)
+                            error("Chat Completions HTTP ${response.status.value}: $err")
                         }
-                        val choices = obj["choices"] as? JsonArray
-                        val firstChoice = choices?.firstOrNull() as? JsonObject
-                        val delta = (firstChoice?.get("delta") as? JsonObject)
-                            ?: (firstChoice?.get("message") as? JsonObject)
-                        if (delta != null) {
-                            val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
-                                ?: delta["reasoning"]?.jsonPrimitive?.contentOrNull ?: ""
-                            if (reasoning.isNotEmpty()) {
-                                onFirstToken()
-                                onThinking(reasoning)
-                            }
-                            val content = delta["content"]?.jsonPrimitive?.contentOrNull ?: ""
-                            if (content.isNotEmpty()) {
-                                onFirstToken()
-                                roundContentBuilder.append(content)
-                                fullTextAccumulator.append(content)
-                                onContent(content)
-                            }
-                            val tcArray = delta["tool_calls"] as? JsonArray
-                            tcArray?.forEachIndexed { fallbackIdx, tcEl ->
-                                val tcObj = tcEl as? JsonObject ?: return@forEachIndexed
-                                val idx = tcObj["index"]?.jsonPrimitive?.intOrNull ?: fallbackIdx
-                                val idPart = tcObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                                val fnObj = tcObj["function"] as? JsonObject
-                                val namePart = fnObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
-                                val argsPart = fnObj?.get("arguments")?.jsonPrimitive?.contentOrNull ?: ""
-                                val existing = roundToolCalls[idx]
-                                val mergedId = if (idPart.isNotBlank()) idPart else (existing?.first ?: "call_$idx")
-                                val mergedName = if (namePart.isNotBlank()) namePart else (existing?.second ?: "")
-                                val sb = existing?.third ?: StringBuilder()
-                                sb.append(argsPart)
-                                roundToolCalls[idx] = Triple(mergedId, mergedName, sb)
-                            }
-                            val imagesArr = delta["images"] as? JsonArray
-                            if (imagesArr != null) {
-                                for (imgEl in imagesArr) {
-                                    val imgObj = imgEl as? JsonObject ?: continue
-                                    val urlVal = (imgObj["image_url"] as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
-                                        ?: imgObj["url"]?.jsonPrimitive?.contentOrNull
-                                        ?: imgObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    if (urlVal.startsWith("data:image/")) {
-                                        val mime = urlVal.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
-                                        val b64 = urlVal.substringAfter("base64,")
-                                        saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
-                                    } else if (urlVal.startsWith("http")) {
-                                        saveAndEmitImage("", urlVal, "image/png", profile.mediaAspectRatio, "", onMedia)
+
+                        readSseOrJsonFallback(
+                            channel = response.bodyAsChannel(),
+                            onSseEvent = { _, dataLine ->
+                                if (dataLine == "[DONE]") return@readSseOrJsonFallback
+                                onRawWire(reqStr, dataLine)
+                                val obj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val errObj = obj["error"] as? JsonObject
+                                if (errObj != null && errObj.isNotEmpty()) {
+                                    val msg = errObj["message"]?.jsonPrimitive?.contentOrNull ?: dataLine
+                                    error("Chat Completions Stream Error: $msg")
+                                }
+                                val choices = obj["choices"] as? JsonArray
+                                val firstChoice = choices?.firstOrNull() as? JsonObject
+                                val delta = (firstChoice?.get("delta") as? JsonObject)
+                                    ?: (firstChoice?.get("message") as? JsonObject)
+                                if (delta != null) {
+                                    val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
+                                        ?: delta["reasoning"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    if (reasoning.isNotEmpty()) {
+                                        onFirstToken()
+                                        roundReasoningBuilder.append(reasoning)
+                                        onThinking(reasoning)
+                                    }
+                                    val content = delta["content"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    if (content.isNotEmpty()) {
+                                        onFirstToken()
+                                        stepEmittedOutput = true
+                                        roundContentBuilder.append(content)
+                                        fullTextAccumulator.append(content)
+                                        onContent(content)
+                                    }
+                                    val tcArray = delta["tool_calls"] as? JsonArray
+                                    tcArray?.forEachIndexed { fallbackIdx, tcEl ->
+                                        val tcObj = tcEl as? JsonObject ?: return@forEachIndexed
+                                        val idx = tcObj["index"]?.jsonPrimitive?.intOrNull ?: fallbackIdx
+                                        val idPart = tcObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                        val fnObj = tcObj["function"] as? JsonObject
+                                        val namePart = fnObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
+                                        val argsPart = fnObj?.get("arguments")?.jsonPrimitive?.contentOrNull ?: ""
+                                        val existing = roundToolCalls[idx]
+                                        val mergedId = if (idPart.isNotBlank()) idPart else (existing?.first ?: "call_$idx")
+                                        val mergedName = if (namePart.isNotBlank()) namePart else (existing?.second ?: "")
+                                        val sb = existing?.third ?: StringBuilder()
+                                        sb.append(argsPart)
+                                        roundToolCalls[idx] = Triple(mergedId, mergedName, sb)
+                                    }
+                                    val imagesArr = delta["images"] as? JsonArray
+                                    if (imagesArr != null) {
+                                        for (imgEl in imagesArr) {
+                                            val imgObj = imgEl as? JsonObject ?: continue
+                                            val urlVal = (imgObj["image_url"] as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
+                                                ?: imgObj["url"]?.jsonPrimitive?.contentOrNull
+                                                ?: imgObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            if (urlVal.startsWith("data:image/")) {
+                                                val mime = urlVal.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
+                                                val b64 = urlVal.substringAfter("base64,")
+                                                stepEmittedOutput = true
+                                                saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
+                                            } else if (urlVal.startsWith("http")) {
+                                                stepEmittedOutput = true
+                                                saveAndEmitImage("", urlVal, "image/png", profile.mediaAspectRatio, "", onMedia)
+                                            }
+                                        }
+                                    }
+                                }
+                                val usage = obj["usage"] as? JsonObject
+                                if (usage != null) {
+                                    val inTok = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val cacheTok = (usage["prompt_tokens_details"] as? JsonObject)
+                                        ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
+                                    val thinkTok = (usage["completion_tokens_details"] as? JsonObject)
+                                        ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
+                                    val outTok = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    onUsage(inTok, cacheTok, thinkTok, outTok)
+                                }
+                            },
+                            onPlainJsonFallback = { body ->
+                                onRawWire(reqStr, body)
+                                val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val firstMsg = ((root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("message") as? JsonObject
+                                val reasoning = firstMsg?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+                                    ?: firstMsg?.get("reasoning")?.jsonPrimitive?.contentOrNull ?: ""
+                                if (reasoning.isNotEmpty()) {
+                                    onFirstToken()
+                                    roundReasoningBuilder.append(reasoning)
+                                    onThinking(reasoning)
+                                }
+                                val txt = firstMsg?.get("content")?.jsonPrimitive?.contentOrNull ?: ""
+                                if (txt.isNotEmpty()) {
+                                    onFirstToken()
+                                    stepEmittedOutput = true
+                                    roundContentBuilder.append(txt)
+                                    fullTextAccumulator.append(txt)
+                                    onContent(txt)
+                                }
+                                val tcArray = firstMsg?.get("tool_calls") as? JsonArray
+                                tcArray?.forEachIndexed { fallbackIdx, tcEl ->
+                                    val tcObj = tcEl as? JsonObject ?: return@forEachIndexed
+                                    val idx = tcObj["index"]?.jsonPrimitive?.intOrNull ?: fallbackIdx
+                                    val idPart = tcObj["id"]?.jsonPrimitive?.contentOrNull ?: "call_$idx"
+                                    val fnObj = tcObj["function"] as? JsonObject
+                                    val namePart = fnObj?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
+                                    val argsPart = fnObj?.get("arguments")?.jsonPrimitive?.contentOrNull ?: "{}"
+                                    if (namePart.isNotBlank()) {
+                                        roundToolCalls[idx] = Triple(idPart, namePart, StringBuilder(argsPart))
                                     }
                                 }
                             }
-                        }
-                        val usage = obj["usage"] as? JsonObject
-                        if (usage != null) {
-                            val inTok = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                            val cacheTok = (usage["prompt_tokens_details"] as? JsonObject)
-                                ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                            val thinkTok = (usage["completion_tokens_details"] as? JsonObject)
-                                ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                            val outTok = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                            onUsage(inTok, cacheTok, thinkTok, outTok)
-                        }
-                    },
-                    onPlainJsonFallback = { body ->
-                        onRawWire(reqStr, body)
-                        val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                        val firstMsg = ((root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("message") as? JsonObject
-                        val txt = firstMsg?.get("content")?.jsonPrimitive?.contentOrNull ?: ""
-                        if (txt.isNotEmpty()) {
-                            onFirstToken()
-                            roundContentBuilder.append(txt)
-                            fullTextAccumulator.append(txt)
-                            onContent(txt)
-                        }
+                        )
                     }
-                )
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    if (!stepEmittedOutput && roundToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e) && stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        stepRetryAttempt++
+                        val backoffMs = 1500L * stepRetryAttempt
+                        onStatus("Transient API error in step $loopStep — auto-retrying ($stepRetryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000.0}s)…")
+                        delay(backoffMs)
+                        continue
+                    }
+                    throw e
+                }
             }
 
             val validCalls = roundToolCalls.values.filter { it.second.isNotBlank() }
@@ -2627,7 +2959,12 @@ object AiProviderEngine {
 
             extraToolMessages.add(buildJsonObject {
                 put("role", "assistant")
-                put("content", roundContentBuilder.toString().ifBlank { "\n" })
+                if (roundContentBuilder.isNotEmpty()) {
+                    put("content", roundContentBuilder.toString())
+                }
+                if (roundReasoningBuilder.isNotEmpty()) {
+                    put("reasoning_content", roundReasoningBuilder.toString())
+                }
                 putJsonArray("tool_calls") {
                     for ((callId, fnName, argsSb) in validCalls) {
                         add(buildJsonObject {
@@ -2676,6 +3013,31 @@ object AiProviderEngine {
     //    Automatic Prompt Caching (`cache_control: {"type": "ephemeral"}`),
     //    Native Assistant Prefill (`continuePrefix`), and Local Workspace Function Tools loop.
     // ============================================================================================
+    private sealed class AnthropicStreamBlock {
+        data class Thinking(
+            val thinking: StringBuilder = StringBuilder(),
+            val signature: StringBuilder = StringBuilder()
+        ) : AnthropicStreamBlock()
+
+        data class RedactedThinking(val data: String) : AnthropicStreamBlock()
+
+        data class Text(val text: StringBuilder = StringBuilder()) : AnthropicStreamBlock()
+
+        data class ToolUse(
+            val id: String,
+            val name: String,
+            val initialInputJson: String = "",
+            val streamedInputJson: StringBuilder = StringBuilder()
+        ) : AnthropicStreamBlock() {
+            fun resolvedArgsJson(): String {
+                val streamed = streamedInputJson.toString().trim()
+                if (streamed.isNotEmpty()) return streamed
+                val init = initialInputJson.trim()
+                return if (init.isNotEmpty()) init else "{}"
+            }
+        }
+    }
+
     private suspend fun executeAnthropicMessagesLoop(
         profile: ProviderProfile,
         model: String,
@@ -2692,9 +3054,48 @@ object AiProviderEngine {
         onRawWire: suspend (String, String) -> Unit,
         onUsage: (String, Int, Int, Int) -> Unit
     ) {
-        val activeNodes = historyNodes.filter { it.includedInContext }
+        val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val turnsWithAuthorsNote = injectAuthorsNoteIntoHistory(activeNodes, session)
+
+        // Coalesce consecutive same-role messages so Anthropic never rejects with HTTP 400 ("roles must alternate")
+        val coalescedBaseMessages = mutableListOf<Pair<String, MutableList<JsonObject>>>()
+        if (turnsWithAuthorsNote.firstOrNull()?.first == MessageRole.ASSISTANT) {
+            coalescedBaseMessages.add(
+                "user" to mutableListOf(
+                    buildJsonObject {
+                        put("type", "text")
+                        put("text", "[Begin narrative]")
+                    }
+                )
+            )
+        }
+        for ((idx, pair) in turnsWithAuthorsNote.withIndex()) {
+            val (role, text) = pair
+            val roleStr = if (role == MessageRole.ASSISTANT) "assistant" else "user"
+            val imageAttachments = resolveImageAttachments(activeNodes.getOrNull(idx)?.activeVariant)
+            val blocks = mutableListOf<JsonObject>()
+            for ((mime, b64) in imageAttachments) {
+                blocks.add(buildJsonObject {
+                    put("type", "image")
+                    putJsonObject("source") {
+                        put("type", "base64")
+                        put("media_type", mime)
+                        put("data", b64)
+                    }
+                })
+            }
+            blocks.add(buildJsonObject {
+                put("type", "text")
+                put("text", text.ifBlank { "..." })
+            })
+            val last = coalescedBaseMessages.lastOrNull()
+            if (last != null && last.first == roleStr) {
+                last.second.addAll(blocks)
+            } else {
+                coalescedBaseMessages.add(roleStr to blocks)
+            }
+        }
 
         // Mutable conversation list for multi-step tool loop
         val extraLoopMessages = mutableListOf<JsonObject>()
@@ -2703,6 +3104,7 @@ object AiProviderEngine {
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val effort = profile.thinkingEffort.trim()
+            val lowerEffort = effort.lowercase()
             val lowerModel = model.lowercase()
             val thinkBudget = profile.thinkingBudgetTokens ?: 0
             val isAdaptiveEffortModel = lowerModel.contains("5-5") ||
@@ -2721,7 +3123,8 @@ object AiProviderEngine {
 
             val enableBudgetThinking = !isAdaptiveEffortModel &&
                 effort.isNotEmpty() &&
-                !effort.equals("none", ignoreCase = true) &&
+                lowerEffort != "none" &&
+                lowerEffort != "off" &&
                 thinkBudget >= 1024 &&
                 continuePrefix.isBlank()
 
@@ -2739,7 +3142,7 @@ object AiProviderEngine {
 
                 if (isAdaptiveEffortModel) {
                     // Claude 4.6+ / Opus 5.5 / Sonnet 5.5 adaptive effort dialect
-                    if (effort.equals("none", ignoreCase = true) || effort.equals("off", ignoreCase = true)) {
+                    if (lowerEffort == "none" || lowerEffort == "off") {
                         putJsonObject("thinking") {
                             put("type", "disabled")
                         }
@@ -2748,9 +3151,14 @@ object AiProviderEngine {
                             put("type", "adaptive")
                             put("display", "summarized")
                         }
-                        if (effort.isNotEmpty() && !effort.equals("default", ignoreCase = true) && !effort.equals("auto", ignoreCase = true)) {
+                        if (effort.isNotEmpty() && lowerEffort != "default" && lowerEffort != "auto") {
+                            val normalizedAnthropicEffort = when (lowerEffort) {
+                                "minimal" -> "low"
+                                "xhigh" -> "max"
+                                else -> lowerEffort
+                            }
                             putJsonObject("output_config") {
-                                put("effort", effort.lowercase())
+                                put("effort", normalizedAnthropicEffort)
                             }
                         }
                     }
@@ -2780,43 +3188,22 @@ object AiProviderEngine {
 
                 // Messages array with strict user-first / alternating role validation & cache_control breakpoint
                 putJsonArray("messages") {
-                    if (turnsWithAuthorsNote.firstOrNull()?.first == MessageRole.ASSISTANT) {
+                    val lastMsgIdx = coalescedBaseMessages.size - 1
+                    for ((msgIdx, msgPair) in coalescedBaseMessages.withIndex()) {
+                        val (roleStr, blocks) = msgPair
                         add(buildJsonObject {
-                            put("role", "user")
+                            put("role", roleStr)
                             putJsonArray("content") {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", "[Begin narrative]")
-                                })
-                            }
-                        })
-                    }
-                    val lastIdx = turnsWithAuthorsNote.size - 1
-                    for ((idx, pair) in turnsWithAuthorsNote.withIndex()) {
-                        val (role, text) = pair
-                        val imageAttachments = resolveImageAttachments(activeNodes.getOrNull(idx)?.activeVariant)
-                        add(buildJsonObject {
-                            put("role", if (role == MessageRole.ASSISTANT) "assistant" else "user")
-                            putJsonArray("content") {
-                                for ((mime, b64) in imageAttachments) {
-                                    add(buildJsonObject {
-                                        put("type", "image")
-                                        putJsonObject("source") {
-                                            put("type", "base64")
-                                            put("media_type", mime)
-                                            put("data", b64)
-                                        }
-                                    })
-                                }
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", text.ifBlank { "..." })
-                                    if (idx == lastIdx && extraLoopMessages.isEmpty()) {
-                                        putJsonObject("cache_control") {
-                                            put("type", "ephemeral")
-                                        }
+                                val lastBlockIdx = blocks.size - 1
+                                for ((bIdx, bObj) in blocks.withIndex()) {
+                                    if (msgIdx == lastMsgIdx && bIdx == lastBlockIdx && extraLoopMessages.isEmpty()) {
+                                        val withCache = bObj.toMutableMap()
+                                        withCache["cache_control"] = buildJsonObject { put("type", "ephemeral") }
+                                        add(JsonObject(withCache))
+                                    } else {
+                                        add(bObj)
                                     }
-                                })
+                                }
                             }
                         })
                     }
@@ -2856,121 +3243,275 @@ object AiProviderEngine {
             val path = profile.endpointPathOverride.ifBlank { defaultPath }
             val url = buildUrlWithAuthQuery(profile, "$base$path")
 
-            onRawWire(reqStr, "Dispatching to $url ...")
+            val streamBlocksByIndex = mutableMapOf<Int, AnthropicStreamBlock>()
+            var stepEmittedOutput = false
+            var stepRetryAttempt = 0
 
+            while (true) {
+                streamBlocksByIndex.clear()
+                stepEmittedOutput = false
+
+                onRawWire(reqStr, "Dispatching to $url ...")
+
+                try {
+                    httpClient.preparePost(url) {
+                        applyAuthAndCustomHeaders(profile)
+                        header("anthropic-version", "2023-06-01")
+                        if (profile.anthropicBetaHeaders.isNotBlank()) {
+                            header("anthropic-beta", profile.anthropicBetaHeaders.trim())
+                        }
+                        header("Accept", "text/event-stream")
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            val err = response.bodyAsText()
+                            onRawWire(reqStr, err)
+                            error("Anthropic Messages HTTP ${response.status.value}: $err")
+                        }
+
+                        var msgId = ""
+                        var inTok = 0
+                        var cacheReadTok = 0
+                        var outTok = 0
+
+                        readSseOrJsonFallback(
+                            channel = response.bodyAsChannel(),
+                            onSseEvent = { eventType, dataLine ->
+                                onRawWire(reqStr, dataLine)
+                                val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val type = evObj["type"]?.jsonPrimitive?.contentOrNull ?: eventType
+
+                                when (type) {
+                                    "message_start" -> {
+                                        val msgObj = evObj["message"] as? JsonObject
+                                        msgId = msgObj?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
+                                        val usage = msgObj?.get("usage") as? JsonObject
+                                        if (usage != null) {
+                                            inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            cacheReadTok = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            onUsage(msgId, inTok, cacheReadTok, outTok)
+                                        }
+                                    }
+                                    "content_block_start" -> {
+                                        val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: streamBlocksByIndex.size
+                                        val cb = evObj["content_block"] as? JsonObject
+                                        when (cb?.get("type")?.jsonPrimitive?.contentOrNull) {
+                                            "thinking" -> {
+                                                val initThink = cb["thinking"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val initSig = cb["signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val block = AnthropicStreamBlock.Thinking()
+                                                if (initThink.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    block.thinking.append(initThink)
+                                                    onThinking(initThink, "")
+                                                }
+                                                if (initSig.isNotEmpty()) {
+                                                    block.signature.append(initSig)
+                                                    onThinking("", initSig)
+                                                }
+                                                streamBlocksByIndex[idx] = block
+                                            }
+                                            "redacted_thinking" -> {
+                                                val data = cb["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                streamBlocksByIndex[idx] = AnthropicStreamBlock.RedactedThinking(data)
+                                            }
+                                            "text" -> {
+                                                val initTxt = cb["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val block = AnthropicStreamBlock.Text()
+                                                if (initTxt.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    stepEmittedOutput = true
+                                                    block.text.append(initTxt)
+                                                    onContent(initTxt)
+                                                }
+                                                streamBlocksByIndex[idx] = block
+                                            }
+                                            "tool_use" -> {
+                                                val id = cb["id"]?.jsonPrimitive?.contentOrNull ?: "toolu_$idx"
+                                                val name = cb["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val inputObj = cb["input"] as? JsonObject
+                                                val initInput = if (inputObj != null && inputObj.isNotEmpty()) inputObj.toString() else ""
+                                                streamBlocksByIndex[idx] = AnthropicStreamBlock.ToolUse(
+                                                    id = id,
+                                                    name = name,
+                                                    initialInputJson = initInput
+                                                )
+                                            }
+                                        }
+                                    }
+                                    "content_block_delta" -> {
+                                        val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
+                                        val deltaObj = evObj["delta"] as? JsonObject ?: return@readSseOrJsonFallback
+                                        when (deltaObj["type"]?.jsonPrimitive?.contentOrNull) {
+                                            "text_delta" -> {
+                                                val txt = deltaObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (txt.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    stepEmittedOutput = true
+                                                    val textBlock = (streamBlocksByIndex[idx] as? AnthropicStreamBlock.Text)
+                                                        ?: AnthropicStreamBlock.Text().also { streamBlocksByIndex[idx] = it }
+                                                    textBlock.text.append(txt)
+                                                    onContent(txt)
+                                                }
+                                            }
+                                            "thinking_delta" -> {
+                                                val th = deltaObj["thinking"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (th.isNotEmpty()) {
+                                                    onFirstToken()
+                                                    val thinkBlock = (streamBlocksByIndex[idx] as? AnthropicStreamBlock.Thinking)
+                                                        ?: AnthropicStreamBlock.Thinking().also { streamBlocksByIndex[idx] = it }
+                                                    thinkBlock.thinking.append(th)
+                                                    onThinking(th, "")
+                                                }
+                                            }
+                                            "signature_delta" -> {
+                                                val sig = deltaObj["signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                if (sig.isNotEmpty()) {
+                                                    val thinkBlock = (streamBlocksByIndex[idx] as? AnthropicStreamBlock.Thinking)
+                                                        ?: AnthropicStreamBlock.Thinking().also { streamBlocksByIndex[idx] = it }
+                                                    thinkBlock.signature.append(sig)
+                                                    onThinking("", sig)
+                                                }
+                                            }
+                                            "input_json_delta" -> {
+                                                val partial = deltaObj["partial_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val toolBlock = streamBlocksByIndex[idx] as? AnthropicStreamBlock.ToolUse
+                                                toolBlock?.streamedInputJson?.append(partial)
+                                            }
+                                        }
+                                    }
+                                    "message_delta" -> {
+                                        val usage = evObj["usage"] as? JsonObject
+                                        if (usage != null) {
+                                            outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: outTok
+                                            onUsage(msgId, inTok, cacheReadTok, outTok)
+                                        }
+                                    }
+                                    "error" -> {
+                                        val errMsg = (evObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
+                                        error("Anthropic Stream Error: $errMsg")
+                                    }
+                                }
+                            },
+                            onPlainJsonFallback = { body ->
+                                onRawWire(reqStr, body)
+                                val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                                val usage = root["usage"] as? JsonObject
+                                if (usage != null) {
+                                    val uIn = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val uCache = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val uOut = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    onUsage(id, uIn, uCache, uOut)
+                                }
+                                val contentArr = root["content"] as? JsonArray
+                                contentArr?.forEachIndexed { idx, el ->
+                                    val cb = el as? JsonObject ?: return@forEachIndexed
+                                    when (cb["type"]?.jsonPrimitive?.contentOrNull) {
+                                        "thinking" -> {
+                                            val th = cb["thinking"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val sig = cb["signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val block = AnthropicStreamBlock.Thinking()
+                                            block.thinking.append(th)
+                                            block.signature.append(sig)
+                                            streamBlocksByIndex[idx] = block
+                                            if (th.isNotEmpty() || sig.isNotEmpty()) {
+                                                onFirstToken()
+                                                onThinking(th, sig)
+                                            }
+                                        }
+                                        "redacted_thinking" -> {
+                                            val data = cb["data"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            streamBlocksByIndex[idx] = AnthropicStreamBlock.RedactedThinking(data)
+                                        }
+                                        "text" -> {
+                                            val txt = cb["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val block = AnthropicStreamBlock.Text()
+                                            block.text.append(txt)
+                                            streamBlocksByIndex[idx] = block
+                                            if (txt.isNotEmpty()) {
+                                                onFirstToken()
+                                                stepEmittedOutput = true
+                                                onContent(txt)
+                                            }
+                                        }
+                                        "tool_use" -> {
+                                            val callId = cb["id"]?.jsonPrimitive?.contentOrNull ?: "toolu_$idx"
+                                            val name = cb["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                            val inputStr = (cb["input"] as? JsonObject)?.toString() ?: "{}"
+                                            streamBlocksByIndex[idx] = AnthropicStreamBlock.ToolUse(
+                                                id = callId,
+                                                name = name,
+                                                initialInputJson = inputStr
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    val hasAnyToolUse = streamBlocksByIndex.values.any { it is AnthropicStreamBlock.ToolUse }
+                    if (!stepEmittedOutput && !hasAnyToolUse && isTransientOrProxyTimeoutError(e) && stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        stepRetryAttempt++
+                        val backoffMs = 1500L * stepRetryAttempt
+                        onStatus("Transient API error in step $loopStep — auto-retrying ($stepRetryAttempt/$MAX_PRE_TOKEN_RETRIES in ${backoffMs / 1000.0}s)…")
+                        delay(backoffMs)
+                        continue
+                    }
+                    throw e
+                }
+            }
+
+            val orderedBlocks = streamBlocksByIndex.entries.sortedBy { it.key }.map { it.value }
             val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>()
             val assistantContentBlocksForToolLoop = mutableListOf<JsonObject>()
-            var turnThinkingText = StringBuilder()
-            var turnThinkingSig = StringBuilder()
-            var turnText = StringBuilder()
 
-            httpClient.preparePost(url) {
-                applyAuthAndCustomHeaders(profile)
-                header("anthropic-version", "2023-06-01")
-                if (profile.anthropicBetaHeaders.isNotBlank()) {
-                    header("anthropic-beta", profile.anthropicBetaHeaders.trim())
-                }
-                header("Accept", "text/event-stream")
-                contentType(ContentType.Application.Json)
-                setBody(reqStr)
-            }.execute { response ->
-                if (!response.status.isSuccess()) {
-                    val err = response.bodyAsText()
-                    onRawWire(reqStr, err)
-                    error("Anthropic Messages HTTP ${response.status.value}: $err")
-                }
-
-                var msgId = ""
-                var inTok = 0
-                var cacheReadTok = 0
-                var outTok = 0
-                val toolBlocksByIndex = mutableMapOf<Int, Pair<String, Pair<String, StringBuilder>>>()
-
-                readSseOrJsonFallback(
-                    channel = response.bodyAsChannel(),
-                    onSseEvent = { eventType, dataLine ->
-                        onRawWire(reqStr, dataLine)
-                        val evObj = runCatching { json.parseToJsonElement(dataLine).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
-                        val type = evObj["type"]?.jsonPrimitive?.contentOrNull ?: eventType
-
-                        when (type) {
-                            "message_start" -> {
-                                val msgObj = evObj["message"] as? JsonObject
-                                msgId = msgObj?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
-                                val usage = msgObj?.get("usage") as? JsonObject
-                                if (usage != null) {
-                                    inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    cacheReadTok = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    onUsage(msgId, inTok, cacheReadTok, outTok)
-                                }
-                            }
-                            "content_block_start" -> {
-                                val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                                val cb = evObj["content_block"] as? JsonObject
-                                if (cb?.get("type")?.jsonPrimitive?.contentOrNull == "tool_use") {
-                                    val id = cb["id"]?.jsonPrimitive?.contentOrNull ?: "toolu_$idx"
-                                    val name = cb["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                                    toolBlocksByIndex[idx] = id to (name to StringBuilder())
-                                }
-                            }
-                            "content_block_delta" -> {
-                                val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                                val deltaObj = evObj["delta"] as? JsonObject ?: return@readSseOrJsonFallback
-                                when (deltaObj["type"]?.jsonPrimitive?.contentOrNull) {
-                                    "text_delta" -> {
-                                        val txt = deltaObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        if (txt.isNotEmpty()) {
-                                            onFirstToken()
-                                            turnText.append(txt)
-                                            onContent(txt)
-                                        }
-                                    }
-                                    "thinking_delta" -> {
-                                        val th = deltaObj["thinking"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        if (th.isNotEmpty()) {
-                                            onFirstToken()
-                                            turnThinkingText.append(th)
-                                            onThinking(th, "")
-                                        }
-                                    }
-                                    "signature_delta" -> {
-                                        val sig = deltaObj["signature"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        if (sig.isNotEmpty()) {
-                                            turnThinkingSig.append(sig)
-                                            onThinking("", sig)
-                                        }
-                                    }
-                                    "input_json_delta" -> {
-                                        val partial = deltaObj["partial_json"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        toolBlocksByIndex[idx]?.second?.second?.append(partial)
-                                    }
-                                }
-                            }
-                            "message_delta" -> {
-                                val usage = evObj["usage"] as? JsonObject
-                                if (usage != null) {
-                                    outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: outTok
-                                    onUsage(msgId, inTok, cacheReadTok, outTok)
-                                }
-                            }
-                            "error" -> {
-                                val errMsg = (evObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull ?: dataLine
-                                error("Anthropic Stream Error: $errMsg")
-                            }
+            for (block in orderedBlocks) {
+                when (block) {
+                    is AnthropicStreamBlock.Thinking -> {
+                        if (block.signature.isNotEmpty()) {
+                            assistantContentBlocksForToolLoop.add(buildJsonObject {
+                                put("type", "thinking")
+                                put("thinking", block.thinking.toString())
+                                put("signature", block.signature.toString())
+                            })
                         }
-                    },
-                    onPlainJsonFallback = { body ->
-                        onRawWire(reqStr, body)
                     }
-                )
-
-                for ((_, pair) in toolBlocksByIndex.entries.sortedBy { it.key }) {
-                    val callId = pair.first
-                    val fnName = pair.second.first
-                    val argsStr = pair.second.second.toString().ifBlank { "{}" }
-                    if (fnName.isNotBlank()) {
-                        turnToolCalls.add(callId to (fnName to argsStr))
+                    is AnthropicStreamBlock.RedactedThinking -> {
+                        if (block.data.isNotEmpty()) {
+                            assistantContentBlocksForToolLoop.add(buildJsonObject {
+                                put("type", "redacted_thinking")
+                                put("data", block.data)
+                            })
+                        }
+                    }
+                    is AnthropicStreamBlock.Text -> {
+                        if (block.text.isNotEmpty()) {
+                            assistantContentBlocksForToolLoop.add(buildJsonObject {
+                                put("type", "text")
+                                put("text", block.text.toString())
+                            })
+                        }
+                    }
+                    is AnthropicStreamBlock.ToolUse -> {
+                        if (block.name.isNotBlank()) {
+                            val argsStr = block.resolvedArgsJson()
+                            turnToolCalls.add(block.id to (block.name to argsStr))
+                            val parsedArgs = runCatching { json.parseToJsonElement(argsStr).jsonObject }
+                                .getOrElse { JsonObject(emptyMap()) }
+                            assistantContentBlocksForToolLoop.add(buildJsonObject {
+                                put("type", "tool_use")
+                                put("id", block.id)
+                                put("name", block.name)
+                                put("input", parsedArgs)
+                            })
+                        }
                     }
                 }
             }
@@ -2978,19 +3519,6 @@ object AiProviderEngine {
             if (turnToolCalls.isEmpty()) {
                 val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
                 if (stopHookPrompt != null) {
-                    if (turnThinkingText.isNotEmpty() && turnThinkingSig.isNotEmpty()) {
-                        assistantContentBlocksForToolLoop.add(buildJsonObject {
-                            put("type", "thinking")
-                            put("thinking", turnThinkingText.toString())
-                            put("signature", turnThinkingSig.toString())
-                        })
-                    }
-                    if (turnText.isNotEmpty()) {
-                        assistantContentBlocksForToolLoop.add(buildJsonObject {
-                            put("type", "text")
-                            put("text", turnText.toString())
-                        })
-                    }
                     if (assistantContentBlocksForToolLoop.isNotEmpty()) {
                         extraLoopMessages.add(buildJsonObject {
                             put("role", "assistant")
@@ -3010,31 +3538,6 @@ object AiProviderEngine {
                     continue
                 }
                 break
-            }
-
-            // Preserve assistant thinking + signature + tool_use blocks for Anthropic multi-turn tool loop
-            if (turnThinkingText.isNotEmpty() && turnThinkingSig.isNotEmpty()) {
-                assistantContentBlocksForToolLoop.add(buildJsonObject {
-                    put("type", "thinking")
-                    put("thinking", turnThinkingText.toString())
-                    put("signature", turnThinkingSig.toString())
-                })
-            }
-            if (turnText.isNotEmpty()) {
-                assistantContentBlocksForToolLoop.add(buildJsonObject {
-                    put("type", "text")
-                    put("text", turnText.toString())
-                })
-            }
-            for ((callId, fnPair) in turnToolCalls) {
-                val parsedArgs = runCatching { json.parseToJsonElement(fnPair.second).jsonObject }
-                    .getOrElse { JsonObject(emptyMap()) }
-                assistantContentBlocksForToolLoop.add(buildJsonObject {
-                    put("type", "tool_use")
-                    put("id", callId)
-                    put("name", fnPair.first)
-                    put("input", parsedArgs)
-                })
             }
 
             extraLoopMessages.add(buildJsonObject {
@@ -3426,10 +3929,27 @@ object AiProviderEngine {
         }
     }
 
+    private fun sanitizeContextNodes(historyNodes: List<MessageNode>): List<MessageNode> {
+        return historyNodes.filter { node ->
+            if (!node.includedInContext) return@filter false
+            if (node.role == MessageRole.ASSISTANT) {
+                val v = node.activeVariant
+                val trimmed = v.content.trim()
+                if (trimmed.startsWith("**[Provider Error:") || trimmed.startsWith("**[Stream Error:")) {
+                    return@filter false
+                }
+                if (trimmed.isEmpty() && v.attachments.isEmpty() && v.mediaItems.isEmpty() && v.toolCalls.isEmpty()) {
+                    return@filter false
+                }
+            }
+            true
+        }
+    }
+
     /**
      * Detects transient proxy/gateway/CDN timeouts (~5-minute 300s Cloudflare 524, Nginx 502/504,
-     * socket read timeout, premature EOF, connection reset, or 429 rate limit) so `streamGeneration`
-     * can automatically retry pre-token or seamlessly stitch a mid-stream continuation pass.
+     * socket read timeout, premature EOF, connection reset, 529 overloaded, or 429 rate limit) so
+     * `streamGeneration` and multi-step workspace tool loops can automatically retry.
      */
     private fun isTransientOrProxyTimeoutError(err: Throwable): Boolean {
         val msg = (err.message ?: err.toString()).lowercase()
@@ -3438,6 +3958,7 @@ object AiProviderEngine {
         }
         return msg.contains("timeout") ||
             msg.contains("timed out") ||
+            msg.contains("http 408") ||
             msg.contains("http 429") ||
             msg.contains("http 500") ||
             msg.contains("http 502") ||
@@ -3446,10 +3967,23 @@ object AiProviderEngine {
             msg.contains("http 520") ||
             msg.contains("http 522") ||
             msg.contains("http 524") ||
+            msg.contains("http 529") ||
+            msg.contains("overloaded") ||
+            msg.contains("rate_limit") ||
+            msg.contains("rate limit") ||
+            msg.contains("resource_exhausted") ||
+            msg.contains("too many requests") ||
+            msg.contains("bad gateway") ||
+            msg.contains("service unavailable") ||
+            msg.contains("gateway timeout") ||
+            msg.contains("server_error") ||
+            msg.contains("internal error") ||
+            msg.contains("temporarily unavailable") ||
             msg.contains("connection reset") ||
             msg.contains("connection closed") ||
             msg.contains("closed prematurely") ||
             msg.contains("broken pipe") ||
+            msg.contains("stream reset") ||
             msg.contains("eof") ||
             msg.contains("socket") ||
             msg.contains("unknownhost") ||

@@ -679,11 +679,22 @@ fun ParchmentApp() {
             }
         }.trim()
 
+        val resolvedWorkspacePath = sessionSnap.workspacePath.ifBlank { assistantSnap.workspacePath }
+        val resolvedWorkspaceMode = if (sessionSnap.workspaceMode != WorkspaceMode.OFF) {
+            sessionSnap.workspaceMode
+        } else if (sessionSnap.workspacePath.isBlank()) {
+            assistantSnap.workspaceMode
+        } else {
+            WorkspaceMode.OFF
+        }
+
         val mergedSessionForApi = sessionSnap.copy(
             systemPrompt = mergedSystemPrompt,
             authorsNote = sessionSnap.authorsNote.ifBlank { assistantSnap.authorsNote },
             activeCard = sessionSnap.activeCard ?: assistantSnap.activeCard,
-            fragments = (appState.globalWorldBook + assistantSnap.fragments + sessionSnap.fragments).distinctBy { it.id }
+            fragments = (appState.globalWorldBook + assistantSnap.fragments + sessionSnap.fragments).distinctBy { it.id },
+            workspacePath = resolvedWorkspacePath,
+            workspaceMode = resolvedWorkspaceMode
         )
 
         val effectiveHistory = if (assistantSnap.contextMessageLimit > 0 && historyForCall.size > assistantSnap.contextMessageLimit) {
@@ -696,7 +707,8 @@ fun ParchmentApp() {
             temperature = assistantSnap.temperature ?: profileSnap.temperature,
             topP = assistantSnap.topP ?: profileSnap.topP,
             maxOutputTokens = assistantSnap.maxOutputTokens ?: profileSnap.maxOutputTokens,
-            thinkingEffort = assistantSnap.thinkingEffort.ifBlank { profileSnap.thinkingEffort }
+            thinkingEffort = assistantSnap.thinkingEffort.ifBlank { profileSnap.thinkingEffort },
+            enableWebSearch = profileSnap.enableWebSearch || assistantSnap.enableWebSearch
         )
 
         val modelName = mergedSessionForApi.modelOverride.ifBlank {
