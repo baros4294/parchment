@@ -210,6 +210,8 @@ object AiProviderEngine {
             var currentContinuePrefix = cleanInitialPrefix
             var retryAttempt = 0
             var continuationPass = 0
+            var emptyAnswerNudgePass = 0
+            var emptyStreamRetryPass = 0
 
             while (true) {
                 val charsBeforePass = contentBuilder.length
@@ -218,9 +220,19 @@ object AiProviderEngine {
                 val toolsBeforePass = executedTools.size
                 val mediaBeforePass = generatedMedia.size
 
+                // On Nudge Pass >= 2 (if the model completed reasoning once and then spent Nudge Pass 1
+                // thinking again without outputting any final prose), automatically relax thinkingEffort
+                // and surface the completed thought summary so the model immediately writes the final answer!
+                val effectiveProfileForPass = when {
+                    emptyAnswerNudgePass == 2 -> profile.copy(thinkingEffort = "low")
+                    emptyAnswerNudgePass >= 3 -> profile.copy(thinkingEffort = "minimal")
+                    else -> profile
+                }
+
                 // If continuing a turn that already accumulated thoughts or tool calls (either before clicking
-                // '→ Continue' or before a mid-stream network drop), synthesize the partial assistant turn in
-                // history so no protocol loses prior thoughts/signatures or re-executes completed tools.
+                // '→ Continue', during an automatic zero-answer nudge pass, or after a mid-stream network drop),
+                // synthesize the partial assistant turn in history so no protocol loses prior thoughts/signatures
+                // or re-executes completed tools.
                 val (effectiveHistoryNodes, effectiveContinuePrefix) = buildEffectiveHistoryAndPrefix(
                     baseHistoryNodes = activeBaseHistoryNodes,
                     continuePrefix = currentContinuePrefix,
@@ -229,20 +241,21 @@ object AiProviderEngine {
                     signatureText = signatureBuilder.toString(),
                     executedTools = executedTools.toList(),
                     generatedMedia = generatedMedia.toList(),
-                    protocol = profile.protocol,
+                    protocol = effectiveProfileForPass.protocol,
                     model = model,
-                    passTag = "pass-$continuationPass"
+                    passTag = "pass-$continuationPass-nudge-$emptyAnswerNudgePass",
+                    forceVisibleThoughtSummary = emptyAnswerNudgePass >= 2
                 )
 
                 try {
-                    when (profile.protocol) {
+                    when (effectiveProfileForPass.protocol) {
                         ProviderProtocol.GEMINI_INTERACTIONS -> {
                             suspend fun runLegacyGeminiGenerateContent(
                                 targetHistoryNodes: List<MessageNode>,
                                 targetContinuePrefix: String
                             ) {
                                 executeGeminiGenerateContentLoop(
-                                    profile = profile,
+                                    profile = effectiveProfileForPass,
                                     model = model,
                                     session = session,
                                     historyNodes = targetHistoryNodes,
@@ -294,9 +307,12 @@ object AiProviderEngine {
                             // Always attempt the newer /v1beta/interactions protocol first; if it errors out
                             // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
                             // hand off any accumulated thoughts/tools/prose to :streamGenerateContent!
+                            if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
+                                runLegacyGeminiGenerateContent(effectiveHistoryNodes, effectiveContinuePrefix)
+                            } else {
                             try {
                                 executeGeminiInteractionsLoop(
-                                    profile = profile,
+                                    profile = effectiveProfileForPass,
                                     model = model,
                                     session = session,
                                     historyNodes = effectiveHistoryNodes,
@@ -375,6 +391,7 @@ object AiProviderEngine {
                                     throw e
                                 }
                             }
+                            }
                         }
 
                         ProviderProtocol.OPENAI_RESPONSES -> {
@@ -400,7 +417,7 @@ object AiProviderEngine {
                                 targetContinuePrefix: String
                             ) {
                                 executeOpenAiChatCompletionsLoop(
-                                    profile = profile,
+                                    profile = effectiveProfileForPass,
                                     model = model,
                                     session = session,
                                     historyNodes = targetHistoryNodes,
@@ -501,9 +518,12 @@ object AiProviderEngine {
                                 // Always attempt the newer /v1/responses protocol first; if it errors out
                                 // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
                                 // hand off any accumulated thoughts/tools/prose to /v1/chat/completions!
+                                if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
+                                    runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                } else {
                                 try {
                                     executeOpenAiResponsesLoop(
-                                        profile = profile,
+                                        profile = effectiveProfileForPass,
                                         model = model,
                                         session = session,
                                         historyNodes = effectiveHistoryNodes,
@@ -576,12 +596,13 @@ object AiProviderEngine {
                                         throw e
                                     }
                                 }
+                                }
                             }
                         }
 
                         ProviderProtocol.ANTHROPIC_MESSAGES -> {
                             executeAnthropicMessagesLoop(
-                                profile = profile,
+                                profile = effectiveProfileForPass,
                                 model = model,
                                 session = session,
                                 historyNodes = effectiveHistoryNodes,
@@ -663,7 +684,7 @@ object AiProviderEngine {
                                 )
                             } else {
                                 executeOpenAiChatCompletionsLoop(
-                                    profile = profile,
+                                    profile = effectiveProfileForPass,
                                     model = model,
                                     session = session,
                                     historyNodes = effectiveHistoryNodes,
@@ -709,7 +730,34 @@ object AiProviderEngine {
                             }
                         }
                     }
-                    // Completed cleanly without mid-stream cutoff
+                    // Foolproof 3-Stage Zero-Answer Auto-Continuation Engine:
+                    // Sometimes an upstream model or proxy finishes its reasoning (`thinkingBuilder` / `signatureBuilder`)
+                    // or finishes executing tool calls (`executedTools`), and then closes the SSE stream cleanly (`[DONE]`)
+                    // with ZERO final answer prose (`contentBuilder.isBlank()`).
+                    // Instead of stopping and forcing the user to manually click '→ Continue', automatically nudge the model!
+                    val hasNoFinalAnswer = contentBuilder.toString().isBlank() && generatedMedia.isEmpty()
+                    val hasThoughtsOrTools = thinkingBuilder.isNotBlank() || signatureBuilder.isNotBlank() || executedTools.isNotEmpty()
+                    val isBreakerTripped = circuitBreaker.checkTripped() != null
+
+                    if (hasNoFinalAnswer && hasThoughtsOrTools && !isBreakerTripped && emptyAnswerNudgePass < 3) {
+                        emptyAnswerNudgePass++
+                        currentContinuePrefix = ""
+                        val nudgeStatus = when (emptyAnswerNudgePass) {
+                            1 -> "Reasoning complete — auto-continuing to generate final answer (1/3)…"
+                            2 -> "Auto-nudging final answer with reduced thinking overhead (2/3)…"
+                            else -> "Auto-nudging final answer via direct completion pass (3/3)…"
+                        }
+                        emit(StreamUpdate.Status(nudgeStatus, lastInteractionId))
+                        continue
+                    } else if (hasNoFinalAnswer && !hasThoughtsOrTools && emptyStreamRetryPass < 2) {
+                        // Proxy returned HTTP 200 OK followed by immediate EOF with 0 thoughts, 0 tools, and 0 text
+                        emptyStreamRetryPass++
+                        emit(StreamUpdate.Status("Endpoint returned empty stream — auto-retrying ($emptyStreamRetryPass/2)…", lastInteractionId))
+                        delay(1200L)
+                        continue
+                    }
+
+                    // Completed cleanly with final answer
                     break
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -2636,11 +2684,17 @@ object AiProviderEngine {
                 var emittedAny = false
 
                 if (thinkSummary.isNotBlank()) {
-                    val thoughtPart = buildJsonObject {
-                        put("thought", true)
-                        put("text", thinkSummary)
-                        if (savedSig.isNotBlank() && toolCalls.isEmpty() && cleanText.isBlank()) {
-                            put("thoughtSignature", savedSig)
+                    val thoughtPart = if (savedSig.isNotBlank()) {
+                        buildJsonObject {
+                            put("thought", true)
+                            put("text", thinkSummary)
+                            if (toolCalls.isEmpty() && cleanText.isBlank()) {
+                                put("thoughtSignature", savedSig)
+                            }
+                        }
+                    } else {
+                        buildJsonObject {
+                            put("text", "[Completed internal reasoning:\n$thinkSummary]")
                         }
                     }
                     appendOrMergeContentTurn("model", listOf(thoughtPart))
@@ -2873,7 +2927,8 @@ object AiProviderEngine {
                             session.workspaceMode,
                             session.workspacePath,
                             profile.allowShellExecution,
-                            goalModeActive = circuitBreaker.goalState != null
+                            goalModeActive = circuitBreaker.goalState != null,
+                            enableWebTools = profile.enableUrlContext
                         )
                         wsTools.forEach { add(it) }
                     }
@@ -3422,7 +3477,8 @@ object AiProviderEngine {
                         session.workspaceMode,
                         session.workspacePath,
                         profile.allowShellExecution,
-                        goalModeActive = circuitBreaker.goalState != null
+                        goalModeActive = circuitBreaker.goalState != null,
+                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext
                     )
                     if (wsTools.isNotEmpty()) {
                         put("tools", wsTools)
@@ -3962,7 +4018,8 @@ object AiProviderEngine {
                         session.workspaceMode,
                         session.workspacePath,
                         profile.allowShellExecution,
-                        goalModeActive = circuitBreaker.goalState != null
+                        goalModeActive = circuitBreaker.goalState != null,
+                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext
                     )
                     if (wsTools.isNotEmpty()) {
                         put("tools", wsTools)
@@ -5029,14 +5086,22 @@ object AiProviderEngine {
         generatedMedia: List<GeneratedMediaItem>,
         protocol: ProviderProtocol,
         model: String,
-        passTag: String
+        passTag: String,
+        forceVisibleThoughtSummary: Boolean = false
     ): Pair<List<MessageNode>, String> {
         val hasPriorTurnProgress = executedTools.isNotEmpty() ||
             (continuePrefix.isBlank() && (thinkingText.isNotEmpty() || signatureText.isNotEmpty()))
         return if (hasPriorTurnProgress) {
+            val effectiveAssistantContent = when {
+                executedTools.isNotEmpty() && continuePrefix.isNotBlank() -> continuePrefix
+                forceVisibleThoughtSummary && continuePrefix.isBlank() && thinkingText.isNotBlank() -> {
+                    "[Completed internal reasoning:\n$thinkingText]"
+                }
+                else -> ""
+            }
             val partialVar = MessageVariant(
                 id = "var-in-progress-$passTag",
-                content = if (executedTools.isNotEmpty() && continuePrefix.isNotBlank()) continuePrefix else "",
+                content = effectiveAssistantContent,
                 thinkingSummary = thinkingText,
                 trailingThinking = if (executedTools.isNotEmpty()) trailingThinkingText else "",
                 thinkingSignature = signatureText,
@@ -5053,7 +5118,8 @@ object AiProviderEngine {
             val resumePrompt = if (executedTools.isNotEmpty() && continuePrefix.isNotBlank()) {
                 "[System Note: Continue seamlessly from the exact end of this partial passage without repeating completed tool calls or text:\n\"$continuePrefix\"]"
             } else {
-                "[System Note: Continue seamlessly from your reasoning and tool executions above without repeating completed steps.]"
+                val stepDesc = if (executedTools.isNotEmpty()) "internal reasoning and tool executions" else "internal reasoning"
+                "[System Note: You have already completed your $stepDesc above, but your turn ended before you wrote your final response to the user. Do NOT repeat completed tool calls or thoughts—write the complete final response to the user now.]"
             }
             val resumeUserNode = MessageNode(
                 id = "node-resume-user-$passTag",

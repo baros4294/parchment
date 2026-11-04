@@ -16,24 +16,37 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.parchment.ai.platform.PlatformBridge
+import kotlinx.coroutines.launch
 
 private sealed class ProseBlock {
     data class Heading(val level: Int, val text: String) : ProseBlock()
@@ -75,9 +88,9 @@ fun LiteraryProseRenderer(
     autoCollapseCodeBlocks: Boolean = false
 ) {
     val p = LocalParchmentPalette.current
+    val scope = rememberCoroutineScope()
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
-
     val baseTextStyle = if (compactReasoningMode) {
         p.uiBodyStyle.copy(
             fontFamily = p.proseFontFamily,
@@ -189,10 +202,16 @@ fun LiteraryProseRenderer(
                     }
 
                     is ProseBlock.CodeFence -> {
-                        var isCollapsed by remember(index, block.language, autoCollapseCodeBlocks) {
+                        var isCollapsed by remember(index, autoCollapseCodeBlocks) {
                             mutableStateOf(autoCollapseCodeBlocks)
                         }
+                        val isSvgArtifact = remember(block.language, block.code) {
+                            block.language.equals("svg", ignoreCase = true) ||
+                                (block.code.contains("<svg", ignoreCase = true) && block.code.contains("<path", ignoreCase = true))
+                        }
+                        var showSvgPreview by remember(index, isSvgArtifact) { mutableStateOf(isSvgArtifact) }
                         var copiedCode by remember(index) { mutableStateOf(false) }
+                        var savedCode by remember(index) { mutableStateOf(false) }
                         val shape = RoundedCornerShape(8.dp)
                         Column(
                             modifier = Modifier
@@ -202,24 +221,52 @@ fun LiteraryProseRenderer(
                                 .background(p.elevatedBg)
                                 .border(0.85.dp, p.border, shape)
                         ) {
-                            Row(
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(p.sheetBg)
                                     .padding(horizontal = 10.dp, vertical = 5.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 BasicText(
                                     text = "${block.language.ifBlank { "code" }} (${block.code.lines().size} lines)",
-                                    style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
+                                    style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily),
+                                    modifier = Modifier.padding(top = 4.dp)
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    if (isSvgArtifact) {
+                                        SepiaButton(
+                                            text = if (showSvgPreview) "‹/› Code" else "👁 Preview",
+                                            compact = true,
+                                            style = if (showSvgPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
+                                            onClick = {
+                                                showSvgPreview = !showSvgPreview
+                                                isCollapsed = false
+                                            }
+                                        )
+                                    }
                                     SepiaButton(
                                         text = if (isCollapsed) "▸ Expand" else "▾ Collapse",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { isCollapsed = !isCollapsed }
+                                    )
+                                    SepiaButton(
+                                        text = if (savedCode) "✓ Saved" else "💾 Save",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        onClick = {
+                                            scope.launch {
+                                                val ext = inferCodeFenceExtension(block.language, isSvgArtifact)
+                                                val saved = PlatformBridge.saveFileForExport(
+                                                    "artifact-${index + 1}.$ext",
+                                                    block.code.encodeToByteArray()
+                                                )
+                                                if (saved != null) savedCode = true
+                                            }
+                                        }
                                     )
                                     SepiaButton(
                                         text = if (copiedCode) "✓ Copied" else "📋 Copy",
@@ -237,7 +284,9 @@ fun LiteraryProseRenderer(
                                     SepiaDivider()
                                     val isDiffLang = block.language.equals("diff", ignoreCase = true) ||
                                         block.language.equals("patch", ignoreCase = true)
-                                    if (isDiffLang) {
+                                    if (isSvgArtifact && showSvgPreview) {
+                                        InlineSvgArtifactPreview(rawSvg = block.code)
+                                    } else if (isDiffLang) {
                                         SepiaRawDiffLinesView(
                                             rawDiffText = block.code,
                                             modifier = Modifier.padding(vertical = 4.dp)
@@ -686,21 +735,33 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Markdown Link: [label](url)
+            // Markdown Link: [label](url) with balanced-parenthesis URL support & 1-tap browser launch
             ch == '[' -> {
                 val closeBracket = text.indexOf(']', startIndex = i + 1)
                 val openParen = if (closeBracket != -1 && closeBracket + 1 < n && text[closeBracket + 1] == '(') closeBracket + 1 else -1
-                val closeParen = if (openParen != -1) text.indexOf(')', startIndex = openParen + 1) else -1
+                val closeParen = if (openParen != -1) findClosingMarkdownLinkParen(text, openParen) else -1
                 if (closeBracket != -1 && openParen != -1 && closeParen != -1 && !text.substring(i + 1, closeBracket).contains('\n')) {
                     val linkLabel = text.substring(i + 1, closeBracket)
-                    pushStyle(
-                        SpanStyle(
-                            color = palette.accent,
-                            fontWeight = FontWeight.Medium,
-                            textDecoration = TextDecoration.Underline
+                    val linkUrl = text.substring(openParen + 1, closeParen).trim()
+                    val linkStyle = SpanStyle(
+                        color = palette.accent,
+                        fontWeight = FontWeight.Medium,
+                        textDecoration = TextDecoration.Underline
+                    )
+                    pushLink(
+                        LinkAnnotation.Url(
+                            url = linkUrl,
+                            styles = TextLinkStyles(style = linkStyle),
+                            linkInteractionListener = {
+                                if (linkUrl.isNotBlank()) {
+                                    PlatformBridge.openOrPlayMedia(linkUrl)
+                                }
+                            }
                         )
                     )
+                    pushStyle(linkStyle)
                     append(linkLabel)
+                    pop()
                     pop()
                     i = closeParen + 1
                 } else {
@@ -750,7 +811,29 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Inline Code: `...`
+            // Double-Backtick Inline Code: ``...`` (allows literal single backticks inside inline code)
+            i + 1 < n && ch == '`' && text[i + 1] == '`' -> {
+                val endIdx = text.indexOf("``", startIndex = i + 2)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 2, endIdx).trim()
+                    pushStyle(
+                        SpanStyle(
+                            fontFamily = palette.codeFontFamily,
+                            fontSize = palette.config.codeFontSizeSp.sp,
+                            background = palette.elevatedBg,
+                            color = palette.accent
+                        )
+                    )
+                    append(" $inner ")
+                    pop()
+                    i = endIdx + 2
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Single-Backtick Inline Code: `...`
             ch == '`' -> {
                 val endIdx = text.indexOf('`', startIndex = i + 1)
                 if (endIdx != -1) {
@@ -775,6 +858,118 @@ private fun styleLiteraryParagraph(
             else -> {
                 append(ch)
                 i++
+            }
+        }
+    }
+}
+
+/**
+ * Finds the closing `)` for a Markdown link `[label](url)`, properly balancing nested parentheses
+ * inside the URL (such as Wikipedia URLs `https://en.wikipedia.org/wiki/Kotlin_(programming_language)`).
+ */
+internal fun findClosingMarkdownLinkParen(text: String, openParenIdx: Int): Int {
+    var depth = 0
+    var idx = openParenIdx + 1
+    while (idx < text.length) {
+        val c = text[idx]
+        if (c == '\n' || c == '\r') return -1
+        if (c == '(') {
+            depth++
+        } else if (c == ')') {
+            if (depth == 0) return idx
+            depth--
+        }
+        idx++
+    }
+    return -1
+}
+
+private fun inferCodeFenceExtension(language: String, isSvg: Boolean): String {
+    if (isSvg) return "svg"
+    return when (language.trim().lowercase()) {
+        "kotlin", "kt" -> "kt"
+        "python", "py" -> "py"
+        "javascript", "js" -> "js"
+        "typescript", "ts" -> "ts"
+        "html", "htm" -> "html"
+        "css" -> "css"
+        "json" -> "json"
+        "markdown", "md" -> "md"
+        "mermaid", "mmd" -> "mmd"
+        "sh", "bash", "zsh" -> "sh"
+        "powershell", "ps1" -> "ps1"
+        "sql" -> "sql"
+        "yaml", "yml" -> "yml"
+        "xml" -> "xml"
+        "rust", "rs" -> "rs"
+        "go", "golang" -> "go"
+        "java" -> "java"
+        "c" -> "c"
+        "cpp", "c++", "cxx" -> "cpp"
+        else -> "txt"
+    }
+}
+
+/**
+ * Renders an inline Compose Canvas preview for `<svg>` code blocks by extracting `viewBox` and `<path d="..."/>` elements.
+ */
+@Composable
+private fun InlineSvgArtifactPreview(rawSvg: String) {
+    val p = LocalParchmentPalette.current
+    val parsedPaths = remember(rawSvg) {
+        Regex("""<path\b[^>]*\bd\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(rawSvg)
+            .mapNotNull { m ->
+                val d = m.groupValues.getOrNull(1)?.trim().orEmpty()
+                if (d.isNotEmpty()) runCatching { parseSvgPathNormalized(d) }.getOrNull() else null
+            }
+            .toList()
+    }
+    val viewBoxDims = remember(rawSvg) {
+        val vbMatch = Regex("""viewBox\s*=\s*["']\s*([-\d.]+)[,\s]+([-\d.]+)[,\s]+([-\d.]+)[,\s]+([-\d.]+)\s*["']""", RegexOption.IGNORE_CASE)
+            .find(rawSvg)
+        val w = vbMatch?.groupValues?.getOrNull(3)?.toFloatOrNull()?.takeIf { it > 0f } ?: 24f
+        val h = vbMatch?.groupValues?.getOrNull(4)?.toFloatOrNull()?.takeIf { it > 0f } ?: 24f
+        w to h
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 140.dp, max = 280.dp)
+            .background(p.cardBg)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (parsedPaths.isEmpty()) {
+            BasicText(
+                text = "SVG source ready (click '💾 Save' to export .svg or '‹/› Code' to inspect markup).",
+                style = p.uiLabelStyle
+            )
+        } else {
+            val (vbW, vbH) = viewBoxDims
+            val strokeFlag = remember(rawSvg) {
+                rawSvg.contains("fill=\"none\"", ignoreCase = true) || rawSvg.contains("stroke=", ignoreCase = true)
+            }
+            Canvas(modifier = Modifier.size(160.dp)) {
+                val sx = size.width / vbW
+                val sy = size.height / vbH
+                val s = minOf(sx, sy)
+                withTransform({
+                    scale(scaleX = s, scaleY = s, pivot = androidx.compose.ui.geometry.Offset.Zero)
+                }) {
+                    for (path in parsedPaths) {
+                        if (strokeFlag) {
+                            drawPath(
+                                path = path,
+                                color = p.accent,
+                                style = Stroke(width = (1.8f / s).coerceAtLeast(0.5f))
+                            )
+                        } else {
+                            drawPath(path = path, color = p.accent)
+                        }
+                    }
+                }
             }
         }
     }

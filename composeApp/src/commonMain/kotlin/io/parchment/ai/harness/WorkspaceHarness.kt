@@ -20,7 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-
+import kotlin.math.pow
 /**
  * Self-contained, pure-API Local File System & Long-Horizon Goal Agent Harness.
  * Zero external CLI bridge required. Works directly with Gemini Interactions, OpenAI Responses,
@@ -56,6 +56,25 @@ object WorkspaceHarness {
                         put("description", "Whether to list subdirectories recursively.")
                     }
                 }
+            }
+        ),
+        ToolDefinition(
+            name = "fs_glob",
+            description = "Find files and directories matching a glob pattern (e.g. '*.kt', '**/*.md', 'src/**/Test*') inside the mounted workspace.",
+            requiresWritePermission = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("pattern") {
+                        put("type", "string")
+                        put("description", "Glob pattern to match (e.g. '*.kt', '**/*.md', 'docs/*').")
+                    }
+                    putJsonObject("max_results") {
+                        put("type", "integer")
+                        put("description", "Maximum number of matched paths to return (default 200).")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("pattern")) }
             }
         ),
         ToolDefinition(
@@ -150,6 +169,128 @@ object WorkspaceHarness {
                     add(JsonPrimitive("path"))
                     add(JsonPrimitive("old_text"))
                     add(JsonPrimitive("new_text"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "fs_multi_edit",
+            description = "Apply multiple search-and-replace edits to a single file atomically in one call. If any edit fails to match, all edits are rolled back.",
+            requiresWritePermission = true,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("path") {
+                        put("type", "string")
+                        put("description", "Relative file path inside the workspace.")
+                    }
+                    putJsonObject("edits") {
+                        put("type", "array")
+                        put("description", "Ordered list of search-and-replace hunks to apply atomically.")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("old_text") {
+                                    put("type", "string")
+                                    put("description", "Exact existing text block to find.")
+                                }
+                                putJsonObject("new_text") {
+                                    put("type", "string")
+                                    put("description", "Replacement text block.")
+                                }
+                                putJsonObject("replace_all") {
+                                    put("type", "boolean")
+                                    put("description", "Replace every occurrence if true (default false).")
+                                }
+                            }
+                            putJsonArray("required") {
+                                add(JsonPrimitive("old_text"))
+                                add(JsonPrimitive("new_text"))
+                            }
+                        }
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("path"))
+                    add(JsonPrimitive("edits"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "fs_move",
+            description = "Move or rename a file or directory inside the mounted workspace.",
+            requiresWritePermission = true,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("source_path") {
+                        put("type", "string")
+                        put("description", "Existing relative path inside the workspace.")
+                    }
+                    putJsonObject("dest_path") {
+                        put("type", "string")
+                        put("description", "Destination relative path inside the workspace.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("source_path"))
+                    add(JsonPrimitive("dest_path"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "fs_delete",
+            description = "Delete a file or directory inside the mounted workspace.",
+            requiresWritePermission = true,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("path") {
+                        put("type", "string")
+                        put("description", "Relative path to delete inside the workspace.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("path"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "web_fetch",
+            description = "Fetch the contents of any HTTP/HTTPS URL and extract clean readable Markdown/text or JSON.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("url") {
+                        put("type", "string")
+                        put("description", "Full http:// or https:// URL to fetch.")
+                    }
+                    putJsonObject("max_chars") {
+                        put("type", "integer")
+                        put("description", "Maximum characters to return (default 24000).")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("url"))
+                }
+            }
+        ),
+        ToolDefinition(
+            name = "calc_eval",
+            description = "Deterministically evaluate a mathematical or scientific expression (supports +, -, *, /, %, ^, parentheses, sqrt, sin, cos, tan, ln, log, abs, round, pi, e).",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("expression") {
+                        put("type", "string")
+                        put("description", "Mathematical expression to evaluate, e.g. '(1450 * 1.08^5) / sqrt(16)'.")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("expression"))
                 }
             }
         ),
@@ -290,13 +431,18 @@ object WorkspaceHarness {
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
-        goalModeActive: Boolean = false
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
     ): List<ToolDefinition> {
         val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
-        if (!hasMountedWorkspace && !goalModeActive) return emptyList()
+        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools) return emptyList()
         return ALL_TOOLS.filter { tool ->
             if (!hasMountedWorkspace) {
-                !tool.requiresWorkspaceFolder
+                if (!goalModeActive && enableWebTools) {
+                    tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll"
+                } else {
+                    !tool.requiresWorkspaceFolder
+                }
             } else {
                 val writeOk = mode == WorkspaceMode.READ_WRITE || !tool.requiresWritePermission
                 val shellOk = !tool.requiresShellPermission || (mode == WorkspaceMode.READ_WRITE && allowShell)
@@ -325,53 +471,53 @@ object WorkspaceHarness {
     }
 
     /**
-     * Formats active workspace tools for Google Gemini Interactions API (`tools` array).
+     * Formats active workspace & utility tools for Google Gemini Interactions API (`/v1beta/interactions`)
+     * and OpenAI Responses API (`/v1/responses`), which share the flat `{"type":"function","name":...,"parameters":...}` schema.
      */
+    fun buildFlatFunctionTools(
+        mode: WorkspaceMode,
+        workspacePath: String,
+        allowShell: Boolean = false,
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
+    ): JsonArray = buildJsonArray {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
+            add(buildJsonObject {
+                put("type", "function")
+                put("name", tool.name)
+                put("description", tool.description)
+                put("parameters", tool.parametersSchema)
+            })
+        }
+    }
+
     fun buildGeminiInteractionsTools(
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
-        goalModeActive: Boolean = false
-    ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
-            add(buildJsonObject {
-                put("type", "function")
-                put("name", tool.name)
-                put("description", tool.description)
-                put("parameters", tool.parametersSchema)
-            })
-        }
-    }
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools)
 
-    /**
-     * Formats active workspace tools for OpenAI Responses API (`/v1/responses`).
-     */
     fun buildOpenAiResponsesTools(
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
-        goalModeActive: Boolean = false
-    ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
-            add(buildJsonObject {
-                put("type", "function")
-                put("name", tool.name)
-                put("description", tool.description)
-                put("parameters", tool.parametersSchema)
-            })
-        }
-    }
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools)
 
     /**
-     * Formats active workspace tools for legacy OpenAI `/v1/chat/completions`.
+     * Formats active workspace & utility tools for OpenAI `/v1/chat/completions`.
      */
     fun buildOpenAiChatCompletionsTools(
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
-        goalModeActive: Boolean = false
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
             add(buildJsonObject {
                 put("type", "function")
                 putJsonObject("function") {
@@ -384,15 +530,16 @@ object WorkspaceHarness {
     }
 
     /**
-     * Formats active workspace tools for Anthropic Messages API (`/v1/messages`).
+     * Formats active workspace & utility tools for Anthropic Messages API (`/v1/messages`).
      */
     fun buildAnthropicTools(
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
-        goalModeActive: Boolean = false
+        goalModeActive: Boolean = false,
+        enableWebTools: Boolean = false
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
             add(buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
@@ -400,7 +547,6 @@ object WorkspaceHarness {
             })
         }
     }
-
 
     /**
      * Formats a concise, present-participle intent description (inspired by `omp`) for live UI status telemetry
@@ -420,9 +566,18 @@ object WorkspaceHarness {
                 "Reading $path (lines $start..${start + max - 1})"
             }
             "fs_edit" -> "Editing ${strArg("path").ifBlank { "file" }}"
+            "fs_multi_edit" -> {
+                val count = (args["edits"] as? JsonArray)?.size ?: 0
+                "Multi-editing ${strArg("path").ifBlank { "file" }} ($count hunks)"
+            }
             "fs_write" -> "Writing ${strArg("path").ifBlank { "file" }}"
+            "fs_move" -> "Moving ${strArg("source_path")} -> ${strArg("dest_path")}"
+            "fs_delete" -> "Deleting ${strArg("path")}"
             "fs_list" -> "Listing workspace ${strArg("path").ifBlank { "root" }}"
+            "fs_glob" -> "Matching files with glob '${strArg("pattern").take(36)}'"
             "fs_search" -> "Searching workspace for '${strArg("query").take(36)}'"
+            "web_fetch" -> "Fetching URL ${strArg("url").take(48)}"
+            "calc_eval" -> "Calculating ${strArg("expression").take(36)}"
             "shell_exec" -> "Running shell: ${strArg("command").lineSequence().firstOrNull()?.take(52).orEmpty()}"
             "todo_write" -> "Updating task checklist"
             "goal_complete" -> "Verifying & completing goal"
@@ -442,7 +597,11 @@ object WorkspaceHarness {
         toolName: String,
         argumentsJson: String
     ): ToolCallRecord {
-        val isFolderFreeTool = toolName == "todo_write" || toolName == "goal_complete" || toolName == "dice_roll"
+        val isFolderFreeTool = toolName == "todo_write" ||
+            toolName == "goal_complete" ||
+            toolName == "dice_roll" ||
+            toolName == "calc_eval" ||
+            toolName == "web_fetch"
         if (!isFolderFreeTool && (mode == WorkspaceMode.OFF || workspaceRoot.isBlank())) {
             return ToolCallRecord(
                 id = callId,
@@ -501,6 +660,11 @@ object WorkspaceHarness {
                 val rec = args["recursive"]?.jsonPrimitive?.booleanOrNull ?: false
                 PlatformBridge.workspaceList(workspaceRoot, rel, rec)
             }
+            "fs_glob" -> {
+                val pat = strArg("pattern")
+                val maxRes = args["max_results"]?.jsonPrimitive?.intOrNull ?: 200
+                PlatformBridge.workspaceGlob(workspaceRoot, pat, maxRes)
+            }
             "fs_read" -> {
                 val rel = strArg("path")
                 val startLine = args["start_line"]?.jsonPrimitive?.intOrNull ?: 1
@@ -531,6 +695,48 @@ object WorkspaceHarness {
                     val replaceAll = args["replace_all"]?.jsonPrimitive?.booleanOrNull ?: false
                     PlatformBridge.workspaceEdit(workspaceRoot, rel, oldText, newText, replaceAll)
                 }
+            }
+            "fs_multi_edit" -> {
+                if (mode != WorkspaceMode.READ_WRITE) {
+                    Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to allow editing files."))
+                } else {
+                    val rel = strArg("path")
+                    val editsArr = args["edits"] as? JsonArray ?: JsonArray(emptyList())
+                    val parsedEdits = editsArr.mapNotNull { el ->
+                        val obj = el as? JsonObject ?: return@mapNotNull null
+                        val oldTxt = obj["old_text"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        val newTxt = obj["new_text"]?.jsonPrimitive?.contentOrNull ?: ""
+                        val repAll = obj["replace_all"]?.jsonPrimitive?.booleanOrNull ?: false
+                        Triple(oldTxt, newTxt, repAll)
+                    }
+                    PlatformBridge.workspaceMultiEdit(workspaceRoot, rel, parsedEdits)
+                }
+            }
+            "fs_move" -> {
+                if (mode != WorkspaceMode.READ_WRITE) {
+                    Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to allow moving files."))
+                } else {
+                    val src = strArg("source_path")
+                    val dst = strArg("dest_path")
+                    PlatformBridge.workspaceMove(workspaceRoot, src, dst)
+                }
+            }
+            "fs_delete" -> {
+                if (mode != WorkspaceMode.READ_WRITE) {
+                    Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to allow deleting files."))
+                } else {
+                    val rel = strArg("path")
+                    PlatformBridge.workspaceDelete(workspaceRoot, rel)
+                }
+            }
+            "web_fetch" -> {
+                val url = strArg("url")
+                val maxChars = args["max_chars"]?.jsonPrimitive?.intOrNull ?: 24000
+                PlatformBridge.fetchUrlText(url, maxChars)
+            }
+            "calc_eval" -> {
+                val expr = strArg("expression")
+                runCatching { evaluateMathExpression(expr) }
             }
             "dice_roll" -> {
                 val expr = strArg("expression", "1d20")
@@ -618,6 +824,200 @@ object WorkspaceHarness {
         return "Rolled $expression$label: [${rolls.joinToString(", ")}]$modStr = $sum"
     }
 
+    /**
+     * Converts raw HTML into clean readable Markdown/text while leaving JSON, Markdown, and plain text intact.
+     */
+    fun convertHtmlToReadableText(raw: String, contentType: String = ""): String {
+        val trimmed = raw.trim()
+        val looksLikeHtml = contentType.contains("html", ignoreCase = true) ||
+            trimmed.startsWith("<!DOCTYPE html", ignoreCase = true) ||
+            trimmed.startsWith("<html", ignoreCase = true) ||
+            (trimmed.contains("<body", ignoreCase = true) && trimmed.contains("</body>", ignoreCase = true))
+        if (!looksLikeHtml) return trimmed
+
+        return trimmed
+            .replace(Regex("(?is)<(script|style|noscript|svg|head)\\b[^>]*>.*?</\\1>"), "")
+            .replace(Regex("(?is)<!--.*?-->"), "")
+            .replace(Regex("(?is)<h1\\b[^>]*>(.*?)</h1>"), "\n# $1\n")
+            .replace(Regex("(?is)<h2\\b[^>]*>(.*?)</h2>"), "\n## $1\n")
+            .replace(Regex("(?is)<h3\\b[^>]*>(.*?)</h3>"), "\n### $1\n")
+            .replace(Regex("(?is)<h[4-6]\\b[^>]*>(.*?)</h[4-6]>"), "\n#### $1\n")
+            .replace(Regex("(?is)<li\\b[^>]*>(.*?)</li>"), "\n- $1")
+            .replace(Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>"), "[$2]($1)")
+            .replace(Regex("(?is)<(br|hr)\\s*/?>"), "\n")
+            .replace(Regex("(?is)</(p|div|section|article|tr|blockquote|pre|ul|ol|table)>"), "\n")
+            .replace(Regex("(?is)<[^>]+>"), "")
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .lines()
+            .map { it.trim() }
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    /**
+     * Pure-Kotlin deterministic recursive-descent mathematical evaluator for `calc_eval`.
+     * Supports +, -, *, /, %, ^, parentheses, pi, e, sqrt, cbrt, abs, round, floor, ceil, sin, cos, tan, asin, acos, atan, ln, log, log10, log2, exp.
+     */
+    fun evaluateMathExpression(expression: String): String {
+        val src = expression.trim()
+        require(src.isNotEmpty()) { "Expression must not be empty." }
+        val parser = MathExprParser(src)
+        val value = parser.parseAll()
+        val formatted = if (value.isFinite() && value == kotlin.math.floor(value) && kotlin.math.abs(value) < 9e15) {
+            value.toLong().toString()
+        } else {
+            value.toString()
+        }
+        return "$src = $formatted"
+    }
+
+    private class MathExprParser(private val src: String) {
+        private var pos = 0
+
+        fun parseAll(): Double {
+            val v = parseExpr()
+            skipWs()
+            require(pos == src.length) { "Unexpected trailing text '${src.substring(pos)}' in expression." }
+            return v
+        }
+
+        private fun skipWs() {
+            while (pos < src.length && (src[pos].isWhitespace() || src[pos] == '_')) pos++
+        }
+
+        private fun eat(ch: Char): Boolean {
+            skipWs()
+            if (pos < src.length && src[pos] == ch) {
+                pos++
+                return true
+            }
+            return false
+        }
+
+        private fun parseExpr(): Double {
+            var x = parseTerm()
+            while (true) {
+                skipWs()
+                when {
+                    eat('+') -> x += parseTerm()
+                    eat('-') -> x -= parseTerm()
+                    else -> return x
+                }
+            }
+        }
+
+        private fun parseTerm(): Double {
+            var x = parsePower()
+            while (true) {
+                skipWs()
+                when {
+                    eat('*') -> x *= parsePower()
+                    eat('/') -> {
+                        val d = parsePower()
+                        require(d != 0.0) { "Division by zero." }
+                        x /= d
+                    }
+                    eat('%') -> {
+                        val d = parsePower()
+                        require(d != 0.0) { "Modulo by zero." }
+                        x %= d
+                    }
+                    else -> return x
+                }
+            }
+        }
+
+        private fun parsePower(): Double {
+            val base = parseUnary()
+            skipWs()
+            return if (eat('^')) {
+                base.pow(parsePower())
+            } else {
+                base
+            }
+        }
+
+        private fun parseUnary(): Double {
+            skipWs()
+            if (eat('+')) return parseUnary()
+            if (eat('-')) return -parseUnary()
+            return parsePrimary()
+        }
+
+        private fun parsePrimary(): Double {
+            skipWs()
+            if (eat('(')) {
+                val v = parseExpr()
+                require(eat(')')) { "Missing closing parenthesis ')'." }
+                return v
+            }
+            val start = pos
+            if (pos < src.length && (src[pos].isDigit() || src[pos] == '.')) {
+                while (pos < src.length && (src[pos].isDigit() || src[pos] == '.' || src[pos] == '_')) pos++
+                if (pos < src.length && (src[pos] == 'e' || src[pos] == 'E')) {
+                    pos++
+                    if (pos < src.length && (src[pos] == '+' || src[pos] == '-')) pos++
+                    while (pos < src.length && src[pos].isDigit()) pos++
+                }
+                val numStr = src.substring(start, pos).replace("_", "")
+                return numStr.toDoubleOrNull() ?: error("Invalid number '$numStr'.")
+            }
+            if (pos < src.length && src[pos].isLetter()) {
+                while (pos < src.length && (src[pos].isLetterOrDigit() || src[pos] == '_')) pos++
+                val ident = src.substring(start, pos).lowercase()
+                skipWs()
+                if (eat('(')) {
+                    val args = mutableListOf<Double>()
+                    if (!eat(')')) {
+                        do {
+                            args.add(parseExpr())
+                        } while (eat(','))
+                        require(eat(')')) { "Missing ')' after function '$ident' arguments." }
+                    }
+                    require(args.isNotEmpty()) { "Function '$ident' requires at least 1 argument." }
+                    val a0 = args[0]
+                    return when (ident) {
+                        "sqrt" -> kotlin.math.sqrt(a0)
+                        "cbrt" -> kotlin.math.cbrt(a0)
+                        "abs" -> kotlin.math.abs(a0)
+                        "round" -> kotlin.math.round(a0)
+                        "floor" -> kotlin.math.floor(a0)
+                        "ceil" -> kotlin.math.ceil(a0)
+                        "sin" -> kotlin.math.sin(a0)
+                        "cos" -> kotlin.math.cos(a0)
+                        "tan" -> kotlin.math.tan(a0)
+                        "asin" -> kotlin.math.asin(a0)
+                        "acos" -> kotlin.math.acos(a0)
+                        "atan" -> kotlin.math.atan(a0)
+                        "ln" -> kotlin.math.ln(a0)
+                        "log", "log10" -> kotlin.math.log10(a0)
+                        "log2" -> kotlin.math.log2(a0)
+                        "exp" -> kotlin.math.exp(a0)
+                        "pow" -> {
+                            require(args.size >= 2) { "pow(x, y) requires 2 arguments." }
+                            a0.pow(args[1])
+                        }
+                        "min" -> args.minOrNull() ?: a0
+                        "max" -> args.maxOrNull() ?: a0
+                        else -> error("Unknown math function '$ident'.")
+                    }
+                }
+                return when (ident) {
+                    "pi" -> kotlin.math.PI
+                    "e" -> kotlin.math.E
+                    else -> error("Unknown constant '$ident'.")
+                }
+            }
+            error("Unexpected character at position $pos in '$src'.")
+        }
+    }
     /**
      * Parses `todo_write` or `goal_complete` tool calls into an updated `GoalTrackerState`.
      */

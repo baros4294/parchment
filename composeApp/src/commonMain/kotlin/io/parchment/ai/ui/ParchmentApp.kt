@@ -128,130 +128,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.ExperimentalEncodingApi
 
-/**
- * Process-wide supervisor scope so switching apps on Android or recomposing UI
- * never cancels an active generation stream.
- */
-private val appProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
-private val compactStateJson = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-    encodeDefaults = true
-    prettyPrint = false
-}
-
-enum class SidebarTab {
-    ASSISTANTS,
-    TOPICS
-}
-
-sealed interface DeleteConfirmRequest {
-    data class SingleSession(val sessionId: String, val title: String) : DeleteConfirmRequest
-    data class ClearAllSessions(val assistantName: String, val count: Int) : DeleteConfirmRequest
-    data class ClearCurrentMessages(val title: String) : DeleteConfirmRequest
-}
-
-sealed interface ActiveMediaViewerItem {
-    data class ImageViewer(
-        val title: String,
-        val mimeType: String,
-        val localFilePath: String,
-        val remoteUrl: String = ""
-    ) : ActiveMediaViewerItem
-
-    data class TextOrCodeViewer(
-        val title: String,
-        val mimeType: String,
-        val textContent: String,
-        val localFilePath: String = ""
-    ) : ActiveMediaViewerItem
-}
-
-data class SessionStreamRuntime(
-    val sessionId: String,
-    val targetNodeId: String = "",
-    val isThinkingPhase: Boolean = false,
-    val statusText: String = "",
-    val interactionId: String = "",
-    val job: Job? = null
-)
-
-internal fun formatDurationFromMs(ms: Long): String {
-    val totalTenths = (ms.coerceAtLeast(0L) + 50L) / 100L
-    val totalSeconds = totalTenths / 10L
-    val dec = totalTenths % 10L
-    return when {
-        totalSeconds < 60L -> "${totalSeconds}.${dec}s"
-        totalSeconds < 3600L -> {
-            val mins = totalSeconds / 60L
-            val secs = totalSeconds % 60L
-            "${mins}m${secs}.${dec}s"
-        }
-        totalSeconds < 86_400L -> {
-            val hrs = totalSeconds / 3600L
-            val mins = (totalSeconds % 3600L) / 60L
-            "${hrs}h${mins}m"
-        }
-        else -> {
-            val days = totalSeconds / 86_400L
-            val hrs = (totalSeconds % 86_400L) / 3600L
-            val mins = (totalSeconds % 3600L) / 60L
-            "${days}d${hrs}h${mins}m"
-        }
-    }
-}
-
-/**
- * Extracts the latest single thought block (title + body) for the Compact Single-Thought Peek Window
- * when the user presses `Hide ▲` while the model is still actively reasoning.
- */
-internal fun extractLatestThoughtPeek(variant: MessageVariant): Pair<String, String> {
-    val raw = variant.trailingThinking.ifBlank { variant.thinkingSummary }.trim()
-    if (raw.isEmpty()) return "" to ""
-
-    // Split into logical thought sections by bold/markdown headings at line start or blank-line paragraphs
-    val blocks = raw.split(Regex("(?m)(?=^\\*\\*[^*\\n]+\\*\\*\\s*$|^#{1,4}\\s+)|\\n\\s*\\n+"))
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-    if (blocks.isEmpty()) return "" to raw
-
-    val lastIdx = blocks.lastIndex
-    val lastBlock = blocks[lastIdx]
-    val lines = lastBlock.lines()
-    val firstLine = lines.first().trim()
-    val isHeadingLine = (firstLine.startsWith("**") && firstLine.endsWith("**") && firstLine.length > 4) ||
-        firstLine.startsWith("#")
-    return if (isHeadingLine && lines.size > 1) {
-        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
-        val body = lines.drop(1).joinToString(" ").replace(Regex("\\s+"), " ").trim()
-        cleanTitle to body
-    } else if (isHeadingLine && lines.size == 1) {
-        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
-        cleanTitle to ""
-    } else {
-        // Check if the immediately preceding block was a standalone heading line!
-        val prevBlock = if (lastIdx > 0) blocks[lastIdx - 1].trim() else ""
-        val prevIsStandaloneHeading = prevBlock.isNotEmpty() && !prevBlock.contains('\n') &&
-            ((prevBlock.startsWith("**") && prevBlock.endsWith("**") && prevBlock.length > 4) || prevBlock.startsWith("#"))
-        val cleanTitle = if (prevIsStandaloneHeading) {
-            prevBlock.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
-        } else ""
-        val cleanBody = lastBlock.replace(Regex("\\s+"), " ").trim()
-        cleanTitle to cleanBody
-    }
-}
-
-private val THINKING_EFFORT_PRESETS = listOf(
-    "minimal",
-    "none",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max"
-)
-
 @OptIn(ExperimentalEncodingApi::class)
 @Composable
 fun ParchmentApp(
@@ -303,16 +179,17 @@ fun ParchmentApp(
         if (activeSession.id in validSaved) validSaved else (validSaved + activeSession.id)
     }
 
-    // Per-session composer inputs (synced with activeSession.draftInput so switching chats preserves drafts!)
+    // Per-session composer inputs & staged attachments (synced per session so switching tabs never leaks or loses files!)
     var userPromptInput by remember(activeSession.id) { mutableStateOf(activeSession.draftInput) }
     var assistantPrefillInput by remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
     var showPrefillBox by remember { mutableStateOf(false) }
     var isGoalModeEnabled by remember { mutableStateOf(false) }
     var isLiveVoiceMode by remember { mutableStateOf(false) }
     var isVoiceListening by remember { mutableStateOf(false) }
-    var pendingAttachments by remember { mutableStateOf<List<PromptAttachment>>(emptyList()) }
+    var pendingAttachmentsBySession by remember { mutableStateOf<Map<String, List<PromptAttachment>>>(emptyMap()) }
+    val pendingAttachments = pendingAttachmentsBySession[activeSession.id].orEmpty()
     var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
-    var pendingRegenerateConfirmNodeIndex by remember { mutableStateOf<Int?>(null) }
+    var pendingRegenerateConfirm by remember { mutableStateOf<RegenerateConfirmRequest?>(null) }
     var activeViewerItem by remember { mutableStateOf<ActiveMediaViewerItem?>(null) }
     var isDraggingFilesOverWindow by remember { mutableStateOf(false) }
     var diskPersistJob by remember { mutableStateOf<Job?>(null) }
@@ -461,9 +338,10 @@ fun ParchmentApp(
                 }
             }
         }
-        pendingAttachments = pendingAttachments + newAtts
+        val targetSessId = activeSession.id
+        val existingList = pendingAttachmentsBySession[targetSessId].orEmpty()
+        pendingAttachmentsBySession = pendingAttachmentsBySession + (targetSessId to (existingList + newAtts))
     }
-
     LaunchedEffect(Unit) {
         PlatformBridge.registerFileDropCallbacks(
             onDragHover = { hovering -> isDraggingFilesOverWindow = hovering },
@@ -1442,10 +1320,52 @@ fun ParchmentApp(
         }
     }
 
+    fun clearCurrentChatMessages(targetSessionId: String = activeSession.id) {
+        val curStream = activeStreamsBySession[targetSessionId]
+        curStream?.job?.cancel()
+        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+            appProcessScope.launch {
+                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
+            }
+        }
+        updateSessionStreamState(targetSessionId) { null }
+        queuedPromptsBySession = queuedPromptsBySession - targetSessionId
+        pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessionId
+        updateSessionById(targetSessionId, immediate = true) { it.copy(messages = emptyList()) }
+    }
+
+    fun continueAssistantNodeAt(nodeIndex: Int) {
+        val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return
+        if (targetNode.role != MessageRole.ASSISTANT) return
+        val historyBefore = activeSession.messages.subList(0, nodeIndex)
+        val existingText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content)
+        // Immediately strip any inline error banner in UI state so the user sees clean resumption at 0ms!
+        updateActiveSession(immediate = true) { sess ->
+            sess.copy(
+                messages = sess.messages.mapIndexed { idx, n ->
+                    if (idx != nodeIndex) n
+                    else n.copy(
+                        variants = n.variants.mapIndexed { vIdx, v ->
+                            if (vIdx == n.activeVariantIndex) v.copy(content = existingText, isStreaming = true) else v
+                        }
+                    )
+                }
+            )
+        }
+        triggerGeneration(
+            sessionId = activeSession.id,
+            historyForCall = historyBefore,
+            targetAssistantNodeId = targetNode.id,
+            targetVariantId = targetNode.activeVariant.id,
+            continuePrefix = existingText
+        )
+    }
+
     fun sendUserTurn() {
         val rawInput = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
-        var currentAtts = pendingAttachments
+        val sessId = activeSession.id
+        var currentAtts = pendingAttachmentsBySession[sessId].orEmpty()
         if (rawInput.isEmpty() && prefill.isEmpty() && currentAtts.isEmpty()) return
 
         // Handle `/compact` slash command (Summarizes into Memory + Mutes older turns, keeping last 4 active)
@@ -1456,10 +1376,40 @@ fun ParchmentApp(
             return
         }
 
+        // Handle `/summarize` slash command (Updates Rolling Story / Continuity Summary without muting turns)
+        if (rawInput.equals("/summarize", ignoreCase = true) && currentAtts.isEmpty()) {
+            userPromptInput = ""
+            updateActiveSession { it.copy(draftInput = "") }
+            triggerAutoSummarizeStory(autoMuteOlderTurns = false)
+            return
+        }
+
+        // Handle `/continue` slash command (Continues the last Assistant turn seamlessly)
+        if (rawInput.equals("/continue", ignoreCase = true) && currentAtts.isEmpty()) {
+            val lastAsstIdx = activeSession.messages.indexOfLast { it.role == MessageRole.ASSISTANT }
+            if (lastAsstIdx >= 0) {
+                userPromptInput = ""
+                updateActiveSession { it.copy(draftInput = "") }
+                continueAssistantNodeAt(lastAsstIdx)
+                return
+            }
+        }
+
+        // Handle `/clear` slash command (Clears all messages in current chat)
+        if (rawInput.equals("/clear", ignoreCase = true) && currentAtts.isEmpty()) {
+            userPromptInput = ""
+            updateActiveSession { it.copy(draftInput = "") }
+            clearCurrentChatMessages(sessId)
+            bannerNotification = "Cleared messages in '${activeSession.title}'."
+            return
+        }
+
         // Handle `/rewind` slash command (Removes the last turn pair in-place)
         if (rawInput.equals("/rewind", ignoreCase = true) && currentAtts.isEmpty()) {
             userPromptInput = ""
             if (activeSession.messages.isNotEmpty()) {
+                activeStreamsBySession[sessId]?.job?.cancel()
+                updateSessionStreamState(sessId) { null }
                 val dropCount = if (activeSession.messages.size >= 2 && activeSession.messages.last().role == MessageRole.ASSISTANT) 2 else 1
                 updateActiveSession(immediate = true) {
                     it.copy(
@@ -1499,10 +1449,10 @@ fun ParchmentApp(
 
         userPromptInput = ""
         assistantPrefillInput = ""
-        pendingAttachments = emptyList()
+        pendingAttachmentsBySession = pendingAttachmentsBySession - sessId
 
         dispatchPromptItem(
-            sessionId = activeSession.id,
+            sessionId = sessId,
             text = finalText,
             prefill = prefill,
             attachments = currentAtts,
@@ -1514,14 +1464,17 @@ fun ParchmentApp(
     fun sendGuidedDirection() {
         val direction = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
-        if (direction.isEmpty() && prefill.isEmpty()) return
+        val sessId = activeSession.id
+        val atts = pendingAttachmentsBySession[sessId].orEmpty()
+        if (direction.isEmpty() && prefill.isEmpty() && atts.isEmpty()) return
         userPromptInput = ""
         assistantPrefillInput = ""
+        pendingAttachmentsBySession = pendingAttachmentsBySession - sessId
         dispatchPromptItem(
-            sessionId = activeSession.id,
+            sessionId = sessId,
             text = direction,
             prefill = prefill,
-            attachments = emptyList(),
+            attachments = atts,
             isGuidedDirection = true
         )
     }
@@ -1534,13 +1487,12 @@ fun ParchmentApp(
         val targetSessId = activeSession.id
         val steerText = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
-        val atts = pendingAttachments
+        val atts = pendingAttachmentsBySession[targetSessId].orEmpty()
         if (steerText.isEmpty() && prefill.isEmpty() && atts.isEmpty()) return
 
         userPromptInput = ""
         assistantPrefillInput = ""
-        pendingAttachments = emptyList()
-
+        pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessId
         uiScope.launch {
             val runningJob = activeStreamsBySession[targetSessId]?.job
             runningJob?.cancel()
@@ -1562,7 +1514,7 @@ fun ParchmentApp(
         val targetSessId = activeSession.id
         val qText = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
-        val atts = pendingAttachments
+        val atts = pendingAttachmentsBySession[targetSessId].orEmpty()
         if (qText.isEmpty() && prefill.isEmpty() && atts.isEmpty()) return
 
         val item = QueuedPromptItem(
@@ -1575,7 +1527,7 @@ fun ParchmentApp(
         queuedPromptsBySession = queuedPromptsBySession + (targetSessId to (curList + item))
         userPromptInput = ""
         assistantPrefillInput = ""
-        pendingAttachments = emptyList()
+        pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessId
         updateActiveSession { it.copy(draftInput = "", draftPrefill = "") }
     }
 
@@ -1643,16 +1595,16 @@ fun ParchmentApp(
      *    (truncating subsequent turns) and `deletePreviousMessageWhenRegenerating` (replacing ONLY the active
      *    swipe variant in-place instead of wiping out other swipe versions).
      */
-    fun executeRegenerateFromNode(nodeIndex: Int) {
+    fun executeRegenerateFromNode(nodeIndex: Int, sessionId: String = activeSession.id) {
         val curSnap = appState
-        val sess = curSnap.sessions.find { it.id == curSnap.activeSessionId }
+        val sess = curSnap.sessions.find { it.id == sessionId }
+            ?: curSnap.sessions.find { it.id == curSnap.activeSessionId }
             ?: curSnap.sessions.firstOrNull() ?: return
         val targetNode = sess.messages.getOrNull(nodeIndex) ?: return
 
         // Cancel any active stream on this session before mutating the message list
         activeStreamsBySession[sess.id]?.job?.cancel()
         updateSessionStreamState(sess.id) { null }
-
         val now = PlatformBridge.currentTimeMillis()
         val curProf = curSnap.profiles.find { it.id == sess.profileId } ?: curSnap.profiles.first()
         val modelUsed = sess.modelOverride.ifBlank { curProf.defaultModel }
@@ -1849,45 +1801,11 @@ fun ParchmentApp(
             return
         }
 
-        val now = PlatformBridge.currentTimeMillis()
-        val profId = assistant.defaultProfileId.ifBlank { appState.defaultModels.globalProfileId.ifBlank { activeProfile.id } }
-        val modId = assistant.defaultModelId.ifBlank {
-            appState.defaultModels.globalModelId.ifBlank {
-                (appState.profiles.find { it.id == profId } ?: activeProfile).defaultModel
-            }
-        }
-        val card = assistant.activeCard
-        val initialMessages = if (card != null && card.firstMessage.isNotBlank()) {
-            val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
-            listOf(
-                MessageNode(
-                    id = "node-greeting-$now",
-                    role = MessageRole.ASSISTANT,
-                    variants = allGreetings.mapIndexed { idx, g ->
-                        MessageVariant(
-                            id = "var-greeting-$idx-$now",
-                            content = g.replace("{{char}}", card.name).replace("{{user}}", "User"),
-                            modelUsed = "Card Greeting #${idx + 1}",
-                            createdAt = now
-                        )
-                    }
-                )
-            )
-        } else emptyList()
-
-        val newSess = ChatSession(
-            id = "sess-$now",
-            title = "New Chat",
-            createdAt = now,
-            updatedAt = now,
-            profileId = profId,
-            modelOverride = modId,
-            assistantId = assistant.id,
-            activeCard = card,
-            viewMode = appState.preferences.defaultViewMode,
-            workspacePath = assistant.workspacePath,
-            workspaceMode = assistant.workspaceMode,
-            messages = initialMessages
+        val newSess = buildFreshSessionForAssistant(
+            appState = appState,
+            activeProfile = activeProfile,
+            assistant = assistant,
+            userName = activeSession.userName
         )
         val updatedTabs = if (openInNewTab) {
             (openTabIds + newSess.id).distinct()
@@ -1976,6 +1894,8 @@ fun ParchmentApp(
     fun executeDeleteSingleSession(targetId: String) {
         activeStreamsBySession[targetId]?.job?.cancel()
         updateSessionStreamState(targetId) { null }
+        queuedPromptsBySession = queuedPromptsBySession - targetId
+        pendingAttachmentsBySession = pendingAttachmentsBySession - targetId
         val remaining = appState.sessions.filterNot { it.id == targetId }
         val remainingTabs = openTabIds.filterNot { it == targetId }
         val remainingForAssistant = remaining.filter {
@@ -1996,16 +1916,11 @@ fun ParchmentApp(
                 immediateFlush = true
             )
         } else {
-            val now = PlatformBridge.currentTimeMillis()
-            val fresh = ChatSession(
-                id = "sess-$now",
-                title = "New Chat",
-                createdAt = now,
-                updatedAt = now,
-                profileId = activeProfile.id,
-                modelOverride = activeProfile.defaultModel,
-                assistantId = activeAssistant.id,
-                viewMode = appState.preferences.defaultViewMode
+            val fresh = buildFreshSessionForAssistant(
+                appState = appState,
+                activeProfile = activeProfile,
+                assistant = activeAssistant,
+                userName = activeSession.userName
             )
             persist(
                 appState.copy(
@@ -2019,20 +1934,24 @@ fun ParchmentApp(
     }
 
     fun executeClearAllTopicsForAssistant() {
-        val otherSessions = appState.sessions.filterNot {
+        val removedSessions = appState.sessions.filter {
             it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }
         }
+        val removedIds = removedSessions.map { it.id }.toSet()
+        removedIds.forEach { id ->
+            activeStreamsBySession[id]?.job?.cancel()
+        }
+        activeStreamsBySession = activeStreamsBySession - removedIds
+        queuedPromptsBySession = queuedPromptsBySession - removedIds
+        pendingAttachmentsBySession = pendingAttachmentsBySession - removedIds
+
+        val otherSessions = appState.sessions.filterNot { it.id in removedIds }
         val otherIds = otherSessions.map { it.id }.toSet()
-        val now = PlatformBridge.currentTimeMillis()
-        val fresh = ChatSession(
-            id = "sess-$now",
-            title = "New Chat",
-            createdAt = now,
-            updatedAt = now,
-            profileId = activeProfile.id,
-            modelOverride = activeProfile.defaultModel,
-            assistantId = activeAssistant.id,
-            viewMode = appState.preferences.defaultViewMode
+        val fresh = buildFreshSessionForAssistant(
+            appState = appState,
+            activeProfile = activeProfile,
+            assistant = activeAssistant,
+            userName = activeSession.userName
         )
         val keptTabs = openTabIds.filter { it in otherIds } + fresh.id
         persist(
@@ -2045,7 +1964,6 @@ fun ParchmentApp(
         )
         bannerNotification = "Cleared all chats for '${activeAssistant.name}' (Assistant & System Prompt preserved)."
     }
-
     ProvideParchmentTheme(config = appState.theme) {
         val p = LocalParchmentPalette.current
 
@@ -2498,11 +2416,17 @@ fun ParchmentApp(
                                         if (remaining.isNotEmpty()) {
                                             val nextProfId = if (appState.activeProfileId == targetProfId) remaining.first().id else appState.activeProfileId
                                             persist(appState.copy(profiles = remaining, activeProfileId = nextProfId), immediateFlush = true)
-                                            bannerNotification = "Deleted provider."
+                                            bannerNotification = "Deleted provider profile."
+                                        } else {
+                                            bannerNotification = "At least one provider profile is required."
                                         }
                                     },
                                     onUpdateAssistants = { updatedList, activeId ->
-                                        persist(appState.copy(assistants = updatedList, activeAssistantId = activeId), immediateFlush = true)
+                                        val safeList = updatedList.ifEmpty {
+                                            listOf(AssistantAgent(id = "asst-default", name = "Default Assistant", iconEmoji = "💬"))
+                                        }
+                                        val safeActive = safeList.find { it.id == activeId }?.id ?: safeList.first().id
+                                        persist(appState.copy(assistants = safeList, activeAssistantId = safeActive), immediateFlush = true)
                                     },
                                     onUpdateDefaultModels = { dm ->
                                         persist(appState.copy(defaultModels = dm), immediateFlush = true)
@@ -2534,10 +2458,20 @@ fun ParchmentApp(
                                     onCheckOtaNow = ::triggerOtaCheckManual,
                                     onInstallOtaRelease = ::triggerOtaDownloadAndInstall,
                                     onRestoreFullBackup = { restored ->
-                                        persist(restored, immediateFlush = true)
+                                        activeStreamsBySession.values.forEach { it.job?.cancel() }
+                                        activeStreamsBySession = emptyMap()
+                                        queuedPromptsBySession = emptyMap()
+                                        pendingAttachmentsBySession = emptyMap()
+                                        persist(sanitizeLoadedSnapshot(restored), immediateFlush = true)
                                         bannerNotification = "Restored backup."
                                     },
                                     onWipeAllData = {
+                                        activeStreamsBySession.values.forEach { it.job?.cancel() }
+                                        activeStreamsBySession = emptyMap()
+                                        queuedPromptsBySession = emptyMap()
+                                        pendingAttachmentsBySession = emptyMap()
+                                        PlatformBridge.stopSpeakingAloud()
+                                        PlatformBridge.stopVoiceInput()
                                         PlatformBridge.wipeAllLocalData()
                                         appState = createDefaultAppState()
                                         bannerNotification = "All local data wiped cleanly."
@@ -2625,11 +2559,13 @@ fun ParchmentApp(
                                         if (appState.preferences.confirmBeforeDeletingChat) {
                                             pendingDeleteConfirmation = DeleteConfirmRequest.ClearCurrentMessages(activeSession.title)
                                         } else {
-                                            updateActiveSession(immediate = true) { it.copy(messages = emptyList()) }
+                                            clearCurrentChatMessages(activeSession.id)
                                         }
                                     },
                                     onRemoveAttachment = { attId ->
-                                        pendingAttachments = pendingAttachments.filterNot { it.id == attId }
+                                        val curAtts = pendingAttachmentsBySession[activeSession.id].orEmpty()
+                                        pendingAttachmentsBySession = pendingAttachmentsBySession +
+                                            (activeSession.id to curAtts.filterNot { it.id == attId })
                                     },
                                     onInspectAttachment = ::openAttachmentInViewer,
                                     onInspectGeneratedImage = { media ->
@@ -2646,21 +2582,47 @@ fun ParchmentApp(
                                                 appendLine("# ${activeSession.title}")
                                                 appendLine()
                                                 for (n in activeSession.messages) {
+                                                    val v = n.activeVariant
                                                     val roleHeader = if (n.role == MessageRole.ASSISTANT) {
-                                                        activeSession.activeCard?.name?.ifBlank { n.activeVariant.modelUsed.ifBlank { activeAssistant.name } } ?: activeAssistant.name
+                                                        activeSession.activeCard?.name?.ifBlank { v.modelUsed.ifBlank { activeAssistant.name } } ?: activeAssistant.name
                                                     } else {
                                                         activeSession.userName.ifBlank { "User" }
                                                     }
-                                                    appendLine("### $roleHeader")
-                                                    if (n.activeVariant.thinkingSummary.isNotBlank()) {
+                                                    val muteTag = if (!n.includedInContext) " *(Muted)*" else ""
+                                                    appendLine("### $roleHeader$muteTag")
+                                                    if (v.thinkingSummary.isNotBlank()) {
                                                         appendLine("<details><summary>Reasoning</summary>")
                                                         appendLine()
-                                                        appendLine(n.activeVariant.thinkingSummary)
+                                                        appendLine(v.thinkingSummary)
                                                         appendLine("</details>")
                                                         appendLine()
                                                     }
-                                                    appendLine(n.activeVariant.content)
-                                                    appendLine()
+                                                    if (v.toolCalls.isNotEmpty()) {
+                                                        appendLine("<details><summary>Tools Executed (${v.toolCalls.size})</summary>")
+                                                        appendLine()
+                                                        for (tc in v.toolCalls) {
+                                                            appendLine("- **`${tc.name}`**: `${tc.argumentsJson}`")
+                                                            if (tc.resultText.isNotBlank()) {
+                                                                appendLine("  ```")
+                                                                appendLine("  ${tc.resultText.take(1200)}")
+                                                                appendLine("  ```")
+                                                            }
+                                                        }
+                                                        appendLine("</details>")
+                                                        appendLine()
+                                                    }
+                                                    if (v.content.isNotBlank()) {
+                                                        appendLine(v.content)
+                                                        appendLine()
+                                                    }
+                                                    if (v.attachments.isNotEmpty()) {
+                                                        appendLine("*Attachments: ${v.attachments.joinToString { it.fileName }}*")
+                                                        appendLine()
+                                                    }
+                                                    if (v.mediaItems.isNotEmpty()) {
+                                                        appendLine("*Generated Media: ${v.mediaItems.joinToString { it.localFilePath.ifBlank { it.remoteUrl } }}*")
+                                                        appendLine()
+                                                    }
                                                     appendLine("---")
                                                     appendLine()
                                                 }
@@ -2683,13 +2645,26 @@ fun ParchmentApp(
                                     onAutoSummarizeStory = { triggerAutoSummarizeStory(autoMuteOlderTurns = false) },
                                     onCompactContext = { triggerAutoSummarizeStory(autoMuteOlderTurns = true) },
                                     onRewindToNode = { nodeIndex ->
-                                        val keepCount = (nodeIndex + 1).coerceIn(1, activeSession.messages.size)
-                                        val dropped = activeSession.messages.size - keepCount
-                                        if (dropped > 0) {
-                                            updateActiveSession(immediate = true) { sess ->
-                                                sess.copy(messages = sess.messages.take(keepCount))
+                                        val sessId = activeSession.id
+                                        activeStreamsBySession[sessId]?.job?.cancel()
+                                        updateSessionStreamState(sessId) { null }
+                                        val total = activeSession.messages.size
+                                        if (total > 0) {
+                                            if (nodeIndex < total - 1) {
+                                                val keepCount = (nodeIndex + 1).coerceIn(1, total)
+                                                val dropped = total - keepCount
+                                                updateActiveSession(immediate = true) { sess ->
+                                                    sess.copy(messages = sess.messages.take(keepCount))
+                                                }
+                                                bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed $dropped later turn(s))."
+                                            } else {
+                                                // Clicked `↺ Rewind` on the final message: rewind that turn (or turn pair) so it's never a no-op!
+                                                val dropCount = if (total >= 2 && activeSession.messages.last().role == MessageRole.ASSISTANT) 2 else 1
+                                                updateActiveSession(immediate = true) { sess ->
+                                                    sess.copy(messages = sess.messages.dropLast(dropCount))
+                                                }
+                                                bannerNotification = "Rewound last $dropCount turn(s)."
                                             }
-                                            bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed $dropped later turn(s))."
                                         }
                                     },
                                     onForkSessionFromNode = { nodeIndex ->
@@ -2733,27 +2708,15 @@ fun ParchmentApp(
                                     onUpdateProfile = ::updateActiveProfile,
                                     onRegenerateNode = { nodeIndex ->
                                         if (appState.preferences.confirmBeforeRegenerating) {
-                                            pendingRegenerateConfirmNodeIndex = nodeIndex
+                                            pendingRegenerateConfirm = RegenerateConfirmRequest(activeSession.id, nodeIndex)
                                         } else {
-                                            executeRegenerateFromNode(nodeIndex)
+                                            executeRegenerateFromNode(nodeIndex, activeSession.id)
                                         }
                                     },
                                     onTranslateNode = { nodeIndex ->
                                         triggerTranslateNode(nodeIndex)
                                     },
-                                    onContinueAssistantNode = { nodeIndex ->
-                                        val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return@ManuscriptViewport
-                                        if (targetNode.role != MessageRole.ASSISTANT) return@ManuscriptViewport
-                                        val historyBefore = activeSession.messages.subList(0, nodeIndex)
-                                        val existingText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content)
-                                        triggerGeneration(
-                                            sessionId = activeSession.id,
-                                            historyForCall = historyBefore,
-                                            targetAssistantNodeId = targetNode.id,
-                                            targetVariantId = targetNode.activeVariant.id,
-                                            continuePrefix = existingText
-                                        )
-                                    }
+                                    onContinueAssistantNode = ::continueAssistantNodeAt
                                 )
                             }
                         }
@@ -2912,7 +2875,7 @@ fun ParchmentApp(
                                                     is DeleteConfirmRequest.ClearAllSessions ->
                                                         executeClearAllTopicsForAssistant()
                                                     is DeleteConfirmRequest.ClearCurrentMessages ->
-                                                        updateActiveSession(immediate = true) { it.copy(messages = emptyList()) }
+                                                        clearCurrentChatMessages(activeSession.id)
                                                 }
                                             }
                                         )
@@ -2921,13 +2884,13 @@ fun ParchmentApp(
                             }
                         }
                         // Regenerate Confirmation Modal Dialog (when confirmBeforeRegenerating is enabled in Settings -> Preferences)
-                        val regenNodeIdx = pendingRegenerateConfirmNodeIndex
-                        if (regenNodeIdx != null) {
+                        val regenReq = pendingRegenerateConfirm
+                        if (regenReq != null) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(Color.Black.copy(alpha = 0.42f))
-                                    .clickable { pendingRegenerateConfirmNodeIndex = null },
+                                    .clickable { pendingRegenerateConfirm = null },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
@@ -2972,7 +2935,7 @@ fun ParchmentApp(
                                             text = "Cancel",
                                             compact = true,
                                             style = SepiaButtonStyle.OUTLINE,
-                                            onClick = { pendingRegenerateConfirmNodeIndex = null }
+                                            onClick = { pendingRegenerateConfirm = null }
                                         )
                                         Spacer(Modifier.width(8.dp))
                                         SepiaButton(
@@ -2980,8 +2943,8 @@ fun ParchmentApp(
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = {
-                                                pendingRegenerateConfirmNodeIndex = null
-                                                executeRegenerateFromNode(regenNodeIdx)
+                                                pendingRegenerateConfirm = null
+                                                executeRegenerateFromNode(regenReq.nodeIndex, regenReq.sessionId)
                                             }
                                         )
                                     }
@@ -3020,1021 +2983,6 @@ fun ParchmentApp(
                     }
                 }
             }
-        }
-    }
-}
-
-// ============================================================================================
-// DESKTOP BROWSER-STYLE MULTI-TASKING TAB BAR & MOBILE CHROMIUM/FIREFOX TAB SWITCHER GRID
-// ============================================================================================
-@Composable
-private fun DesktopBrowserTabBar(
-    appState: AppStateSnapshot,
-    openTabIds: List<String>,
-    activeSessionId: String,
-    activeStreamsBySession: Map<String, SessionStreamRuntime>,
-    onSelectTab: (String) -> Unit,
-    onCloseTab: (String) -> Unit,
-    onNewTab: () -> Unit,
-    onOpenTabOverview: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(p.sheetBg.copy(alpha = 0.88f))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            openTabIds.forEach { tabId ->
-                val sess = appState.sessions.find { it.id == tabId } ?: return@forEach
-                val isSelected = tabId == activeSessionId
-                val isTabStreaming = activeStreamsBySession.containsKey(tabId)
-                val tabAsst = appState.assistants.find { it.id == sess.assistantId && it.id.isNotBlank() }
-                    ?: appState.assistants.firstOrNull()
-                val tabProf = appState.profiles.find { it.id == sess.profileId }
-                    ?: appState.profiles.firstOrNull()
-                val tabModelShort = sess.modelOverride.ifBlank { tabProf?.defaultModel.orEmpty() }
-                    .substringAfterLast('/')
-                    .take(22)
-                val asstName = tabAsst?.name?.takeIf { it.isNotBlank() } ?: "Default Assistant"
-                val cardName = (sess.activeCard ?: tabAsst?.activeCard)?.name?.takeIf { it.isNotBlank() }
-                val rawTitle = sess.title.ifBlank { "New Chat" }
-                val primaryTitle = if (rawTitle == "New Chat" && cardName != null) {
-                    "$cardName • New Chat"
-                } else {
-                    rawTitle
-                }
-                val contextDetail = when {
-                    isTabStreaming -> "Streaming…"
-                    sess.messages.isNotEmpty() -> "${sess.messages.size} msgs"
-                    tabModelShort.isNotBlank() -> tabModelShort
-                    else -> "Empty"
-                }
-                val subtitleText = "$asstName • $contextDetail"
-                val tabShape = RoundedCornerShape(8.dp)
-
-                Row(
-                    modifier = Modifier
-                        .clip(tabShape)
-                        .background(if (isSelected) p.cardBg else p.elevatedBg.copy(alpha = 0.55f))
-                        .border(
-                            width = if (isSelected) 1.2.dp else 0.75.dp,
-                            color = if (isSelected) p.accent else p.border.copy(alpha = 0.65f),
-                            shape = tabShape
-                        )
-                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
-                        .padding(horizontal = 9.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    if (isTabStreaming) {
-                        KissStreamingPulseDot(color = p.accent)
-                    } else {
-                        SepiaAvatarCircle(
-                            symbol = tabAsst?.iconEmoji ?: "💬",
-                            selected = isSelected,
-                            sizeDp = 22.dp
-                        )
-                    }
-                    Column(
-                        modifier = Modifier.widthIn(max = 185.dp),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
-                    ) {
-                        BasicText(
-                            text = primaryTitle,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = if (isSelected) p.primaryInk else p.narrationInk,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 11.5.sp
-                            )
-                        )
-                        BasicText(
-                            text = subtitleText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = if (isSelected) p.accent else p.mutedInk,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                fontSize = 9.5.sp
-                            )
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clip(CircleShape)
-                            .kissClickable { onCloseTab(tabId) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        KissVectorIcon(
-                            icon = KissIcon.CLOSE,
-                            tint = p.mutedInk,
-                            size = 10.dp
-                        )
-                    }
-                }
-            }
-
-            SepiaButton(
-                text = "+",
-                compact = true,
-                style = SepiaButtonStyle.GHOST,
-                onClick = onNewTab
-            )
-        }
-
-        Spacer(Modifier.width(8.dp))
-
-        SepiaButton(
-            text = "⊞ ${openTabIds.size} Tabs",
-            compact = true,
-            style = SepiaButtonStyle.OUTLINE,
-            onClick = onOpenTabOverview
-        )
-    }
-}
-
-@Composable
-private fun MobileTabSwitcherModal(
-    appState: AppStateSnapshot,
-    openTabIds: List<String>,
-    activeSessionId: String,
-    activeStreamsBySession: Map<String, SessionStreamRuntime>,
-    isCompactScreen: Boolean = true,
-    onSelectTab: (String) -> Unit,
-    onCloseTab: (String) -> Unit,
-    onCloseEmptyTabs: () -> Unit = {},
-    onNewTab: () -> Unit,
-    onCloseModal: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    val runningTotal = activeStreamsBySession.size
-    var tabFilterQuery by remember { mutableStateOf("") }
-    val emptyTabsCount = remember(openTabIds, appState.sessions, activeStreamsBySession) {
-        openTabIds.count { tabId ->
-            val s = appState.sessions.find { it.id == tabId }
-            s != null && s.messages.isEmpty() && s.title == "New Chat" && s.draftInput.isBlank() && !activeStreamsBySession.containsKey(tabId)
-        }
-    }
-    val filteredTabIds = remember(openTabIds, appState.sessions, appState.assistants, tabFilterQuery) {
-        val q = tabFilterQuery.trim()
-        if (q.isEmpty()) openTabIds
-        else openTabIds.filter { tabId ->
-            val s = appState.sessions.find { it.id == tabId } ?: return@filter false
-            val asst = appState.assistants.find { it.id == s.assistantId }
-            s.title.contains(q, ignoreCase = true) ||
-                (asst?.name?.contains(q, ignoreCase = true) == true) ||
-                s.modelOverride.contains(q, ignoreCase = true) ||
-                s.messages.any { it.activeVariant.content.contains(q, ignoreCase = true) }
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.52f))
-            .clickable { onCloseModal() },
-        contentAlignment = if (isCompactScreen) Alignment.BottomCenter else Alignment.Center
-    ) {
-        val sheetShape = if (isCompactScreen) {
-            RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
-        } else {
-            RoundedCornerShape(14.dp)
-        }
-        Column(
-            modifier = Modifier
-                .then(if (isCompactScreen) Modifier.fillMaxWidth() else Modifier.widthIn(max = 860.dp).fillMaxWidth(0.92f))
-                .fillMaxHeight(if (isCompactScreen) 0.84f else 0.80f)
-                .clip(sheetShape)
-                .background(p.sheetBg)
-                .border(1.dp, p.border, sheetShape)
-                .clickable(enabled = false) {}
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            @OptIn(ExperimentalLayoutApi::class)
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 4.dp)
-                ) {
-                    KissVectorIcon(icon = KissIcon.TABS, tint = p.accent, size = 16.dp)
-                    BasicText(
-                        text = "Open Tabs (${openTabIds.size})" + if (runningTotal > 0) " • $runningTotal active" else "",
-                        style = p.uiHeaderStyle.copy(fontSize = 16.sp)
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (emptyTabsCount >= 2) {
-                        SepiaButton(
-                            text = "🗑 Empty ($emptyTabsCount)",
-                            compact = true,
-                            style = SepiaButtonStyle.OUTLINE,
-                            onClick = onCloseEmptyTabs
-                        )
-                    }
-                    SepiaButton(
-                        text = "+ New Tab",
-                        compact = true,
-                        style = SepiaButtonStyle.PRIMARY,
-                        onClick = onNewTab
-                    )
-                    SepiaButton(
-                        text = "×",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = onCloseModal
-                    )
-                }
-            }
-
-            if (openTabIds.size > 3) {
-                SepiaTextField(
-                    value = tabFilterQuery,
-                    onValueChange = { tabFilterQuery = it },
-                    placeholder = "🔍 Filter open tabs by title, assistant, model, or message…",
-                    singleLine = true,
-                    minHeight = 34.dp,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            SepiaDivider()
-
-            val rows = remember(filteredTabIds) { filteredTabIds.chunked(2) }
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                itemsIndexed(rows) { _, rowPair ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        rowPair.forEach { tabId ->
-                            val sess = appState.sessions.find { it.id == tabId }
-                            if (sess != null) {
-                                val isSel = tabId == activeSessionId
-                                val streamInfo = activeStreamsBySession[tabId]
-                                val tabAsst = appState.assistants.find { it.id == sess.assistantId && it.id.isNotBlank() }
-                                    ?: appState.assistants.firstOrNull()
-                                val tabProf = appState.profiles.find { it.id == sess.profileId }
-                                    ?: appState.profiles.firstOrNull()
-                                val asstName = tabAsst?.name?.takeIf { it.isNotBlank() } ?: "Default Assistant"
-                                val modelLabel = sess.modelOverride.ifBlank { tabProf?.defaultModel.orEmpty() }
-                                    .substringAfterLast('/')
-                                    .ifBlank { tabProf?.name.orEmpty() }
-                                val lastMsgPreview = sess.messages.lastOrNull()?.activeVariant?.content
-                                    ?.take(110)?.replace('\n', ' ').orEmpty()
-                                    .ifBlank { "Empty chat — tap to start" }
-
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(min = 122.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(p.cardBg)
-                                        .border(
-                                            width = if (isSel) 1.5.dp else 0.85.dp,
-                                            color = if (isSel) p.accent else p.border,
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
-                                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
-                                        .padding(10.dp),
-                                    verticalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.weight(1f),
-                                                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                SepiaAvatarCircle(
-                                                    symbol = tabAsst?.iconEmoji ?: "💬",
-                                                    selected = isSel,
-                                                    sizeDp = 24.dp
-                                                )
-                                                BasicText(
-                                                    text = sess.title.ifBlank { "New Chat" },
-                                                    maxLines = 2,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = p.uiBodyStyle.copy(
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 13.sp,
-                                                        color = if (isSel) p.accent else p.primaryInk
-                                                    )
-                                                )
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(20.dp)
-                                                    .clip(CircleShape)
-                                                    .kissClickable { onCloseTab(tabId) },
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                KissVectorIcon(icon = KissIcon.CLOSE, tint = p.mutedInk, size = 11.dp)
-                                            }
-                                        }
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            BasicText(
-                                                text = asstName,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
-                                            )
-                                            if (modelLabel.isNotBlank()) {
-                                                BasicText(
-                                                    text = modelLabel,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
-                                                )
-                                            }
-                                        }
-                                        BasicText(
-                                            text = lastMsgPreview,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.narrationInk)
-                                        )
-                                    }
-
-                                    Spacer(Modifier.height(6.dp))
-
-                                    if (streamInfo != null) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                        ) {
-                                            KissStreamingPulseDot(color = p.accent)
-                                            BasicText(
-                                                text = streamInfo.statusText.ifBlank { "Running in background…" },
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
-                                            )
-                                        }
-                                    } else {
-                                        val dateSuffix = if (appState.preferences.showChatListDates && sess.updatedAt > 0L) {
-                                            " • ${formatCompactTimestamp(sess.updatedAt)}"
-                                        } else ""
-                                        BasicText(
-                                            text = "${sess.messages.size} messages$dateSuffix",
-                                            style = p.uiLabelStyle.copy(fontSize = 10.sp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        if (rowPair.size == 1) {
-                            Spacer(Modifier.weight(1f))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================================
-// TOP EDITORIAL BAR WITH INLINE TITLE RENAME (`✎`), AI TITLE REGEN (`✦`), & MODEL POPOVER
-// ============================================================================================
-@Composable
-private fun TopEditorialBar(
-    appState: AppStateSnapshot,
-    activeSession: ChatSession,
-    activeAssistant: AssistantAgent,
-    activeProfile: ProviderProfile,
-    isCompactScreen: Boolean,
-    showSidebar: Boolean,
-    showSessionInspector: Boolean,
-    showQuickModelPopover: Boolean,
-    openTabCount: Int,
-    backgroundStreamingCount: Int,
-    onOpenMobileTabSwitcher: () -> Unit,
-    onNewChatTab: () -> Unit,
-    onToggleSidebar: () -> Unit,
-    onToggleSessionInspector: () -> Unit,
-    onToggleQuickModelPopover: () -> Unit,
-    onSelectModelQuick: (String, String) -> Unit,
-    onRenameTopicInline: (String) -> Unit,
-    onRegenerateTitleAi: () -> Unit,
-    onOpenSettings: (SettingsCategory?) -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-    val modelLabel = activeModel.ifBlank { "Select model…" }
-    var isEditingTitle by remember(activeSession.id) { mutableStateOf(false) }
-    var titleBuffer by remember(activeSession.id, activeSession.title) { mutableStateOf(activeSession.title) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(p.sheetBg)
-            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SepiaButton(
-                    text = if (showSidebar) "◂" else "☰",
-                    compact = true,
-                    style = if (showSidebar) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
-                    onClick = onToggleSidebar
-                )
-
-                if (appState.preferences.showAssistantAvatarInTitleBar) {
-                    SepiaAvatarCircle(
-                        symbol = activeAssistant.iconEmoji,
-                        selected = true,
-                        sizeDp = 28.dp,
-                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }
-                    )
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    if (isEditingTitle) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SepiaTextField(
-                                value = titleBuffer,
-                                onValueChange = { titleBuffer = it },
-                                minHeight = 30.dp,
-                                modifier = Modifier.weight(1f)
-                            )
-                            SepiaButton(
-                                text = "Save",
-                                compact = true,
-                                style = SepiaButtonStyle.PRIMARY,
-                                onClick = {
-                                    onRenameTopicInline(titleBuffer.trim())
-                                    isEditingTitle = false
-                                }
-                            )
-                        }
-                    } else {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            BasicText(
-                                text = activeSession.title,
-                                maxLines = if (isCompactScreen) 2 else 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
-                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }
-                            )
-                            KissVectorIcon(
-                                icon = KissIcon.EDIT,
-                                tint = p.mutedInk,
-                                size = 12.dp,
-                                modifier = Modifier.kissClickable { isEditingTitle = true }
-                            )
-                            if (activeSession.messages.isNotEmpty()) {
-                                KissVectorIcon(
-                                    icon = KissIcon.SPARKLES,
-                                    tint = p.accent,
-                                    size = 13.dp,
-                                    modifier = Modifier.kissClickable { onRegenerateTitleAi() }
-                                )
-                            }
-                        }
-                    }
-
-                    val shortModelLabel = if (isCompactScreen && modelLabel.contains('/')) {
-                        modelLabel.substringAfterLast('/')
-                    } else {
-                        modelLabel
-                    }
-                    val asstSuffix = if (activeAssistant.id.isNotBlank() && !isCompactScreen) " • ${activeAssistant.name}" else ""
-                    val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
-                        "$shortModelLabel • ${activeProfile.name}$asstSuffix"
-                    } else {
-                        "$shortModelLabel$asstSuffix"
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.kissClickable(hoverScale = 1.01f) { onToggleQuickModelPopover() }
-                    ) {
-                        BasicText(
-                            text = capsuleText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.sp),
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        KissVectorIcon(
-                            icon = if (showQuickModelPopover) KissIcon.CHEVRON_UP else KissIcon.CHEVRON_DOWN,
-                            tint = p.accent,
-                            size = 11.dp
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.width(6.dp))
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val win = LocalParchmentWindowSize.current
-                val hasChatNotes = activeSession.systemPrompt.isNotBlank() ||
-                    activeSession.authorsNote.isNotBlank() ||
-                    activeSession.storySummary.isNotBlank()
-                if (win.isCompact) {
-                    // Chromium / Firefox Mobile-Style Rounded Square Tab Counter Button
-                    val tabBadgeShape = RoundedCornerShape(6.dp)
-                    Box(
-                        modifier = Modifier
-                            .height(27.dp)
-                            .widthIn(min = 27.dp)
-                            .clip(tabBadgeShape)
-                            .background(if (backgroundStreamingCount > 0) p.accent.copy(alpha = 0.16f) else p.cardBg)
-                            .border(
-                                width = if (backgroundStreamingCount > 0) 1.2.dp else 1.dp,
-                                color = if (backgroundStreamingCount > 0) p.accent else p.narrationInk.copy(alpha = 0.8f),
-                                shape = tabBadgeShape
-                            )
-                            .kissClickable { onOpenMobileTabSwitcher() }
-                            .padding(horizontal = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            if (backgroundStreamingCount > 0) {
-                                KissStreamingPulseDot(color = p.accent)
-                            }
-                            BasicText(
-                                text = openTabCount.toString(),
-                                style = p.monoStyle.copy(
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (backgroundStreamingCount > 0) p.accent else p.primaryInk
-                                )
-                            )
-                        }
-                    }
-                } else {
-                    SepiaButton(
-                        text = "+ New Tab",
-                        compact = true,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = onNewChatTab
-                    )
-                }
-                SepiaChip(
-                    label = if (win.isCompact) "✎" else "✎ Notes",
-                    selected = showSessionInspector || hasChatNotes,
-                    onClick = onToggleSessionInspector
-                )
-                SepiaButton(
-                    text = if (win.isCompact) "⚙" else "⚙ Settings",
-                    compact = true,
-                    style = SepiaButtonStyle.OUTLINE,
-                    onClick = { onOpenSettings(null) }
-                )
-            }
-        }
-
-        // Quick Inline Searchable Vertical Model Switcher Popover
-        AnimatedVisibility(visible = showQuickModelPopover) {
-            val totalModelsCount = remember(appState.profiles) {
-                appState.profiles.sumOf { prof ->
-                    if (prof.savedModels.isNotEmpty()) prof.savedModels.size
-                    else if (prof.defaultModel.isNotBlank()) 1
-                    else 0
-                }
-            }
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(p.cardBg)
-                    .border(0.95.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
-                    .padding(11.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(top = 4.dp)
-                    ) {
-                        KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
-                        BasicText(
-                            text = "Quick Switch Model",
-                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
-                        )
-                        BasicText(
-                            text = "($totalModelsCount)",
-                            style = p.monoStyle.copy(color = p.mutedInk, fontSize = 11.sp)
-                        )
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        SepiaButton(
-                            text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage Providers",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = {
-                                onToggleQuickModelPopover()
-                                onOpenSettings(SettingsCategory.PROVIDERS)
-                            }
-                        )
-                        SepiaButton(
-                            text = "×",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onToggleQuickModelPopover
-                        )
-                    }
-                }
-                SepiaSearchableModelPicker(
-                    profiles = appState.profiles,
-                    selectedProfileId = activeProfile.id,
-                    selectedModelId = activeModel,
-                    onSelectModel = { profId, modelId ->
-                        onSelectModelQuick(profId, modelId)
-                    },
-                    maxListHeight = 280.dp
-                )
-            }
-        }
-    }
-}
-
-// ============================================================================================
-// PARCHMENT `[ Assistants | Chats ]` LEFT SIDEBAR
-// ============================================================================================
-@Composable
-private fun ParchmentSidebar(
-    appState: AppStateSnapshot,
-    activeAssistant: AssistantAgent,
-    activeSession: ChatSession,
-    selectedTab: SidebarTab,
-    isCompactScreen: Boolean,
-    onSelectTab: (SidebarTab) -> Unit,
-    modifier: Modifier = Modifier,
-    onSelectAssistant: (AssistantAgent) -> Unit,
-    onEditAssistantInSettings: (String) -> Unit,
-    onCreateNewAssistant: () -> Unit,
-    onSelectSession: (String) -> Unit,
-    onNewTopic: () -> Unit,
-    onTogglePinSession: (String) -> Unit,
-    onRegenerateSessionTitle: (String) -> Unit,
-    onDeleteSession: (String) -> Unit,
-    onDeleteAllTopicsForAssistant: () -> Unit,
-    onOpenSettings: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    var searchQuery by remember { mutableStateOf("") }
-
-    Column(
-        modifier = modifier
-            .background(p.sheetBg.copy(alpha = if (isCompactScreen) 0.98f else 0.65f))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        // 1. Top Search Pill Bar (`🔍 Search assistants` / `🔍 Search topics`) + Single `+` Action
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SepiaTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = if (selectedTab == SidebarTab.ASSISTANTS) "🔍 Search assistants…" else "🔍 Search chats…",
-                minHeight = 36.dp,
-                modifier = Modifier.weight(1f)
-            )
-            SepiaButton(
-                text = "+",
-                compact = true,
-                style = SepiaButtonStyle.PRIMARY,
-                onClick = {
-                    if (selectedTab == SidebarTab.ASSISTANTS) onCreateNewAssistant() else onNewTopic()
-                }
-            )
-        }
-
-        // 2. Parchment 2-Tab Pill Switcher (`[ Assistants | Chats ]`)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(999.dp))
-                .background(p.cardBg.copy(alpha = 0.7f))
-                .border(0.8.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(999.dp))
-                .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats").forEach { (tab, label) ->
-                val isSel = selectedTab == tab
-                val tabInteraction = remember { MutableInteractionSource() }
-                val tabHovered by tabInteraction.collectIsHoveredAsState()
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .kissClickable(
-                            pressScale = 0.96f,
-                            hoverScale = 1.01f,
-                            interactionSource = tabInteraction,
-                            onClick = { onSelectTab(tab) }
-                        )
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            when {
-                                isSel -> p.sheetBg
-                                tabHovered -> p.accent.copy(alpha = 0.08f)
-                                else -> Color.Transparent
-                            }
-                        )
-                        .padding(vertical = 6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    BasicText(
-                        text = label,
-                        style = p.uiBodyStyle.copy(
-                            fontSize = 13.sp,
-                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSel || tabHovered) p.accent else p.narrationInk
-                        )
-                    )
-                }
-            }
-        }
-
-        // 3. Tab Content
-        if (selectedTab == SidebarTab.ASSISTANTS) {
-            val filteredAssistants = remember(appState.assistants, searchQuery) {
-                val q = searchQuery.trim()
-                if (q.isEmpty()) appState.assistants
-                else appState.assistants.filter {
-                    it.name.contains(q, ignoreCase = true) || it.systemPrompt.contains(q, ignoreCase = true)
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (filteredAssistants.isEmpty()) {
-                    item {
-                        BasicText(
-                            text = "No matching assistants found. Tap '+' above to create a new assistant.",
-                            style = p.uiLabelStyle,
-                            modifier = Modifier.padding(8.dp)
-                        )
-                    }
-                }
-                itemsIndexed(filteredAssistants, key = { _, a -> a.id }) { _, asst ->
-                    val isSel = asst.id == activeAssistant.id
-                    val shape = RoundedCornerShape(999.dp)
-                    val rowInteraction = remember { MutableInteractionSource() }
-                    val rowHovered by rowInteraction.collectIsHoveredAsState()
-                    val rowPressed by rowInteraction.collectIsPressedAsState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .kissClickable(
-                                pressScale = 0.98f,
-                                hoverScale = 1.01f,
-                                interactionSource = rowInteraction,
-                                onClick = { onSelectAssistant(asst) }
-                            )
-                            .clip(shape)
-                            .background(
-                                when {
-                                    isSel -> p.sheetBg
-                                    rowPressed -> p.accent.copy(alpha = 0.14f)
-                                    rowHovered -> p.accent.copy(alpha = 0.08f)
-                                    else -> Color.Transparent
-                                }
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SepiaAvatarCircle(
-                                symbol = asst.iconEmoji,
-                                selected = isSel,
-                                sizeDp = 32.dp
-                            )
-                            BasicText(
-                                text = asst.name,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(
-                                    fontSize = 14.sp,
-                                    fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isSel || rowHovered) p.accent else p.primaryInk
-                                )
-                            )
-                        }
-                        SepiaButton(
-                            text = "⚙",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { onEditAssistantInSettings(asst.id) }
-                        )
-                    }
-                }
-            }
-        } else {
-            // CHATS / TOPICS TAB (Filtered by active Assistant, Pinned first, sorted by updatedAt)
-            val assistantTopics = remember(appState.sessions, activeAssistant.id, searchQuery) {
-                val q = searchQuery.trim()
-                val forAsst = appState.sessions.filter { it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId } }
-                val searched = if (q.isEmpty()) forAsst else forAsst.filter { s ->
-                    s.title.contains(q, ignoreCase = true) || s.messages.any { n -> n.activeVariant.content.contains(q, ignoreCase = true) }
-                }
-                searched.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f).padding(end = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val hdrIcon = remember(activeAssistant.iconEmoji) {
-                        parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
-                    }
-                    KissVectorIcon(icon = hdrIcon, tint = p.accent, size = 13.dp)
-                    BasicText(
-                        text = "${activeAssistant.name} (${assistantTopics.size})",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
-                    )
-                }
-                if (assistantTopics.size > 1 || assistantTopics.any { it.messages.isNotEmpty() || it.title != "New Chat" }) {
-                    SepiaButton(
-                        text = "Clear All",
-                        compact = true,
-                        style = SepiaButtonStyle.GHOST,
-                        onClick = onDeleteAllTopicsForAssistant
-                    )
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                itemsIndexed(assistantTopics, key = { _, s -> s.id }) { _, sess ->
-                    val selected = sess.id == activeSession.id
-                    val shape = RoundedCornerShape(10.dp)
-                    val rowInteraction = remember { MutableInteractionSource() }
-                    val rowHovered by rowInteraction.collectIsHoveredAsState()
-                    val rowPressed by rowInteraction.collectIsPressedAsState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .kissClickable(
-                                pressScale = 0.98f,
-                                hoverScale = 1.008f,
-                                interactionSource = rowInteraction,
-                                onClick = { onSelectSession(sess.id) }
-                            )
-                            .clip(shape)
-                            .background(
-                                when {
-                                    selected -> p.cardBg
-                                    rowPressed -> p.accent.copy(alpha = 0.14f)
-                                    rowHovered -> p.accent.copy(alpha = 0.08f)
-                                    else -> p.elevatedBg.copy(alpha = 0.35f)
-                                }
-                            )
-                            .border(
-                                0.85.dp,
-                                if (selected || rowHovered) p.accent.copy(alpha = if (selected) 1f else 0.55f) else Color.Transparent,
-                                shape
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                if (sess.isPinned) {
-                                    KissVectorIcon(icon = KissIcon.PIN, tint = p.accent, size = 11.dp)
-                                }
-                                BasicText(
-                                    text = sess.title,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = p.uiBodyStyle.copy(
-                                        fontSize = 13.5.sp,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (selected || rowHovered) p.accent else p.primaryInk
-                                    )
-                                )
-                            }
-                            val msgCountLabel = if (sess.messages.isNotEmpty()) "${sess.messages.size} messages" else "Empty chat"
-                            val dateLabel = if (appState.preferences.showChatListDates && sess.updatedAt > 0L) {
-                                formatCompactTimestamp(sess.updatedAt)
-                            } else ""
-                            val combinedSub = if (dateLabel.isNotEmpty()) "$msgCountLabel • $dateLabel" else if (sess.messages.isNotEmpty()) msgCountLabel else ""
-                            if (combinedSub.isNotEmpty()) {
-                                BasicText(
-                                    text = combinedSub,
-                                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
-                                )
-                            }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            SepiaButton(
-                                text = "📌",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = { onTogglePinSession(sess.id) }
-                            )
-                            if (sess.messages.isNotEmpty()) {
-                                SepiaButton(
-                                    text = "✦",
-                                    compact = true,
-                                    style = SepiaButtonStyle.GHOST,
-                                    onClick = { onRegenerateSessionTitle(sess.id) }
-                                )
-                            }
-                            SepiaButton(
-                                text = "×",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = { onDeleteSession(sess.id) }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        if (isCompactScreen) {
-            SepiaDivider()
-
-            // Mobile Drawer Footer: Quick Settings Button
-            SepiaButton(
-                text = "⚙ Settings & Providers",
-                style = SepiaButtonStyle.OUTLINE,
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onOpenSettings
-            )
         }
     }
 }
@@ -5098,6 +4046,39 @@ private fun ManuscriptViewport(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+                // Interactive Slash-Command Autocomplete Pill Bar when typing `/` in the Composer!
+                val trimmedSlashPrefix = userPromptInput.trimStart()
+                val showSlashSuggestions = trimmedSlashPrefix.startsWith("/") && !trimmedSlashPrefix.contains('\n')
+                val matchingSlashCommands = remember(trimmedSlashPrefix) {
+                    if (!showSlashSuggestions) emptyList()
+                    else {
+                        val cmdToken = trimmedSlashPrefix.substringBefore(' ').lowercase()
+                        BUILTIN_SLASH_COMMANDS.filter { spec ->
+                            spec.command.startsWith(cmdToken) ||
+                                (trimmedSlashPrefix.startsWith(spec.command, ignoreCase = true) && trimmedSlashPrefix.length == spec.command.length)
+                        }
+                    }
+                }
+                AnimatedVisibility(visible = matchingSlashCommands.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        matchingSlashCommands.forEach { spec ->
+                            SepiaChip(
+                                label = "${spec.label} — ${spec.description}",
+                                selected = trimmedSlashPrefix.equals(spec.command, ignoreCase = true),
+                                onClick = {
+                                    onUserPromptChange(if (spec.takesArgument) "${spec.command} " else spec.command)
+                                }
+                            )
+                        }
+                    }
+                }
 
                 // 4. Clean Borderless Prompt Input Area with Desktop Enter-to-Send & Shift+Enter Newline!
                 val targetName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
@@ -5354,6 +4335,7 @@ private fun MessageTurnItem(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
+    @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val activeVar = node.activeVariant
     val isAssistant = node.role == MessageRole.ASSISTANT
@@ -5724,22 +4706,38 @@ private fun MessageTurnItem(
                 @Composable
                 fun RenderToolExecutionCard(tc: ToolCallRecord) {
                     val lowerTool = tc.name.lowercase()
-                    if (lowerTool == "fs_edit" || lowerTool == "fs_write") {
+                    if (lowerTool == "fs_edit" || lowerTool == "fs_write" || lowerTool == "fs_multi_edit") {
                         val parsedObj: JsonObject? = remember(tc.argumentsJson) {
                             runCatching { compactStateJson.parseToJsonElement(tc.argumentsJson) as? JsonObject }.getOrNull()
                         }
                         val pathStr = parsedObj?.get("path")?.jsonPrimitive?.contentOrNull.orEmpty()
-                        val oldTxt = if (lowerTool == "fs_edit") {
-                            parsedObj?.get("old_text")?.jsonPrimitive?.contentOrNull.orEmpty()
-                        } else ""
-                        val newTxt = if (lowerTool == "fs_edit") {
-                            parsedObj?.get("new_text")?.jsonPrimitive?.contentOrNull.orEmpty()
-                        } else {
-                            parsedObj?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val (oldTxt, newTxt) = remember(lowerTool, parsedObj) {
+                            when (lowerTool) {
+                                "fs_edit" -> {
+                                    val o = parsedObj?.get("old_text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                                    val n = parsedObj?.get("new_text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                                    o to n
+                                }
+                                "fs_multi_edit" -> {
+                                    val editsArr = parsedObj?.get("edits") as? JsonArray
+                                    val o = editsArr?.mapNotNull { (it as? JsonObject)?.get("old_text")?.jsonPrimitive?.contentOrNull }
+                                        ?.joinToString("\n...\n").orEmpty()
+                                    val n = editsArr?.mapNotNull { (it as? JsonObject)?.get("new_text")?.jsonPrimitive?.contentOrNull }
+                                        ?.joinToString("\n...\n").orEmpty()
+                                    o to n
+                                }
+                                else -> {
+                                    "" to parsedObj?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
+                                }
+                            }
                         }
                         SepiaFileDiffCard(
                             filePath = pathStr,
-                            actionLabel = if (lowerTool == "fs_edit") "Edited" else "Wrote",
+                            actionLabel = when (lowerTool) {
+                                "fs_edit" -> "Edited"
+                                "fs_multi_edit" -> "Multi-Edited"
+                                else -> "Wrote"
+                            },
                             oldText = oldTxt,
                             newText = newTxt,
                             resultSummary = tc.resultText,
@@ -6416,6 +5414,7 @@ private fun MessageTurnItem(
                     SepiaButton(
                         text = if (isAssistant) "↻ Redo" else "↻ Regenerate",
                         compact = true,
+                        enabled = !activeVar.isStreaming,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onRegenerate
                     )
@@ -6440,6 +5439,7 @@ private fun MessageTurnItem(
                             SepiaButton(
                                 text = "→ Continue",
                                 compact = true,
+                                enabled = !activeVar.isStreaming,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onContinue
                             )
@@ -6557,530 +5557,5 @@ private fun MessageTurnItem(
             Spacer(Modifier.height(8.dp))
             SepiaDivider()
         }
-    }
-}
-
-// ============================================================================================
-// BUILT-IN ZOOMABLE IMAGE LIGHTBOX & TEXT/CODE ATTACHMENT VIEWER MODAL (KISS)
-// ============================================================================================
-@Composable
-private fun ParchmentAttachmentViewerModal(
-    item: ActiveMediaViewerItem,
-    onNotify: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-    @Suppress("DEPRECATION")
-    val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.82f))
-            .clickable { onClose() },
-        contentAlignment = Alignment.Center
-    ) {
-        when (item) {
-            is ActiveMediaViewerItem.ImageViewer -> {
-                val bmp = remember(item.localFilePath) {
-                    PlatformBridge.loadImageBitmapFromFile(item.localFilePath)
-                }
-                var scale by remember(item) { mutableStateOf(1f) }
-                var offsetX by remember(item) { mutableStateOf(0f) }
-                var offsetY by remember(item) { mutableStateOf(0f) }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp)
-                        .clickable(enabled = false) {},
-                    verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // Top Control Bar
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(p.cardBg.copy(alpha = 0.96f))
-                            .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 15.dp)
-                                BasicText(
-                                    text = item.title,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
-                                )
-                            }
-                            val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
-                            BasicText(
-                                text = "$dimInfo${item.mimeType} • Pinch or double-tap to zoom",
-                                style = p.uiLabelStyle
-                            )
-                        }
-
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            SepiaButton(
-                                text = "−",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = {
-                                    scale = (scale / 1.25f).coerceIn(0.5f, 8f)
-                                    if (scale <= 1.02f) {
-                                        offsetX = 0f
-                                        offsetY = 0f
-                                    }
-                                }
-                            )
-                            SepiaButton(
-                                text = "${(scale * 100).toInt()}%",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = {
-                                    scale = 1f
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                }
-                            )
-                            SepiaButton(
-                                text = "+",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = {
-                                    scale = (scale * 1.25f).coerceIn(0.5f, 8f)
-                                }
-                            )
-                            val openTarget = item.localFilePath.ifBlank { item.remoteUrl }
-                            if (openTarget.isNotBlank()) {
-                                SepiaButton(
-                                    text = "Open",
-                                    compact = true,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
-                                )
-                            }
-                            if (item.localFilePath.isNotBlank()) {
-                                SepiaButton(
-                                    text = "Save",
-                                    compact = true,
-                                    style = SepiaButtonStyle.SECONDARY,
-                                    onClick = {
-                                        scope.launch {
-                                            val bytes = PlatformBridge.readBinaryFileBytes(item.localFilePath) ?: return@launch
-                                            val saved = PlatformBridge.saveFileForExport(item.title, bytes)
-                                            if (saved != null) onNotify("Saved image to $saved")
-                                        }
-                                    }
-                                )
-                            }
-                            SepiaButton(
-                                text = "✕",
-                                compact = true,
-                                style = SepiaButtonStyle.PRIMARY,
-                                onClick = onClose
-                            )
-                        }
-                    }
-
-                    // Interactive Zoomable & Pannable Image Viewport
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .pointerInput(item) {
-                                detectTapGestures(
-                                    onDoubleTap = {
-                                        if (scale > 1.05f) {
-                                            scale = 1f
-                                            offsetX = 0f
-                                            offsetY = 0f
-                                        } else {
-                                            scale = 2.5f
-                                        }
-                                    }
-                                )
-                            }
-                            .pointerInput(item) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    val newScale = (scale * zoom).coerceIn(0.5f, 8f)
-                                    scale = newScale
-                                    if (newScale > 1.0f) {
-                                        offsetX += pan.x
-                                        offsetY += pan.y
-                                    } else {
-                                        offsetX = 0f
-                                        offsetY = 0f
-                                    }
-                                }
-                            }
-                            .pointerInput(item) {
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        if (event.type == PointerEventType.Scroll) {
-                                            val deltaY = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
-                                            if (deltaY != 0f) {
-                                                val factor = if (deltaY < 0f) 1.15f else (1f / 1.15f)
-                                                scale = (scale * factor).coerceIn(0.5f, 8f)
-                                                if (scale <= 1.02f) {
-                                                    offsetX = 0f
-                                                    offsetY = 0f
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (bmp != null) {
-                            Image(
-                                bitmap = bmp,
-                                contentDescription = item.title,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .graphicsLayer(
-                                        scaleX = scale,
-                                        scaleY = scale,
-                                        translationX = offsetX,
-                                        translationY = offsetY
-                                    )
-                            )
-                        } else {
-                            BasicText(
-                                text = "Unable to decode image preview (${item.localFilePath.ifBlank { item.remoteUrl }})",
-                                style = p.uiHeaderStyle.copy(color = Color.White)
-                            )
-                        }
-                    }
-                }
-            }
-
-            is ActiveMediaViewerItem.TextOrCodeViewer -> {
-                var copied by remember(item) { mutableStateOf(false) }
-                val linesCount = remember(item.textContent) { item.textContent.lines().size }
-
-                Column(
-                    modifier = Modifier
-                        .widthIn(max = 940.dp)
-                        .fillMaxWidth(0.94f)
-                        .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(p.cardBg)
-                        .border(1.dp, p.border, RoundedCornerShape(12.dp))
-                        .clickable(enabled = false) {}
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                KissVectorIcon(icon = KissIcon.FILE_TEXT, tint = p.accent, size = 15.dp)
-                                BasicText(
-                                    text = item.title,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
-                                )
-                            }
-                            BasicText(
-                                text = "$linesCount lines • ${item.textContent.length} chars • ${item.mimeType}",
-                                style = p.uiLabelStyle
-                            )
-                        }
-
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            SepiaButton(
-                                text = if (copied) "✓ Copied" else "📋 Copy",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = {
-                                    clipboard.setText(AnnotatedString(item.textContent))
-                                    copied = true
-                                }
-                            )
-                            if (item.localFilePath.isNotBlank()) {
-                                SepiaButton(
-                                    text = "Open",
-                                    compact = true,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
-                                )
-                            }
-                            SepiaButton(
-                                text = "✕",
-                                compact = true,
-                                style = SepiaButtonStyle.PRIMARY,
-                                onClick = onClose
-                            )
-                        }
-                    }
-
-                    SepiaDivider()
-
-                    SelectionContainer(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(p.sheetBg.copy(alpha = 0.65f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        BasicText(
-                            text = item.textContent.ifEmpty { "(Empty file)" },
-                            style = p.monoStyle.copy(fontSize = 12.5.sp, lineHeight = 18.sp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================================
-// CLEAN & RESILIENT STATE LOADER — LOADS SAVED STATE 1:1 AND RECOVERS FIELD-BY-FIELD IF NEEDED
-// ============================================================================================
-private fun loadOrCreateDefaultAppState(): AppStateSnapshot {
-    val raw = PlatformBridge.loadAppStateJson()
-    if (!raw.isNullOrBlank()) {
-        val directResult = runCatching {
-            val loaded = compactStateJson.decodeFromString<AppStateSnapshot>(raw)
-            sanitizeLoadedSnapshot(loaded)
-        }.getOrNull()
-
-        if (directResult != null) {
-            return directResult
-        }
-
-        // Field-by-field fallback recovery: if a schema field ever changed across updates,
-        // recover every valid profile, API key, assistant, session, and preference individually!
-        val recovered = runCatching {
-            recoverAppStateFromPartialJson(raw)
-        }.getOrNull()
-
-        if (recovered != null) {
-            return sanitizeLoadedSnapshot(recovered)
-        }
-    }
-    return createDefaultAppState()
-}
-
-private fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
-    val defaultFallback = createDefaultAppState()
-    val safeProfiles = if (loaded.profiles.isNotEmpty()) loaded.profiles else defaultFallback.profiles
-    val safeActiveProfileId = safeProfiles.find { it.id == loaded.activeProfileId }?.id ?: safeProfiles.first().id
-    val safeActiveProfile = safeProfiles.first { it.id == safeActiveProfileId }
-
-    val safeAssistants = if (loaded.assistants.isNotEmpty()) {
-        loaded.assistants
-    } else {
-        defaultFallback.assistants
-    }
-    val safeActiveAssistantId = safeAssistants.find { it.id == loaded.activeAssistantId }?.id
-        ?: safeAssistants.first().id
-
-    val recoveredSessions = if (loaded.sessions.isNotEmpty()) {
-        loaded.sessions.map { sess ->
-            sess.copy(
-                assistantId = sess.assistantId.ifBlank { safeActiveAssistantId },
-                messages = sess.messages.map { node ->
-                    node.copy(
-                        variants = node.variants.map { v ->
-                            if (v.isStreaming) v.copy(isStreaming = false) else v
-                        }
-                    )
-                }
-            )
-        }
-    } else {
-        val now = PlatformBridge.currentTimeMillis()
-        listOf(
-            ChatSession(
-                id = "sess-$now",
-                title = "New Chat",
-                createdAt = now,
-                updatedAt = now,
-                profileId = safeActiveProfile.id,
-                modelOverride = safeActiveProfile.defaultModel,
-                assistantId = safeActiveAssistantId
-            )
-        )
-    }
-
-    val safeActiveSessionId = recoveredSessions.find { it.id == loaded.activeSessionId }?.id ?: recoveredSessions.first().id
-    val validSessionIdSet = recoveredSessions.map { it.id }.toSet()
-    val safeOpenTabs = (loaded.openTabSessionIds.filter { it in validSessionIdSet } + safeActiveSessionId).distinct()
-
-    val migratedTheme = if (loaded.theme.name.endsWith("Warm Ivory (Light)") && !loaded.theme.name.startsWith("Parchment ")) {
-        loaded.theme.copy(name = "Parchment Warm Ivory (Light)")
-    } else {
-        loaded.theme
-    }
-
-    return loaded.copy(
-        profiles = safeProfiles,
-        activeProfileId = safeActiveProfileId,
-        assistants = safeAssistants,
-        activeAssistantId = safeActiveAssistantId,
-        sessions = recoveredSessions,
-        activeSessionId = safeActiveSessionId,
-        openTabSessionIds = safeOpenTabs,
-        theme = migratedTheme
-    )
-}
-
-private fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
-    val fallback = createDefaultAppState()
-    val root = compactStateJson.parseToJsonElement(raw) as? JsonObject ?: return fallback
-
-    fun <T> decodeListItems(key: String, itemDeserializer: kotlinx.serialization.DeserializationStrategy<T>): List<T> {
-        val arr = root[key] as? JsonArray ?: return emptyList()
-        return arr.mapNotNull { elem ->
-            runCatching { compactStateJson.decodeFromJsonElement(itemDeserializer, elem) }.getOrNull()
-        }
-    }
-
-    val profiles = decodeListItems("profiles", ProviderProfile.serializer()).ifEmpty { fallback.profiles }
-    val activeProfileId = root["activeProfileId"]?.jsonPrimitive?.contentOrNull ?: profiles.first().id
-    val assistants = decodeListItems("assistants", AssistantAgent.serializer()).ifEmpty { fallback.assistants }
-    val activeAssistantId = root["activeAssistantId"]?.jsonPrimitive?.contentOrNull ?: assistants.firstOrNull()?.id.orEmpty()
-    val defaultModels = root["defaultModels"]?.let {
-        runCatching { compactStateJson.decodeFromJsonElement(DefaultModelConfig.serializer(), it) }.getOrNull()
-    } ?: fallback.defaultModels
-    val preferences = root["preferences"]?.let {
-        runCatching { compactStateJson.decodeFromJsonElement(PreferencesConfig.serializer(), it) }.getOrNull()
-    } ?: fallback.preferences
-    val desktopWindow = root["desktopWindow"]?.let {
-        runCatching { compactStateJson.decodeFromJsonElement(DesktopWindowConfig.serializer(), it) }.getOrNull()
-    } ?: fallback.desktopWindow
-    val sessions = decodeListItems("sessions", ChatSession.serializer())
-    val activeSessionId = root["activeSessionId"]?.jsonPrimitive?.contentOrNull ?: sessions.firstOrNull()?.id.orEmpty()
-    val openTabs = (root["openTabSessionIds"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
-    val presets = decodeListItems("systemPromptPresets", SystemPromptPreset.serializer())
-    val savedCards = decodeListItems("savedCards", CharacterOrScenarioCard.serializer())
-    val globalWorldBook = decodeListItems("globalWorldBook", ContextFragment.serializer())
-    val theme = root["theme"]?.let {
-        runCatching { compactStateJson.decodeFromJsonElement(ThemeConfig.serializer(), it) }.getOrNull()
-    } ?: fallback.theme
-    val otaRepo = root["otaGithubRepo"]?.jsonPrimitive?.contentOrNull ?: fallback.otaGithubRepo
-    val autoOta = root["autoCheckOtaOnStartup"]?.jsonPrimitive?.booleanOrNull ?: fallback.autoCheckOtaOnStartup
-
-    return AppStateSnapshot(
-        profiles = profiles,
-        activeProfileId = activeProfileId,
-        assistants = assistants,
-        activeAssistantId = activeAssistantId,
-        defaultModels = defaultModels,
-        preferences = preferences,
-        desktopWindow = desktopWindow,
-        sessions = sessions,
-        activeSessionId = activeSessionId,
-        openTabSessionIds = openTabs,
-        systemPromptPresets = presets,
-        savedCards = savedCards,
-        globalWorldBook = globalWorldBook,
-        theme = theme,
-        otaGithubRepo = otaRepo,
-        autoCheckOtaOnStartup = autoOta
-    )
-}
-
-private fun createDefaultAppState(): AppStateSnapshot {
-    val now = PlatformBridge.currentTimeMillis()
-    val geminiProfile = ProviderProfile(
-        id = "prof-gemini-interactions",
-        name = "Google Gemini",
-        protocol = ProviderProtocol.GEMINI_INTERACTIONS,
-        useStatefulChaining = true,
-        useBackgroundLongDecode = true
-    )
-    val openAiProfile = ProviderProfile(
-        id = "prof-openai-responses",
-        name = "OpenAI",
-        protocol = ProviderProtocol.OPENAI_RESPONSES,
-        useStatefulChaining = true
-    )
-    val anthropicProfile = ProviderProfile(
-        id = "prof-anthropic-messages",
-        name = "Anthropic",
-        protocol = ProviderProtocol.ANTHROPIC_MESSAGES
-    )
-    val byteDanceProfile = ProviderProfile(
-        id = "prof-bytedance-ark",
-        name = "ByteDance Ark",
-        protocol = ProviderProtocol.BYTEDANCE_ARK,
-        enableImageGeneration = true
-    )
-
-    val defaultAssistant = AssistantAgent(
-        id = "asst-default",
-        name = "Default Assistant",
-        iconEmoji = "💬",
-        systemPrompt = ""
-    )
-
-    val initialSession = ChatSession(
-        id = "sess-initial",
-        title = "New Chat",
-        createdAt = now,
-        updatedAt = now,
-        profileId = geminiProfile.id,
-        assistantId = defaultAssistant.id
-    )
-
-    return AppStateSnapshot(
-        profiles = listOf(geminiProfile, openAiProfile, anthropicProfile, byteDanceProfile),
-        activeProfileId = geminiProfile.id,
-        assistants = listOf(defaultAssistant),
-        activeAssistantId = defaultAssistant.id,
-        sessions = listOf(initialSession),
-        activeSessionId = initialSession.id,
-        openTabSessionIds = listOf(initialSession.id),
-        theme = ThemeConfig()
-    )
-}
-
-private fun formatCompactTimestamp(epochMs: Long): String {
-    if (epochMs <= 0L) return ""
-    val now = PlatformBridge.currentTimeMillis()
-    val diffSec = ((now - epochMs) / 1000L).coerceAtLeast(0L)
-    return when {
-        diffSec < 60L -> "Just now"
-        diffSec < 3600L -> "${diffSec / 60L}m ago"
-        diffSec < 86_400L -> "${diffSec / 3600L}h ago"
-        diffSec < 172_800L -> "Yesterday"
-        diffSec < 604_800L -> "${diffSec / 86_400L}d ago"
-        else -> "${diffSec / 604_800L}w ago"
     }
 }

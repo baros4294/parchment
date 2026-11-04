@@ -1679,12 +1679,17 @@ private fun ProvidersSubpage(
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = { showProtocolSettingsSubpage = true }
                         )
-                        SepiaButton(
-                            text = "🗑",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = { onDeleteProfile(activeProfile.id) }
-                        )
+                        if (appState.profiles.size > 1) {
+                            SepiaButton(
+                                text = "🗑",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = {
+                                    onDeleteProfile(activeProfile.id)
+                                    mobileEditingProfileId = null
+                                }
+                            )
+                        }
                     }
                     SepiaToggleSwitch(
                         checked = activeProfile.enabled,
@@ -2926,8 +2931,10 @@ private fun AssistantsSubpage(
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
-                            val remaining = appState.assistants.filterNot { it.id == asst.id }
-                            val nextActive = if (appState.activeAssistantId == asst.id) remaining.firstOrNull()?.id.orEmpty() else appState.activeAssistantId
+                            val remaining = appState.assistants.filterNot { it.id == asst.id }.ifEmpty {
+                                listOf(AssistantAgent(id = "asst-default", name = "Default Assistant", iconEmoji = "💬"))
+                            }
+                            val nextActive = if (appState.activeAssistantId == asst.id) remaining.first().id else appState.activeAssistantId
                             onUpdateAssistants(remaining, nextActive)
                             onNotify("Deleted assistant '${asst.name}'.")
                         }

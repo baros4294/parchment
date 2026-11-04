@@ -7,6 +7,7 @@ import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PromptAttachment
+import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
@@ -20,6 +21,7 @@ import io.parchment.ai.ui.BUILTIN_LAB_SVG_PATHS
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
 import io.parchment.ai.ui.extractLatestThoughtPeek
+import io.parchment.ai.ui.findClosingMarkdownLinkParen
 import io.parchment.ai.ui.formatDurationFromMs
 import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
@@ -596,6 +598,78 @@ class ParchmentProtocolAndHarnessTest {
         val (peekHeading, peekText) = extractLatestThoughtPeek(multiThoughtVar)
         assertEquals("Refining Humorous Angles", peekHeading)
         assertTrue(peekText.startsWith("I'm exploring genuinely funny ideas"))
+
+        // 15. Verify Balanced-Parenthesis Markdown Link Parser & HTML-to-Markdown Converter
+        val wikiLink = "[Kotlin](https://en.wikipedia.org/wiki/Kotlin_(programming_language)) is great."
+        val openParenIdx = wikiLink.indexOf('(')
+        val closeParenIdx = findClosingMarkdownLinkParen(wikiLink, openParenIdx)
+        assertEquals("https://en.wikipedia.org/wiki/Kotlin_(programming_language)", wikiLink.substring(openParenIdx + 1, closeParenIdx))
+
+        val htmlDoc = "<html><head><script>alert(1)</script></head><body><h1>Title</h1><p>Hello <a href=\"https://example.com\">World</a> &amp; Friends!</p></body></html>"
+        val cleanMd = WorkspaceHarness.convertHtmlToReadableText(htmlDoc, "text/html")
+        assertTrue(cleanMd.contains("# Title"))
+        assertTrue(cleanMd.contains("[World](https://example.com) & Friends!"))
+        assertTrue(!cleanMd.contains("alert(1)"))
+
+        // 16. Verify 2026 Harness Tools: calc_eval, fs_multi_edit, fs_glob, fs_move, fs_delete
+        val mathRec = WorkspaceHarness.executeToolCall("", WorkspaceMode.OFF, "c_math", "calc_eval", """{"expression":"(2^10 + sqrt(144)) / 2"}""")
+        assertTrue(!mathRec.isError, "calc_eval failed: ${mathRec.resultText}")
+        assertTrue(mathRec.resultText.endsWith("= 518"), "Expected 518, got: ${mathRec.resultText}")
+
+        val tempWs = "${PlatformBridge.getAppStorageDirectoryPath()}/test-2026-tools-${PlatformBridge.currentTimeMillis()}"
+        WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_WRITE, "c_w1", "fs_write", """{"path":"src/App.kt","content":"val a = 1\nval b = 2\nval c = 3"}""")
+        val multiEditRec = WorkspaceHarness.executeToolCall(
+            tempWs,
+            WorkspaceMode.READ_WRITE,
+            "c_me",
+            "fs_multi_edit",
+            """{"path":"src/App.kt","edits":[{"old_text":"val a = 1","new_text":"val a = 10"},{"old_text":"val c = 3","new_text":"val c = 30"}]}"""
+        )
+        assertTrue(!multiEditRec.isError, "fs_multi_edit failed: ${multiEditRec.resultText}")
+        val readAfterMulti = WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_ONLY, "c_r1", "fs_read", """{"path":"src/App.kt"}""")
+        assertTrue(readAfterMulti.resultText.contains("val a = 10") && readAfterMulti.resultText.contains("val c = 30"))
+
+        val globRec = WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_ONLY, "c_glob", "fs_glob", """{"pattern":"**/*.kt"}""")
+        assertTrue(globRec.resultText.contains("src/App.kt"), "fs_glob should find src/App.kt: ${globRec.resultText}")
+
+        val moveRec = WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_WRITE, "c_mv", "fs_move", """{"source_path":"src/App.kt","dest_path":"src/MainApp.kt"}""")
+        assertTrue(!moveRec.isError, "fs_move failed: ${moveRec.resultText}")
+        val delRec = WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_WRITE, "c_del", "fs_delete", """{"path":"src/MainApp.kt"}""")
+        assertTrue(!delRec.isError, "fs_delete failed: ${delRec.resultText}")
+
+        // 17. Verify Foolproof Zero-Answer Auto-Continuation History Builder (Stage 1 & Stage 2)
+        val baseNodes = listOf(
+            MessageNode(id = "u-1", role = MessageRole.USER, variants = listOf(MessageVariant(id = "vu-1", content = "Explain quantum tunneling.")))
+        )
+        val (nudgeNodes1, nudgePrefix1) = AiProviderEngine.buildEffectiveHistoryAndPrefix(
+            baseHistoryNodes = baseNodes,
+            continuePrefix = "",
+            thinkingText = "I should explain wavefunctions and barrier penetration.",
+            signatureText = "sig_quantum_123",
+            executedTools = emptyList(),
+            generatedMedia = emptyList(),
+            protocol = ProviderProtocol.GEMINI_INTERACTIONS,
+            model = "gemini-2.5-pro",
+            passTag = "test-nudge-1",
+            forceVisibleThoughtSummary = false
+        )
+        assertEquals("", nudgePrefix1)
+        assertEquals(3, nudgeNodes1.size)
+        assertTrue(nudgeNodes1.last().activeVariant.content.contains("write the complete final response to the user now"))
+
+        val (nudgeNodes2, _) = AiProviderEngine.buildEffectiveHistoryAndPrefix(
+            baseHistoryNodes = baseNodes,
+            continuePrefix = "",
+            thinkingText = "I should explain wavefunctions and barrier penetration.",
+            signatureText = "sig_quantum_123",
+            executedTools = emptyList(),
+            generatedMedia = emptyList(),
+            protocol = ProviderProtocol.GEMINI_INTERACTIONS,
+            model = "gemini-2.5-pro",
+            passTag = "test-nudge-2",
+            forceVisibleThoughtSummary = true
+        )
+        assertTrue(nudgeNodes2[1].activeVariant.content.contains("[Completed internal reasoning:"))
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {

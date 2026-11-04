@@ -171,12 +171,16 @@ expect object PlatformBridge {
 
     // Built-in Local File System Agent Harness (Sandboxed to workspaceRoot)
     fun workspaceList(workspaceRoot: String, relativePath: String = "", recursive: Boolean = false): Result<String>
+    fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int = 200): Result<String>
     fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int = 1, maxLines: Int = 250): Result<String>
     fun workspaceWrite(workspaceRoot: String, relativePath: String, content: String): Result<String>
     fun workspaceEdit(workspaceRoot: String, relativePath: String, oldText: String, newText: String, replaceAll: Boolean = false): Result<String>
+    fun workspaceMultiEdit(workspaceRoot: String, relativePath: String, edits: List<Triple<String, String, Boolean>>): Result<String>
+    fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String>
+    fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String>
     fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String = ""): Result<String>
     fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int = 30): Result<String>
-
+    fun fetchUrlText(url: String, maxChars: Int = 24000): Result<String>
     // Long Decode Lifecycle Hook (Android Foreground Service / Desktop status)
     fun notifyLongDecodeStart(modelName: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)

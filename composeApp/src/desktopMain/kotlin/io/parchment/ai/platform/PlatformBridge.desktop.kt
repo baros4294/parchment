@@ -387,6 +387,61 @@ actual object PlatformBridge {
         if (entries.isEmpty()) "(Empty directory)" else entries.joinToString("\n")
     }
 
+    actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> = runCatching {
+        val rootFile = File(workspaceRoot).canonicalFile
+        val rootPath = rootFile.toPath().normalize()
+        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
+        val cleanPat = pattern.trim().replace('\\', '/').removePrefix("./")
+        require(cleanPat.isNotEmpty()) { "Glob pattern must not be empty." }
+        val regexStr = buildString {
+            append("^")
+            var i = 0
+            while (i < cleanPat.length) {
+                val c = cleanPat[i]
+                if (c == '*' && i + 1 < cleanPat.length && cleanPat[i + 1] == '*') {
+                    if (i + 2 < cleanPat.length && cleanPat[i + 2] == '/') {
+                        append("(?:.*/)?")
+                        i += 3
+                        continue
+                    } else {
+                        append(".*")
+                        i += 2
+                        continue
+                    }
+                } else if (c == '*') {
+                    append("[^/]*")
+                } else if (c == '?') {
+                    append("[^/]")
+                } else if (".+()[]{}|^$\\".contains(c)) {
+                    append('\\').append(c)
+                } else {
+                    append(c)
+                }
+                i++
+            }
+            append("$")
+        }
+        val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
+        val matches = rootFile.walkTopDown()
+            .maxDepth(8)
+            .filter { f ->
+                f != rootFile &&
+                    !f.path.contains(".git") &&
+                    !f.name.equals("build", ignoreCase = true) &&
+                    !f.name.equals("node_modules", ignoreCase = true)
+            }
+            .mapNotNull { f ->
+                val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                val matchTarget = if (!cleanPat.contains('/')) f.name else rel
+                if (globRegex.matches(matchTarget) || rel.contains(cleanPat.replace("*", ""), ignoreCase = true)) {
+                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
+                } else null
+            }
+            .take(maxResults.coerceIn(1, 500))
+            .toList()
+        if (matches.isEmpty()) "No files matched glob '$pattern'." else matches.joinToString("\n")
+    }
+
     actual fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int, maxLines: Int): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
@@ -458,6 +513,68 @@ actual object PlatformBridge {
         "Edited '$relativePath' (+$addedLines / -$removedLines lines)."
     }
 
+    actual fun workspaceMultiEdit(
+        workspaceRoot: String,
+        relativePath: String,
+        edits: List<Triple<String, String, Boolean>>
+    ): Result<String> = runCatching {
+        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
+        require(target.exists() && target.isFile) { "File not found: $relativePath" }
+        require(edits.isNotEmpty()) { "edits list must not be empty." }
+        val existingRaw = target.readText(Charsets.UTF_8)
+        val usesCrlf = existingRaw.contains("\r\n")
+        var currentLf = existingRaw.replace("\r\n", "\n")
+        var totalAdded = 0
+        var totalRemoved = 0
+
+        edits.forEachIndexed { idx, (oldText, newText, replaceAll) ->
+            require(oldText.isNotEmpty()) { "Edit #${idx + 1}: old_text must not be empty." }
+            val normOld = oldText.replace("\r\n", "\n")
+            val normNew = newText.replace("\r\n", "\n")
+            if (!currentLf.contains(normOld)) {
+                error("Edit #${idx + 1} failed (rolled back all edits): old_text was not found in '$relativePath'.")
+            }
+            currentLf = if (replaceAll) {
+                currentLf.replace(normOld, normNew)
+            } else {
+                val firstIdx = currentLf.indexOf(normOld)
+                val secondIdx = currentLf.indexOf(normOld, startIndex = firstIdx + normOld.length)
+                if (secondIdx != -1) {
+                    error("Edit #${idx + 1} failed (rolled back all edits): old_text matched multiple locations in '$relativePath'. Include more surrounding lines or set replace_all=true.")
+                }
+                currentLf.replaceFirst(normOld, normNew)
+            }
+            totalRemoved += normOld.lines().size
+            totalAdded += normNew.lines().size
+        }
+
+        val finalContent = if (usesCrlf) currentLf.replace("\n", "\r\n") else currentLf
+        target.writeText(finalContent, Charsets.UTF_8)
+        "Applied ${edits.size} edit(s) atomically to '$relativePath' (+$totalAdded / -$totalRemoved lines)."
+    }
+
+    actual fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String> = runCatching {
+        val srcFile = resolveSandboxedPath(workspaceRoot, sourceRelativePath).toFile()
+        val dstFile = resolveSandboxedPath(workspaceRoot, destRelativePath).toFile()
+        require(srcFile.exists()) { "Source path does not exist: $sourceRelativePath" }
+        dstFile.parentFile?.mkdirs()
+        java.nio.file.Files.move(
+            srcFile.toPath(),
+            dstFile.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+        "Moved '$sourceRelativePath' -> '$destRelativePath'."
+    }
+
+    actual fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String> = runCatching {
+        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
+        val rootCanon = File(workspaceRoot).canonicalFile
+        require(target.canonicalFile != rootCanon) { "Cannot delete workspace root directory." }
+        require(target.exists()) { "Path does not exist: $relativePath" }
+        val deleted = if (target.isDirectory) target.deleteRecursively() else target.delete()
+        require(deleted) { "Failed to delete '$relativePath'." }
+        "Deleted '$relativePath'."
+    }
     actual fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int): Result<String> = runCatching {
         val rootDir = File(workspaceRoot).canonicalFile
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
@@ -550,6 +667,33 @@ actual object PlatformBridge {
         if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
     }
 
+    actual fun fetchUrlText(url: String, maxChars: Int): Result<String> = runCatching {
+        val trimmed = url.trim()
+        require(trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            "URL must start with http:// or https://"
+        }
+        val conn = (URI(trimmed).toURL().openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 20_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "Mozilla/5.0 (compatible; ParchmentAI/2.0)")
+            setRequestProperty("Accept", "text/markdown, text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.8")
+        }
+        try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+            val body = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            if (code !in 200..299) {
+                error("HTTP $code from $trimmed: ${body.take(400)}")
+            }
+            val contentType = conn.contentType.orEmpty().lowercase()
+            val cleaned = io.parchment.ai.harness.WorkspaceHarness.convertHtmlToReadableText(body, contentType)
+            cleaned.take(maxChars.coerceIn(500, 100_000))
+        } finally {
+            conn.disconnect()
+        }
+    }
     @Volatile
     private var keepAwakeProcess: Process? = null
 
