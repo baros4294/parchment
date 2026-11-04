@@ -987,7 +987,7 @@ private fun DrawScope.drawKissIconPath(
 private val LOBE_ICONS_HTTP_CLIENT by lazy { HttpClient() }
 private val DYNAMIC_LOBE_SVG_CACHE = mutableMapOf<String, List<String>>()
 
-private val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
+internal val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
     "gemini" to listOf(
         "M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
     ),
@@ -1090,6 +1090,81 @@ fun resolveLabSlugForModelOrProvider(modelOrProvider: String, fallbackProtocolNa
 private val SVG_PATH_D_REGEX = Regex("""<path[^>]*\bd=["']([^"']+)["']""")
 
 /**
+ * Normalizes SVGO-minified SVG `<path d="..."/>` strings so that single-bit arc flags (`large-arc-flag`
+ * and `sweep-flag` at positions 3 and 4 of every 7-argument `A`/`a` tuple, such as `01-4.45` or `000`)
+ * and adjacent decimals (`.502.502`) are always separated by spaces before passing to Compose `PathParser`.
+ */
+internal fun normalizeSvgPathArcFlags(d: String): String {
+    val sb = StringBuilder(d.length + 64)
+    var i = 0
+    val n = d.length
+    var currentCmd = ' '
+    var argIndexInCmd = 0
+
+    fun skipSeparators() {
+        while (i < n && (d[i].isWhitespace() || d[i] == ',')) i++
+    }
+
+    fun readNumberToken(): String {
+        val start = i
+        if (i < n && (d[i] == '+' || d[i] == '-')) i++
+        var sawDot = false
+        while (i < n) {
+            val c = d[i]
+            if (c.isDigit()) {
+                i++
+            } else if (c == '.' && !sawDot) {
+                sawDot = true
+                i++
+            } else if (c == 'e' || c == 'E') {
+                i++
+                if (i < n && (d[i] == '+' || d[i] == '-')) i++
+            } else {
+                break
+            }
+        }
+        return d.substring(start, i)
+    }
+
+    while (true) {
+        skipSeparators()
+        if (i >= n) break
+        val ch = d[i]
+        if (ch.isLetter()) {
+            currentCmd = ch
+            argIndexInCmd = 0
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append(ch)
+            i++
+            continue
+        }
+        val isArcCmd = currentCmd == 'A' || currentCmd == 'a'
+        val tuplePos = if (isArcCmd) (argIndexInCmd % 7) else -1
+        if (isArcCmd && (tuplePos == 3 || tuplePos == 4) && (ch == '0' || ch == '1')) {
+            sb.append(' ').append(ch)
+            i++
+            argIndexInCmd++
+        } else {
+            val numTok = readNumberToken()
+            if (numTok.isEmpty()) {
+                i++
+            } else {
+                sb.append(' ').append(numTok)
+                argIndexInCmd++
+            }
+        }
+    }
+    return sb.toString()
+}
+
+internal fun parseSvgPathNormalized(dStr: String): Path {
+    val normalized = normalizeSvgPathArcFlags(dStr)
+    return PathParser().parsePathString(normalized).toPath().apply {
+        fillType = PathFillType.EvenOdd
+    }
+}
+
+/**
  * Renders the official AI Lab / Model SVG icon (`viewBox="0 0 24 24"`) for any model ID or provider.
  * Uses the embedded `@lobehub/icons-static-svg` paths for instant 0ms rendering and automatically
  * fetches + caches `.svg` paths from `lobehub/lobe-icons` online for any novel lab slug.
@@ -1128,11 +1203,7 @@ fun ModelLabSvgIcon(
 
     val parsedVectorPaths = remember(rawPaths) {
         rawPaths?.mapNotNull { dStr ->
-            runCatching {
-                PathParser().parsePathString(dStr).toPath().apply {
-                    fillType = PathFillType.EvenOdd
-                }
-            }.getOrNull()
+            runCatching { parseSvgPathNormalized(dStr) }.getOrNull()
         }.orEmpty()
     }
 

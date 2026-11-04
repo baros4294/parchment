@@ -16,9 +16,11 @@ import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
+import io.parchment.ai.ui.BUILTIN_LAB_SVG_PATHS
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
 import io.parchment.ai.ui.formatDurationFromMs
+import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -570,6 +572,19 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("20m21.2s", formatDurationFromMs(1_221_200L))
         assertEquals("2h15m", formatDurationFromMs(8_145_000L))
         assertEquals("1d4h15m", formatDurationFromMs(101_700_000L))
+
+        // 13. Verify SVGO Arc-Flag Normalization keeps all 18 official Lab SVG Icons strictly inside 24x24 viewBox
+        for ((slug, pathList) in BUILTIN_LAB_SVG_PATHS) {
+            assertTrue(pathList.isNotEmpty(), "Lab '$slug' must have at least one SVG path")
+            for (dStr in pathList) {
+                val parsed = parseSvgPathNormalized(dStr)
+                val bounds = parsed.getBounds()
+                assertTrue(
+                    bounds.left >= -1.5f && bounds.top >= -1.5f && bounds.right <= 25.5f && bounds.bottom <= 25.5f,
+                    "Lab '$slug' SVG bounds $bounds overflowed 24x24 viewBox!"
+                )
+            }
+        }
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {
