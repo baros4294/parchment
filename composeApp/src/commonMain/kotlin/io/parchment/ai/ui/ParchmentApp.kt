@@ -455,18 +455,21 @@ fun ParchmentApp(
     }
 
     fun updateActiveSession(immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
-        val targetId = activeSession.id
-        val newSessions = appState.sessions.map {
+        val currentSnap = appState
+        val targetId = currentSnap.sessions.find { it.id == currentSnap.activeSessionId }?.id
+            ?: currentSnap.sessions.firstOrNull()?.id ?: return
+        val newSessions = currentSnap.sessions.map {
             if (it.id == targetId) transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis()) else it
         }
-        persist(appState.copy(sessions = newSessions), immediateFlush = immediate)
+        persist(currentSnap.copy(sessions = newSessions), immediateFlush = immediate)
     }
 
     fun updateSessionById(sessionId: String, immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
-        val newSessions = appState.sessions.map {
+        val currentSnap = appState
+        val newSessions = currentSnap.sessions.map {
             if (it.id == sessionId) transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis()) else it
         }
-        persist(appState.copy(sessions = newSessions), immediateFlush = immediate)
+        persist(currentSnap.copy(sessions = newSessions), immediateFlush = immediate)
     }
 
     fun updateActiveSessionInMemoryOnly(sessionId: String, transform: (ChatSession) -> ChatSession) {
@@ -479,13 +482,14 @@ fun ParchmentApp(
     }
 
     fun updateActiveProfile(transform: (ProviderProfile) -> ProviderProfile) {
-        val targetProfId = activeProfile.id
-        val newProfiles = appState.profiles.map {
+        val currentSnap = appState
+        val targetProfId = currentSnap.profiles.find { it.id == currentSnap.activeProfileId }?.id
+            ?: currentSnap.profiles.firstOrNull()?.id ?: return
+        val newProfiles = currentSnap.profiles.map {
             if (it.id == targetProfId) transform(it) else it
         }
-        persist(appState.copy(profiles = newProfiles), immediateFlush = true)
+        persist(currentSnap.copy(profiles = newProfiles), immediateFlush = true)
     }
-
     fun updateProfileById(profileId: String, transform: (ProviderProfile) -> ProviderProfile) {
         val newProfiles = appState.profiles.map {
             if (it.id == profileId) transform(it) else it
@@ -564,10 +568,10 @@ fun ParchmentApp(
     }
 
     // Automatically look up pricing & context window from models.dev when active model changes
-    LaunchedEffect(activeProfile.id, activeProfile.defaultModel) {
-        val currentModel = activeProfile.defaultModel.trim()
-        if (currentModel.isNotEmpty()) {
-            val savedCustom = activeProfile.customModelSpecs[currentModel]
+    val currentEffectiveModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.trim()
+    LaunchedEffect(activeProfile.id, currentEffectiveModel) {
+        if (currentEffectiveModel.isNotEmpty()) {
+            val savedCustom = activeProfile.customModelSpecs[currentEffectiveModel]
             if (savedCustom != null) {
                 updateProfileById(activeProfile.id) {
                     it.copy(
@@ -581,7 +585,7 @@ fun ParchmentApp(
                     )
                 }
             } else {
-                ModelsDevClient.fetchModelSpec(currentModel).onSuccess { spec ->
+                ModelsDevClient.fetchModelSpec(currentEffectiveModel).onSuccess { spec ->
                     updateProfileById(activeProfile.id) {
                         it.copy(
                             contextWindowTokens = spec.contextWindowTokens,
@@ -589,7 +593,8 @@ fun ParchmentApp(
                             outputPricePerM = spec.outputPricePerM,
                             cacheReadPricePerM = spec.cacheReadPricePerM,
                             cacheWritePricePerM = spec.cacheWritePricePerM,
-                            reasoningPricePerM = spec.reasoningPricePerM
+                            reasoningPricePerM = spec.reasoningPricePerM,
+                            customModelSpecs = it.customModelSpecs + (currentEffectiveModel to spec)
                         )
                     }
                 }
@@ -626,14 +631,21 @@ fun ParchmentApp(
             }
             val prompt = "${dm.titlePromptTemplate}\n\nConversation:\n$transcriptSnippet"
 
-            AiProviderEngine.generateUtilityText(resolvedProf, resolvedModel, prompt).onSuccess { genTitle ->
-                val cleaned = genTitle.lines().firstOrNull()?.trim()?.removeSurrounding("\"")?.take(60).orEmpty()
-                if (cleaned.isNotBlank()) {
-                    updateSessionById(sessionId, immediate = true) { s ->
-                        if (!forceRegenerate && s.isTitleManuallySet) s else s.copy(title = cleaned)
+            AiProviderEngine.generateUtilityText(resolvedProf, resolvedModel, prompt).fold(
+                onSuccess = { genTitle ->
+                    val cleaned = genTitle.lines().firstOrNull()?.trim()?.removeSurrounding("\"")?.take(60).orEmpty()
+                    if (cleaned.isNotBlank()) {
+                        updateSessionById(sessionId, immediate = true) { s ->
+                            if (!forceRegenerate && s.isTitleManuallySet) s else s.copy(title = cleaned)
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    if (forceRegenerate) {
+                        bannerNotification = "Title generation failed: ${err.message}"
                     }
                 }
-            }
+            )
         }
     }
 
@@ -1563,6 +1575,167 @@ fun ParchmentApp(
         }
     }
 
+    /**
+     * Unified Regenerate Dispatcher supporting BOTH:
+     * 1. User turns (`targetNode.role == MessageRole.USER`): deletes all Assistant / subsequent turns below
+     *    the User message, appends a fresh Assistant turn right below it, and streams a new response.
+     * 2. Assistant turns (`targetNode.role == MessageRole.ASSISTANT`): honors `deleteMessagesBelowWhenRegenerating`
+     *    (truncating subsequent turns) and `deletePreviousMessageWhenRegenerating` (replacing ONLY the active
+     *    swipe variant in-place instead of wiping out other swipe versions).
+     */
+    fun executeRegenerateFromNode(nodeIndex: Int) {
+        val curSnap = appState
+        val sess = curSnap.sessions.find { it.id == curSnap.activeSessionId }
+            ?: curSnap.sessions.firstOrNull() ?: return
+        val targetNode = sess.messages.getOrNull(nodeIndex) ?: return
+
+        // Cancel any active stream on this session before mutating the message list
+        activeStreamsBySession[sess.id]?.job?.cancel()
+        updateSessionStreamState(sess.id) { null }
+
+        val now = PlatformBridge.currentTimeMillis()
+        val curProf = curSnap.profiles.find { it.id == sess.profileId } ?: curSnap.profiles.first()
+        val modelUsed = sess.modelOverride.ifBlank { curProf.defaultModel }
+
+        if (targetNode.role == MessageRole.USER) {
+            // Regenerating under a User message ALWAYS deletes all Assistant/subsequent messages below it
+            val historyUpToUser = sess.messages.subList(0, nodeIndex + 1)
+            val newAsstNodeId = "node-$now-regen-a"
+            val newVarId = "var-$now-regen-a"
+            val newAsstNode = MessageNode(
+                id = newAsstNodeId,
+                role = MessageRole.ASSISTANT,
+                variants = listOf(
+                    MessageVariant(
+                        id = newVarId,
+                        content = "",
+                        modelUsed = modelUsed,
+                        providerProtocol = curProf.protocol,
+                        isStreaming = true,
+                        createdAt = now
+                    )
+                )
+            )
+            val updatedMessages = historyUpToUser + newAsstNode
+            updateSessionById(sess.id, immediate = true) { it.copy(messages = updatedMessages) }
+            triggerGeneration(
+                sessionId = sess.id,
+                historyForCall = historyUpToUser,
+                targetAssistantNodeId = newAsstNodeId,
+                targetVariantId = newVarId
+            )
+        } else {
+            val historyBefore = sess.messages.subList(0, nodeIndex)
+            val newVarId = "var-$now-regen"
+            val newVar = MessageVariant(
+                id = newVarId,
+                content = "",
+                modelUsed = modelUsed,
+                providerProtocol = curProf.protocol,
+                isStreaming = true,
+                createdAt = now
+            )
+            val prefs = curSnap.preferences
+            val activeVarIdx = targetNode.activeVariantIndex.coerceIn(0, (targetNode.variants.size - 1).coerceAtLeast(0))
+            val newVariants = if (prefs.deletePreviousMessageWhenRegenerating && targetNode.variants.isNotEmpty()) {
+                // Replace ONLY the currently active swipe variant in-place, preserving all other swipe versions!
+                targetNode.variants.mapIndexed { vIdx, v -> if (vIdx == activeVarIdx) newVar else v }
+            } else {
+                targetNode.variants + newVar
+            }
+            val newIdx = if (prefs.deletePreviousMessageWhenRegenerating && targetNode.variants.isNotEmpty()) {
+                activeVarIdx
+            } else {
+                newVariants.lastIndex
+            }
+            val baseList = if (prefs.deleteMessagesBelowWhenRegenerating) {
+                sess.messages.subList(0, nodeIndex + 1)
+            } else {
+                sess.messages
+            }
+            updateSessionById(sess.id, immediate = true) { s ->
+                val sliced = if (prefs.deleteMessagesBelowWhenRegenerating) {
+                    s.messages.take(nodeIndex + 1)
+                } else {
+                    s.messages
+                }
+                s.copy(
+                    messages = sliced.mapIndexed { idx, n ->
+                        if (idx == nodeIndex) n.copy(variants = newVariants, activeVariantIndex = newIdx) else n
+                    }
+                )
+            }
+            triggerGeneration(
+                sessionId = sess.id,
+                historyForCall = historyBefore,
+                targetAssistantNodeId = targetNode.id,
+                targetVariantId = newVarId
+            )
+        }
+    }
+
+    /**
+     * Translates a turn into `defaultModels.translationTargetLanguage` using the configured Translation Model
+     * and adds the translated passage as a new swipeable version branch on that turn.
+     */
+    fun triggerTranslateNode(nodeIndex: Int) {
+        val curSnap = appState
+        val sess = curSnap.sessions.find { it.id == curSnap.activeSessionId }
+            ?: curSnap.sessions.firstOrNull() ?: return
+        val targetNode = sess.messages.getOrNull(nodeIndex) ?: return
+        val sourceText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content).trim()
+        if (sourceText.isEmpty()) return
+
+        val dm = curSnap.defaultModels
+        val targetLang = dm.translationTargetLanguage.ifBlank { "English" }.trim()
+        val transProf = if (!dm.translationFollowGlobal && dm.translationProfileId.isNotBlank()) {
+            curSnap.profiles.find { it.id == dm.translationProfileId } ?: activeProfile
+        } else {
+            curSnap.profiles.find { it.id == sess.profileId } ?: activeProfile
+        }
+        val transModel = if (!dm.translationFollowGlobal && dm.translationModelId.isNotBlank()) {
+            dm.translationModelId
+        } else {
+            sess.modelOverride.ifBlank { transProf.defaultModel }.ifBlank { dm.globalModelId }
+        }
+        if (transModel.isBlank()) {
+            bannerNotification = "Select a model first to translate messages."
+            return
+        }
+        bannerNotification = "Translating turn #${nodeIndex + 1} to $targetLang ($transModel)…"
+        appProcessScope.launch {
+            val prompt = "Translate the following passage accurately and naturally into $targetLang. Preserve all Markdown formatting, code blocks, and tone. Return ONLY the translated text without introductory commentary:\n\n$sourceText"
+            AiProviderEngine.generateUtilityText(transProf, transModel, prompt).fold(
+                onSuccess = { translated ->
+                    if (translated.isNotBlank()) {
+                        val now = PlatformBridge.currentTimeMillis()
+                        updateSessionById(sess.id, immediate = true) { s ->
+                            s.copy(
+                                messages = s.messages.mapIndexed { idx, n ->
+                                    if (idx != nodeIndex) n
+                                    else {
+                                        val newVar = n.activeVariant.copy(
+                                            id = "var-trans-$now",
+                                            content = translated,
+                                            modelUsed = "${n.activeVariant.modelUsed.ifBlank { transModel }} ($targetLang)",
+                                            providerInteractionId = "",
+                                            createdAt = now
+                                        )
+                                        val updatedVars = n.variants + newVar
+                                        n.copy(variants = updatedVars, activeVariantIndex = updatedVars.lastIndex)
+                                    }
+                                }
+                            )
+                        }
+                        bannerNotification = "Translated turn #${nodeIndex + 1} to $targetLang (added as swipe version)."
+                    }
+                },
+                onFailure = { err ->
+                    bannerNotification = "Translation failed: ${err.message}"
+                }
+            )
+        }
+    }
     fun triggerVoiceInput() {
         if (isVoiceListening) {
             PlatformBridge.stopVoiceInput()
@@ -2483,48 +2656,14 @@ fun ParchmentApp(
                                     onUpdateSession = { transform -> updateActiveSession(immediate = true, transform = transform) },
                                     onUpdateProfile = ::updateActiveProfile,
                                     onRegenerateNode = { nodeIndex ->
-                                        val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return@ManuscriptViewport
-                                        if (targetNode.role != MessageRole.ASSISTANT) return@ManuscriptViewport
                                         if (appState.preferences.confirmBeforeRegenerating) {
                                             pendingRegenerateConfirmNodeIndex = nodeIndex
-                                            return@ManuscriptViewport
-                                        }
-                                        val historyBefore = activeSession.messages.subList(0, nodeIndex)
-                                        val now = PlatformBridge.currentTimeMillis()
-                                        val newVarId = "var-$now-regen"
-                                        val newVar = MessageVariant(
-                                            id = newVarId,
-                                            content = "",
-                                            modelUsed = activeSession.modelOverride.ifBlank { activeProfile.defaultModel },
-                                            providerProtocol = activeProfile.protocol,
-                                            isStreaming = true,
-                                            createdAt = now
-                                        )
-                                        val prefs = appState.preferences
-                                        val newVariants = if (prefs.deletePreviousMessageWhenRegenerating) {
-                                            listOf(newVar)
                                         } else {
-                                            targetNode.variants + newVar
+                                            executeRegenerateFromNode(nodeIndex)
                                         }
-                                        val newIdx = newVariants.lastIndex
-                                        val baseList = if (prefs.deleteMessagesBelowWhenRegenerating) {
-                                            activeSession.messages.subList(0, nodeIndex + 1)
-                                        } else {
-                                            activeSession.messages
-                                        }
-                                        updateActiveSession(immediate = true) { sess ->
-                                            sess.copy(
-                                                messages = baseList.mapIndexed { idx, n ->
-                                                    if (idx == nodeIndex) n.copy(variants = newVariants, activeVariantIndex = newIdx) else n
-                                                }
-                                            )
-                                        }
-                                        triggerGeneration(
-                                            sessionId = activeSession.id,
-                                            historyForCall = historyBefore,
-                                            targetAssistantNodeId = targetNode.id,
-                                            targetVariantId = newVarId
-                                        )
+                                    },
+                                    onTranslateNode = { nodeIndex ->
+                                        triggerTranslateNode(nodeIndex)
                                     },
                                     onContinueAssistantNode = { nodeIndex ->
                                         val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return@ManuscriptViewport
@@ -2766,45 +2905,7 @@ fun ParchmentApp(
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = {
                                                 pendingRegenerateConfirmNodeIndex = null
-                                                val targetNode = activeSession.messages.getOrNull(regenNodeIdx)
-                                                if (targetNode != null && targetNode.role == MessageRole.ASSISTANT) {
-                                                    val historyBefore = activeSession.messages.subList(0, regenNodeIdx)
-                                                    val now = PlatformBridge.currentTimeMillis()
-                                                    val newVarId = "var-$now-regen"
-                                                    val newVar = MessageVariant(
-                                                        id = newVarId,
-                                                        content = "",
-                                                        modelUsed = activeSession.modelOverride.ifBlank { activeProfile.defaultModel },
-                                                        providerProtocol = activeProfile.protocol,
-                                                        isStreaming = true,
-                                                        createdAt = now
-                                                    )
-                                                    val prefs = appState.preferences
-                                                    val newVariants = if (prefs.deletePreviousMessageWhenRegenerating) {
-                                                        listOf(newVar)
-                                                    } else {
-                                                        targetNode.variants + newVar
-                                                    }
-                                                    val newIdx = newVariants.lastIndex
-                                                    val baseList = if (prefs.deleteMessagesBelowWhenRegenerating) {
-                                                        activeSession.messages.subList(0, regenNodeIdx + 1)
-                                                    } else {
-                                                        activeSession.messages
-                                                    }
-                                                    updateActiveSession(immediate = true) { sess ->
-                                                        sess.copy(
-                                                            messages = baseList.mapIndexed { idx, n ->
-                                                                if (idx == regenNodeIdx) n.copy(variants = newVariants, activeVariantIndex = newIdx) else n
-                                                            }
-                                                        )
-                                                    }
-                                                    triggerGeneration(
-                                                        sessionId = activeSession.id,
-                                                        historyForCall = historyBefore,
-                                                        targetAssistantNodeId = targetNode.id,
-                                                        targetVariantId = newVarId
-                                                    )
-                                                }
+                                                executeRegenerateFromNode(regenNodeIdx)
                                             }
                                         )
                                     }
@@ -3910,6 +4011,7 @@ private fun ManuscriptViewport(
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
     onRegenerateNode: (Int) -> Unit,
+    onTranslateNode: (Int) -> Unit = {},
     onContinueAssistantNode: (Int) -> Unit
 ) {
     val p = LocalParchmentPalette.current
@@ -4211,7 +4313,7 @@ private fun ManuscriptViewport(
                                 )
                             }
                         },
-                        onSaveEditedText = { newText, asNewBranch ->
+                        onSaveEditedText = { newText, asNewBranch, alsoRegenerate ->
                             val now = PlatformBridge.currentTimeMillis()
                             onUpdateSession { sess ->
                                 sess.copy(
@@ -4235,6 +4337,9 @@ private fun ManuscriptViewport(
                                     }
                                 )
                             }
+                            if (alsoRegenerate) {
+                                onRegenerateNode(index)
+                            }
                         },
                         onToggleContextMute = {
                             onUpdateSession { sess ->
@@ -4245,6 +4350,23 @@ private fun ManuscriptViewport(
                                 )
                             }
                         },
+                        onDeleteCurrentVariant = {
+                            onUpdateSession { sess ->
+                                val target = sess.messages.getOrNull(index) ?: return@onUpdateSession sess
+                                if (target.variants.size <= 1) {
+                                    sess.copy(messages = sess.messages.filterIndexed { i, _ -> i != index })
+                                } else {
+                                    val curVarIdx = target.activeVariantIndex.coerceIn(0, target.variants.lastIndex)
+                                    val remainingVars = target.variants.filterIndexed { vIdx, _ -> vIdx != curVarIdx }
+                                    val nextVarIdx = curVarIdx.coerceAtMost(remainingVars.lastIndex)
+                                    sess.copy(
+                                        messages = sess.messages.mapIndexed { i, n ->
+                                            if (i == index) n.copy(variants = remainingVars, activeVariantIndex = nextVarIdx) else n
+                                        }
+                                    )
+                                }
+                            }
+                        },
                         onDeleteNode = {
                             onUpdateSession { sess ->
                                 sess.copy(messages = sess.messages.filterIndexed { i, _ -> i != index })
@@ -4253,6 +4375,7 @@ private fun ManuscriptViewport(
                         onForkHere = { onForkSessionFromNode(index) },
                         onRewindHere = { onRewindToNode(index) },
                         onRegenerate = { onRegenerateNode(index) },
+                        onTranslate = { onTranslateNode(index) },
                         onContinue = { onContinueAssistantNode(index) },
                         onInspectAttachment = onInspectAttachment,
                         onInspectGeneratedImage = onInspectGeneratedImage
@@ -5018,9 +5141,12 @@ private fun ManuscriptViewport(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                                val activeModId = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
+                                val effectiveCtxWindow = activeProfile.customModelSpecs[activeModId]?.contextWindowTokens
+                                    ?: activeProfile.contextWindowTokens
                                 SepiaContextGaugeRing(
                                     usedTokens = liveContextTokens,
-                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    contextLimitTokens = effectiveCtxWindow,
                                     sessionCostUsd = sessionTotalCostUsd,
                                     onClick = onOpenPricingSettings
                                 )
@@ -5082,12 +5208,14 @@ private fun MessageTurnItem(
     providerName: String,
     isActivelyThinkingThisNode: Boolean,
     onSelectVariant: (Int) -> Unit,
-    onSaveEditedText: (String, Boolean) -> Unit,
+    onSaveEditedText: (String, Boolean, Boolean) -> Unit,
     onToggleContextMute: () -> Unit,
+    onDeleteCurrentVariant: () -> Unit = {},
     onDeleteNode: () -> Unit,
     onForkHere: () -> Unit,
     onRewindHere: () -> Unit = {},
     onRegenerate: () -> Unit,
+    onTranslate: () -> Unit = {},
     onContinue: () -> Unit,
     onInspectAttachment: (PromptAttachment) -> Unit = {},
     onInspectGeneratedImage: (GeneratedMediaItem) -> Unit = {}
@@ -5175,11 +5303,29 @@ private fun MessageTurnItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (isAssistant && preferences.showModelIcon) {
-                    SepiaAvatarCircle(
-                        symbol = assistantIconEmoji,
-                        selected = true,
-                        sizeDp = 22.dp
-                    )
+                    if (characterName.isNotBlank() && assistantIconEmoji != "💬") {
+                        SepiaAvatarCircle(
+                            symbol = assistantIconEmoji,
+                            selected = true,
+                            sizeDp = 22.dp
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(p.accent.copy(alpha = 0.14f))
+                                .border(0.8.dp, p.accent.copy(alpha = 0.55f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            ModelLabSvgIcon(
+                                modelOrProvider = activeVar.modelUsed.ifBlank { providerName },
+                                tint = p.accent,
+                                size = 13.dp,
+                                fallbackProtocolName = providerName
+                            )
+                        }
+                    }
                 } else if (!isAssistant && preferences.showUserAvatar) {
                     Box(
                         modifier = Modifier
@@ -5372,6 +5518,31 @@ private fun MessageTurnItem(
 
                 @Composable
                 fun RenderToolExecutionCard(tc: ToolCallRecord) {
+                    val lowerTool = tc.name.lowercase()
+                    if (lowerTool == "fs_edit" || lowerTool == "fs_write") {
+                        val parsedObj: JsonObject? = remember(tc.argumentsJson) {
+                            runCatching { compactStateJson.parseToJsonElement(tc.argumentsJson) as? JsonObject }.getOrNull()
+                        }
+                        val pathStr = parsedObj?.get("path")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val oldTxt = if (lowerTool == "fs_edit") {
+                            parsedObj?.get("old_text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        } else ""
+                        val newTxt = if (lowerTool == "fs_edit") {
+                            parsedObj?.get("new_text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        } else {
+                            parsedObj?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        }
+                        SepiaFileDiffCard(
+                            filePath = pathStr,
+                            actionLabel = if (lowerTool == "fs_edit") "Edited" else "Wrote",
+                            oldText = oldTxt,
+                            newText = newTxt,
+                            resultSummary = tc.resultText,
+                            isError = tc.isError
+                        )
+                        return
+                    }
+
                     var isToolResultExpanded by remember(tc.id) { mutableStateOf(false) }
                     val toolIcon = remember(tc.name) { resolveToolKissIcon(tc.name) }
                     Column(
@@ -5665,12 +5836,24 @@ private fun MessageTurnItem(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (!isAssistant) {
+                        SepiaButton(
+                            text = "↻ Save & Regenerate",
+                            compact = true,
+                            style = SepiaButtonStyle.PRIMARY,
+                            onClick = {
+                                val asBranch = !preferences.deletePreviousMessageWhenRegenerating
+                                onSaveEditedText(editBuffer, asBranch, true)
+                                isEditing = false
+                            }
+                        )
+                    }
                     SepiaButton(
                         text = "Save",
                         compact = true,
-                        style = SepiaButtonStyle.PRIMARY,
+                        style = if (isAssistant) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.OUTLINE,
                         onClick = {
-                            onSaveEditedText(editBuffer, false)
+                            onSaveEditedText(editBuffer, false, false)
                             isEditing = false
                         }
                     )
@@ -5679,7 +5862,7 @@ private fun MessageTurnItem(
                         compact = true,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
-                            onSaveEditedText(editBuffer, true)
+                            onSaveEditedText(editBuffer, true, false)
                             isEditing = false
                         }
                     )
@@ -6023,14 +6206,12 @@ private fun MessageTurnItem(
                             }
                         )
                     }
-                    if (isAssistant) {
-                        SepiaButton(
-                            text = "↻ Redo",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onRegenerate
-                        )
-                    }
+                    SepiaButton(
+                        text = if (isAssistant) "↻ Redo" else "↻ Regenerate",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = onRegenerate
+                    )
                     SepiaButton(
                         text = if (showMoreActions) "▾ Less" else "⋯",
                         compact = true,
@@ -6065,6 +6246,14 @@ private fun MessageTurnItem(
                                 isEditing = !isEditing
                             }
                         )
+                        if (activeVar.content.isNotBlank()) {
+                            SepiaButton(
+                                text = "Translate",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onTranslate
+                            )
+                        }
                         SepiaButton(
                             text = "⑂ Branch",
                             compact = true,
@@ -6091,12 +6280,27 @@ private fun MessageTurnItem(
                                 onClick = { showRawWireDrawer = !showRawWireDrawer }
                             )
                         }
-                        SepiaButton(
-                            text = "🗑 Delete",
-                            compact = true,
-                            style = SepiaButtonStyle.GHOST,
-                            onClick = onDeleteNode
-                        )
+                        if (node.variants.size > 1) {
+                            SepiaButton(
+                                text = "🗑 Delete Swipe (${node.activeVariantIndex + 1}/${node.variants.size})",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onDeleteCurrentVariant
+                            )
+                            SepiaButton(
+                                text = "🗑 Delete Turn",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onDeleteNode
+                            )
+                        } else {
+                            SepiaButton(
+                                text = "🗑 Delete",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = onDeleteNode
+                            )
+                        }
                     }
                 }
 

@@ -1369,11 +1369,21 @@ private fun ProvidersSubpage(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    SepiaAvatarCircle(
-                                        symbol = prof.name.take(1).uppercase(),
-                                        selected = isSel,
-                                        sizeDp = 26.dp
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(26.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isSel) p.accent.copy(alpha = 0.16f) else p.elevatedBg)
+                                            .border(0.8.dp, if (isSel) p.accent else p.border, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        ModelLabSvgIcon(
+                                            modelOrProvider = prof.defaultModel.ifBlank { prof.name },
+                                            tint = if (isSel) p.accent else p.narrationInk,
+                                            size = 14.dp,
+                                            fallbackProtocolName = prof.protocol.displayName
+                                        )
+                                    }
                                     BasicText(
                                         text = prof.name,
                                         maxLines = 1,
@@ -1476,11 +1486,21 @@ private fun ProvidersSubpage(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    SepiaAvatarCircle(
-                                        symbol = prof.name.take(1).uppercase(),
-                                        selected = isSel,
-                                        sizeDp = 34.dp
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isSel) p.accent.copy(alpha = 0.16f) else p.elevatedBg)
+                                            .border(0.8.dp, if (isSel) p.accent else p.border, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        ModelLabSvgIcon(
+                                            modelOrProvider = prof.defaultModel.ifBlank { prof.name },
+                                            tint = if (isSel) p.accent else p.narrationInk,
+                                            size = 17.dp,
+                                            fallbackProtocolName = prof.protocol.displayName
+                                        )
+                                    }
                                     Column(
                                         modifier = Modifier.weight(1f),
                                         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -1539,6 +1559,7 @@ private fun ProvidersSubpage(
                                         onClick = {
                                             onAddProfile(proto)
                                             showAddProviderMenu = false
+                                            mobileEditingProfileId = "newly-added"
                                         }
                                     )
                                 }
@@ -1589,7 +1610,10 @@ private fun ProvidersSubpage(
                     return@Column
                 }
 
-                // Main Provider Detail Header (Matching Screenshot 9: `zAI ⚙` + Enable Switch)
+                // Main Provider Detail Header with Inline Editable Name + Enable Switch
+                var isRenamingProvider by remember(activeProfile.id) { mutableStateOf(false) }
+                var providerNameBuffer by remember(activeProfile.id, activeProfile.name) { mutableStateOf(activeProfile.name) }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1601,11 +1625,54 @@ private fun ProvidersSubpage(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        BasicText(
-                            text = activeProfile.name,
-                            style = p.uiHeaderStyle.copy(fontSize = 18.sp),
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
+                        if (isRenamingProvider) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SepiaTextField(
+                                    value = providerNameBuffer,
+                                    onValueChange = { providerNameBuffer = it },
+                                    placeholder = "Provider Name…",
+                                    minHeight = 32.dp,
+                                    modifier = Modifier.width(210.dp)
+                                )
+                                SepiaButton(
+                                    text = "Save",
+                                    compact = true,
+                                    style = SepiaButtonStyle.PRIMARY,
+                                    onClick = {
+                                        val cleanName = providerNameBuffer.trim().ifBlank { "Custom Provider" }
+                                        onUpdateProfileById(activeProfile.id) { it.copy(name = cleanName) }
+                                        isRenamingProvider = false
+                                    }
+                                )
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .kissClickable { isRenamingProvider = true }
+                                    .padding(top = 2.dp)
+                            ) {
+                                ModelLabSvgIcon(
+                                    modelOrProvider = activeProfile.defaultModel.ifBlank { activeProfile.name },
+                                    tint = p.accent,
+                                    size = 17.dp,
+                                    fallbackProtocolName = activeProfile.protocol.displayName
+                                )
+                                BasicText(
+                                    text = activeProfile.name,
+                                    style = p.uiHeaderStyle.copy(fontSize = 18.sp)
+                                )
+                                KissVectorIcon(
+                                    icon = KissIcon.EDIT,
+                                    tint = p.mutedInk,
+                                    size = 13.dp
+                                )
+                            }
+                        }
                         SepiaButton(
                             text = "⚙ Protocol & Params",
                             compact = true,
@@ -1621,7 +1688,7 @@ private fun ProvidersSubpage(
                     }
                     SepiaToggleSwitch(
                         checked = activeProfile.enabled,
-                        onCheckedChange = { en -> onUpdateProfile { it.copy(enabled = en) } }
+                        onCheckedChange = { en -> onUpdateProfileById(activeProfile.id) { it.copy(enabled = en) } }
                     )
                 }
 
@@ -1669,7 +1736,7 @@ private fun ProvidersSubpage(
                         value = if (showApiKey) activeProfile.apiKey else "•".repeat(activeProfile.apiKey.length.coerceAtMost(48)),
                         onValueChange = { newVal ->
                             if (showApiKey || activeProfile.apiKey.isEmpty()) {
-                                onUpdateProfile { it.copy(apiKey = newVal.trim()) }
+                                onUpdateProfileById(activeProfile.id) { it.copy(apiKey = newVal.trim()) }
                             }
                         },
                         placeholder = "Paste API Key (click 👁 Show to edit masked key)…",
@@ -1678,15 +1745,46 @@ private fun ProvidersSubpage(
                     )
                 }
 
-                // API Base URL
-                SepiaTextField(
-                    value = activeProfile.baseUrl,
-                    onValueChange = { url -> onUpdateProfile { it.copy(baseUrl = url.trim()) } },
-                    label = "API Base URL",
-                    placeholder = activeProfile.protocol.defaultBaseUrl,
-                    monospace = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // API Base URL (Keyed by activeProfile.id with 1-tap Clear / Reset Default buttons)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = "API Base URL",
+                            style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold, color = p.narrationInk)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (activeProfile.baseUrl.isNotEmpty()) {
+                                SepiaButton(
+                                    text = "× Clear URL",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { onUpdateProfileById(activeProfile.id) { it.copy(baseUrl = "") } }
+                                )
+                            }
+                            if (activeProfile.baseUrl != activeProfile.protocol.defaultBaseUrl) {
+                                SepiaButton(
+                                    text = "↺ Default URL",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = {
+                                        onUpdateProfileById(activeProfile.id) { it.copy(baseUrl = activeProfile.protocol.defaultBaseUrl) }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    SepiaTextField(
+                        value = activeProfile.baseUrl,
+                        onValueChange = { url -> onUpdateProfileById(activeProfile.id) { it.copy(baseUrl = url) } },
+                        placeholder = activeProfile.protocol.defaultBaseUrl,
+                        monospace = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 Spacer(Modifier.height(4.dp))
 
@@ -1927,10 +2025,11 @@ private fun ProvidersSubpage(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    KissVectorIcon(
-                                        icon = if (isSelectedModel) KissIcon.SPARKLES else KissIcon.CIRCLE_EMPTY,
-                                        tint = if (isSelectedModel || rowHovered) p.accent else p.mutedInk,
-                                        size = 13.dp
+                                    ModelLabSvgIcon(
+                                        modelOrProvider = modelId,
+                                        tint = if (isSelectedModel || rowHovered) p.accent else p.narrationInk,
+                                        size = 14.5.dp,
+                                        fallbackProtocolName = activeProfile.protocol.displayName
                                     )
                                     BasicText(
                                         text = modelId,
@@ -2552,6 +2651,96 @@ private fun AssistantsSubpage(
                     )
                 }
             }
+            SepiaSectionCard(
+                title = "Assistant Model, Thinking Effort & Workspace",
+                subtitle = "Bind this Assistant to a dedicated provider/model or local project directory"
+            ) {
+                val scope = rememberCoroutineScope()
+                val followsGlobalModel = editingAssistant.defaultModelId.isBlank()
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SepiaToggleRow(
+                        title = "Follow Global Default Model",
+                        checked = followsGlobalModel,
+                        onCheckedChange = { follow ->
+                            if (follow) {
+                                updateCurrent { it.copy(defaultProfileId = "", defaultModelId = "") }
+                            } else {
+                                val fallbackProf = appState.profiles.find { it.id == appState.activeProfileId } ?: appState.profiles.first()
+                                updateCurrent {
+                                    it.copy(
+                                        defaultProfileId = fallbackProf.id,
+                                        defaultModelId = fallbackProf.defaultModel.ifBlank { fallbackProf.savedModels.firstOrNull().orEmpty() }
+                                    )
+                                }
+                            }
+                        }
+                    )
+                    AnimatedVisibility(visible = !followsGlobalModel) {
+                        SepiaSearchableModelPicker(
+                            profiles = appState.profiles,
+                            selectedProfileId = editingAssistant.defaultProfileId.ifBlank { appState.activeProfileId },
+                            selectedModelId = editingAssistant.defaultModelId,
+                            onSelectModel = { profId, modId ->
+                                updateCurrent { it.copy(defaultProfileId = profId, defaultModelId = modId) }
+                            },
+                            maxListHeight = 200.dp
+                        )
+                    }
+                    SepiaDivider()
+                    SepiaAdaptiveRow(label = "Thinking Effort Override") {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Inherit", "none" to "None", "low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "XHigh").forEach { (effVal, effLabel) ->
+                                SepiaChip(
+                                    label = effLabel,
+                                    selected = editingAssistant.thinkingEffort.equals(effVal, ignoreCase = true),
+                                    onClick = { updateCurrent { it.copy(thinkingEffort = effVal) } }
+                                )
+                            }
+                        }
+                    }
+                    SepiaDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = if (editingAssistant.workspacePath.isBlank()) "Workspace: None" else "Workspace: ${editingAssistant.workspacePath}",
+                            style = p.monoStyle.copy(fontSize = 11.5.sp),
+                            modifier = Modifier.weight(1f).padding(end = 8.dp)
+                        )
+                        SepiaButton(
+                            text = "📂 Mount Folder…",
+                            compact = true,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = {
+                                scope.launch {
+                                    val picked = PlatformBridge.pickWorkspaceDirectory(editingAssistant.workspacePath)
+                                    if (!picked.isNullOrBlank()) {
+                                        updateCurrent {
+                                            it.copy(
+                                                workspacePath = picked,
+                                                workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        WorkspaceMode.entries.forEach { mode ->
+                            SepiaChip(
+                                label = mode.label,
+                                selected = editingAssistant.workspaceMode == mode,
+                                onClick = { updateCurrent { it.copy(workspaceMode = mode) } }
+                            )
+                        }
+                    }
+                }
+            }
 
             SepiaSectionCard(
                 title = "Assistant Sampling & Context Overrides (Blank = Strip / Follow Profile, 0 = Unlimited)",
@@ -2858,12 +3047,30 @@ private fun DefaultModelSubpage(
             }
         }
 
-        // 4. Translation Model
+        // 4. Translation Model & Target Language
         SepiaSectionCard(
-            title = "4. Translation Model",
-            subtitle = "Used for translating messages or passages"
+            title = "4. Translation Model & Target Language",
+            subtitle = "Used when clicking 'Translate' inside any message's action menu"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SepiaTextField(
+                    value = defaultModels.translationTargetLanguage,
+                    onValueChange = { lang -> onUpdateDefaultModels(defaultModels.copy(translationTargetLanguage = lang)) },
+                    label = "Target Language for In-Chat Translation",
+                    placeholder = "English, Vietnamese, Japanese, Spanish…",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("English", "Vietnamese", "Japanese", "Chinese", "Korean", "Spanish", "French", "German").forEach { lang ->
+                        SepiaChip(
+                            label = lang,
+                            selected = defaultModels.translationTargetLanguage.equals(lang, ignoreCase = true),
+                            onClick = { onUpdateDefaultModels(defaultModels.copy(translationTargetLanguage = lang)) }
+                        )
+                    }
+                }
+                SepiaDivider()
                 SepiaToggleRow(
                     title = "Follow Global Choice (Use Current Global Model)",
                     checked = defaultModels.translationFollowGlobal,
@@ -3102,11 +3309,140 @@ private fun WorldBookAndCardsSubpage(
             }
         }
 
+        // Saved Character Cards Library & System Prompt Presets Library
+        if (appState.savedCards.isNotEmpty()) {
+            SepiaSectionCard(
+                title = "Saved Character & Scenario Cards Library (${appState.savedCards.size})",
+                subtitle = "Click 'Apply' to activate any saved card in the current chat"
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    appState.savedCards.forEach { savedCard ->
+                        val isActive = activeSession.activeCard?.name == savedCard.name
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isActive) p.accent.copy(alpha = 0.14f) else p.elevatedBg.copy(alpha = 0.45f))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                BasicText(
+                                    text = savedCard.name.ifBlank { "Untitled Card" },
+                                    style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = if (isActive) p.accent else p.primaryInk)
+                                )
+                                BasicText(
+                                    text = savedCard.description.take(90).ifBlank { "No description" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiLabelStyle
+                                )
+                            }
+                            SepiaButton(
+                                text = if (isActive) "✓ Active" else "Apply",
+                                compact = true,
+                                style = if (isActive) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    val mergedFrags = (activeSession.fragments + savedCard.embeddedFragments).distinctBy { it.title }
+                                    onUpdateSession { it.copy(activeCard = savedCard, fragments = mergedFrags) }
+                                    onNotify("Applied card '${savedCard.name}'.")
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (appState.systemPromptPresets.isNotEmpty() || activeSession.systemPrompt.isNotBlank()) {
+            SepiaSectionCard(
+                title = "System Prompt Presets Library (${appState.systemPromptPresets.size})",
+                subtitle = "Save and reuse system prompts across sessions",
+                headerAction = {
+                    if (activeSession.systemPrompt.isNotBlank()) {
+                        SepiaButton(
+                            text = "+ Save Current Prompt",
+                            compact = true,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = {
+                                val now = PlatformBridge.currentTimeMillis()
+                                val preset = SystemPromptPreset(
+                                    id = "preset-$now",
+                                    name = activeSession.title.takeIf { it != "New Chat" } ?: "Preset #${appState.systemPromptPresets.size + 1}",
+                                    systemPrompt = activeSession.systemPrompt
+                                )
+                                onSavePresetToLibrary(preset)
+                                onNotify("Saved '${preset.name}' to System Prompt Presets.")
+                            }
+                        )
+                    }
+                }
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (appState.systemPromptPresets.isEmpty()) {
+                        BasicText(
+                            text = "No saved presets yet. Import a .PNG/.JSON prompt preset or click '+ Save Current Prompt'.",
+                            style = p.uiLabelStyle
+                        )
+                    }
+                    appState.systemPromptPresets.forEach { preset ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(p.elevatedBg.copy(alpha = 0.45f))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                BasicText(text = preset.name, style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
+                                BasicText(text = preset.systemPrompt, maxLines = 1, overflow = TextOverflow.Ellipsis, style = p.uiLabelStyle)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                SepiaButton(
+                                    text = "Apply",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = {
+                                        onUpdateSession { it.copy(systemPrompt = preset.systemPrompt) }
+                                        onNotify("Applied System Prompt '${preset.name}'.")
+                                    }
+                                )
+                                SepiaButton(
+                                    text = "×",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { onDeletePresetFromLibrary(preset.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        var editingGlobalWorldBook by remember { mutableStateOf(false) }
+        val displayedFragments = if (editingGlobalWorldBook) appState.globalWorldBook else activeSession.fragments
+
         SepiaSectionCard(
-            title = "World Book / Lore Fragments (${activeSession.fragments.size} entries)",
+            title = "World Book / Lore Fragments (${displayedFragments.size} entries)",
             subtitle = "Pinned or keyword-triggered lore entries injected into context automatically"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaChip(
+                        label = "This Chat (${activeSession.fragments.size})",
+                        selected = !editingGlobalWorldBook,
+                        onClick = { editingGlobalWorldBook = false }
+                    )
+                    SepiaChip(
+                        label = "Global World Book (${appState.globalWorldBook.size})",
+                        selected = editingGlobalWorldBook,
+                        onClick = { editingGlobalWorldBook = true }
+                    )
+                }
                 if (win.isCompact) {
                     SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry Title", modifier = Modifier.fillMaxWidth())
                     SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger Keywords (comma-separated)", modifier = Modifier.fillMaxWidth())
@@ -3118,7 +3454,7 @@ private fun WorldBookAndCardsSubpage(
                 }
                 SepiaTextField(value = fragContent, onValueChange = { fragContent = it }, label = "Lore Content", singleLine = false, minHeight = 56.dp)
                 SepiaButton(
-                    text = "+ Add World Book Entry",
+                    text = if (editingGlobalWorldBook) "+ Add to Global World Book" else "+ Add to Chat World Book",
                     compact = true,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
@@ -3131,7 +3467,11 @@ private fun WorldBookAndCardsSubpage(
                                 keywords = keys,
                                 mode = if (keys.isEmpty()) FragmentActivationMode.PINNED else FragmentActivationMode.KEYWORD
                             )
-                            onUpdateSession { it.copy(fragments = it.fragments + frag) }
+                            if (editingGlobalWorldBook) {
+                                onUpdateGlobalWorldBook(appState.globalWorldBook + frag)
+                            } else {
+                                onUpdateSession { it.copy(fragments = it.fragments + frag) }
+                            }
                             fragTitle = ""
                             fragKeywords = ""
                             fragContent = ""
@@ -3139,7 +3479,7 @@ private fun WorldBookAndCardsSubpage(
                     }
                 )
 
-                activeSession.fragments.forEach { frag ->
+                displayedFragments.forEach { frag ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -3163,8 +3503,14 @@ private fun WorldBookAndCardsSubpage(
                                         FragmentActivationMode.KEYWORD -> FragmentActivationMode.MUTED
                                         FragmentActivationMode.MUTED -> FragmentActivationMode.PINNED
                                     }
-                                    onUpdateSession { s ->
-                                        s.copy(fragments = s.fragments.map { if (it.id == frag.id) it.copy(mode = next) else it })
+                                    if (editingGlobalWorldBook) {
+                                        onUpdateGlobalWorldBook(
+                                            appState.globalWorldBook.map { if (it.id == frag.id) it.copy(mode = next) else it }
+                                        )
+                                    } else {
+                                        onUpdateSession { s ->
+                                            s.copy(fragments = s.fragments.map { if (it.id == frag.id) it.copy(mode = next) else it })
+                                        }
                                     }
                                 }
                             )
@@ -3173,7 +3519,11 @@ private fun WorldBookAndCardsSubpage(
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
-                                    onUpdateSession { s -> s.copy(fragments = s.fragments.filterNot { it.id == frag.id }) }
+                                    if (editingGlobalWorldBook) {
+                                        onUpdateGlobalWorldBook(appState.globalWorldBook.filterNot { it.id == frag.id })
+                                    } else {
+                                        onUpdateSession { s -> s.copy(fragments = s.fragments.filterNot { it.id == frag.id }) }
+                                    }
                                 }
                             )
                         }

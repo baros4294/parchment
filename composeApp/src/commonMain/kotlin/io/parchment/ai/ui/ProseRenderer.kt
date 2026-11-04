@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -234,16 +235,25 @@ fun LiteraryProseRenderer(
                             AnimatedVisibility(visible = !isCollapsed) {
                                 Column {
                                     SepiaDivider()
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(11.dp)
-                                    ) {
-                                        BasicText(
-                                            text = block.code,
-                                            style = p.monoStyle
+                                    val isDiffLang = block.language.equals("diff", ignoreCase = true) ||
+                                        block.language.equals("patch", ignoreCase = true)
+                                    if (isDiffLang) {
+                                        SepiaRawDiffLinesView(
+                                            rawDiffText = block.code,
+                                            modifier = Modifier.padding(vertical = 4.dp)
                                         )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState())
+                                                .padding(11.dp)
+                                        ) {
+                                            BasicText(
+                                                text = block.code,
+                                                style = p.monoStyle
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -259,7 +269,15 @@ fun LiteraryProseRenderer(
                     }
 
                     is ProseBlock.TableBlock -> {
-                        val shape = RoundedCornerShape(7.dp)
+                        val win = LocalParchmentWindowSize.current
+                        var copiedTable by remember(index) { mutableStateOf(false) }
+                        val colCount = maxOf(
+                            block.headers.size,
+                            block.rows.maxOfOrNull { it.size } ?: 0
+                        ).coerceAtLeast(1)
+                        val needsHorizontalScroll = colCount >= 4 || win.isCompact
+                        val shape = RoundedCornerShape(8.dp)
+
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -268,46 +286,89 @@ fun LiteraryProseRenderer(
                                 .background(p.cardBg)
                                 .border(0.85.dp, p.border, shape)
                         ) {
-                            if (block.headers.isNotEmpty()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(p.sheetBg)
-                                        .padding(horizontal = 10.dp, vertical = 7.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    block.headers.forEach { h ->
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            BasicText(
-                                                text = styleLiteraryParagraph(h, p, 0, enableMath, enableInlineDollarMath),
-                                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
-                                            )
-                                        }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(p.sheetBg.copy(alpha = 0.7f))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BasicText(
+                                    text = "Table ($colCount cols × ${block.rows.size} rows)",
+                                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
+                                )
+                                SepiaButton(
+                                    text = if (copiedTable) "✓ Copied" else "📋 Copy",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = {
+                                        val tsv = buildString {
+                                            if (block.headers.isNotEmpty()) {
+                                                appendLine(block.headers.joinToString("\t"))
+                                            }
+                                            block.rows.forEach { r ->
+                                                appendLine(r.joinToString("\t"))
+                                            }
+                                        }.trim()
+                                        clipboard.setText(AnnotatedString(tsv))
+                                        copiedTable = true
                                     }
-                                }
-                                SepiaDivider()
+                                )
                             }
-                            block.rows.forEachIndexed { rIdx, rowCells ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(if (rIdx % 2 == 1) p.elevatedBg.copy(alpha = 0.35f) else p.cardBg)
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    val colCount = maxOf(block.headers.size, rowCells.size).coerceAtLeast(1)
-                                    for (cIdx in 0 until colCount) {
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            val cellText = rowCells.getOrElse(cIdx) { "" }
-                                            BasicText(
-                                                text = styleLiteraryParagraph(cellText, p, 0, enableMath, enableInlineDollarMath),
-                                                style = p.uiBodyStyle
-                                            )
+                            SepiaDivider()
+
+                            val tableBodyMod = if (needsHorizontalScroll) {
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                            } else {
+                                Modifier.fillMaxWidth()
+                            }
+                            Column(modifier = tableBodyMod) {
+                                if (block.headers.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(p.sheetBg)
+                                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        for (cIdx in 0 until colCount) {
+                                            val h = block.headers.getOrElse(cIdx) { "" }
+                                            Box(
+                                                modifier = if (needsHorizontalScroll) Modifier.width(145.dp) else Modifier.weight(1f)
+                                            ) {
+                                                BasicText(
+                                                    text = styleLiteraryParagraph(h, p, 0, enableMath, enableInlineDollarMath),
+                                                    style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold)
+                                                )
+                                            }
                                         }
                                     }
-                                }
-                                if (rIdx < block.rows.lastIndex) {
                                     SepiaDivider()
+                                }
+                                block.rows.forEachIndexed { rIdx, rowCells ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(if (rIdx % 2 == 1) p.elevatedBg.copy(alpha = 0.35f) else p.cardBg)
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        for (cIdx in 0 until colCount) {
+                                            val cellText = rowCells.getOrElse(cIdx) { "" }
+                                            Box(
+                                                modifier = if (needsHorizontalScroll) Modifier.width(145.dp) else Modifier.weight(1f)
+                                            ) {
+                                                BasicText(
+                                                    text = styleLiteraryParagraph(cellText, p, 0, enableMath, enableInlineDollarMath),
+                                                    style = p.uiBodyStyle
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (rIdx < block.rows.lastIndex) {
+                                        SepiaDivider()
+                                    }
                                 }
                             }
                         }

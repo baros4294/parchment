@@ -16,6 +16,9 @@ import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
+import io.parchment.ai.ui.DiffLineKind
+import io.parchment.ai.ui.computeUnifiedLineDiff
+import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -542,8 +545,25 @@ class ParchmentProtocolAndHarnessTest {
         val compactedOverflow = AiProviderEngine.compactHistoryNodesOnOverflow(sixTurnHistory)
         assertTrue(compactedOverflow.first().activeVariant.content.contains("Auto-Compacted Earlier Conversation Continuity Digest"))
         assertEquals(4, compactedOverflow.count { it.includedInContext }, "Digest node + 3 newest turns must remain active after compacting 3 oldest of 6 turns")
-    }
 
+        // 11. Verify LCS Unified Line Diff Engine (Green ADDED / Red REMOVED / CONTEXT) & Official Lab SVG Slug Resolver
+        val diffLines = computeUnifiedLineDiff(
+            oldText = "fun hello() {\n    println(\"old\")\n}",
+            newText = "fun hello() {\n    println(\"new1\")\n    println(\"new2\")\n}"
+        )
+        assertEquals(1, diffLines.count { it.kind == DiffLineKind.REMOVED && it.text.contains("old") })
+        assertEquals(2, diffLines.count { it.kind == DiffLineKind.ADDED && it.text.contains("new") })
+        assertEquals(2, diffLines.count { it.kind == DiffLineKind.CONTEXT })
+
+        assertEquals("gemini", resolveLabSlugForModelOrProvider("gemini-4-argon"))
+        assertEquals("openai", resolveLabSlugForModelOrProvider("gpt-5-pro"))
+        assertEquals("openai", resolveLabSlugForModelOrProvider("o3-mini"))
+        assertEquals("claude", resolveLabSlugForModelOrProvider("anthropic/claude-sonnet-4"))
+        assertEquals("deepseek", resolveLabSlugForModelOrProvider("deepseek-ai/DeepSeek-R1"))
+        assertEquals("grok", resolveLabSlugForModelOrProvider("x-ai/grok-4"))
+        assertEquals("qwen", resolveLabSlugForModelOrProvider("Qwen/Qwen3-235B"))
+        assertEquals("doubao", resolveLabSlugForModelOrProvider("seedream-4-0"))
+    }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {
         val tempRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-shell-${PlatformBridge.currentTimeMillis()}"

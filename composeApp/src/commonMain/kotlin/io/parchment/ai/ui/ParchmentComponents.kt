@@ -1343,10 +1343,11 @@ fun SepiaSearchableModelPicker(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            KissVectorIcon(
-                                icon = if (isSel) KissIcon.SPARKLES else KissIcon.CPU,
-                                tint = if (isSel || isHovered) p.accent else p.mutedInk,
-                                size = 13.dp
+                            ModelLabSvgIcon(
+                                modelOrProvider = opt.modelId,
+                                tint = if (isSel || isHovered) p.accent else p.narrationInk,
+                                size = 14.5.dp,
+                                fallbackProtocolName = opt.profileName
                             )
                             BasicText(
                                 text = opt.modelId,
@@ -1400,6 +1401,337 @@ fun SepiaSearchableModelPicker(
                     }
                 }
             }
+        }
+    }
+}
+
+// ============================================================================================
+// GIT / GITHUB-STYLE GREEN & RED UNIFIED LINE DIFF ENGINE (`fs_edit`, `fs_write`, & ```diff)
+// ============================================================================================
+enum class DiffLineKind {
+    CONTEXT,
+    REMOVED,
+    ADDED,
+    COLLAPSED
+}
+
+data class DiffLine(
+    val kind: DiffLineKind,
+    val text: String
+)
+
+/**
+ * Computes a clean unified line-by-line diff using LCS (Longest Common Subsequence) with
+ * automatic collapsing of long unchanged context regions (> 6 lines).
+ */
+fun computeUnifiedLineDiff(oldText: String, newText: String): List<DiffLine> {
+    val oldLines = if (oldText.isEmpty()) emptyList() else oldText.replace("\r\n", "\n").lines()
+    val newLines = if (newText.isEmpty()) emptyList() else newText.replace("\r\n", "\n").lines()
+    if (oldLines.isEmpty() && newLines.isEmpty()) return emptyList()
+    if (oldLines.isEmpty()) {
+        return newLines.take(120).map { DiffLine(DiffLineKind.ADDED, it) }
+    }
+    if (newLines.isEmpty()) {
+        return oldLines.take(120).map { DiffLine(DiffLineKind.REMOVED, it) }
+    }
+
+    // Cap LCS matrix dimensions on huge files for 0ms UI responsiveness
+    val maxDim = 180
+    if (oldLines.size > maxDim || newLines.size > maxDim) {
+        val removed = oldLines.take(80).map { DiffLine(DiffLineKind.REMOVED, it) }
+        val added = newLines.take(80).map { DiffLine(DiffLineKind.ADDED, it) }
+        return removed + added
+    }
+
+    val m = oldLines.size
+    val n = newLines.size
+    val dp = Array(m + 1) { IntArray(n + 1) }
+    for (i in m - 1 downTo 0) {
+        for (j in n - 1 downTo 0) {
+            dp[i][j] = if (oldLines[i] == newLines[j]) {
+                1 + dp[i + 1][j + 1]
+            } else {
+                maxOf(dp[i + 1][j], dp[i][j + 1])
+            }
+        }
+    }
+
+    val rawDiff = mutableListOf<DiffLine>()
+    var i = 0
+    var j = 0
+    while (i < m && j < n) {
+        if (oldLines[i] == newLines[j]) {
+            rawDiff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[i]))
+            i++
+            j++
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            rawDiff.add(DiffLine(DiffLineKind.REMOVED, oldLines[i]))
+            i++
+        } else {
+            rawDiff.add(DiffLine(DiffLineKind.ADDED, newLines[j]))
+            j++
+        }
+    }
+    while (i < m) {
+        rawDiff.add(DiffLine(DiffLineKind.REMOVED, oldLines[i]))
+        i++
+    }
+    while (j < n) {
+        rawDiff.add(DiffLine(DiffLineKind.ADDED, newLines[j]))
+        j++
+    }
+
+    // Collapse runs of > 6 consecutive CONTEXT lines to keep the diff focused
+    val compacted = mutableListOf<DiffLine>()
+    var idx = 0
+    while (idx < rawDiff.size) {
+        if (rawDiff[idx].kind == DiffLineKind.CONTEXT) {
+            var endCtx = idx
+            while (endCtx < rawDiff.size && rawDiff[endCtx].kind == DiffLineKind.CONTEXT) {
+                endCtx++
+            }
+            val runLen = endCtx - idx
+            if (runLen > 6) {
+                compacted.add(rawDiff[idx])
+                compacted.add(rawDiff[idx + 1])
+                compacted.add(DiffLine(DiffLineKind.COLLAPSED, "⋯ ${runLen - 4} unchanged lines ⋯"))
+                compacted.add(rawDiff[endCtx - 2])
+                compacted.add(rawDiff[endCtx - 1])
+            } else {
+                for (k in idx until endCtx) compacted.add(rawDiff[k])
+            }
+            idx = endCtx
+        } else {
+            compacted.add(rawDiff[idx])
+            idx++
+        }
+    }
+    return compacted
+}
+
+@Composable
+fun SepiaDiffLinesList(
+    diffLines: List<DiffLine>,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    val addedColor = Color(0xFF2E7D32)
+    val removedColor = p.danger
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp)
+    ) {
+        diffLines.forEach { line ->
+            when (line.kind) {
+                DiffLineKind.REMOVED -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(removedColor.copy(alpha = 0.14f))
+                            .padding(end = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.5.dp)
+                                .height(20.dp)
+                                .background(removedColor)
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        BasicText(
+                            text = "- ${line.text}",
+                            style = p.monoStyle.copy(color = removedColor, fontSize = 11.5.sp)
+                        )
+                    }
+                }
+                DiffLineKind.ADDED -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(addedColor.copy(alpha = 0.14f))
+                            .padding(end = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.5.dp)
+                                .height(20.dp)
+                                .background(addedColor)
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        BasicText(
+                            text = "+ ${line.text}",
+                            style = p.monoStyle.copy(color = addedColor, fontSize = 11.5.sp)
+                        )
+                    }
+                }
+                DiffLineKind.COLLAPSED -> {
+                    BasicText(
+                        text = line.text,
+                        style = p.uiLabelStyle.copy(
+                            color = p.mutedInk,
+                            fontFamily = p.codeFontFamily,
+                            fontSize = 10.5.sp
+                        ),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
+                DiffLineKind.CONTEXT -> {
+                    BasicText(
+                        text = "  ${line.text}",
+                        style = p.monoStyle.copy(color = p.narrationInk, fontSize = 11.5.sp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SepiaRawDiffLinesView(
+    rawDiffText: String,
+    modifier: Modifier = Modifier
+) {
+    val parsed = remember(rawDiffText) {
+        rawDiffText.lines().map { rawLine ->
+            when {
+                rawLine.startsWith("+") && !rawLine.startsWith("+++") ->
+                    DiffLine(DiffLineKind.ADDED, rawLine.removePrefix("+").removePrefix(" "))
+                rawLine.startsWith("-") && !rawLine.startsWith("---") ->
+                    DiffLine(DiffLineKind.REMOVED, rawLine.removePrefix("-").removePrefix(" "))
+                rawLine.startsWith("@@") ->
+                    DiffLine(DiffLineKind.COLLAPSED, rawLine)
+                else ->
+                    DiffLine(DiffLineKind.CONTEXT, rawLine.removePrefix(" "))
+            }
+        }
+    }
+    SepiaDiffLinesList(diffLines = parsed, modifier = modifier)
+}
+
+@Composable
+fun SepiaFileDiffCard(
+    filePath: String,
+    actionLabel: String,
+    oldText: String,
+    newText: String,
+    resultSummary: String = "",
+    isError: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalParchmentPalette.current
+    val diffLines = remember(oldText, newText) { computeUnifiedLineDiff(oldText, newText) }
+    val addedCount = remember(diffLines) { diffLines.count { it.kind == DiffLineKind.ADDED } }
+    val removedCount = remember(diffLines) { diffLines.count { it.kind == DiffLineKind.REMOVED } }
+    var showDiffBody by remember { mutableStateOf(true) }
+    val addedGreen = Color(0xFF2E7D32)
+    val shape = RoundedCornerShape(8.dp)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(p.cardBg)
+            .border(
+                width = 0.85.dp,
+                color = if (isError) p.danger.copy(alpha = 0.7f) else p.border.copy(alpha = 0.8f),
+                shape = shape
+            )
+    ) {
+        // Diff Card Header Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(p.sheetBg.copy(alpha = 0.85f))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                KissVectorIcon(
+                    icon = KissIcon.DIFF,
+                    tint = if (isError) p.danger else p.accent,
+                    size = 13.5.dp
+                )
+                BasicText(
+                    text = actionLabel,
+                    style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                )
+                BasicText(
+                    text = filePath.ifBlank { "workspace file" },
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                )
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (addedCount > 0) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(addedGreen.copy(alpha = 0.16f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        BasicText(
+                            text = "+$addedCount",
+                            style = p.monoStyle.copy(color = addedGreen, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                        )
+                    }
+                }
+                if (removedCount > 0) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(p.danger.copy(alpha = 0.16f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        BasicText(
+                            text = "−$removedCount",
+                            style = p.monoStyle.copy(color = p.danger, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                        )
+                    }
+                }
+                if (diffLines.isNotEmpty()) {
+                    SepiaButton(
+                        text = if (showDiffBody) "▾ Hide Diff" else "▸ Show Diff",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = { showDiffBody = !showDiffBody }
+                    )
+                }
+            }
+        }
+
+        if (isError && resultSummary.isNotBlank()) {
+            SepiaDivider()
+            BasicText(
+                text = resultSummary,
+                style = p.monoStyle.copy(color = p.danger, fontSize = 11.sp),
+                modifier = Modifier.padding(9.dp)
+            )
+        } else if (showDiffBody && diffLines.isNotEmpty()) {
+            SepiaDivider()
+            SepiaDiffLinesList(diffLines = diffLines)
+        } else if (resultSummary.isNotBlank()) {
+            SepiaDivider()
+            BasicText(
+                text = resultSummary,
+                style = p.monoStyle.copy(color = p.narrationInk, fontSize = 11.sp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
         }
     }
 }

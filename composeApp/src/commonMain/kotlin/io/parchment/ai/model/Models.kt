@@ -413,7 +413,7 @@ data class PreferencesConfig(
     val collapseThinkingSteps: Boolean = false,
     val showToolResultSummary: Boolean = true,
     val collapseLongMessages: Boolean = false,
-    val deleteMessagesBelowWhenRegenerating: Boolean = false,
+    val deleteMessagesBelowWhenRegenerating: Boolean = true,
     val deletePreviousMessageWhenRegenerating: Boolean = false,
     val confirmBeforeRegenerating: Boolean = false,
     val confirmBeforeDeletingChat: Boolean = true,

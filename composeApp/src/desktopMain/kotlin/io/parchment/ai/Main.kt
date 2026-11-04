@@ -75,8 +75,10 @@ import org.jetbrains.skia.Image
 import java.awt.Component
 import java.awt.Container
 import java.awt.Cursor
+import java.awt.GraphicsEnvironment
 import java.awt.MouseInfo
 import java.awt.Rectangle
+import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
@@ -145,6 +147,24 @@ private fun attachDropTargetRecursively(component: Component, createTarget: () -
                 attachDropTargetRecursively(child, createTarget)
             }
         }
+    }
+}
+
+private fun computeUsableMaximizedBounds(window: java.awt.Window): Rectangle {
+    return runCatching {
+        val gc = window.graphicsConfiguration
+            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration
+        val screenBounds = gc.bounds
+        val insets = Toolkit.getDefaultToolkit().getScreenInsets(gc)
+        val x = screenBounds.x + insets.left
+        val y = screenBounds.y + insets.top
+        val w = (screenBounds.width - insets.left - insets.right).coerceAtLeast(640)
+        // Keep 1px margin when all insets are 0 so Windows 11 auto-hide taskbar can still trigger
+        val bottomInset = if (insets.bottom == 0 && insets.top == 0 && insets.left == 0 && insets.right == 0) 1 else insets.bottom
+        val h = (screenBounds.height - insets.top - bottomInset).coerceAtLeast(480)
+        Rectangle(x, y, w, h)
+    }.getOrElse {
+        GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
     }
 }
 
@@ -335,9 +355,18 @@ fun main() {
                     )
                 }
                 attachDropTargetRecursively(window, makeDropTarget)
+                window.maximizedBounds = computeUsableMaximizedBounds(window)
             }
             val isMaximized = windowState.placement == WindowPlacement.Maximized ||
                 windowState.placement == WindowPlacement.Fullscreen
+
+            LaunchedEffect(window, isMaximized) {
+                val usable = computeUsableMaximizedBounds(window)
+                window.maximizedBounds = usable
+                if (isMaximized && window.bounds != usable) {
+                    window.bounds = usable
+                }
+            }
 
             Box(modifier = Modifier.fillMaxSize()) {
                 ParchmentApp(
