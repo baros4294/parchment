@@ -88,7 +88,9 @@ enum class KissIcon {
     TERMINAL,
     SLIDERS,
     SHIELD_CHECK,
-    CPU
+    CPU,
+    USER,
+    LAYOUT_GRID
 }
 
 fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()) {
@@ -158,6 +160,8 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "🎵" -> return ParsedLabelWithIcons(KissIcon.AUDIO, "", null)
         "🎙" -> return ParsedLabelWithIcons(KissIcon.MIC, "", null)
         "🗂" -> return ParsedLabelWithIcons(KissIcon.TABS, "", null)
+        "⊞" -> return ParsedLabelWithIcons(KissIcon.LAYOUT_GRID, "", null)
+        "👤" -> return ParsedLabelWithIcons(KissIcon.USER, "", null)
         "🔊" -> return ParsedLabelWithIcons(KissIcon.VOLUME_ON, "", null)
         "🔇" -> return ParsedLabelWithIcons(KissIcon.VOLUME_OFF, "", null)
     }
@@ -916,6 +920,19 @@ private fun DrawScope.drawKissIconPath(
             line(3f, 15f, 6f, 15f)
             line(18f, 9f, 21f, 9f)
             line(18f, 15f, 21f, 15f)
+        }
+        KissIcon.USER -> {
+            drawCircle(color, radius = 4f * s, center = pt(12f, 8f), style = stroke)
+            path {
+                moveTo(5f * s, 20f * s)
+                cubicTo(5f * s, 15.5f * s, 19f * s, 15.5f * s, 19f * s, 20f * s)
+            }
+        }
+        KissIcon.LAYOUT_GRID -> {
+            drawRoundRect(color, pt(3.5f, 3.5f), Size(7f * s, 7f * s), CornerRadius(1.5f * s), stroke)
+            drawRoundRect(color, pt(13.5f, 3.5f), Size(7f * s, 7f * s), CornerRadius(1.5f * s), stroke)
+            drawRoundRect(color, pt(3.5f, 13.5f), Size(7f * s, 7f * s), CornerRadius(1.5f * s), stroke)
+            drawRoundRect(color, pt(13.5f, 13.5f), Size(7f * s, 7f * s), CornerRadius(1.5f * s), stroke)
         }
     }
 }

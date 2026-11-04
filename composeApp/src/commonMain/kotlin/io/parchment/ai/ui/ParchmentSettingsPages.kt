@@ -92,6 +92,7 @@ fun ParchmentSettingsScreen(
     activeProfile: ProviderProfile,
     activeSession: ChatSession,
     initialCategory: SettingsCategory,
+    startAtMobileRoot: Boolean = false,
     otaState: OtaUpdateState,
     onSelectProfile: (String) -> Unit,
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
@@ -175,8 +176,18 @@ fun ParchmentSettingsScreen(
                     }
                     Spacer(Modifier.height(6.dp))
 
+                    val categoryMatchCounts = remember(settingsSearchQuery, appState, activeProfile, activeSession) {
+                        val q = settingsSearchQuery.trim()
+                        if (q.isEmpty()) emptyMap()
+                        else SettingsCategory.entries.associateWith { cat ->
+                            countCategorySearchMatches(cat, q, appState, activeProfile, activeSession)
+                        }
+                    }
+
                     SettingsCategory.entries.forEach { cat ->
                         val isSelected = selectedCategory == cat
+                        val matchCount = categoryMatchCounts[cat] ?: 0
+                        val isHighlightedBySearch = settingsSearchQuery.isNotBlank() && matchCount > 0
                         val shape = RoundedCornerShape(10.dp)
                         val catIcon = remember(cat.icon) { parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS }
                         val interactionSource = remember { MutableInteractionSource() }
@@ -189,34 +200,57 @@ fun ParchmentSettingsScreen(
                                     pressScale = 0.97f,
                                     hoverScale = 1.01f,
                                     interactionSource = interactionSource,
-                                    onClick = { selectedCategory = cat }
+                                    onClick = {
+                                        selectedCategory = cat
+                                        settingsSearchQuery = ""
+                                    }
                                 )
                                 .clip(shape)
                                 .background(
                                     when {
                                         isSelected -> p.accent.copy(alpha = 0.16f)
+                                        isHighlightedBySearch -> p.accent.copy(alpha = 0.10f)
                                         isPressed -> p.accent.copy(alpha = 0.12f)
                                         isHovered -> p.accent.copy(alpha = 0.08f)
                                         else -> Color.Transparent
                                     }
                                 )
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            KissVectorIcon(
-                                icon = catIcon,
-                                tint = if (isSelected || isHovered || isPressed) p.accent else p.narrationInk,
-                                size = 15.dp
-                            )
-                            BasicText(
-                                text = cat.label,
-                                style = p.uiBodyStyle.copy(
-                                    color = if (isSelected || isHovered || isPressed) p.accent else p.primaryInk,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                    fontSize = 13.5.sp
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                KissVectorIcon(
+                                    icon = catIcon,
+                                    tint = if (isSelected || isHovered || isPressed || isHighlightedBySearch) p.accent else p.narrationInk,
+                                    size = 15.dp
                                 )
-                            )
+                                BasicText(
+                                    text = cat.label,
+                                    style = p.uiBodyStyle.copy(
+                                        color = if (isSelected || isHovered || isPressed || isHighlightedBySearch) p.accent else p.primaryInk,
+                                        fontWeight = if (isSelected || isHighlightedBySearch) FontWeight.SemiBold else FontWeight.Normal,
+                                        fontSize = 13.5.sp
+                                    )
+                                )
+                            }
+                            if (settingsSearchQuery.isNotBlank() && matchCount > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(p.accent.copy(alpha = 0.18f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    BasicText(
+                                        text = matchCount.toString(),
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.Bold)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -269,50 +303,96 @@ fun ParchmentSettingsScreen(
                 }
             }
         } else {
-            // Compact / Portrait Mobile Layout: Clean top category bar + full-width subpage + swipe-right-to-return-to-chat
+            // Compact / Portrait Mobile Layout:
+            // Hierarchical Vertical Root Menu List -> Subpage Drill-Down (Zero awkward horizontal chip strip!)
+            var mobileOpenedCategory by remember(initialCategory, startAtMobileRoot) {
+                mutableStateOf<SettingsCategory?>(if (startAtMobileRoot) null else initialCategory)
+            }
             var dragX by remember { mutableStateOf(0f) }
+
+            fun categorySubtitle(cat: SettingsCategory): String = when (cat) {
+                SettingsCategory.PREFERENCES -> "Theme (${appState.theme.name.substringBefore(" (")}), fonts, display & behavior"
+                SettingsCategory.PROVIDERS -> "${activeProfile.name} • ${appState.profiles.size} provider profile(s)"
+                SettingsCategory.ASSISTANTS -> "${appState.assistants.size} assistant persona(s) & system prompts"
+                SettingsCategory.DEFAULT_MODEL -> {
+                    val curModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { "Not selected" }
+                    "Global, topic title, summary & translation ($curModel)"
+                }
+                SettingsCategory.WORKSPACE -> "Sandboxed local file agent (${activeSession.workspaceMode.label}) & shell_exec"
+                SettingsCategory.WORLD_BOOK -> "Character cards (PNG/JSON) & ${appState.globalWorldBook.size + activeSession.fragments.size} lore fragment(s)"
+                SettingsCategory.BACKUP_OTA -> "Installed v${OtaUpdateEngine.currentAppVersion} • JSON backup & GitHub OTA"
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
+                    .pointerInput(mobileOpenedCategory, settingsSearchQuery) {
                         detectHorizontalDragGestures(
                             onDragStart = { dragX = 0f },
                             onHorizontalDrag = { _, dragAmount -> dragX += dragAmount },
                             onDragEnd = {
                                 if (dragX > 72.dp.toPx()) {
-                                    onClose()
+                                    if (settingsSearchQuery.isNotEmpty()) {
+                                        settingsSearchQuery = ""
+                                    } else if (mobileOpenedCategory != null) {
+                                        mobileOpenedCategory = null
+                                    } else {
+                                        onClose()
+                                    }
                                 }
                                 dragX = 0f
                             }
                         )
                     }
             ) {
+                // Mobile Top Header Bar
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(p.sheetBg.copy(alpha = 0.75f))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .background(p.sheetBg.copy(alpha = 0.85f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        SepiaTextField(
-                            value = settingsSearchQuery,
-                            onValueChange = { settingsSearchQuery = it },
-                            placeholder = "🔍 Search all settings…",
-                            minHeight = 34.dp,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (settingsSearchQuery.isNotEmpty()) {
-                            SepiaButton(
-                                text = "×",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = { settingsSearchQuery = "" }
-                            )
+                        val openedCat = mobileOpenedCategory
+                        if (openedCat != null && settingsSearchQuery.isBlank()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                SepiaButton(
+                                    text = "← Settings",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = { mobileOpenedCategory = null }
+                                )
+                                val catIcon = remember(openedCat.icon) {
+                                    parseKissLabelIcons(openedCat.icon).leadingIcon ?: KissIcon.SETTINGS
+                                }
+                                KissVectorIcon(icon = catIcon, tint = p.accent, size = 15.dp)
+                                BasicText(
+                                    text = openedCat.label,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiHeaderStyle.copy(fontSize = 16.sp)
+                                )
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                KissVectorIcon(icon = KissIcon.SETTINGS, tint = p.accent, size = 17.dp)
+                                BasicText(
+                                    text = "Settings",
+                                    style = p.uiHeaderStyle.copy(fontSize = 18.sp)
+                                )
+                            }
                         }
                         SepiaButton(
                             text = "← Chat",
@@ -321,57 +401,140 @@ fun ParchmentSettingsScreen(
                             onClick = onClose
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        SettingsCategory.entries.forEach { cat ->
-                            SepiaChip(
-                                label = "${cat.icon} ${cat.label}",
-                                selected = selectedCategory == cat,
-                                onClick = { selectedCategory = cat }
+
+                    if (mobileOpenedCategory == null || settingsSearchQuery.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SepiaTextField(
+                                value = settingsSearchQuery,
+                                onValueChange = { settingsSearchQuery = it },
+                                placeholder = "🔍 Search all settings…",
+                                minHeight = 36.dp,
+                                modifier = Modifier.weight(1f)
                             )
+                            if (settingsSearchQuery.isNotEmpty()) {
+                                SepiaButton(
+                                    text = "×",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { settingsSearchQuery = "" }
+                                )
+                            }
                         }
                     }
                 }
                 SepiaDivider()
+
                 Crossfade(
-                    targetState = selectedCategory,
+                    targetState = Pair(mobileOpenedCategory, settingsSearchQuery.isNotBlank()),
                     animationSpec = tween(160),
                     modifier = Modifier.weight(1f).fillMaxWidth()
-                ) { cat ->
-                    SettingsSubpageContent(
-                        category = cat,
-                        searchQuery = settingsSearchQuery,
-                        appState = appState,
-                        activeProfile = activeProfile,
-                        activeSession = activeSession,
-                        otaState = otaState,
-                        onJumpToCategory = { targetCat ->
-                            selectedCategory = targetCat
-                            settingsSearchQuery = ""
-                        },
-                        onSelectProfile = onSelectProfile,
-                        onUpdateProfile = onUpdateProfile,
-                        onUpdateProfileById = onUpdateProfileById,
-                        onAddProfile = onAddProfile,
-                        onDeleteProfile = onDeleteProfile,
-                        onUpdateAssistants = onUpdateAssistants,
-                        onUpdateDefaultModels = onUpdateDefaultModels,
-                        onUpdatePreferences = onUpdatePreferences,
-                        onUpdateTheme = onUpdateTheme,
-                        onUpdateSession = onUpdateSession,
-                        onUpdateGlobalWorldBook = onUpdateGlobalWorldBook,
-                        onSaveCardToLibrary = onSaveCardToLibrary,
-                        onSavePresetToLibrary = onSavePresetToLibrary,
-                        onDeletePresetFromLibrary = onDeletePresetFromLibrary,
-                        onUpdateOtaSettings = onUpdateOtaSettings,
-                        onCheckOtaNow = onCheckOtaNow,
-                        onInstallOtaRelease = onInstallOtaRelease,
-                        onRestoreFullBackup = onRestoreFullBackup,
-                        onWipeAllData = onWipeAllData,
-                        onNotify = onNotify
-                    )
+                ) { (openedCat, isSearching) ->
+                    if (isSearching || openedCat != null) {
+                        SettingsSubpageContent(
+                            category = openedCat ?: selectedCategory,
+                            searchQuery = settingsSearchQuery,
+                            appState = appState,
+                            activeProfile = activeProfile,
+                            activeSession = activeSession,
+                            otaState = otaState,
+                            onJumpToCategory = { targetCat ->
+                                selectedCategory = targetCat
+                                mobileOpenedCategory = targetCat
+                                settingsSearchQuery = ""
+                            },
+                            onSelectProfile = onSelectProfile,
+                            onUpdateProfile = onUpdateProfile,
+                            onUpdateProfileById = onUpdateProfileById,
+                            onAddProfile = onAddProfile,
+                            onDeleteProfile = onDeleteProfile,
+                            onUpdateAssistants = onUpdateAssistants,
+                            onUpdateDefaultModels = onUpdateDefaultModels,
+                            onUpdatePreferences = onUpdatePreferences,
+                            onUpdateTheme = onUpdateTheme,
+                            onUpdateSession = onUpdateSession,
+                            onUpdateGlobalWorldBook = onUpdateGlobalWorldBook,
+                            onSaveCardToLibrary = onSaveCardToLibrary,
+                            onSavePresetToLibrary = onSavePresetToLibrary,
+                            onDeletePresetFromLibrary = onDeletePresetFromLibrary,
+                            onUpdateOtaSettings = onUpdateOtaSettings,
+                            onCheckOtaNow = onCheckOtaNow,
+                            onInstallOtaRelease = onInstallOtaRelease,
+                            onRestoreFullBackup = onRestoreFullBackup,
+                            onWipeAllData = onWipeAllData,
+                            onNotify = onNotify
+                        )
+                    } else {
+                        // Mobile Vertical Settings Root Menu List
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            SettingsCategory.entries.forEach { cat ->
+                                val catIcon = remember(cat.icon) {
+                                    parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS
+                                }
+                                val cardShape = RoundedCornerShape(12.dp)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(cardShape)
+                                        .background(p.cardBg)
+                                        .border(0.85.dp, p.border, cardShape)
+                                        .kissClickable(pressScale = 0.985f) {
+                                            selectedCategory = cat
+                                            mobileOpenedCategory = cat
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 13.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f).padding(end = 10.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(RoundedCornerShape(9.dp))
+                                                .background(p.accent.copy(alpha = 0.14f))
+                                                .border(0.8.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(9.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            KissVectorIcon(icon = catIcon, tint = p.accent, size = 17.dp)
+                                        }
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            BasicText(
+                                                text = cat.label,
+                                                style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.primaryInk)
+                                            )
+                                            BasicText(
+                                                text = categorySubtitle(cat),
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiLabelStyle.copy(fontSize = 11.5.sp, color = p.narrationInk)
+                                            )
+                                        }
+                                    }
+                                    KissVectorIcon(
+                                        icon = KissIcon.CHEVRON_RIGHT,
+                                        tint = p.mutedInk,
+                                        size = 15.dp
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -799,11 +962,16 @@ private fun PreferencesSubpage(
                     )
                     SepiaDivider()
                     SepiaToggleRow(
+                        title = "Show Assistant Avatar in Title Bar",
+                        checked = prefs.showAssistantAvatarInTitleBar,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(showAssistantAvatarInTitleBar = it)) }
+                    )
+                    SepiaDivider()
+                    SepiaToggleRow(
                         title = "Show User Avatar",
                         checked = prefs.showUserAvatar,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showUserAvatar = it)) }
                     )
-                    SepiaDivider()
                     SepiaToggleRow(
                         title = "Show User Name",
                         checked = prefs.showUserName,
@@ -823,11 +991,16 @@ private fun PreferencesSubpage(
                     )
                     SepiaDivider()
                     SepiaToggleRow(
+                        title = "Show Model Icon / Avatar",
+                        checked = prefs.showModelIcon,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(showModelIcon = it)) }
+                    )
+                    SepiaDivider()
+                    SepiaToggleRow(
                         title = "Show Model Name",
                         checked = prefs.showModelName,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showModelName = it)) }
                     )
-                    SepiaDivider()
                     SepiaToggleRow(
                         title = "Show Model Timestamp",
                         checked = prefs.showModelTimestamp,
@@ -918,6 +1091,13 @@ private fun PreferencesSubpage(
                         title = "Auto-collapse Code Blocks",
                         checked = prefs.autoCollapseCodeBlocks,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseCodeBlocks = it)) }
+                    )
+                    SepiaDivider()
+                    SepiaToggleRow(
+                        title = "Collapse Long Messages (> 1,800 chars)",
+                        subtitle = "Folds very long messages with an inline '▸ Read Full Message' button",
+                        checked = prefs.collapseLongMessages,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
                     )
                 }
             }
@@ -1038,7 +1218,13 @@ private fun PreferencesSubpage(
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoFollowBottom = it)) }
                     )
                     SepiaDivider()
-
+                    SepiaToggleRow(
+                        title = "Auto-compact context when reaching 85% of context limit",
+                        subtitle = "Automatically summarizes older turns into Continuity Memory & mutes them so long chats never hit token limits",
+                        checked = prefs.autoCompactWhenNearContextLimit,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
+                    )
+                    SepiaDivider()
                     // Message Navigation Buttons (Minimap) Visibility
                     SepiaAdaptiveRow(label = "Message Navigation Minimap") {
                         @OptIn(ExperimentalLayoutApi::class)
@@ -1130,6 +1316,7 @@ private fun ProvidersSubpage(
     var manualModelToAdd by remember { mutableStateOf("") }
     var showAddModelBox by remember { mutableStateOf(false) }
     var isTestingOrFetching by remember { mutableStateOf(false) }
+    var mobileEditingProfileId by remember { mutableStateOf<String?>(null) }
 
     val filteredProfiles = remember(appState.profiles, providerSearch) {
         val q = providerSearch.trim()
@@ -1256,44 +1443,128 @@ private fun ProvidersSubpage(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 if (!isWide) {
-                    // Mobile Horizontal Provider Selector
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        appState.profiles.forEach { prof ->
-                            SepiaChip(
-                                label = prof.name,
-                                selected = prof.id == activeProfile.id,
-                                onClick = { onSelectProfile(prof.id) }
-                            )
-                        }
-                        SepiaButton(
-                            text = "+ Add",
-                            compact = true,
-                            style = SepiaButtonStyle.OUTLINE,
-                            onClick = { showAddProviderMenu = !showAddProviderMenu }
+                    // Mobile Hierarchical Provider List -> Provider Detail Subpage Drill-Down
+                    if (mobileEditingProfileId == null) {
+                        BasicText(
+                            text = "Select a Provider Profile to Configure",
+                            style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                         )
-                    }
-                    AnimatedVisibility(visible = showAddProviderMenu) {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            ProviderProtocol.entries.forEach { proto ->
-                                SepiaButton(
-                                    text = "+ ${proto.displayName.substringBefore(" API")}",
-                                    compact = true,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = {
-                                        onAddProfile(proto)
-                                        showAddProviderMenu = false
+                        appState.profiles.forEach { prof ->
+                            val isSel = prof.id == activeProfile.id
+                            val statusOn = prof.enabled && (prof.apiKey.isNotBlank() || prof.baseUrl != prof.protocol.defaultBaseUrl)
+                            val shape = RoundedCornerShape(11.dp)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(shape)
+                                    .background(p.cardBg)
+                                    .border(
+                                        width = if (isSel) 1.2.dp else 0.85.dp,
+                                        color = if (isSel) p.accent else p.border,
+                                        shape = shape
+                                    )
+                                    .kissClickable(pressScale = 0.985f) {
+                                        onSelectProfile(prof.id)
+                                        mobileEditingProfileId = prof.id
                                     }
-                                )
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f).padding(end = 10.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SepiaAvatarCircle(
+                                        symbol = prof.name.take(1).uppercase(),
+                                        selected = isSel,
+                                        sizeDp = 34.dp
+                                    )
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        BasicText(
+                                            text = prof.name,
+                                            style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                                        )
+                                        val modelCountInfo = if (prof.savedModels.isNotEmpty()) "${prof.savedModels.size} models" else prof.defaultModel.ifBlank { "No models yet" }
+                                        BasicText(
+                                            text = "${prof.protocol.displayName.substringBefore(" API")} • $modelCountInfo",
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.narrationInk)
+                                        )
+                                    }
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (statusOn) Color(0xFF2E7D32).copy(alpha = 0.14f) else p.accentSecondary.copy(alpha = 0.14f))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        BasicText(
+                                            text = if (statusOn) "ON" else "OFF",
+                                            style = p.uiLabelStyle.copy(
+                                                fontSize = 9.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (statusOn) Color(0xFF2E7D32) else p.accentSecondary
+                                            )
+                                        )
+                                    }
+                                    KissVectorIcon(icon = KissIcon.CHEVRON_RIGHT, tint = p.mutedInk, size = 15.dp)
+                                }
                             }
                         }
+
+                        SepiaButton(
+                            text = "+ Add Provider Profile",
+                            style = SepiaButtonStyle.OUTLINE,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { showAddProviderMenu = !showAddProviderMenu }
+                        )
+                        AnimatedVisibility(visible = showAddProviderMenu) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                ProviderProtocol.entries.forEach { proto ->
+                                    SepiaButton(
+                                        text = "+ ${proto.displayName.substringBefore(" API")}",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        onClick = {
+                                            onAddProfile(proto)
+                                            showAddProviderMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        return@Column
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SepiaButton(
+                                text = "← All Providers",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = { mobileEditingProfileId = null }
+                            )
+                            BasicText(
+                                text = activeProfile.name,
+                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        SepiaDivider()
                     }
                 }
-
                 // If a specific model's ⚙ subpage is open, show the dedicated Per-Model Token & Pricing Subpage!
                 val configModelId = selectedModelForConfigSubpage
                 if (configModelId != null) {
@@ -1804,7 +2075,8 @@ private fun ProviderProtocolSubpage(
                     onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
                 )
                 SepiaToggleRow(
-                    title = "Use Legacy Fallback Endpoint (:streamGenerateContent or /v1/chat/completions)",
+                    title = "Smart Legacy Endpoint Fallback (:streamGenerateContent or /v1/chat/completions)",
+                    subtitle = "Tries /v1beta/interactions or /v1/responses first; if the newer protocol errors repeatedly, automatically falls back to :streamGenerateContent or /v1/chat/completions",
                     checked = profile.useLegacyFallbackEndpoint,
                     onCheckedChange = { leg -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = leg) } }
                 )
@@ -3086,10 +3358,131 @@ fun pickBestInitialChatModel(models: List<String>): String {
 }
 
 // ============================================================================================
-// UNIVERSAL CROSS-CATEGORY GLOBAL SETTINGS SEARCH ENGINE
+// UNIVERSAL CROSS-CATEGORY GLOBAL SETTINGS SEARCH ENGINE (100% ITEM-LEVEL GRANULARITY)
 // Searches across Preferences, Providers, Models, Assistants, Default Models, Workspace,
 // World Book / Lorebook, and Backup / OTA with interactive inline controls and 1-tap tab jumps!
 // ============================================================================================
+private fun matchesSearchTokens(tokens: List<String>, vararg terms: String): Boolean {
+    if (tokens.isEmpty()) return true
+    val combined = terms.joinToString(" ").lowercase()
+    return tokens.all { tok -> combined.contains(tok) }
+}
+
+private fun countCategorySearchMatches(
+    category: SettingsCategory,
+    rawQuery: String,
+    appState: AppStateSnapshot,
+    activeProfile: ProviderProfile,
+    activeSession: ChatSession
+): Int {
+    val tokens = rawQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (tokens.isEmpty()) return 0
+    fun hit(vararg terms: String) = matchesSearchTokens(tokens, *terms)
+
+    return when (category) {
+        SettingsCategory.PREFERENCES -> {
+            val items = listOf(
+                hit("Color Mode & Preset", "Appearance & Fonts", "theme", "sepia", "dark", "light", "ivory", "oxford", "candlelight", "midnight", "oled"),
+                hit("Accent Color", "Appearance & Fonts", "swatch", "hex", "canvas", "ink", "card color"),
+                hit("App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "ttf", "otf", "custom font"),
+                hit("Prose Font Size", "Code Font Size", "Max Reading Width", "Appearance & Fonts", "sp", "dp", "typography"),
+                hit("Message Layout Style", "Card Bubbles", "Clean Page", "Chat item display", "manuscript", "editorial turns", "view mode"),
+                hit("Show provider in model capsule", "Chat item display", "header", "top bar"),
+                hit("Show Assistant Avatar in Title Bar", "Chat item display", "assistant icon", "top bar", "avatar"),
+                hit("Show User Avatar", "Chat item display", "user icon", "profile", "avatar"),
+                hit("Show User Name", "Chat item display", "username", "author"),
+                hit("Show User Timestamp", "Chat item display", "time", "date", "clock", "user"),
+                hit("Show User Message Actions", "Chat item display", "copy", "edit", "branch", "buttons"),
+                hit("Show Model Icon / Avatar", "Chat item display", "assistant avatar", "bot icon", "avatar"),
+                hit("Show Model Name", "Chat item display", "assistant name", "ai name"),
+                hit("Show Model Timestamp", "Chat item display", "assistant time", "date", "clock", "model"),
+                hit("Show Provider After Model Name", "Chat item display", "provider badge"),
+                hit("Show Token & Context Stats", "Chat item display", "telemetry", "speed", "tok/s", "cost", "context ring"),
+                hit("Show tokens for the entire turn", "Chat item display", "input tokens", "output tokens", "cache", "ttft"),
+                hit("Show Thinking Cards", "Chat item display", "reasoning drawer", "thoughts"),
+                hit("Show Tool Cards", "Chat item display", "workspace tools", "function call"),
+                hit("Show reasoning level on the button", "Chat item display", "thinking effort", "composer chip"),
+                hit("Inline $...$ Rendering", "Rendering settings", "math", "latex", "dollar"),
+                hit("Math Formula Rendering", "Rendering settings", "latex", "katex", "equations"),
+                hit("Render user messages with Markdown", "Rendering settings", "formatting", "user"),
+                hit("Render reasoning (thinking) with Markdown & LaTeX", "Rendering settings", "thoughts", "formatting"),
+                hit("Render assistant messages with Markdown", "Rendering settings", "formatting", "prose", "assistant"),
+                hit("Highlight spoken dialogue & narration ink", "Rendering settings", "quotes", "italics", "roleplay"),
+                hit("Auto-collapse Code Blocks", "Rendering settings", "fenced code"),
+                hit("Collapse Long Messages", "Rendering settings", "truncate", "expand", "read more"),
+                hit("Auto switch to Topics", "Behavior & startup", "sidebar", "chats tab", "assistant"),
+                hit("Auto-collapse Thinking", "Behavior & startup", "reasoning drawer", "thoughts"),
+                hit("Show Tool Result Summary", "Behavior & startup", "tool output", "agent"),
+                hit("Delete messages below when regenerating", "Behavior & startup", "redo", "prune"),
+                hit("Delete previous message when regenerating", "Behavior & startup", "replace", "swipe", "variant"),
+                hit("Confirm before regenerating", "Behavior & startup", "redo", "dialog", "prompt"),
+                hit("Confirm before deleting or clearing chats", "Behavior & startup", "trash", "dialog", "warning"),
+                hit("Keep Message Versions When Forking", "Behavior & startup", "branch", "swipes", "variants"),
+                hit("Show Chat List Dates", "Behavior & startup", "sidebar", "timestamp", "time", "date"),
+                hit("New chat when switching assistants", "Behavior & startup", "sidebar", "assistant"),
+                hit("New chat after deleting topic", "Behavior & startup", "trash", "session"),
+                hit("New Chat on Launch", "Behavior & startup", "startup", "boot", "open"),
+                hit("Auto-follow bottom while streaming", "Behavior & startup", "scroll", "autoscroll"),
+                hit("Auto-compact context when reaching 85% of context limit", "Behavior & startup", "compaction", "context window", "summarize", "token limit"),
+                hit("Message Navigation Minimap", "Behavior & startup", "tree", "scroll buttons", "map"),
+                hit("Send Shortcut (Desktop)", "Behavior & startup", "enter", "ctrl+enter", "shift+enter", "keyboard"),
+                hit("Paste long text as file attachment", "Conversion threshold", "Behavior & startup", "clipboard")
+            )
+            items.count { it }
+        }
+        SettingsCategory.PROVIDERS -> {
+            val modelHits = appState.profiles.sumOf { prof ->
+                prof.savedModels.count { m ->
+                    tokens.all { tok -> m.lowercase().contains(tok) || prof.name.lowercase().contains(tok) }
+                }
+            }
+            val fieldHits = listOf(
+                hit("API Key", "Providers", "token", "auth", "bearer", "credential", activeProfile.name),
+                hit("Base URL", "Endpoint Path Override", "Providers", "proxy", "host", activeProfile.baseUrl),
+                hit("Stateful Interaction Chaining", "previous_interaction_id", "previous_response_id", "Providers"),
+                hit("Background Poll & Stream Recovery", "long decode", "timeout", "Providers"),
+                hit("Smart Legacy Endpoint Fallback", "useLegacyFallbackEndpoint", "generateContent", "chat/completions", "Providers"),
+                hit("Temperature", "Top-P", "Max Output Tokens", "Thinking Effort", "sampling", "Providers"),
+                hit("Web Search", "Code Execution", "URL Context", "Image Generation", "Video Generation", "google_search", "Providers"),
+                hit("Custom HTTP Headers", "Raw JSON Extra Body", "Auth Header Mode", "Providers")
+            ).count { it }
+            fieldHits + modelHits.coerceAtMost(10)
+        }
+        SettingsCategory.ASSISTANTS -> {
+            appState.assistants.count { asst ->
+                hit(asst.name, asst.systemPrompt, asst.authorsNote, "assistant", "persona", "system prompt", "author's note")
+            }
+        }
+        SettingsCategory.DEFAULT_MODEL -> {
+            listOf(
+                hit("Global Default Chat Model", "Default Model", "primary model"),
+                hit("Title Generation", "Topic Naming", "Default Model", "prompt template"),
+                hit("Summary & Context Compression", "Default Model", "compact context"),
+                hit("Translation Model", "Target Language", "Default Model")
+            ).count { it }
+        }
+        SettingsCategory.WORKSPACE -> {
+            listOf(
+                hit("Sandboxed Local File System Agent", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write"),
+                hit("Allow Sandboxed Shell Execution", "shell_exec", "terminal", "powershell", "bash", "Workspace")
+            ).count { it }
+        }
+        SettingsCategory.WORLD_BOOK -> {
+            val loreHits = (activeSession.fragments + appState.globalWorldBook).distinctBy { it.id }.count { frag ->
+                hit(frag.title, frag.content, frag.keywords.joinToString(" "), "world book", "lorebook", "fragment")
+            }
+            val cardHits = if (hit("Character Card", "PNG", "JSON", "ccv3", "chara", "System Prompt Preset", "World Book")) 1 else 0
+            loreHits + cardHits
+        }
+        SettingsCategory.BACKUP_OTA -> {
+            listOf(
+                hit("Auto-Check for OTA Updates on Launch", "GitHub Release Repository", "Check for Update Now", "Backup & OTA", "version"),
+                hit("Export Full Backup JSON", "Restore Backup JSON", "Wipe All Local Data", "Backup & OTA", "storage")
+            ).count { it }
+        }
+    }
+}
+
 @Composable
 private fun GlobalSettingsSearchResultsSubpage(
     searchQuery: String,
@@ -3116,11 +3509,78 @@ private fun GlobalSettingsSearchResultsSubpage(
         searchQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
     }
 
-    fun hit(vararg terms: String): Boolean {
-        if (tokens.isEmpty()) return true
-        val combined = terms.joinToString(" ").lowercase()
-        return tokens.all { tok -> combined.contains(tok) }
-    }
+    fun hit(vararg terms: String): Boolean = matchesSearchTokens(tokens, *terms)
+
+    // 1. PREFERENCES INDIVIDUAL ITEM MATCHES (Every single setting in PreferencesSubpage!)
+    val hitColorMode = hit("Color Mode & Preset", "Appearance & Fonts", "theme", "sepia", "dark", "light", "ivory", "oxford", "candlelight", "midnight", "oled")
+    val hitAccentColor = hit("Accent Color", "Appearance & Fonts", "swatch", "hex", "canvas", "ink", "card color")
+    val hitAppFont = hit("App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "ttf", "otf", "custom font")
+    val hitFontSizes = hit("Prose Font Size", "Code Font Size", "Max Reading Width", "Appearance & Fonts", "sp", "dp", "typography")
+
+    val hitLayoutStyle = hit("Message Layout Style", "Card Bubbles", "Clean Page", "Chat item display", "manuscript", "editorial turns", "view mode")
+    val hitProviderCapsule = hit("Show provider in model capsule", "Chat item display", "header", "top bar")
+    val hitTitleBarAvatar = hit("Show Assistant Avatar in Title Bar", "Chat item display", "assistant icon", "top bar", "avatar")
+    val hitUserAvatar = hit("Show User Avatar", "Chat item display", "user icon", "profile", "avatar")
+    val hitUserName = hit("Show User Name", "Chat item display", "username", "author")
+    val hitUserTimestamp = hit("Show User Timestamp", "Chat item display", "time", "date", "clock", "user")
+    val hitUserActions = hit("Show User Message Actions", "Chat item display", "copy", "edit", "branch", "buttons")
+    val hitModelIcon = hit("Show Model Icon / Avatar", "Chat item display", "assistant avatar", "bot icon", "avatar")
+    val hitModelName = hit("Show Model Name", "Chat item display", "assistant name", "ai name")
+    val hitModelTimestamp = hit("Show Model Timestamp", "Chat item display", "assistant time", "date", "clock", "model")
+    val hitProviderAfterModel = hit("Show Provider After Model Name", "Chat item display", "provider badge")
+    val hitTokenStats = hit("Show Token & Context Stats", "Chat item display", "telemetry", "speed", "tok/s", "cost", "context ring")
+    val hitTokensEntireTurn = hit("Show tokens for the entire turn", "Chat item display", "input tokens", "output tokens", "cache", "ttft")
+    val hitThinkingCards = hit("Show Thinking Cards", "Chat item display", "reasoning drawer", "thoughts")
+    val hitToolCards = hit("Show Tool Cards", "Chat item display", "workspace tools", "function call")
+    val hitReasoningButton = hit("Show reasoning level on the button", "Chat item display", "thinking effort", "composer chip")
+
+    val hitInlineDollar = hit("Inline $...$ Rendering", "Rendering settings", "math", "latex", "dollar")
+    val hitMathFormula = hit("Math Formula Rendering", "Rendering settings", "latex", "katex", "equations")
+    val hitUserMd = hit("Render user messages with Markdown", "Rendering settings", "formatting", "user")
+    val hitReasoningMd = hit("Render reasoning (thinking) with Markdown & LaTeX", "Rendering settings", "thoughts", "formatting")
+    val hitAssistantMd = hit("Render assistant messages with Markdown", "Rendering settings", "formatting", "prose", "assistant")
+    val hitDialogueInk = hit("Highlight spoken dialogue & narration ink", "Rendering settings", "quotes", "italics", "roleplay")
+    val hitAutoCollapseCode = hit("Auto-collapse Code Blocks", "Rendering settings", "fenced code")
+    val hitCollapseLong = hit("Collapse Long Messages", "Rendering settings", "truncate", "expand", "read more")
+
+    val hitAutoTopics = hit("Auto switch to Topics", "Behavior & startup", "sidebar", "chats tab", "assistant")
+    val hitAutoCollapseThink = hit("Auto-collapse Thinking", "Behavior & startup", "reasoning drawer", "thoughts")
+    val hitToolSummary = hit("Show Tool Result Summary", "Behavior & startup", "tool output", "agent")
+    val hitDeleteBelowRegen = hit("Delete messages below when regenerating", "Behavior & startup", "redo", "prune")
+    val hitDeletePrevRegen = hit("Delete previous message when regenerating", "Behavior & startup", "replace", "swipe", "variant")
+    val hitConfirmRegen = hit("Confirm before regenerating", "Behavior & startup", "redo", "dialog", "prompt")
+    val hitConfirmDelete = hit("Confirm before deleting or clearing chats", "Behavior & startup", "trash", "dialog", "warning")
+    val hitKeepForkVersions = hit("Keep Message Versions When Forking", "Behavior & startup", "branch", "swipes", "variants")
+    val hitChatListDates = hit("Show Chat List Dates", "Behavior & startup", "sidebar", "timestamp", "time", "date")
+    val hitNewChatSwitchAsst = hit("New chat when switching assistants", "Behavior & startup", "sidebar", "assistant")
+    val hitNewChatDeleteTopic = hit("New chat after deleting topic", "Behavior & startup", "trash", "session")
+    val hitNewChatLaunch = hit("New Chat on Launch", "Behavior & startup", "startup", "boot", "open")
+    val hitAutoFollowBottom = hit("Auto-follow bottom while streaming", "Behavior & startup", "scroll", "autoscroll")
+    val hitAutoCompactLimit = hit("Auto-compact context when reaching 85% of context limit", "Behavior & startup", "compaction", "context window", "summarize", "token limit")
+    val hitNavMinimap = hit("Message Navigation Minimap", "Behavior & startup", "tree", "scroll buttons", "map")
+    val hitSendShortcut = hit("Send Shortcut (Desktop)", "Behavior & startup", "enter", "ctrl+enter", "shift+enter", "keyboard")
+    val hitPasteLongFile = hit("Paste long text as file attachment", "Conversion threshold", "Behavior & startup", "clipboard")
+
+    val anyPrefMatch = listOf(
+        hitColorMode, hitAccentColor, hitAppFont, hitFontSizes,
+        hitLayoutStyle, hitProviderCapsule, hitTitleBarAvatar, hitUserAvatar, hitUserName, hitUserTimestamp,
+        hitUserActions, hitModelIcon, hitModelName, hitModelTimestamp, hitProviderAfterModel, hitTokenStats,
+        hitTokensEntireTurn, hitThinkingCards, hitToolCards, hitReasoningButton,
+        hitInlineDollar, hitMathFormula, hitUserMd, hitReasoningMd, hitAssistantMd, hitDialogueInk,
+        hitAutoCollapseCode, hitCollapseLong,
+        hitAutoTopics, hitAutoCollapseThink, hitToolSummary, hitDeleteBelowRegen, hitDeletePrevRegen,
+        hitConfirmRegen, hitConfirmDelete, hitKeepForkVersions, hitChatListDates, hitNewChatSwitchAsst,
+        hitNewChatDeleteTopic, hitNewChatLaunch, hitAutoFollowBottom, hitAutoCompactLimit, hitNavMinimap, hitSendShortcut, hitPasteLongFile
+    ).any { it }
+
+    // 2. PROVIDERS & MODELS MATCHES
+    val hitApiKey = hit("API Key", "Providers", "token", "auth", "bearer", "credential", activeProfile.name)
+    val hitBaseUrl = hit("Base URL", "Endpoint Path Override", "Providers", "proxy", "host", activeProfile.baseUrl)
+    val hitStateful = hit("Stateful Interaction Chaining", "previous_interaction_id", "previous_response_id", "cache", "Providers")
+    val hitLongDecode = hit("Background Poll & Stream Recovery", "long decode", "timeout", "poll", "Providers")
+    val hitLegacyFallback = hit("Smart Legacy Endpoint Fallback", "useLegacyFallbackEndpoint", "generateContent", "chat/completions", "legacy", "fallback", "Providers")
+    val hitSampling = hit("Temperature", "Top-P", "Max Output Tokens", "Thinking Effort", "sampling", "budget", "Providers")
+    val hitCapabilities = hit("Web Search", "Code Execution", "URL Context", "Image Generation", "Video Generation", "google_search", "grounding", "Providers")
 
     val matchingModels = remember(appState.profiles, tokens) {
         appState.profiles.flatMap { prof ->
@@ -3129,18 +3589,36 @@ private fun GlobalSettingsSearchResultsSubpage(
             }.map { m -> prof to m }
         }.take(25)
     }
+    val anyProviderMatch = hitApiKey || hitBaseUrl || hitStateful || hitLongDecode || hitLegacyFallback || hitSampling || hitCapabilities || matchingModels.isNotEmpty()
 
+    // 3. WORKSPACE MATCHES
+    val hitWorkspaceMode = hit("Sandboxed Local File System Agent", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write", "folder", "workspace")
+    val hitShellExec = hit("Allow Sandboxed Shell Execution", "shell_exec", "terminal", "powershell", "bash", "command", "workspace")
+    val anyWorkspaceMatch = hitWorkspaceMode || hitShellExec
+
+    // 4. DEFAULT MODELS MATCHES
+    val hitGlobalModel = hit("Global Default Chat Model", "Default Model", "primary model")
+    val hitTitleModel = hit("Title Generation", "Topic Naming", "Default Model", "prompt template", "auto title")
+    val hitSummaryModel = hit("Summary & Context Compression", "Default Model", "compact context", "summarize")
+    val hitTranslationModel = hit("Translation Model", "Target Language", "Default Model", "translate")
+    val anyDefaultModelMatch = hitGlobalModel || hitTitleModel || hitSummaryModel || hitTranslationModel
+
+    // 5. ASSISTANTS, WORLD BOOK, & BACKUP / OTA MATCHES
     val matchingAssistants = remember(appState.assistants, tokens) {
         appState.assistants.filter { asst ->
-            hit(asst.name, asst.systemPrompt, asst.authorsNote, "assistant", "persona", "agent")
+            hit(asst.name, asst.systemPrompt, asst.authorsNote, "assistant", "persona", "agent", "system prompt", "author's note")
         }
     }
-
     val matchingLore = remember(activeSession.fragments, appState.globalWorldBook, tokens) {
         (activeSession.fragments + appState.globalWorldBook).distinctBy { it.id }.filter { frag ->
-            hit(frag.title, frag.content, frag.keywords.joinToString(" "), "world book", "lore", "fragment")
+            hit(frag.title, frag.content, frag.keywords.joinToString(" "), "world book", "lorebook", "fragment")
         }
     }
+    val hitWorldBookGeneral = hit("World Book", "Lorebook", "Character Card", "PNG", "JSON", "chara", "ccv3", "System Prompt Preset")
+    val hitOtaBackup = hit("Backup & OTA", "Auto-Check for OTA Updates on Launch", "GitHub Release", "Update", "Export Backup", "Restore Backup", "Wipe All Local Data", "storage")
+
+    val hasAnyResult = anyPrefMatch || anyProviderMatch || anyWorkspaceMatch || anyDefaultModelMatch ||
+        matchingAssistants.isNotEmpty() || matchingLore.isNotEmpty() || hitWorldBookGeneral || hitOtaBackup
 
     Column(
         modifier = Modifier
@@ -3160,20 +3638,24 @@ private fun GlobalSettingsSearchResultsSubpage(
             )
         }
 
-        // 1. PREFERENCES MATCHES
-        val matchTheme = hit("theme", "color", "sepia", "dark", "light", "accent", "hex", "font", "typography", "size", "width")
-        val matchLayout = hit("layout", "bubble", "manuscript", "turns", "view mode")
-        val matchCapsule = hit("provider", "capsule", "header", "model name")
-        val matchThinking = hit("thinking", "reasoning", "thought", "collapse", "cards")
-        val matchTools = hit("tool", "cards", "summary", "agent", "execution")
-        val matchMathMd = hit("math", "latex", "formula", "dollar", "markdown", "dialogue", "narration", "code block")
-        val matchRegenDelete = hit("regenerate", "delete", "confirm", "fork", "versions", "history")
-        val matchMinimapShortcut = hit("minimap", "navigation", "scroll", "shortcut", "enter", "send", "paste", "attachment", "startup", "launch")
+        if (!hasAnyResult) {
+            SepiaSectionCard(
+                title = "No matching settings found for \"$searchQuery\"",
+                subtitle = "Try searching for terms like 'avatar', 'timestamp', 'font', 'minimap', 'fallback', 'shell', 'model', or 'ota'."
+            ) {
+                SepiaButton(
+                    text = "Open Preferences →",
+                    compact = true,
+                    style = SepiaButtonStyle.OUTLINE,
+                    onClick = { onJumpToCategory(SettingsCategory.PREFERENCES) }
+                )
+            }
+        }
 
-        if (matchTheme || matchLayout || matchCapsule || matchThinking || matchTools || matchMathMd || matchRegenDelete || matchMinimapShortcut) {
+        if (anyPrefMatch) {
             SepiaSectionCard(
                 title = "Preferences & Appearance",
-                subtitle = "Display, typography, Markdown/LaTeX rendering, and behavior toggles",
+                subtitle = "Chat item display, typography, Markdown/LaTeX rendering, and behavior toggles",
                 headerAction = {
                     SepiaButton(
                         text = "Open Preferences →",
@@ -3183,8 +3665,8 @@ private fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (matchTheme) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (hitColorMode) {
                         SepiaAdaptiveRow(label = "Color Mode & Preset") {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3198,7 +3680,78 @@ private fun GlobalSettingsSearchResultsSubpage(
                             }
                         }
                     }
-                    if (matchLayout) {
+                    if (hitAccentColor) {
+                        SepiaAdaptiveRow(label = "Accent Color") {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val accentSwatches = listOf("#8B5A2B", "#9E4730", "#3B5998", "#1F6F54", "#5E4B8B", "#7A5216", "#8C3823", "#2D3748")
+                                accentSwatches.forEach { hex ->
+                                    val col = parseHexColor(hex)
+                                    val isSel = theme.accentHex.equals(hex, ignoreCase = true)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(col)
+                                            .border(if (isSel) 2.dp else 0.8.dp, if (isSel) p.primaryInk else p.border, CircleShape)
+                                            .clickable { onUpdateTheme(theme.copy(name = "Custom Theme", accentHex = hex)) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (hitAppFont) {
+                        SepiaAdaptiveRow(label = "App / Prose Font") {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd").forEach { f ->
+                                    SepiaChip(
+                                        label = f,
+                                        selected = theme.customProseFontPath.isBlank() && theme.proseFontFamily.equals(f, ignoreCase = true),
+                                        onClick = { onUpdateTheme(theme.copy(proseFontFamily = f, customProseFontPath = "")) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (hitFontSizes) {
+                        var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }
+                        var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
+                        var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SepiaTextField(
+                                value = proseSizeText,
+                                onValueChange = { v ->
+                                    proseSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
+                                },
+                                label = "Prose Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = codeSizeText,
+                                onValueChange = { v ->
+                                    codeSizeText = v
+                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
+                                },
+                                label = "Code Font Size (sp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = maxWidthText,
+                                onValueChange = { v ->
+                                    maxWidthText = v
+                                    v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
+                                },
+                                label = "Max Reading Width (dp)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    if (hitLayoutStyle) {
                         SepiaAdaptiveRow(label = "Message Layout Style") {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 SepiaChip(
@@ -3220,24 +3773,177 @@ private fun GlobalSettingsSearchResultsSubpage(
                             }
                         }
                     }
-                    if (matchCapsule) {
+                    if (hitProviderCapsule) {
                         SepiaToggleRow(
                             title = "Show provider in model capsule",
                             checked = prefs.showProviderInModelCapsule,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderInModelCapsule = it)) }
                         )
+                    }
+                    if (hitTitleBarAvatar) {
+                        SepiaToggleRow(
+                            title = "Show Assistant Avatar in Title Bar",
+                            checked = prefs.showAssistantAvatarInTitleBar,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showAssistantAvatarInTitleBar = it)) }
+                        )
+                    }
+                    if (hitUserAvatar) {
+                        SepiaToggleRow(
+                            title = "Show User Avatar",
+                            checked = prefs.showUserAvatar,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showUserAvatar = it)) }
+                        )
+                    }
+                    if (hitUserName) {
+                        SepiaToggleRow(
+                            title = "Show User Name",
+                            checked = prefs.showUserName,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showUserName = it)) }
+                        )
+                    }
+                    if (hitUserTimestamp) {
+                        SepiaToggleRow(
+                            title = "Show User Timestamp",
+                            checked = prefs.showUserTimestamp,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showUserTimestamp = it)) }
+                        )
+                    }
+                    if (hitUserActions) {
+                        SepiaToggleRow(
+                            title = "Show User Message Actions",
+                            checked = prefs.showUserMessageActions,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showUserMessageActions = it)) }
+                        )
+                    }
+                    if (hitModelIcon) {
+                        SepiaToggleRow(
+                            title = "Show Model Icon / Avatar",
+                            checked = prefs.showModelIcon,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showModelIcon = it)) }
+                        )
+                    }
+                    if (hitModelName) {
+                        SepiaToggleRow(
+                            title = "Show Model Name",
+                            checked = prefs.showModelName,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showModelName = it)) }
+                        )
+                    }
+                    if (hitModelTimestamp) {
+                        SepiaToggleRow(
+                            title = "Show Model Timestamp",
+                            checked = prefs.showModelTimestamp,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showModelTimestamp = it)) }
+                        )
+                    }
+                    if (hitProviderAfterModel) {
+                        SepiaToggleRow(
+                            title = "Show Provider After Model Name",
+                            checked = prefs.showProviderAfterModelName,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderAfterModelName = it)) }
+                        )
+                    }
+                    if (hitTokenStats) {
                         SepiaToggleRow(
                             title = "Show Token & Context Stats",
                             checked = prefs.showTokenAndContextStats,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showTokenAndContextStats = it)) }
                         )
                     }
-                    if (matchThinking) {
+                    if (hitTokensEntireTurn) {
+                        SepiaToggleRow(
+                            title = "Show tokens for the entire turn",
+                            checked = prefs.showTokensForEntireTurn,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showTokensForEntireTurn = it)) }
+                        )
+                    }
+                    if (hitThinkingCards) {
                         SepiaToggleRow(
                             title = "Show Thinking Cards",
                             checked = prefs.showThinkingCards,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showThinkingCards = it)) }
                         )
+                    }
+                    if (hitToolCards) {
+                        SepiaToggleRow(
+                            title = "Show Tool Cards",
+                            checked = prefs.showToolCards,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showToolCards = it)) }
+                        )
+                    }
+                    if (hitReasoningButton) {
+                        SepiaToggleRow(
+                            title = "Show reasoning level on the button",
+                            checked = prefs.showReasoningLevelOnButton,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showReasoningLevelOnButton = it)) }
+                        )
+                    }
+                    if (hitInlineDollar) {
+                        SepiaToggleRow(
+                            title = "Inline $...$ Rendering",
+                            checked = prefs.inlineDollarMathRendering,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(inlineDollarMathRendering = it)) }
+                        )
+                    }
+                    if (hitMathFormula) {
+                        SepiaToggleRow(
+                            title = "Math Formula Rendering",
+                            checked = prefs.mathFormulaRendering,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(mathFormulaRendering = it)) }
+                        )
+                    }
+                    if (hitUserMd) {
+                        SepiaToggleRow(
+                            title = "Render user messages with Markdown",
+                            checked = prefs.renderUserMessagesWithMarkdown,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(renderUserMessagesWithMarkdown = it)) }
+                        )
+                    }
+                    if (hitReasoningMd) {
+                        SepiaToggleRow(
+                            title = "Render reasoning (thinking) with Markdown & LaTeX",
+                            checked = prefs.renderReasoningWithMarkdown,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(renderReasoningWithMarkdown = it)) }
+                        )
+                    }
+                    if (hitAssistantMd) {
+                        SepiaToggleRow(
+                            title = "Render assistant messages with Markdown",
+                            checked = prefs.renderAssistantMessagesWithMarkdown,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(renderAssistantMessagesWithMarkdown = it)) }
+                        )
+                    }
+                    if (hitDialogueInk) {
+                        SepiaToggleRow(
+                            title = "Highlight spoken \"dialogue\" & *narration* ink",
+                            checked = theme.highlightDialogueAndNarration,
+                            onCheckedChange = { onUpdateTheme(theme.copy(highlightDialogueAndNarration = it)) }
+                        )
+                    }
+                    if (hitAutoCollapseCode) {
+                        SepiaToggleRow(
+                            title = "Auto-collapse Code Blocks",
+                            checked = prefs.autoCollapseCodeBlocks,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseCodeBlocks = it)) }
+                        )
+                    }
+                    if (hitCollapseLong) {
+                        SepiaToggleRow(
+                            title = "Collapse Long Messages (> 1,800 chars)",
+                            subtitle = "Folds very long messages with an inline '▸ Read Full Message' button",
+                            checked = prefs.collapseLongMessages,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
+                        )
+                    }
+                    if (hitAutoTopics) {
+                        SepiaToggleRow(
+                            title = "Auto switch to Topics",
+                            subtitle = "Automatically switches sidebar to Topics list when selecting an Assistant",
+                            checked = prefs.autoSwitchToTopics,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoSwitchToTopics = it)) }
+                        )
+                    }
+                    if (hitAutoCollapseThink) {
                         SepiaToggleRow(
                             title = "Auto-collapse Thinking",
                             subtitle = "Opens live reasoning box while thinking, then collapses when reply starts",
@@ -3245,57 +3951,109 @@ private fun GlobalSettingsSearchResultsSubpage(
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseThinking = it)) }
                         )
                     }
-                    if (matchTools) {
-                        SepiaToggleRow(
-                            title = "Show Tool Cards",
-                            checked = prefs.showToolCards,
-                            onCheckedChange = { onUpdatePreferences(prefs.copy(showToolCards = it)) }
-                        )
+                    if (hitToolSummary) {
                         SepiaToggleRow(
                             title = "Show Tool Result Summary",
                             checked = prefs.showToolResultSummary,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showToolResultSummary = it)) }
                         )
                     }
-                    if (matchMathMd) {
-                        SepiaToggleRow(
-                            title = "Inline $...$ & Math Formula Rendering",
-                            checked = prefs.mathFormulaRendering,
-                            onCheckedChange = {
-                                onUpdatePreferences(prefs.copy(mathFormulaRendering = it, inlineDollarMathRendering = it))
-                            }
-                        )
-                        SepiaToggleRow(
-                            title = "Render reasoning (thinking) with Markdown & LaTeX",
-                            checked = prefs.renderReasoningWithMarkdown,
-                            onCheckedChange = { onUpdatePreferences(prefs.copy(renderReasoningWithMarkdown = it)) }
-                        )
-                        SepiaToggleRow(
-                            title = "Highlight spoken \"dialogue\" & *narration* ink",
-                            checked = theme.highlightDialogueAndNarration,
-                            onCheckedChange = { onUpdateTheme(theme.copy(highlightDialogueAndNarration = it)) }
-                        )
-                        SepiaToggleRow(
-                            title = "Auto-collapse Code Blocks",
-                            checked = prefs.autoCollapseCodeBlocks,
-                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseCodeBlocks = it)) }
-                        )
-                    }
-                    if (matchRegenDelete) {
-                        SepiaToggleRow(
-                            title = "Confirm before deleting or clearing chats",
-                            checked = prefs.confirmBeforeDeletingChat,
-                            onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
-                        )
+                    if (hitDeleteBelowRegen) {
                         SepiaToggleRow(
                             title = "Delete messages below when regenerating",
                             checked = prefs.deleteMessagesBelowWhenRegenerating,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(deleteMessagesBelowWhenRegenerating = it)) }
                         )
                     }
-                    if (matchMinimapShortcut) {
+                    if (hitDeletePrevRegen) {
+                        SepiaToggleRow(
+                            title = "Delete previous message when regenerating",
+                            checked = prefs.deletePreviousMessageWhenRegenerating,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(deletePreviousMessageWhenRegenerating = it)) }
+                        )
+                    }
+                    if (hitConfirmRegen) {
+                        SepiaToggleRow(
+                            title = "Confirm before regenerating",
+                            checked = prefs.confirmBeforeRegenerating,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeRegenerating = it)) }
+                        )
+                    }
+                    if (hitConfirmDelete) {
+                        SepiaToggleRow(
+                            title = "Confirm before deleting or clearing chats",
+                            checked = prefs.confirmBeforeDeletingChat,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
+                        )
+                    }
+                    if (hitKeepForkVersions) {
+                        SepiaToggleRow(
+                            title = "Keep Message Versions When Forking",
+                            checked = prefs.keepMessageVersionsWhenForking,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(keepMessageVersionsWhenForking = it)) }
+                        )
+                    }
+                    if (hitChatListDates) {
+                        SepiaToggleRow(
+                            title = "Show Chat List Dates",
+                            checked = prefs.showChatListDates,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(showChatListDates = it)) }
+                        )
+                    }
+                    if (hitNewChatSwitchAsst) {
+                        SepiaToggleRow(
+                            title = "New chat when switching assistants",
+                            checked = prefs.newChatWhenSwitchingAssistants,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(newChatWhenSwitchingAssistants = it)) }
+                        )
+                    }
+                    if (hitNewChatDeleteTopic) {
+                        SepiaToggleRow(
+                            title = "New chat after deleting topic",
+                            checked = prefs.newChatAfterDeletingTopic,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(newChatAfterDeletingTopic = it)) }
+                        )
+                    }
+                    if (hitNewChatLaunch) {
+                        SepiaToggleRow(
+                            title = "New Chat on Launch",
+                            checked = prefs.newChatOnLaunch,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(newChatOnLaunch = it)) }
+                        )
+                    }
+                    if (hitAutoFollowBottom) {
+                        SepiaToggleRow(
+                            title = "Auto-follow bottom while streaming",
+                            checked = prefs.autoFollowBottom,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoFollowBottom = it)) }
+                        )
+                    }
+                    if (hitAutoCompactLimit) {
+                        SepiaToggleRow(
+                            title = "Auto-compact context when reaching 85% of context limit",
+                            subtitle = "Automatically summarizes older turns into Continuity Memory & mutes them so long chats never hit token limits",
+                            checked = prefs.autoCompactWhenNearContextLimit,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
+                        )
+                    }
+                    if (hitNavMinimap) {
+                        SepiaAdaptiveRow(label = "Message Navigation Minimap") {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                MessageNavVisibility.entries.forEach { mode ->
+                                    SepiaChip(
+                                        label = mode.label,
+                                        selected = prefs.messageNavButtons == mode,
+                                        onClick = { onUpdatePreferences(prefs.copy(messageNavButtons = mode)) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (hitSendShortcut) {
                         SepiaAdaptiveRow(label = "Send Shortcut (Desktop)") {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 SendShortcutMode.entries.forEach { mode ->
                                     SepiaChip(
                                         label = mode.label,
@@ -3305,6 +4063,8 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 }
                             }
                         }
+                    }
+                    if (hitPasteLongFile) {
                         SepiaToggleRow(
                             title = "Paste long text as file attachment",
                             checked = prefs.pasteLongTextAsFile,
@@ -3315,14 +4075,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             }
         }
 
-        // 2. PROVIDERS & MODELS MATCHES
-        val matchProviderConfig = hit(
-            "provider", "proxy", "api key", "base url", "endpoint", "protocol", "gemini", "openai", "anthropic",
-            "bytedance", "seedream", "seedance", "stateful", "chaining", "long decode", "fallback", "temperature",
-            "top-p", "top_p", "max output", "tokens", "thinking effort", "budget", "web search", "code execution",
-            "url context", "image generation", "video generation", "headers", "bearer", activeProfile.name, activeProfile.baseUrl
-        )
-        if (matchProviderConfig || matchingModels.isNotEmpty()) {
+        if (anyProviderMatch) {
             SepiaSectionCard(
                 title = "Providers, Proxy, & Models (${activeProfile.name})",
                 subtitle = "API credentials, protocol parameters, built-in capabilities, and model selection",
@@ -3336,7 +4089,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (hit("api key", "key", "token", "auth", "bearer", "credential", "provider")) {
+                    if (hitApiKey) {
                         SepiaTextField(
                             value = activeProfile.apiKey,
                             onValueChange = { k -> onUpdateProfile { it.copy(apiKey = k) } },
@@ -3346,7 +4099,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    if (hit("base url", "url", "endpoint", "proxy", "host", "provider")) {
+                    if (hitBaseUrl) {
                         SepiaTextField(
                             value = activeProfile.baseUrl,
                             onValueChange = { u -> onUpdateProfile { it.copy(baseUrl = u) } },
@@ -3355,28 +4108,57 @@ private fun GlobalSettingsSearchResultsSubpage(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    if (hit("stateful", "chaining", "previous_interaction_id", "previous_response_id", "cache")) {
+                    if (hitStateful) {
                         SepiaToggleRow(
                             title = "Stateful Interaction Chaining (previous_interaction_id / previous_response_id)",
                             checked = activeProfile.useStatefulChaining,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useStatefulChaining = v) } }
                         )
                     }
-                    if (hit("long decode", "background", "poll", "timeout")) {
+                    if (hitLongDecode) {
                         SepiaToggleRow(
-                            title = "Background Long Decode & Auto-Poll Recovery",
+                            title = "Background Poll & Stream Recovery",
                             checked = activeProfile.useBackgroundLongDecode,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useBackgroundLongDecode = v) } }
                         )
                     }
-                    if (hit("legacy", "fallback", "generatecontent", "chat/completions")) {
+                    if (hitLegacyFallback) {
                         SepiaToggleRow(
-                            title = "Use Legacy Fallback Endpoint (:streamGenerateContent / /v1/chat/completions)",
+                            title = "Smart Legacy Endpoint Fallback (:streamGenerateContent or /v1/chat/completions)",
+                            subtitle = "Tries /v1beta/interactions or /v1/responses first; if the newer protocol errors repeatedly, automatically falls back to :streamGenerateContent or /v1/chat/completions",
                             checked = activeProfile.useLegacyFallbackEndpoint,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = v) } }
                         )
                     }
-                    if (hit("web search", "google_search", "grounding", "code execution", "url context", "image", "video")) {
+                    if (hitSampling) {
+                        var tempStr by remember(activeProfile.temperature) { mutableStateOf(activeProfile.temperature?.toString().orEmpty()) }
+                        var topPStr by remember(activeProfile.topP) { mutableStateOf(activeProfile.topP?.toString().orEmpty()) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SepiaTextField(
+                                value = tempStr,
+                                onValueChange = { v ->
+                                    tempStr = v
+                                    if (v.trim().isEmpty()) onUpdateProfile { it.copy(temperature = null) }
+                                    else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
+                                },
+                                label = "Temperature (Blank = Strip)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SepiaTextField(
+                                value = topPStr,
+                                onValueChange = { v ->
+                                    topPStr = v
+                                    if (v.trim().isEmpty()) onUpdateProfile { it.copy(topP = null) }
+                                    else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
+                                },
+                                label = "Top-P (Blank = Strip)",
+                                monospace = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    if (hitCapabilities) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             SepiaChip(
@@ -3455,8 +4237,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             }
         }
 
-        // 3. WORKSPACE & SHELL EXECUTION MATCHES
-        if (hit("workspace", "shell", "shell_exec", "terminal", "powershell", "sandbox", "folder", "read-only", "agent r/w", "fs_read", "fs_edit", "todo_write")) {
+        if (anyWorkspaceMatch) {
             SepiaSectionCard(
                 title = "Workspace & Local Agent Harness",
                 subtitle = "Local file system tools and sandboxed shell execution",
@@ -3470,28 +4251,31 @@ private fun GlobalSettingsSearchResultsSubpage(
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        WorkspaceMode.entries.forEach { mode ->
-                            SepiaChip(
-                                label = mode.label,
-                                selected = activeSession.workspaceMode == mode,
-                                onClick = { onUpdateSession { it.copy(workspaceMode = mode) } }
-                            )
+                    if (hitWorkspaceMode) {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            WorkspaceMode.entries.forEach { mode ->
+                                SepiaChip(
+                                    label = mode.label,
+                                    selected = activeSession.workspaceMode == mode,
+                                    onClick = { onUpdateSession { it.copy(workspaceMode = mode) } }
+                                )
+                            }
                         }
                     }
-                    SepiaToggleRow(
-                        title = "Allow Sandboxed Shell Execution (shell_exec)",
-                        subtitle = "Available when Workspace Mode is set to Agent R/W",
-                        checked = activeProfile.allowShellExecution,
-                        onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
-                    )
+                    if (hitShellExec) {
+                        SepiaToggleRow(
+                            title = "Allow Sandboxed Shell Execution (shell_exec)",
+                            subtitle = "Available when Workspace Mode is set to Agent R/W",
+                            checked = activeProfile.allowShellExecution,
+                            onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
+                        )
+                    }
                 }
             }
         }
 
-        // 4. DEFAULT MODELS MATCHES
-        if (hit("default model", "global model", "title", "summary", "compression", "compact", "translation", "language")) {
+        if (anyDefaultModelMatch) {
             SepiaSectionCard(
                 title = "Default Models (Global, Title, Summary, Translation)",
                 subtitle = "Task-specific model assignments and title prompt template",
@@ -3505,22 +4289,32 @@ private fun GlobalSettingsSearchResultsSubpage(
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SepiaToggleRow(
-                        title = "Title Generation: Follow Global Choice",
-                        checked = appState.defaultModels.titleFollowGlobal,
-                        onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(titleFollowGlobal = it)) }
-                    )
-                    SepiaToggleRow(
-                        title = "Summary & Context Compression: Follow Global Choice",
-                        checked = appState.defaultModels.summaryFollowGlobal,
-                        onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(summaryFollowGlobal = it)) }
-                    )
+                    if (hitTitleModel || hitGlobalModel) {
+                        SepiaToggleRow(
+                            title = "Title Generation: Follow Global Choice",
+                            checked = appState.defaultModels.titleFollowGlobal,
+                            onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(titleFollowGlobal = it)) }
+                        )
+                    }
+                    if (hitSummaryModel || hitGlobalModel) {
+                        SepiaToggleRow(
+                            title = "Summary & Context Compression: Follow Global Choice",
+                            checked = appState.defaultModels.summaryFollowGlobal,
+                            onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(summaryFollowGlobal = it)) }
+                        )
+                    }
+                    if (hitTranslationModel || hitGlobalModel) {
+                        SepiaToggleRow(
+                            title = "Translation: Follow Global Choice",
+                            checked = appState.defaultModels.translationFollowGlobal,
+                            onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(translationFollowGlobal = it)) }
+                        )
+                    }
                 }
             }
         }
 
-        // 5. ASSISTANTS, WORLD BOOK, & BACKUP / OTA MATCHES
-        if (matchingAssistants.isNotEmpty() || hit("assistant", "system prompt", "author's note", "persona")) {
+        if (matchingAssistants.isNotEmpty()) {
             SepiaSectionCard(
                 title = "Assistants (${matchingAssistants.size} matched)",
                 subtitle = "Persistent assistant profiles, system prompts, and sampling overrides",
@@ -3544,7 +4338,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             }
         }
 
-        if (matchingLore.isNotEmpty() || hit("world book", "lorebook", "character card", "png", "chara", "ccv3")) {
+        if (matchingLore.isNotEmpty() || hitWorldBookGeneral) {
             SepiaSectionCard(
                 title = "World Book & Character Cards",
                 subtitle = "PNG / JSON Character Cards and keyword-triggered lore fragments",
@@ -3564,7 +4358,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             }
         }
 
-        if (hit("ota", "update", "github", "release", "backup", "export", "restore", "wipe", "reset", "storage")) {
+        if (hitOtaBackup) {
             SepiaSectionCard(
                 title = "Backup & In-App OTA Updates",
                 subtitle = "Installed v${OtaUpdateEngine.currentAppVersion} • Portable JSON backups & GitHub release updater",

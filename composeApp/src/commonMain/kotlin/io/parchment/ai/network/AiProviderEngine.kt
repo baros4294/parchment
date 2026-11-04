@@ -91,12 +91,13 @@ object AiProviderEngine {
     private const val MAX_SAFETY_HORIZON_STEPS = 10_000
     internal const val MAX_PRE_TOKEN_RETRIES = 10
     internal const val RETRY_WAIT_SECONDS = 60
+    internal const val LEGACY_FALLBACK_PRIMARY_MAX_RETRIES = 2
+    internal const val LEGACY_FALLBACK_PRIMARY_WAIT_SECONDS = 3
     private const val MAX_GOAL_NETWORK_RETRIES = 120
     private const val MAX_MID_STREAM_CONTINUATION_PASSES = 64
     private val GEMINI_4_REGEX = Regex("""(^|[/:_-])gemini-4(?:\.\d+)?-""")
 
-    private class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
-
+    internal class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
     private suspend fun waitWithRetryCountdown(
         attempt: Int,
         maxAttempts: Int,
@@ -205,6 +206,7 @@ object AiProviderEngine {
         PlatformBridge.notifyLongDecodeStart(model)
 
         try {
+            var activeBaseHistoryNodes = historyNodes
             var currentContinuePrefix = cleanInitialPrefix
             var retryAttempt = 0
             var continuationPass = 0
@@ -219,50 +221,32 @@ object AiProviderEngine {
                 // If continuing a turn that already accumulated thoughts or tool calls (either before clicking
                 // '→ Continue' or before a mid-stream network drop), synthesize the partial assistant turn in
                 // history so no protocol loses prior thoughts/signatures or re-executes completed tools.
-                val hasPriorTurnProgress = executedTools.isNotEmpty() ||
-                    (currentContinuePrefix.isBlank() && (thinkingBuilder.isNotEmpty() || signatureBuilder.isNotEmpty()))
-                val effectiveHistoryNodes = if (hasPriorTurnProgress) {
-                    val partialVar = MessageVariant(
-                        id = "var-in-progress-pass-$continuationPass",
-                        content = if (executedTools.isNotEmpty() && currentContinuePrefix.isNotBlank()) currentContinuePrefix else "",
-                        thinkingSummary = thinkingBuilder.toString(),
-                        thinkingSignature = signatureBuilder.toString(),
-                        toolCalls = executedTools.toList(),
-                        mediaItems = generatedMedia.toList(),
-                        providerProtocol = profile.protocol,
-                        modelUsed = model
-                    )
-                    val partialAssistantNode = MessageNode(
-                        id = "node-in-progress-pass-$continuationPass",
-                        role = MessageRole.ASSISTANT,
-                        variants = listOf(partialVar)
-                    )
-                    val resumePrompt = if (executedTools.isNotEmpty() && currentContinuePrefix.isNotBlank()) {
-                        "[System Note: Continue seamlessly from the exact end of this partial passage without repeating completed tool calls or text:\n\"$currentContinuePrefix\"]"
-                    } else {
-                        "[System Note: Continue seamlessly from your reasoning and tool executions above without repeating completed steps.]"
-                    }
-                    val resumeUserNode = MessageNode(
-                        id = "node-resume-user-$continuationPass",
-                        role = MessageRole.USER,
-                        variants = listOf(MessageVariant(id = "var-resume-user-$continuationPass", content = resumePrompt))
-                    )
-                    historyNodes + partialAssistantNode + resumeUserNode
-                } else {
-                    historyNodes
-                }
-                val effectiveContinuePrefix = if (hasPriorTurnProgress) "" else currentContinuePrefix
+                val (effectiveHistoryNodes, effectiveContinuePrefix) = buildEffectiveHistoryAndPrefix(
+                    baseHistoryNodes = activeBaseHistoryNodes,
+                    continuePrefix = currentContinuePrefix,
+                    thinkingText = thinkingBuilder.toString(),
+                    trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
+                    signatureText = signatureBuilder.toString(),
+                    executedTools = executedTools.toList(),
+                    generatedMedia = generatedMedia.toList(),
+                    protocol = profile.protocol,
+                    model = model,
+                    passTag = "pass-$continuationPass"
+                )
 
                 try {
                     when (profile.protocol) {
                         ProviderProtocol.GEMINI_INTERACTIONS -> {
-                            suspend fun runLegacyGeminiGenerateContent() {
+                            suspend fun runLegacyGeminiGenerateContent(
+                                targetHistoryNodes: List<MessageNode>,
+                                targetContinuePrefix: String
+                            ) {
                                 executeGeminiGenerateContentLoop(
                                     profile = profile,
                                     model = model,
                                     session = session,
-                                    historyNodes = effectiveHistoryNodes,
-                                    continuePrefix = effectiveContinuePrefix,
+                                    historyNodes = targetHistoryNodes,
+                                    continuePrefix = targetContinuePrefix,
                                     circuitBreaker = circuitBreaker,
                                     onStatus = { statusMsg ->
                                         emit(StreamUpdate.Status(statusMsg, lastInteractionId))
@@ -307,71 +291,88 @@ object AiProviderEngine {
                                     }
                                 )
                             }
-
-                            if (profile.useLegacyFallbackEndpoint) {
-                                runLegacyGeminiGenerateContent()
-                            } else {
-                                try {
-                                    executeGeminiInteractionsLoop(
-                                        profile = profile,
-                                        model = model,
-                                        session = session,
-                                        historyNodes = effectiveHistoryNodes,
-                                        continuePrefix = effectiveContinuePrefix,
-                                        circuitBreaker = circuitBreaker,
-                                        onStatus = { statusMsg, id ->
-                                            if (id.isNotBlank()) lastInteractionId = id
-                                            emit(StreamUpdate.Status(statusMsg, lastInteractionId))
-                                        },
-                                        onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                        onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                        onThinking = { delta, sig ->
-                                            thinkingBuilder.append(delta)
-                                            currentStepThinkingBuilder.append(delta)
-                                            val uniqueSig = appendSignatureIfUnique(sig)
-                                            if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
-                                                emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
-                                            }
-                                        },
-                                        onContent = { delta ->
-                                            contentBuilder.append(delta)
-                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
-                                            val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
-                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                            emit(StreamUpdate.ContentDelta(delta))
-                                        },
-                                        onMedia = { item ->
-                                            onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                            generatedMedia.add(item)
-                                            emit(StreamUpdate.MediaGenerated(item))
-                                        },
-                                        onToolCall = { tc ->
-                                            val enriched = attachStepThinkingToToolCall(tc)
-                                            executedTools.add(enriched)
-                                            emit(StreamUpdate.ToolCallEvent(enriched))
-                                        },
-                                        onRawWire = { req, resp ->
-                                            lastRawReq = req
-                                            lastRawResp = resp
-                                            emit(StreamUpdate.RawWireSnapshot(req, resp))
-                                        },
-                                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                            if (id.isNotBlank()) lastInteractionId = id
-                                            inputTokens = inTok
-                                            cachedTokens = cacheTok
-                                            reasoningTokens = thinkTok
-                                            outputTokens = outTok
+                            // Always attempt the newer /v1beta/interactions protocol first; if it errors out
+                            // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
+                            // hand off any accumulated thoughts/tools/prose to :streamGenerateContent!
+                            try {
+                                executeGeminiInteractionsLoop(
+                                    profile = profile,
+                                    model = model,
+                                    session = session,
+                                    historyNodes = effectiveHistoryNodes,
+                                    continuePrefix = effectiveContinuePrefix,
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { statusMsg, id ->
+                                        if (id.isNotBlank()) lastInteractionId = id
+                                        emit(StreamUpdate.Status(statusMsg, lastInteractionId))
+                                    },
+                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onThinking = { delta, sig ->
+                                        thinkingBuilder.append(delta)
+                                        currentStepThinkingBuilder.append(delta)
+                                        val uniqueSig = appendSignatureIfUnique(sig)
+                                        if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
+                                            emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
                                         }
-                                    )
-                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                    throw e
-                                } catch (e: Throwable) {
-                                    if (contentBuilder.length == charsBeforePass && isEndpointUnsupportedForAutoFallback(e)) {
-                                        emit(StreamUpdate.Status("Endpoint does not support /v1beta/interactions — auto-falling back to :streamGenerateContent…"))
-                                        runLegacyGeminiGenerateContent()
-                                    } else {
-                                        throw e
+                                    },
+                                    onContent = { delta ->
+                                        contentBuilder.append(delta)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                        emit(StreamUpdate.ContentDelta(delta))
+                                    },
+                                    onMedia = { item ->
+                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        generatedMedia.add(item)
+                                        emit(StreamUpdate.MediaGenerated(item))
+                                    },
+                                    onToolCall = { tc ->
+                                        val enriched = attachStepThinkingToToolCall(tc)
+                                        executedTools.add(enriched)
+                                        emit(StreamUpdate.ToolCallEvent(enriched))
+                                    },
+                                    onRawWire = { req, resp ->
+                                        lastRawReq = req
+                                        lastRawResp = resp
+                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                    },
+                                    onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                        if (id.isNotBlank()) lastInteractionId = id
+                                        inputTokens = inTok
+                                        cachedTokens = cacheTok
+                                        reasoningTokens = thinkTok
+                                        outputTokens = outTok
                                     }
+                                )
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
+                                    val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
+                                    val reasonShort = actualCause.message?.lineSequence()?.firstOrNull()?.trim()?.take(72) ?: "endpoint error"
+                                    emit(
+                                        StreamUpdate.Status(
+                                            "Primary /v1beta/interactions failed ($reasonShort) — falling back to :streamGenerateContent…",
+                                            lastInteractionId
+                                        )
+                                    )
+                                    val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
+                                        baseHistoryNodes = activeBaseHistoryNodes,
+                                        continuePrefix = contentBuilder.toString(),
+                                        thinkingText = thinkingBuilder.toString(),
+                                        trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
+                                        signatureText = signatureBuilder.toString(),
+                                        executedTools = executedTools.toList(),
+                                        generatedMedia = generatedMedia.toList(),
+                                        protocol = profile.protocol,
+                                        model = model,
+                                        passTag = "fallback-gemini-$continuationPass"
+                                    )
+                                    runLegacyGeminiGenerateContent(fbNodes, fbPrefix)
+                                } else {
+                                    throw e
                                 }
                             }
                         }
@@ -394,13 +395,16 @@ object AiProviderEngine {
                             val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
                                 (profile.enableImageGeneration && isStandaloneImageModel)
 
-                            suspend fun runLegacyOpenAiChatCompletions() {
+                            suspend fun runLegacyOpenAiChatCompletions(
+                                targetHistoryNodes: List<MessageNode>,
+                                targetContinuePrefix: String
+                            ) {
                                 executeOpenAiChatCompletionsLoop(
                                     profile = profile,
                                     model = model,
                                     session = session,
-                                    historyNodes = effectiveHistoryNodes,
-                                    continuePrefix = effectiveContinuePrefix,
+                                    historyNodes = targetHistoryNodes,
+                                    continuePrefix = targetContinuePrefix,
                                     circuitBreaker = circuitBreaker,
                                     onStatus = { st -> emit(StreamUpdate.Status(st)) },
                                     onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
@@ -493,9 +497,10 @@ object AiProviderEngine {
                                         emit(StreamUpdate.RawWireSnapshot(req, resp))
                                     }
                                 )
-                            } else if (profile.useLegacyFallbackEndpoint) {
-                                runLegacyOpenAiChatCompletions()
                             } else {
+                                // Always attempt the newer /v1/responses protocol first; if it errors out
+                                // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
+                                // hand off any accumulated thoughts/tools/prose to /v1/chat/completions!
                                 try {
                                     executeOpenAiResponsesLoop(
                                         profile = profile,
@@ -545,9 +550,28 @@ object AiProviderEngine {
                                 } catch (e: kotlinx.coroutines.CancellationException) {
                                     throw e
                                 } catch (e: Throwable) {
-                                    if (contentBuilder.length == charsBeforePass && isEndpointUnsupportedForAutoFallback(e)) {
-                                        emit(StreamUpdate.Status("Proxy does not support /v1/responses — auto-falling back to /v1/chat/completions…"))
-                                        runLegacyOpenAiChatCompletions()
+                                    if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
+                                        val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
+                                        val reasonShort = actualCause.message?.lineSequence()?.firstOrNull()?.trim()?.take(72) ?: "endpoint error"
+                                        emit(
+                                            StreamUpdate.Status(
+                                                "Primary /v1/responses failed ($reasonShort) — falling back to /v1/chat/completions…",
+                                                lastInteractionId
+                                            )
+                                        )
+                                        val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
+                                            baseHistoryNodes = activeBaseHistoryNodes,
+                                            continuePrefix = contentBuilder.toString(),
+                                            thinkingText = thinkingBuilder.toString(),
+                                            trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
+                                            signatureText = signatureBuilder.toString(),
+                                            executedTools = executedTools.toList(),
+                                            generatedMedia = generatedMedia.toList(),
+                                            protocol = profile.protocol,
+                                            model = model,
+                                            passTag = "fallback-openai-$continuationPass"
+                                        )
+                                        runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
                                     } else {
                                         throw e
                                     }
@@ -695,6 +719,22 @@ object AiProviderEngine {
                     val producedNewContent = contentBuilder.length > charsBeforePass
                     val producedNewThoughts = thinkingBuilder.length > thinkBeforePass || signatureBuilder.length > sigBeforePass
                     val producedMediaOrTools = generatedMedia.size > mediaBeforePass || executedTools.size > toolsBeforePass
+
+                    // Reactive Context-Overflow Self-Healing: if the endpoint reports that the prompt/context
+                    // exceeded the model's maximum context window, condense the oldest 50% of active turns into
+                    // a Continuity Digest and retry immediately!
+                    val unmutedCount = activeBaseHistoryNodes.count { it.includedInContext }
+                    if (isContextLengthExceededError(actualErr) && unmutedCount > 4) {
+                        activeBaseHistoryNodes = compactHistoryNodesOnOverflow(activeBaseHistoryNodes)
+                        emit(
+                            StreamUpdate.Status(
+                                "Context window limit reached on endpoint — auto-compacting older turns & retrying…",
+                                lastInteractionId
+                            )
+                        )
+                        continue
+                    }
+
                     val isRetryable = isTransientOrProxyTimeoutError(actualErr)
                     val isLongGoalRun = circuitBreaker.goalState != null
                     val maxRetries = if (isLongGoalRun) MAX_GOAL_NETWORK_RETRIES else MAX_PRE_TOKEN_RETRIES
@@ -1660,12 +1700,22 @@ object AiProviderEngine {
                         break
                     }
                     if (!receivedAnyStreamContent && turnToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e)) {
-                        if (stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        val maxPrimaryRetries = if (profile.useLegacyFallbackEndpoint) {
+                            LEGACY_FALLBACK_PRIMARY_MAX_RETRIES
+                        } else {
+                            MAX_PRE_TOKEN_RETRIES
+                        }
+                        val waitSec = if (profile.useLegacyFallbackEndpoint) {
+                            LEGACY_FALLBACK_PRIMARY_WAIT_SECONDS
+                        } else {
+                            RETRY_WAIT_SECONDS
+                        }
+                        if (stepRetryAttempt < maxPrimaryRetries) {
                             stepRetryAttempt++
                             waitWithRetryCountdown(
                                 attempt = stepRetryAttempt,
-                                maxAttempts = MAX_PRE_TOKEN_RETRIES,
-                                waitSeconds = RETRY_WAIT_SECONDS,
+                                maxAttempts = maxPrimaryRetries,
+                                waitSeconds = waitSec,
                                 reasonSummary = e.message ?: "Transient API error in step $loopStep",
                                 onStatus = { msg -> onStatus(msg, currentPrevInteractionId) }
                             )
@@ -3050,12 +3100,22 @@ object AiProviderEngine {
                         continue
                     }
                     if (!stepEmittedOutput && turnToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e)) {
-                        if (stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
+                        val maxPrimaryRetries = if (profile.useLegacyFallbackEndpoint) {
+                            LEGACY_FALLBACK_PRIMARY_MAX_RETRIES
+                        } else {
+                            MAX_PRE_TOKEN_RETRIES
+                        }
+                        val waitSec = if (profile.useLegacyFallbackEndpoint) {
+                            LEGACY_FALLBACK_PRIMARY_WAIT_SECONDS
+                        } else {
+                            RETRY_WAIT_SECONDS
+                        }
+                        if (stepRetryAttempt < maxPrimaryRetries) {
                             stepRetryAttempt++
                             waitWithRetryCountdown(
                                 attempt = stepRetryAttempt,
-                                maxAttempts = MAX_PRE_TOKEN_RETRIES,
-                                waitSeconds = RETRY_WAIT_SECONDS,
+                                maxAttempts = maxPrimaryRetries,
+                                waitSeconds = waitSec,
                                 reasonSummary = e.message ?: "Transient API error in step $loopStep",
                                 onStatus = onStatus
                             )
@@ -4880,11 +4940,9 @@ object AiProviderEngine {
      * socket read timeout, premature EOF, connection reset, 529 overloaded, or 429 rate limit) so
      * `streamGeneration` and multi-step workspace tool loops can automatically retry.
      */
-    internal fun isTransientOrProxyTimeoutError(err: Throwable): Boolean {
-        if (err is kotlinx.coroutines.CancellationException) return false
+    internal fun isHardAuthOrQuotaError(err: Throwable): Boolean {
         val msg = (err.message ?: err.toString()).lowercase()
-        // Fail fast on hard authentication, permission, or billing/quota deactivation errors
-        if (msg.contains("http 401") ||
+        return msg.contains("http 401") ||
             msg.contains("http 403") ||
             msg.contains("invalid_api_key") ||
             msg.contains("invalid api key") ||
@@ -4892,13 +4950,19 @@ object AiProviderEngine {
             msg.contains("permission_denied") ||
             msg.contains("billing_not_active") ||
             msg.contains("insufficient_quota")
-        ) {
+    }
+
+    internal fun isTransientOrProxyTimeoutError(err: Throwable): Boolean {
+        if (err is kotlinx.coroutines.CancellationException) return false
+        // Fail fast on hard authentication, permission, or billing/quota deactivation errors
+        if (isHardAuthOrQuotaError(err)) {
             return false
         }
         // Allow unsupported-endpoint errors (404/405/501) to trigger protocol auto-fallback immediately without waiting 60s
         if (isEndpointUnsupportedForAutoFallback(err)) {
             return false
         }
+        val msg = (err.message ?: err.toString()).lowercase()
         // Fail fast on client-side bad request (HTTP 400) unless it is a rate-limit / overload / timeout wrapped in 400
         if (msg.contains("http 400") &&
             !msg.contains("rate") &&
@@ -4919,7 +4983,7 @@ object AiProviderEngine {
      * Detects when a proxy or server does not implement `/v1beta/interactions` or `/v1/responses`
      * so `streamGeneration` can automatically fall back to `:streamGenerateContent` or `/v1/chat/completions`.
      */
-    private fun isEndpointUnsupportedForAutoFallback(err: Throwable): Boolean {
+    internal fun isEndpointUnsupportedForAutoFallback(err: Throwable): Boolean {
         val msg = (err.message ?: err.toString()).lowercase()
         return msg.contains("http 404") ||
             msg.contains("http 405") ||
@@ -4930,6 +4994,126 @@ object AiProviderEngine {
             msg.contains("unsupported path")
     }
 
+    /**
+     * Determines whether a failure on the primary protocol (`/v1beta/interactions` or `/v1/responses`)
+     * should fall back to the legacy endpoint (`:streamGenerateContent` or `/v1/chat/completions`).
+     * - Never falls back on `CancellationException` or hard auth/quota errors (HTTP 401/403).
+     * - Always falls back on unsupported endpoint errors (404/405/501).
+     * - When `useLegacyFallbackEndpoint` is enabled, falls back on any remaining error after the
+     *   primary protocol's self-healing and fast probe retry budget (`LEGACY_FALLBACK_PRIMARY_MAX_RETRIES`) are exhausted.
+     */
+    internal fun shouldFallbackToLegacyProtocol(
+        err: Throwable,
+        useLegacyFallbackEndpoint: Boolean
+    ): Boolean {
+        if (err is kotlinx.coroutines.CancellationException) return false
+        val actual = if (err is StepRetriesExhaustedException && err.cause != null) err.cause!! else err
+        if (isHardAuthOrQuotaError(actual)) return false
+        if (isEndpointUnsupportedForAutoFallback(actual)) return true
+        return useLegacyFallbackEndpoint
+    }
+
+    /**
+     * Synthesizes an in-progress assistant turn + resume user prompt whenever a turn has already
+     * accumulated tool executions or thoughts (either before a mid-stream continuation pass or before
+     * falling back from a newer protocol to a legacy protocol mid-turn), ensuring zero loss of
+     * thoughts, cryptographic signatures, tool calls, or partial prose.
+     */
+    internal fun buildEffectiveHistoryAndPrefix(
+        baseHistoryNodes: List<MessageNode>,
+        continuePrefix: String,
+        thinkingText: String,
+        trailingThinkingText: String = "",
+        signatureText: String,
+        executedTools: List<ToolCallRecord>,
+        generatedMedia: List<GeneratedMediaItem>,
+        protocol: ProviderProtocol,
+        model: String,
+        passTag: String
+    ): Pair<List<MessageNode>, String> {
+        val hasPriorTurnProgress = executedTools.isNotEmpty() ||
+            (continuePrefix.isBlank() && (thinkingText.isNotEmpty() || signatureText.isNotEmpty()))
+        return if (hasPriorTurnProgress) {
+            val partialVar = MessageVariant(
+                id = "var-in-progress-$passTag",
+                content = if (executedTools.isNotEmpty() && continuePrefix.isNotBlank()) continuePrefix else "",
+                thinkingSummary = thinkingText,
+                trailingThinking = if (executedTools.isNotEmpty()) trailingThinkingText else "",
+                thinkingSignature = signatureText,
+                toolCalls = executedTools,
+                mediaItems = generatedMedia,
+                providerProtocol = protocol,
+                modelUsed = model
+            )
+            val partialAssistantNode = MessageNode(
+                id = "node-in-progress-$passTag",
+                role = MessageRole.ASSISTANT,
+                variants = listOf(partialVar)
+            )
+            val resumePrompt = if (executedTools.isNotEmpty() && continuePrefix.isNotBlank()) {
+                "[System Note: Continue seamlessly from the exact end of this partial passage without repeating completed tool calls or text:\n\"$continuePrefix\"]"
+            } else {
+                "[System Note: Continue seamlessly from your reasoning and tool executions above without repeating completed steps.]"
+            }
+            val resumeUserNode = MessageNode(
+                id = "node-resume-user-$passTag",
+                role = MessageRole.USER,
+                variants = listOf(MessageVariant(id = "var-resume-user-$passTag", content = resumePrompt))
+            )
+            (baseHistoryNodes + partialAssistantNode + resumeUserNode) to ""
+        } else {
+            baseHistoryNodes to continuePrefix
+        }
+    }
+
+    /**
+     * Detects HTTP 400 / 413 context-window / token-limit overflow errors across Gemini, OpenAI, Anthropic, and proxies.
+     */
+    internal fun isContextLengthExceededError(err: Throwable): Boolean {
+        val msg = (err.message ?: err.toString()).lowercase()
+        return msg.contains("context_length_exceeded") ||
+            msg.contains("maximum context length") ||
+            msg.contains("prompt is too long") ||
+            (msg.contains("input token count") && msg.contains("exceed")) ||
+            msg.contains("too many tokens") ||
+            msg.contains("exceeds the maximum number of tokens") ||
+            msg.contains("request too large") ||
+            msg.contains("http 413")
+    }
+
+    /**
+     * Condenses the oldest 50% of active unmuted conversation turns into a compact Continuity Digest
+     * while keeping the newest turns in full verbatim fidelity.
+     */
+    internal fun compactHistoryNodesOnOverflow(nodes: List<MessageNode>): List<MessageNode> {
+        val activeIndices = nodes.mapIndexedNotNull { idx, n -> if (n.includedInContext) idx else null }
+        if (activeIndices.size <= 4) return nodes
+        val compactCount = (activeIndices.size / 2).coerceAtLeast(2)
+        val indicesToCompact = activeIndices.take(compactCount).toSet()
+        val digestLines = mutableListOf<String>()
+        for (idx in indicesToCompact) {
+            val n = nodes[idx]
+            val speaker = if (n.role == MessageRole.ASSISTANT) "Assistant" else "User"
+            val snippet = stripInlineErrorNotices(n.activeVariant.content)
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(260)
+            if (snippet.isNotEmpty()) {
+                digestLines.add("- $speaker: $snippet")
+            }
+        }
+        val digestText = "[Auto-Compacted Earlier Conversation Continuity Digest (${indicesToCompact.size} turns condensed):\n" +
+            digestLines.take(24).joinToString("\n") + "]"
+        val digestNode = MessageNode(
+            id = "node-auto-digest-${PlatformBridge.currentTimeMillis()}",
+            role = MessageRole.USER,
+            variants = listOf(MessageVariant(id = "var-auto-digest", content = digestText))
+        )
+        val remaining = nodes.mapIndexed { idx, n ->
+            if (idx in indicesToCompact) n.copy(includedInContext = false) else n
+        }
+        return listOf(digestNode) + remaining
+    }
     private fun extractGoalObjectiveFromHistory(historyNodes: List<MessageNode>): String {
         val lastUserText = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content?.trim().orEmpty()
         if (lastUserText.startsWith("/goal", ignoreCase = true)) {

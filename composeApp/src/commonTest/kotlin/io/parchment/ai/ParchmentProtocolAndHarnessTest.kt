@@ -473,6 +473,75 @@ class ParchmentProtocolAndHarnessTest {
             "Multi-step tool turn must replay in chronological interleaved order: thought1 -> call1 -> result1 -> thought2 -> call2 -> result2 -> model_output"
         )
         assertTrue(OtaUpdateEngine.compareVersions("1.2.0", "1.2.0-beta.1") > 0, "Stable release 1.2.0 must be newer than 1.2.0-beta.1")
+
+        // 9. Verify Smart Primary-First Legacy Protocol Fallback Classifier & Zero-Loss Mid-Turn Handoff
+        assertFalse(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 401: invalid_api_key"), useLegacyFallbackEndpoint = true),
+            "Auth 401 error must fail fast and never fall back to legacy endpoint"
+        )
+        assertFalse(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 403: permission_denied"), useLegacyFallbackEndpoint = true),
+            "Auth 403 error must fail fast and never fall back to legacy endpoint"
+        )
+        assertTrue(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 404: Not Found"), useLegacyFallbackEndpoint = false),
+            "Unsupported 404 endpoint must always auto-fallback even when toggle is off"
+        )
+        assertFalse(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 502: Bad Gateway"), useLegacyFallbackEndpoint = false),
+            "When toggle is off, non-404 errors must not fall back"
+        )
+        assertTrue(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(
+                AiProviderEngine.StepRetriesExhaustedException("Retries exhausted", RuntimeException("HTTP 502: Bad Gateway")),
+                useLegacyFallbackEndpoint = true
+            ),
+            "When useLegacyFallbackEndpoint is on, primary protocol errors after probe retries must fall back to legacy endpoint"
+        )
+        assertTrue(
+            AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 400: unsupported_parameter"), useLegacyFallbackEndpoint = true),
+            "When useLegacyFallbackEndpoint is on, HTTP 400 schema rejection on primary endpoint must fall back to legacy endpoint"
+        )
+
+        val (handoffNodes, handoffPrefix) = AiProviderEngine.buildEffectiveHistoryAndPrefix(
+            baseHistoryNodes = listOf(userTurn1),
+            continuePrefix = "Partial prose before step 2 failed.",
+            thinkingText = "Step 1 thought",
+            trailingThinkingText = "Step 2 thought",
+            signatureText = "sig_step_1",
+            executedTools = listOf(
+                ToolCallRecord(
+                    id = "call_1",
+                    name = "fs_list",
+                    argumentsJson = """{"path":""}""",
+                    resultText = "README.md",
+                    thoughtSignature = "sig_step_1",
+                    precedingThinking = "Step 1 thought"
+                )
+            ),
+            generatedMedia = emptyList(),
+            protocol = io.parchment.ai.model.ProviderProtocol.GEMINI_INTERACTIONS,
+            model = "gemini-4-argon",
+            passTag = "test-fallback"
+        )
+        assertEquals(3, handoffNodes.size, "Mid-turn fallback handoff must append synthesized partial assistant turn + resume user prompt")
+        assertEquals("", handoffPrefix, "When tool calls exist, partial prose is embedded in synthesized assistant turn and resume prompt")
+        assertEquals(1, handoffNodes[1].activeVariant.toolCalls.size, "Synthesized assistant node must preserve completed tool calls")
+        assertEquals("Step 2 thought", handoffNodes[1].activeVariant.trailingThinking, "Synthesized assistant node must preserve trailing thinking")
+
+        // 10. Verify Reactive Context-Length Overflow Detection & Auto-Compaction
+        assertTrue(AiProviderEngine.isContextLengthExceededError(RuntimeException("HTTP 400: context_length_exceeded - maximum context length is 128000")))
+        assertTrue(AiProviderEngine.isContextLengthExceededError(RuntimeException("HTTP 400: prompt is too long: 205000 tokens > 200000 maximum")))
+        val sixTurnHistory = (1..6).map { i ->
+            MessageNode(
+                id = "t-$i",
+                role = if (i % 2 == 1) MessageRole.USER else MessageRole.ASSISTANT,
+                variants = listOf(MessageVariant(id = "v-$i", content = "Turn $i content"))
+            )
+        }
+        val compactedOverflow = AiProviderEngine.compactHistoryNodesOnOverflow(sixTurnHistory)
+        assertTrue(compactedOverflow.first().activeVariant.content.contains("Auto-Compacted Earlier Conversation Continuity Digest"))
+        assertEquals(4, compactedOverflow.count { it.includedInContext }, "Digest node + 3 newest turns must remain active after compacting 3 oldest of 6 turns")
     }
 
     @Test

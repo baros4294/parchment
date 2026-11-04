@@ -81,7 +81,7 @@ data class ProviderProfile(
     val timeoutMinutes: Int = 60,
     val useStatefulChaining: Boolean = true,
     val useBackgroundLongDecode: Boolean = true,
-    val useLegacyFallbackEndpoint: Boolean = false,
+    val useLegacyFallbackEndpoint: Boolean = true,
     val enableWebSearch: Boolean = false,
     val enableCodeExecution: Boolean = false,
     val enableUrlContext: Boolean = false,
@@ -427,6 +427,7 @@ data class PreferencesConfig(
     val pasteLongTextAsFile: Boolean = false,
     val pasteConversionThresholdChars: Int = 5000,
     val autoFollowBottom: Boolean = true,
+    val autoCompactWhenNearContextLimit: Boolean = true,
     val chatBackgroundOverlayOpacityPercent: Int = 100,
     val inputBoxBackgroundOpacityPercent: Int = 95
 )
