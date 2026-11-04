@@ -1718,9 +1718,8 @@ private fun ProvidersSubpage(
                                         AiProviderEngine.fetchAvailableModels(activeProfile).fold(
                                             onSuccess = { list ->
                                                 val ms = PlatformBridge.currentTimeMillis() - start
-                                                val secStr = "${(ms / 10L) / 100.0}s"
+                                                val secStr = formatDurationFromMs(ms)
                                                 onNotify("✓ Connection OK ($secStr • ${list.size} models reachable)")
-                                                isTestingOrFetching = false
                                             },
                                             onFailure = { err ->
                                                 onNotify("✕ Connection Test Failed: ${err.message}")

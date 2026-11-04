@@ -18,6 +18,7 @@ import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
+import io.parchment.ai.ui.formatDurationFromMs
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -563,6 +564,12 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("grok", resolveLabSlugForModelOrProvider("x-ai/grok-4"))
         assertEquals("qwen", resolveLabSlugForModelOrProvider("Qwen/Qwen3-235B"))
         assertEquals("doubao", resolveLabSlugForModelOrProvider("seedream-4-0"))
+
+        // 12. Verify Smart Duration Formatter (50.5s -> 20m21.2s -> 2h15m -> 1d4h15m)
+        assertEquals("50.5s", formatDurationFromMs(50_500L))
+        assertEquals("20m21.2s", formatDurationFromMs(1_221_200L))
+        assertEquals("2h15m", formatDurationFromMs(8_145_000L))
+        assertEquals("1d4h15m", formatDurationFromMs(101_700_000L))
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {

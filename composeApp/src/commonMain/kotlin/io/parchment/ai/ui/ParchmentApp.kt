@@ -177,9 +177,29 @@ data class SessionStreamRuntime(
     val job: Job? = null
 )
 
-private fun formatSecondsFromMs(ms: Long): String {
-    val sec = (ms / 10L).toDouble() / 100.0
-    return "${sec}s"
+internal fun formatDurationFromMs(ms: Long): String {
+    val totalTenths = (ms.coerceAtLeast(0L) + 50L) / 100L
+    val totalSeconds = totalTenths / 10L
+    val dec = totalTenths % 10L
+    return when {
+        totalSeconds < 60L -> "${totalSeconds}.${dec}s"
+        totalSeconds < 3600L -> {
+            val mins = totalSeconds / 60L
+            val secs = totalSeconds % 60L
+            "${mins}m${secs}.${dec}s"
+        }
+        totalSeconds < 86_400L -> {
+            val hrs = totalSeconds / 3600L
+            val mins = (totalSeconds % 3600L) / 60L
+            "${hrs}h${mins}m"
+        }
+        else -> {
+            val days = totalSeconds / 86_400L
+            val hrs = (totalSeconds % 86_400L) / 3600L
+            val mins = (totalSeconds % 3600L) / 60L
+            "${days}d${hrs}h${mins}m"
+        }
+    }
 }
 
 private val THINKING_EFFORT_PRESETS = listOf(
@@ -1006,7 +1026,7 @@ fun ParchmentApp(
                             updateSessionStreamState(sessionId) { cur ->
                                 cur?.copy(
                                     isThinkingPhase = true,
-                                    statusText = "Reasoning ($modelName • $thinkWords words • ${thinkingDurationMs / 1000.0}s)…"
+                                    statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
                                 )
                             }
                         }
@@ -5430,7 +5450,7 @@ private fun MessageTurnItem(
                 val hasThinking = preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()
                 val hasTools = preferences.showToolCards && activeVar.toolCalls.isNotEmpty()
                 if (hasThinking || hasTools) {
-                    val sec = if (activeVar.thinkingDurationMs > 0) " (${activeVar.thinkingDurationMs / 1000.0}s)" else ""
+                    val sec = if (activeVar.thinkingDurationMs > 0) " (${formatDurationFromMs(activeVar.thinkingDurationMs)})" else ""
                     val toolBadge = if (hasTools) " • ${activeVar.toolCalls.size} tools" else ""
                     val chipText = if (isActivelyThinkingThisNode) {
                         "🧠 Thinking$sec…"
@@ -6311,7 +6331,8 @@ private fun MessageTurnItem(
                     val detailStr = if (showMoreActions || preferences.showTokensForEntireTurn) {
                         val cacheStr = if (m.cachedInputTokens > 0) " (Cache ${formatCompactTokens(m.cachedInputTokens)})" else ""
                         val thinkStr = if (m.reasoningTokens > 0) " • Think ${formatCompactTokens(m.reasoningTokens)}" else ""
-                        "first token ${formatSecondsFromMs(m.ttftMs)} • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok$costStr"
+                        val durStr = if (m.durationMs > 0L) " • ${formatDurationFromMs(m.durationMs)}" else ""
+                        "first token ${formatDurationFromMs(m.ttftMs)}$durStr • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok$costStr"
                     } else {
                         "${m.tokensPerSec} tok/s • ${formatCompactTokens(m.totalTokens)} tok$costStr"
                     }
