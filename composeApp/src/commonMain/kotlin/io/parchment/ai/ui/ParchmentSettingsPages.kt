@@ -1935,10 +1935,11 @@ private fun ProvidersSubpage(
                 }
 
                 if (vendorFamilies.size >= 2) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         SepiaChip(
                             label = "All Families (${activeProfile.savedModels.size})",

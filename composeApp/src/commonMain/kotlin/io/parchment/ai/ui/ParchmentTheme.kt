@@ -136,6 +136,7 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
             fontFamily = proseFont,
             fontSize = fontSize.sp,
             lineHeight = lineHeight.sp,
+            letterSpacing = 0.05.sp,
             color = primaryInk,
             fontWeight = FontWeight.Normal
         ),
@@ -149,13 +150,14 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
         uiBodyStyle = TextStyle(
             fontFamily = uiFont,
             fontSize = 13.5.sp,
-            lineHeight = 19.sp,
+            lineHeight = 19.5.sp,
             color = primaryInk
         ),
         uiLabelStyle = TextStyle(
             fontFamily = uiFont,
             fontSize = 11.5.sp,
-            lineHeight = 15.sp,
+            lineHeight = 15.5.sp,
+            letterSpacing = 0.08.sp,
             color = mutedInk,
             fontWeight = FontWeight.Medium
         ),
@@ -163,6 +165,7 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
             fontFamily = proseFont,
             fontSize = 17.sp,
             lineHeight = 23.sp,
+            letterSpacing = (-0.25).sp,
             color = primaryInk,
             fontWeight = FontWeight.SemiBold
         ),

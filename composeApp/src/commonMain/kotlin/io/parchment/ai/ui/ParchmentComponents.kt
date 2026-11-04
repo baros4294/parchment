@@ -255,12 +255,12 @@ fun SepiaButton(
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else Color.Transparent
         SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else Color.Transparent
         SepiaButtonStyle.OUTLINE -> when {
-            !enabled -> p.border.copy(alpha = 0.4f)
+            !enabled -> p.border.copy(alpha = 0.32f)
             isPressed -> p.accent
-            isHovered -> p.accent.copy(alpha = 0.7f)
-            else -> p.border.copy(alpha = 0.8f)
+            isHovered -> p.accent.copy(alpha = 0.65f)
+            else -> p.border.copy(alpha = 0.52f)
         }
-        SepiaButtonStyle.GHOST -> if (enabled && (isPressed || isHovered)) p.accent.copy(alpha = 0.35f) else Color.Transparent
+        SepiaButtonStyle.GHOST -> if (enabled && (isPressed || isHovered)) p.accent.copy(alpha = 0.28f) else Color.Transparent
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else Color.Transparent
     }
 
@@ -296,7 +296,7 @@ fun SepiaButton(
             .background(bgColor)
             .then(
                 if (borderColor != Color.Transparent) {
-                    Modifier.border(if (isPressed || isHovered) 1.dp else 0.85.dp, borderColor, shape)
+                    Modifier.border(if (isPressed || isHovered) 0.9.dp else 0.65.dp, borderColor, shape)
                 } else Modifier
             )
             .padding(
@@ -369,8 +369,8 @@ fun SepiaChip(
     val borderCol by animateColorAsState(
         targetValue = when {
             selected || isPressed -> p.accent
-            isHovered -> p.accent.copy(alpha = 0.65f)
-            else -> p.border.copy(alpha = 0.65f)
+            isHovered -> p.accent.copy(alpha = 0.6f)
+            else -> p.border.copy(alpha = 0.48f)
         },
         animationSpec = chipColorSpec
     )
@@ -387,7 +387,7 @@ fun SepiaChip(
             .kissClickable(interactionSource = interactionSource, onClick = onClick)
             .clip(shape)
             .background(bg)
-            .border(if (selected || isHovered) 1.dp else 0.85.dp, borderCol, shape)
+            .border(if (selected || isHovered) 0.9.dp else 0.65.dp, borderCol, shape)
             .padding(horizontal = if (win.isCompact) 7.dp else 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -515,19 +515,14 @@ fun SepiaTextField(
     var textFieldValueState by remember {
         mutableStateOf(TextFieldValue(text = value, selection = TextRange(value.length)))
     }
-    val textFieldValue = if (textFieldValueState.text != value) {
-        textFieldValueState.copy(
-            text = value,
-            selection = TextRange(
-                textFieldValueState.selection.start.coerceIn(0, value.length),
-                textFieldValueState.selection.end.coerceIn(0, value.length)
-            )
-        )
-    } else {
-        textFieldValueState
+    var lastTextValue by remember { mutableStateOf(value) }
+    if (value != lastTextValue) {
+        // External state change (e.g. selecting a `/command ` from autocomplete or streaming a draft):
+        // sync textFieldValueState and place the cursor at the END of the new text!
+        lastTextValue = value
+        textFieldValueState = TextFieldValue(text = value, selection = TextRange(value.length))
     }
-    var lastTextValue by remember(value) { mutableStateOf(value) }
-
+    val textFieldValue = textFieldValueState
     val borderColor by animateColorAsState(
         targetValue = when {
             borderless -> Color.Transparent
@@ -688,18 +683,17 @@ fun SepiaSectionCard(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(12.dp)
     val cardPadding = if (win.isCompact) 13.dp else 16.dp
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(shape)
             .background(p.cardBg)
-            .border(0.85.dp, p.border.copy(alpha = 0.78f), shape)
+            .border(0.65.dp, p.border.copy(alpha = 0.52f), shape)
             .animateContentSize(
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
                 )
             )
             .padding(cardPadding)
@@ -764,8 +758,8 @@ fun SepiaDivider(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(0.8.dp)
-            .background(p.border.copy(alpha = 0.6f))
+            .height(0.6.dp)
+            .background(p.border.copy(alpha = 0.42f))
     )
 }
 
@@ -1217,12 +1211,13 @@ fun SepiaSearchableModelPicker(
             }
         }
 
-        // 2. Provider Filter Pills (shown when >1 provider has models)
+        // 2. Provider Filter Pills (shown when >1 provider has models — wrapped via FlowRow so pills never clip!)
         if (providerCounts.size > 1) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            @OptIn(ExperimentalLayoutApi::class)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 SepiaChip(
                     label = "All Providers (${allOptions.size})",
@@ -1245,12 +1240,13 @@ fun SepiaSearchableModelPicker(
             }
         }
 
-        // 3. Vendor Family Filter Pills (shown when >= 2 vendor families exist, e.g. deepseek-ai, Qwen, zai-org)
+        // 3. Vendor Family Filter Pills (shown when >= 2 vendor families exist — wrapped via FlowRow!)
         if (vendorCounts.size >= 2) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            @OptIn(ExperimentalLayoutApi::class)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 SepiaChip(
                     label = "All Families",

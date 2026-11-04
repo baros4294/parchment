@@ -4046,40 +4046,139 @@ private fun ManuscriptViewport(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                // Interactive Slash-Command Autocomplete Pill Bar when typing `/` in the Composer!
+                // Vertical Slash-Command Autocomplete Palette when typing `/` in the Composer!
+                // Automatically dismisses as soon as a space is entered (e.g. `/goal ` or `/btw `) so it never blocks typing!
                 val trimmedSlashPrefix = userPromptInput.trimStart()
-                val showSlashSuggestions = trimmedSlashPrefix.startsWith("/") && !trimmedSlashPrefix.contains('\n')
-                val matchingSlashCommands = remember(trimmedSlashPrefix) {
+                val showSlashSuggestions = trimmedSlashPrefix.startsWith("/") &&
+                    !trimmedSlashPrefix.contains('\n') &&
+                    !trimmedSlashPrefix.contains(' ')
+                val matchingSlashCommands = remember(trimmedSlashPrefix, showSlashSuggestions) {
                     if (!showSlashSuggestions) emptyList()
                     else {
-                        val cmdToken = trimmedSlashPrefix.substringBefore(' ').lowercase()
+                        val cmdToken = trimmedSlashPrefix.lowercase()
                         BUILTIN_SLASH_COMMANDS.filter { spec ->
-                            spec.command.startsWith(cmdToken) ||
-                                (trimmedSlashPrefix.startsWith(spec.command, ignoreCase = true) && trimmedSlashPrefix.length == spec.command.length)
+                            spec.command.startsWith(cmdToken)
                         }
                     }
                 }
-                AnimatedVisibility(visible = matchingSlashCommands.isNotEmpty()) {
-                    Row(
+                AnimatedVisibility(
+                    visible = matchingSlashCommands.isNotEmpty(),
+                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(130)),
+                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(110))
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .heightIn(max = 224.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(p.sheetBg.copy(alpha = 0.82f))
+                            .border(0.65.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .verticalScroll(rememberScrollState())
+                            .padding(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         matchingSlashCommands.forEach { spec ->
-                            SepiaChip(
-                                label = "${spec.label} — ${spec.description}",
-                                selected = trimmedSlashPrefix.equals(spec.command, ignoreCase = true),
-                                onClick = {
-                                    onUserPromptChange(if (spec.takesArgument) "${spec.command} " else spec.command)
+                            val isExact = trimmedSlashPrefix.equals(spec.command, ignoreCase = true)
+                            val rowInteraction = remember { MutableInteractionSource() }
+                            val isHovered by rowInteraction.collectIsHoveredAsState()
+                            val isPressed by rowInteraction.collectIsPressedAsState()
+                            val parsedCmdIcon = remember(spec.label) {
+                                parseKissLabelIcons(spec.label).leadingIcon ?: KissIcon.SPARKLES
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(
+                                        when {
+                                            isExact || isPressed -> p.accent.copy(alpha = 0.14f)
+                                            isHovered -> p.accent.copy(alpha = 0.08f)
+                                            else -> p.cardBg.copy(alpha = 0.72f)
+                                        }
+                                    )
+                                    .border(
+                                        width = 0.6.dp,
+                                        color = if (isExact || isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
+                                        shape = RoundedCornerShape(7.dp)
+                                    )
+                                    .kissClickable(
+                                        pressScale = 0.99f,
+                                        hoverScale = 1.004f,
+                                        interactionSource = rowInteraction,
+                                        onClick = {
+                                            if (spec.takesArgument) {
+                                                onUserPromptChange("${spec.command} ")
+                                            } else {
+                                                // 1-tap instant execution for no-argument slash commands!
+                                                onUserPromptChange("")
+                                                when (spec.command) {
+                                                    "/compact" -> onCompactContext()
+                                                    "/summarize" -> onAutoSummarizeStory()
+                                                    "/clear" -> onRequestClearCurrentChat()
+                                                    "/continue" -> {
+                                                        val lastAsst = activeSession.messages.indexOfLast { it.role == MessageRole.ASSISTANT }
+                                                        if (lastAsst >= 0) onContinueAssistantNode(lastAsst)
+                                                    }
+                                                    "/rewind" -> {
+                                                        if (activeSession.messages.isNotEmpty()) {
+                                                            onRewindToNode(activeSession.messages.lastIndex)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    KissVectorIcon(
+                                        icon = parsedCmdIcon,
+                                        tint = p.accent,
+                                        size = 13.5.dp
+                                    )
+                                    BasicText(
+                                        text = spec.command,
+                                        style = p.monoStyle.copy(
+                                            color = p.accent,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                    BasicText(
+                                        text = spec.description,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiBodyStyle.copy(
+                                            color = p.primaryInk,
+                                            fontSize = 12.sp
+                                        )
+                                    )
                                 }
-                            )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(p.elevatedBg.copy(alpha = 0.7f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    BasicText(
+                                        text = if (spec.takesArgument) "⇥ arg" else "↵ Run",
+                                        style = p.monoStyle.copy(
+                                            fontSize = 10.sp,
+                                            color = p.narrationInk,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-
                 // 4. Clean Borderless Prompt Input Area with Desktop Enter-to-Send & Shift+Enter Newline!
                 val targetName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
                     ?: activeAssistant.name.takeIf { it.isNotBlank() }
@@ -4385,20 +4484,20 @@ private fun MessageTurnItem(
             )
             .padding(vertical = 6.dp)
     } else {
-        val shape = RoundedCornerShape(11.dp)
-        val bg = if (isAssistant) p.cardBg else p.elevatedBg.copy(alpha = 0.65f)
+        val shape = RoundedCornerShape(12.dp)
+        val bg = if (isAssistant) p.cardBg else p.elevatedBg.copy(alpha = 0.56f)
+        val borderCol = if (isAssistant) p.border.copy(alpha = 0.45f) else p.border.copy(alpha = 0.38f)
         Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(bg)
-            .border(0.85.dp, p.border.copy(alpha = 0.8f), shape)
+            .border(0.65.dp, borderCol, shape)
             .then(
                 if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
                 else Modifier
             )
-            .padding(14.dp)
+            .padding(horizontal = 15.dp, vertical = 14.dp)
     }
-
     val containerModifier = if (node.variants.size > 1) {
         baseContainerModifier.pointerInput(node.id, node.activeVariantIndex, node.variants.size) {
             detectHorizontalDragGestures(
@@ -4606,9 +4705,9 @@ private fun MessageTurnItem(
                 modifier = Modifier
                     .padding(top = 8.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(p.sheetBg.copy(alpha = 0.72f))
-                    .border(0.85.dp, if (isActivelyThinkingThisNode) p.accent else p.border.copy(alpha = 0.75f), RoundedCornerShape(9.dp))
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(p.sheetBg.copy(alpha = 0.58f))
+                    .border(0.65.dp, if (isActivelyThinkingThisNode) p.accent.copy(alpha = 0.8f) else p.border.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -5526,7 +5625,13 @@ private fun MessageTurnItem(
                     }
                     BasicText(
                         text = detailStr,
-                        style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily, lineHeight = 14.sp)
+                        modifier = Modifier.padding(top = 2.dp),
+                        style = p.uiLabelStyle.copy(
+                            fontSize = 10.sp,
+                            fontFamily = p.codeFontFamily,
+                            lineHeight = 14.sp,
+                            color = p.mutedInk.copy(alpha = 0.8f)
+                        )
                     )
                 }
             }

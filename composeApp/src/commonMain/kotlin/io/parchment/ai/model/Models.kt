@@ -566,6 +566,36 @@ data class ThemeConfig(
                 mutedInkHex = "#7A6D5B",
                 accentHex = "#C97A3E",
                 accentSecondaryHex = "#C49142"
+            ),
+            ThemeConfig(
+                name = "Paper & Graphite (Modern Editorial Light)",
+                colorMode = "Light",
+                canvasBgHex = "#F7F7F5",
+                sheetBgHex = "#EFEFED",
+                cardBgHex = "#FFFFFF",
+                elevatedBgHex = "#F2F2EF",
+                borderHex = "#E4E4E0",
+                primaryInkHex = "#18181B",
+                dialogueInkHex = "#27272A",
+                narrationInkHex = "#52525B",
+                mutedInkHex = "#71717A",
+                accentHex = "#4F46E5",
+                accentSecondaryHex = "#0D9488"
+            ),
+            ThemeConfig(
+                name = "Linear Carbon (Modern Editorial Dark)",
+                colorMode = "Dark",
+                canvasBgHex = "#0E0F12",
+                sheetBgHex = "#131519",
+                cardBgHex = "#17191E",
+                elevatedBgHex = "#1F2229",
+                borderHex = "#2A2E37",
+                primaryInkHex = "#ECECEE",
+                dialogueInkHex = "#D4D8F0",
+                narrationInkHex = "#A0A6B2",
+                mutedInkHex = "#6E7480",
+                accentHex = "#5E6AD2",
+                accentSecondaryHex = "#38BDF8"
             )
         )
     }
