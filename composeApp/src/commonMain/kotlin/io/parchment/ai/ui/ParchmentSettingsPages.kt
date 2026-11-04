@@ -1707,7 +1707,7 @@ private fun ProvidersSubpage(
                         BasicText(text = "API Key", style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold, color = p.narrationInk))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             SepiaButton(
-                                text = if (showApiKey) "🙈 Hide" else "👁 Show",
+                                text = if (showApiKey) "🙈" else "👁",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showApiKey = !showApiKey }
@@ -1922,7 +1922,7 @@ private fun ProvidersSubpage(
                         )
                         if (modelSearch.isNotEmpty() || selectedVendorFamily.isNotEmpty()) {
                             SepiaButton(
-                                text = "× Reset",
+                                text = "×",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {

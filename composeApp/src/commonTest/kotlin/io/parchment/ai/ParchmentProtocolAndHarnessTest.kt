@@ -23,7 +23,9 @@ import io.parchment.ai.ui.computeUnifiedLineDiff
 import io.parchment.ai.ui.extractLatestThoughtPeek
 import io.parchment.ai.ui.findClosingMarkdownLinkParen
 import io.parchment.ai.ui.formatDurationFromMs
+import io.parchment.ai.ui.parseSvgColorString
 import io.parchment.ai.ui.parseSvgPathNormalized
+import io.parchment.ai.ui.parseSvgSceneDocument
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -670,6 +672,37 @@ class ParchmentProtocolAndHarnessTest {
             forceVisibleThoughtSummary = true
         )
         assertTrue(nudgeNodes2[1].activeVariant.content.contains("[Completed internal reasoning:"))
+
+        // 18. Verify Full-Spec Hierarchical SVG Scene-Graph Parser (gradients, <g transform>, <circle>, <rect>, <polygon>, <line>, <path>, named colors)
+        val pelicanBicycleSvg = """
+            <svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="sky" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="skyblue"/>
+                  <stop offset="100%" stop-color="#E0F7FA"/>
+                </linearGradient>
+              </defs>
+              <rect x="0" y="0" width="800" height="600" fill="url(#sky)"/>
+              <g transform="translate(200, 400)">
+                <circle cx="0" cy="0" r="60" fill="none" stroke="#333333" stroke-width="8"/>
+                <circle cx="300" cy="0" r="60" fill="none" stroke="rgb(51, 51, 51)" stroke-width="8"/>
+                <line x1="0" y1="0" x2="150" y2="-120" stroke="crimson" stroke-width="6"/>
+                <polygon points="150,-120 300,0 120,0" fill="none" stroke="crimson" stroke-width="6"/>
+              </g>
+              <g transform="translate(320, 220) rotate(-10)">
+                <ellipse cx="0" cy="0" rx="55" ry="35" fill="white" stroke="#222" stroke-width="3"/>
+                <path d="M 30 -40 Q 110 -50 130 -20 Q 90 25 30 -10 Z" fill="gold" stroke="darkorange" stroke-width="3"/>
+              </g>
+            </svg>
+        """.trimIndent()
+        val svgDoc = parseSvgSceneDocument(pelicanBicycleSvg)
+        assertTrue(svgDoc != null, "SVG document must parse")
+        assertEquals(800f, svgDoc.width)
+        assertEquals(600f, svgDoc.height)
+        assertTrue(svgDoc.gradients.containsKey("sky"), "Must parse <linearGradient id='sky'>")
+        assertEquals(7, svgDoc.drawItems.size, "Must parse all 7 shape primitives (<rect>, 2 <circle>, <line>, <polygon>, <ellipse>, <path>)")
+        assertTrue(parseSvgColorString("skyblue") != null)
+        assertTrue(parseSvgColorString("rgb(255, 128, 0)") != null)
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {

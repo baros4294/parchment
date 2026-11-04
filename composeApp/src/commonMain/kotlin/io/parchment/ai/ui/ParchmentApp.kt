@@ -2253,7 +2253,7 @@ fun ParchmentApp(
                                     modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                                 )
                                 SepiaButton(
-                                    text = "Dismiss",
+                                    text = "×",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { bannerNotification = "" }
@@ -2543,6 +2543,34 @@ fun ParchmentApp(
                                         uiScope.launch {
                                             val picked = PlatformBridge.pickFileForImport(emptyList()) ?: return@launch
                                             attachPickedFiles(listOf(picked))
+                                        }
+                                    },
+                                    onAttachWorkspaceFile = { relPath ->
+                                        val wsRoot = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
+                                        if (wsRoot.isNotBlank()) {
+                                            PlatformBridge.workspaceRead(wsRoot, relPath, 1, 1500).onSuccess { rawRead ->
+                                                val cleanLines = rawRead.lines().drop(1).joinToString("\n") {
+                                                    it.replaceFirst(Regex("^\\d+:\\s?"), "")
+                                                }
+                                                val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
+                                                if (curList.none { it.fileName == relPath }) {
+                                                    val att = PromptAttachment(
+                                                        id = "att-ws-${PlatformBridge.currentTimeMillis()}",
+                                                        fileName = relPath,
+                                                        mimeType = "text/plain",
+                                                        textContent = cleanLines
+                                                    )
+                                                    pendingAttachmentsBySession = pendingAttachmentsBySession +
+                                                        (activeSession.id to (curList + att))
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onReattachExistingAttachment = { existingAtt ->
+                                        val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
+                                        if (curList.none { it.fileName == existingAtt.fileName }) {
+                                            pendingAttachmentsBySession = pendingAttachmentsBySession +
+                                                (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
                                         }
                                     },
                                     onPasteClipboardMedia = {
@@ -3022,6 +3050,8 @@ private fun ManuscriptViewport(
     onTriggerVoiceInput: () -> Unit,
     pendingAttachments: List<PromptAttachment>,
     onAddAttachment: () -> Unit,
+    onAttachWorkspaceFile: (String) -> Unit = {},
+    onReattachExistingAttachment: (PromptAttachment) -> Unit = {},
     onPasteClipboardMedia: () -> Boolean,
     onRequestClearCurrentChat: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
@@ -4179,6 +4209,197 @@ private fun ManuscriptViewport(
                         }
                     }
                 }
+
+                // Vertical `@` File, Attachment & Lore Mention Autocomplete Palette!
+                val activeAtQuery: String? = remember(userPromptInput) {
+                    val lastAt = userPromptInput.lastIndexOf('@')
+                    if (lastAt == -1) null
+                    else if (lastAt > 0 && !userPromptInput[lastAt - 1].isWhitespace()) null
+                    else {
+                        val afterAt = userPromptInput.substring(lastAt + 1)
+                        if (afterAt.contains(' ') || afterAt.contains('\n')) null else afterAt
+                    }
+                }
+                val effectiveWorkspacePath = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
+                val workspaceFiles = remember(effectiveWorkspacePath, activeAtQuery != null) {
+                    if (activeAtQuery == null || effectiveWorkspacePath.isBlank()) emptyList()
+                    else {
+                        PlatformBridge.workspaceGlob(effectiveWorkspacePath, "*", maxResults = 160)
+                            .getOrDefault("")
+                            .lines()
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() && !it.startsWith("No files") && !it.endsWith("/") }
+                            .map { it.substringBefore(" (").trim() }
+                    }
+                }
+                val historyAttachments = remember(activeSession.messages) {
+                    activeSession.messages.flatMap { it.activeVariant.attachments }
+                        .distinctBy { it.fileName }
+                }
+                val allLoreFragments = remember(appState.globalWorldBook, activeAssistant.fragments, activeSession.fragments) {
+                    (appState.globalWorldBook + activeAssistant.fragments + activeSession.fragments).distinctBy { it.id }
+                }
+                val matchingAtItems = remember(activeAtQuery, workspaceFiles, historyAttachments, allLoreFragments) {
+                    val q = activeAtQuery?.lowercase() ?: return@remember emptyList<Triple<String, String, () -> Unit>>()
+                    val list = mutableListOf<Triple<String, String, () -> Unit>>()
+                    fun replaceTrailingAt(replacement: String) {
+                        val idx = userPromptInput.lastIndexOf('@')
+                        if (idx >= 0) {
+                            val nextInput = userPromptInput.substring(0, idx) + replacement
+                            onUserPromptChange(nextInput)
+                        }
+                    }
+                    if (q.isEmpty() || "file".contains(q) || "attach".contains(q) || "upload".contains(q)) {
+                        list.add(
+                            Triple(
+                                "📎 @file",
+                                "Pick & attach a local file, image, or PDF…",
+                                {
+                                    replaceTrailingAt("")
+                                    onAddAttachment()
+                                }
+                            )
+                        )
+                    }
+                    workspaceFiles
+                        .filter { q.isEmpty() || it.lowercase().contains(q) }
+                        .take(18)
+                        .forEach { relPath ->
+                            val shortName = relPath.substringAfterLast('/')
+                            list.add(
+                                Triple(
+                                    "📄 @$shortName",
+                                    relPath,
+                                    {
+                                        onAttachWorkspaceFile(relPath)
+                                        replaceTrailingAt("@$relPath ")
+                                    }
+                                )
+                            )
+                        }
+                    historyAttachments
+                        .filter { it.fileName.isNotBlank() && (q.isEmpty() || it.fileName.lowercase().contains(q)) }
+                        .take(8)
+                        .forEach { att ->
+                            list.add(
+                                Triple(
+                                    "📎 @${att.fileName}",
+                                    "Re-attach from this conversation (${att.mimeType})",
+                                    {
+                                        onReattachExistingAttachment(att)
+                                        replaceTrailingAt("@${att.fileName} ")
+                                    }
+                                )
+                            )
+                        }
+                    allLoreFragments
+                        .filter { it.title.isNotBlank() && (q.isEmpty() || it.title.lowercase().contains(q)) }
+                        .take(8)
+                        .forEach { frag ->
+                            list.add(
+                                Triple(
+                                    "📖 @${frag.title}",
+                                    frag.content.take(72).replace('\n', ' '),
+                                    {
+                                        replaceTrailingAt("@${frag.title} ")
+                                    }
+                                )
+                            )
+                        }
+                    list
+                }
+                AnimatedVisibility(
+                    visible = matchingAtItems.isNotEmpty(),
+                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(130)),
+                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(110))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 224.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(p.sheetBg.copy(alpha = 0.82f))
+                            .border(0.65.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .verticalScroll(rememberScrollState())
+                            .padding(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        matchingAtItems.forEach { (badgeLabel, descText, action) ->
+                            val rowInteraction = remember { MutableInteractionSource() }
+                            val isHovered by rowInteraction.collectIsHoveredAsState()
+                            val isPressed by rowInteraction.collectIsPressedAsState()
+                            val parsedIcon = remember(badgeLabel) {
+                                parseKissLabelIcons(badgeLabel).leadingIcon ?: KissIcon.FILE_TEXT
+                            }
+                            val cleanBadge = remember(badgeLabel) {
+                                parseKissLabelIcons(badgeLabel).cleanText
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(
+                                        when {
+                                            isPressed -> p.accent.copy(alpha = 0.14f)
+                                            isHovered -> p.accent.copy(alpha = 0.08f)
+                                            else -> p.cardBg.copy(alpha = 0.72f)
+                                        }
+                                    )
+                                    .border(
+                                        width = 0.6.dp,
+                                        color = if (isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
+                                        shape = RoundedCornerShape(7.dp)
+                                    )
+                                    .kissClickable(
+                                        pressScale = 0.99f,
+                                        hoverScale = 1.004f,
+                                        interactionSource = rowInteraction,
+                                        onClick = action
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    KissVectorIcon(
+                                        icon = parsedIcon,
+                                        tint = p.accent,
+                                        size = 13.5.dp
+                                    )
+                                    BasicText(
+                                        text = cleanBadge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.monoStyle.copy(
+                                            color = p.accent,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                    BasicText(
+                                        text = descText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiBodyStyle.copy(
+                                            color = p.narrationInk,
+                                            fontSize = 11.5.sp
+                                        )
+                                    )
+                                }
+                                KissVectorIcon(
+                                    icon = KissIcon.PLUS,
+                                    tint = p.mutedInk,
+                                    size = 11.5.dp
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // 4. Clean Borderless Prompt Input Area with Desktop Enter-to-Send & Shift+Enter Newline!
                 val targetName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
                     ?: activeAssistant.name.takeIf { it.isNotBlank() }
@@ -4753,7 +4974,7 @@ private fun MessageTurnItem(
                         )
                     }
                     SepiaButton(
-                        text = if (isLivePeekOnly) "▸ Expand All" else "Hide ▲",
+                        text = if (isLivePeekOnly) "▾" else "▴",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -4884,7 +5105,7 @@ private fun MessageTurnItem(
                             }
                             if (tc.resultText.length > 260) {
                                 SepiaButton(
-                                    text = if (isToolResultExpanded) "▾ Less" else "▸ Full",
+                                    text = if (isToolResultExpanded) "▴" else "▾",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { isToolResultExpanded = !isToolResultExpanded }
@@ -5481,9 +5702,9 @@ private fun MessageTurnItem(
                 ) {
                     var isSpeakingThisTurn by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
 
-                    // Zen-by-Default Primary Actions: Copy, Speak (TTS), Redo (for AI), & More (⋯)
+                    // Show, Don't Tell: Icon-only primary turn actions (Copy, Speak/Stop, Redo, More)
                     SepiaButton(
-                        text = if (copiedBadge == "txt") "✓ Copied" else "📋 Copy",
+                        text = if (copiedBadge == "txt") "✓" else "📋",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -5493,7 +5714,7 @@ private fun MessageTurnItem(
                     )
                     if (activeVar.content.isNotBlank()) {
                         SepiaButton(
-                            text = if (isSpeakingThisTurn) "🔇 Stop" else "🔊 Speak",
+                            text = if (isSpeakingThisTurn) "🔇" else "🔊",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -5511,14 +5732,14 @@ private fun MessageTurnItem(
                         )
                     }
                     SepiaButton(
-                        text = if (isAssistant) "↻ Redo" else "↻ Regenerate",
+                        text = "↻",
                         compact = true,
                         enabled = !activeVar.isStreaming,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onRegenerate
                     )
                     SepiaButton(
-                        text = if (showMoreActions) "▾ Less" else "⋯",
+                        text = if (showMoreActions) "▴" else "⋯",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showMoreActions = !showMoreActions }
@@ -5526,7 +5747,7 @@ private fun MessageTurnItem(
 
                     if (showMoreActions) {
                         SepiaButton(
-                            text = if (copiedBadge == "md") "✓ Copied MD" else "📋 MD",
+                            text = if (copiedBadge == "md") "✓ MD" else "📋 MD",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -5544,7 +5765,7 @@ private fun MessageTurnItem(
                             )
                         }
                         SepiaButton(
-                            text = "✎ Edit",
+                            text = "✎",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -5554,7 +5775,7 @@ private fun MessageTurnItem(
                         )
                         if (activeVar.content.isNotBlank()) {
                             SepiaButton(
-                                text = "Translate",
+                                text = "🌐",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onTranslate
@@ -5573,14 +5794,14 @@ private fun MessageTurnItem(
                             onClick = onRewindHere
                         )
                         SepiaButton(
-                            text = if (node.includedInContext) "Mute" else "Unmute",
+                            text = if (node.includedInContext) "🙈" else "👁",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onToggleContextMute
                         )
                         if (activeVar.rawRequestPreview.isNotBlank()) {
                             SepiaButton(
-                                text = if (showRawWireDrawer) "Hide JSON" else "Wire JSON",
+                                text = "‹/›",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showRawWireDrawer = !showRawWireDrawer }
@@ -5588,20 +5809,20 @@ private fun MessageTurnItem(
                         }
                         if (node.variants.size > 1) {
                             SepiaButton(
-                                text = "🗑 Delete Swipe (${node.activeVariantIndex + 1}/${node.variants.size})",
+                                text = "🗑 ${node.activeVariantIndex + 1}/${node.variants.size}",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteCurrentVariant
                             )
                             SepiaButton(
-                                text = "🗑 Delete Turn",
+                                text = "🗑",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode
                             )
                         } else {
                             SepiaButton(
-                                text = "🗑 Delete",
+                                text = "🗑",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode

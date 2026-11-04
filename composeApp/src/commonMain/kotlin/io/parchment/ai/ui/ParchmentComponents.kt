@@ -1199,7 +1199,7 @@ fun SepiaSearchableModelPicker(
             )
             if (searchQuery.isNotEmpty() || selectedProviderFilter.isNotEmpty() || selectedVendorFilter.isNotEmpty()) {
                 SepiaButton(
-                    text = "× Reset",
+                    text = "×",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = {
@@ -1723,7 +1723,7 @@ fun SepiaFileDiffCard(
                 }
                 if (diffLines.isNotEmpty()) {
                     SepiaButton(
-                        text = if (showDiffBody) "▾ Hide" else "▸ Diff",
+                        text = if (showDiffBody) "▴" else "▾",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showDiffBody = !showDiffBody }

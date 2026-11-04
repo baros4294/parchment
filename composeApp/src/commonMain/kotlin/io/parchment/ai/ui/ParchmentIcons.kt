@@ -109,9 +109,12 @@ enum class KissIcon {
 
 fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()) {
     "fs_read" -> KissIcon.FILE_TEXT
-    "fs_edit", "fs_write" -> KissIcon.DIFF
-    "fs_list" -> KissIcon.FOLDER
+    "fs_edit", "fs_write", "fs_multi_edit" -> KissIcon.DIFF
+    "fs_list", "fs_glob", "fs_move" -> KissIcon.FOLDER
+    "fs_delete" -> KissIcon.TRASH
     "fs_search" -> KissIcon.SEARCH
+    "web_fetch" -> KissIcon.GLOBE
+    "calc_eval" -> KissIcon.SLIDERS
     "shell_exec" -> KissIcon.TERMINAL
     "todo_write" -> KissIcon.TARGET
     "goal_complete" -> KissIcon.CHECK
@@ -178,8 +181,18 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "👤" -> return ParsedLabelWithIcons(KissIcon.USER, "", null)
         "🔊" -> return ParsedLabelWithIcons(KissIcon.VOLUME_ON, "", null)
         "🔇" -> return ParsedLabelWithIcons(KissIcon.VOLUME_OFF, "", null)
+        "✓" -> return ParsedLabelWithIcons(KissIcon.CHECK, "", null)
+        "💾", "📥", "⬇" -> return ParsedLabelWithIcons(KissIcon.DOWNLOAD, "", null)
+        "📤" -> return ParsedLabelWithIcons(KissIcon.UPLOAD, "", null)
+        "👁" -> return ParsedLabelWithIcons(KissIcon.EYE, "", null)
+        "🙈" -> return ParsedLabelWithIcons(KissIcon.EYE_OFF, "", null)
+        "‹/›", "</>", "💻" -> return ParsedLabelWithIcons(KissIcon.CODE, "", null)
+        "🌐" -> return ParsedLabelWithIcons(KissIcon.TRANSLATE, "", null)
+        "⑂" -> return ParsedLabelWithIcons(KissIcon.GIT_BRANCH, "", null)
+        "▴", "▲" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_UP, "", null)
+        "▾", "▼" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_DOWN, "", null)
+        "▸", "▶" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_RIGHT, "", null)
     }
-
     var working = trimmed
     var leading: KissIcon? = null
     var trailing: KissIcon? = null
@@ -248,9 +261,11 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "📝 " to KissIcon.FILE_TEXT,
         "🎵 " to KissIcon.AUDIO,
         "🎙 " to KissIcon.MIC,
-        "🗂 " to KissIcon.TABS
+        "🗂 " to KissIcon.TABS,
+        "💾 " to KissIcon.DOWNLOAD,
+        "‹/› " to KissIcon.CODE,
+        "</> " to KissIcon.CODE
     )
-
     for ((prefix, icon) in prefixMappings) {
         if (working.startsWith(prefix)) {
             leading = icon

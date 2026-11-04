@@ -207,26 +207,26 @@ fun LiteraryProseRenderer(
                         }
                         val isSvgArtifact = remember(block.language, block.code) {
                             block.language.equals("svg", ignoreCase = true) ||
-                                (block.code.contains("<svg", ignoreCase = true) && block.code.contains("<path", ignoreCase = true))
+                                (block.code.contains("<svg", ignoreCase = true) && block.code.contains("</svg>", ignoreCase = true))
                         }
                         var showSvgPreview by remember(index, isSvgArtifact) { mutableStateOf(isSvgArtifact) }
                         var copiedCode by remember(index) { mutableStateOf(false) }
                         var savedCode by remember(index) { mutableStateOf(false) }
-                        val shape = RoundedCornerShape(8.dp)
+                        val shape = RoundedCornerShape(10.dp)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
                                 .clip(shape)
                                 .background(p.elevatedBg)
-                                .border(0.85.dp, p.border, shape)
+                                .border(0.65.dp, p.border.copy(alpha = 0.52f), shape)
                         ) {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(p.sheetBg)
-                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    .background(p.sheetBg.copy(alpha = 0.85f))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -235,12 +235,12 @@ fun LiteraryProseRenderer(
                                     style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily),
                                     modifier = Modifier.padding(top = 4.dp)
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     if (isSvgArtifact) {
                                         SepiaButton(
-                                            text = if (showSvgPreview) "‹/› Code" else "👁 Preview",
+                                            text = if (showSvgPreview) "‹/›" else "👁",
                                             compact = true,
-                                            style = if (showSvgPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
+                                            style = if (showSvgPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.GHOST,
                                             onClick = {
                                                 showSvgPreview = !showSvgPreview
                                                 isCollapsed = false
@@ -248,13 +248,13 @@ fun LiteraryProseRenderer(
                                         )
                                     }
                                     SepiaButton(
-                                        text = if (isCollapsed) "▸ Expand" else "▾ Collapse",
+                                        text = if (isCollapsed) "▸" else "▾",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { isCollapsed = !isCollapsed }
                                     )
                                     SepiaButton(
-                                        text = if (savedCode) "✓ Saved" else "💾 Save",
+                                        text = if (savedCode) "✓" else "📥",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = {
@@ -269,9 +269,9 @@ fun LiteraryProseRenderer(
                                         }
                                     )
                                     SepiaButton(
-                                        text = if (copiedCode) "✓ Copied" else "📋 Copy",
+                                        text = if (copiedCode) "✓" else "📋",
                                         compact = true,
-                                        style = SepiaButtonStyle.OUTLINE,
+                                        style = SepiaButtonStyle.GHOST,
                                         onClick = {
                                             clipboard.setText(AnnotatedString(block.code))
                                             copiedCode = true
@@ -348,7 +348,7 @@ fun LiteraryProseRenderer(
                                     style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
                                 )
                                 SepiaButton(
-                                    text = if (copiedTable) "✓ Copied" else "📋 Copy",
+                                    text = if (copiedTable) "✓" else "📋",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = {
@@ -910,67 +910,3 @@ private fun inferCodeFenceExtension(language: String, isSvg: Boolean): String {
     }
 }
 
-/**
- * Renders an inline Compose Canvas preview for `<svg>` code blocks by extracting `viewBox` and `<path d="..."/>` elements.
- */
-@Composable
-private fun InlineSvgArtifactPreview(rawSvg: String) {
-    val p = LocalParchmentPalette.current
-    val parsedPaths = remember(rawSvg) {
-        Regex("""<path\b[^>]*\bd\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .findAll(rawSvg)
-            .mapNotNull { m ->
-                val d = m.groupValues.getOrNull(1)?.trim().orEmpty()
-                if (d.isNotEmpty()) runCatching { parseSvgPathNormalized(d) }.getOrNull() else null
-            }
-            .toList()
-    }
-    val viewBoxDims = remember(rawSvg) {
-        val vbMatch = Regex("""viewBox\s*=\s*["']\s*([-\d.]+)[,\s]+([-\d.]+)[,\s]+([-\d.]+)[,\s]+([-\d.]+)\s*["']""", RegexOption.IGNORE_CASE)
-            .find(rawSvg)
-        val w = vbMatch?.groupValues?.getOrNull(3)?.toFloatOrNull()?.takeIf { it > 0f } ?: 24f
-        val h = vbMatch?.groupValues?.getOrNull(4)?.toFloatOrNull()?.takeIf { it > 0f } ?: 24f
-        w to h
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 140.dp, max = 280.dp)
-            .background(p.cardBg)
-            .padding(16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        if (parsedPaths.isEmpty()) {
-            BasicText(
-                text = "SVG source ready (click '💾 Save' to export .svg or '‹/› Code' to inspect markup).",
-                style = p.uiLabelStyle
-            )
-        } else {
-            val (vbW, vbH) = viewBoxDims
-            val strokeFlag = remember(rawSvg) {
-                rawSvg.contains("fill=\"none\"", ignoreCase = true) || rawSvg.contains("stroke=", ignoreCase = true)
-            }
-            Canvas(modifier = Modifier.size(160.dp)) {
-                val sx = size.width / vbW
-                val sy = size.height / vbH
-                val s = minOf(sx, sy)
-                withTransform({
-                    scale(scaleX = s, scaleY = s, pivot = androidx.compose.ui.geometry.Offset.Zero)
-                }) {
-                    for (path in parsedPaths) {
-                        if (strokeFlag) {
-                            drawPath(
-                                path = path,
-                                color = p.accent,
-                                style = Stroke(width = (1.8f / s).coerceAtLeast(0.5f))
-                            )
-                        } else {
-                            drawPath(path = path, color = p.accent)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}

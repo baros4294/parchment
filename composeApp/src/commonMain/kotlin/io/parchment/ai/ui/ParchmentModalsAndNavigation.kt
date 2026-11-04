@@ -659,12 +659,12 @@ internal fun TopEditorialBar(
                     )
                 }
                 SepiaChip(
-                    label = if (win.isCompact) "✎" else "✎ Notes",
+                    label = "✎",
                     selected = showSessionInspector || hasChatNotes,
                     onClick = onToggleSessionInspector
                 )
                 SepiaButton(
-                    text = if (win.isCompact) "⚙" else "⚙ Settings",
+                    text = "⚙",
                     compact = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = { onOpenSettings(null) }
@@ -1180,7 +1180,7 @@ internal fun ParchmentAttachmentViewerModal(
                             val openTarget = item.localFilePath.ifBlank { item.remoteUrl }
                             if (openTarget.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Open",
+                                    text = "📂",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
@@ -1188,7 +1188,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Save",
+                                    text = "📥",
                                     compact = true,
                                     style = SepiaButtonStyle.SECONDARY,
                                     onClick = {
@@ -1332,7 +1332,7 @@ internal fun ParchmentAttachmentViewerModal(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             SepiaButton(
-                                text = if (copied) "✓ Copied" else "📋 Copy",
+                                text = if (copied) "✓" else "📋",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1342,7 +1342,7 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Open",
+                                    text = "📂",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
