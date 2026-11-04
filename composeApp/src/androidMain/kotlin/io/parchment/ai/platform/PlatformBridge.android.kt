@@ -65,6 +65,8 @@ actual object PlatformBridge {
     private var isCurrentlySpeaking: Boolean = false
     @Volatile
     private var pendingTtsFinishedCallback: (() -> Unit)? = null
+    @Volatile
+    private var pendingUtteranceToSpeak: String? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
     private val imageCache = LinkedHashMap<String, ImageBitmap>()
     private val pendingSharedOrPastedFiles = mutableListOf<PickedBinaryFile>()
@@ -79,30 +81,64 @@ actual object PlatformBridge {
         // Ensure default local workspace folder exists
         val wsDir = File(resolveStorageDir(), "workspace")
         if (!wsDir.exists()) wsDir.mkdirs()
-        if (ttsEngine == null) {
-            runCatching {
-                ttsEngine = TextToSpeech(context.applicationContext) { status ->
-                    if (status == TextToSpeech.SUCCESS) {
-                        ttsReady = true
-                        ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                            override fun onStart(utteranceId: String?) {
-                                isCurrentlySpeaking = true
-                            }
-                            override fun onDone(utteranceId: String?) {
-                                isCurrentlySpeaking = false
-                                pendingTtsFinishedCallback?.invoke()
-                            }
-                            @Suppress("OVERRIDE_DEPRECATION")
-                            override fun onError(utteranceId: String?) {
-                                isCurrentlySpeaking = false
-                            }
-                        })
+        ensureTtsInitialized(context.applicationContext)
+    }
+
+    private fun ensureTtsInitialized(ctx: Context) {
+        if (ttsEngine != null && ttsReady) return
+        runCatching {
+            ttsEngine = TextToSpeech(ctx) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    ttsReady = true
+                    runCatching {
+                        ttsEngine?.language = java.util.Locale.getDefault()
                     }
+                    ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            isCurrentlySpeaking = true
+                        }
+                        override fun onDone(utteranceId: String?) {
+                            if (utteranceId?.endsWith("-last") == true) {
+                                isCurrentlySpeaking = false
+                                val cb = pendingTtsFinishedCallback
+                                pendingTtsFinishedCallback = null
+                                cb?.invoke()
+                            }
+                        }
+                        @Suppress("OVERRIDE_DEPRECATION")
+                        override fun onError(utteranceId: String?) {
+                            isCurrentlySpeaking = false
+                            val cb = pendingTtsFinishedCallback
+                            pendingTtsFinishedCallback = null
+                            cb?.invoke()
+                        }
+                    })
+                    val queued = pendingUtteranceToSpeak
+                    if (!queued.isNullOrBlank()) {
+                        pendingUtteranceToSpeak = null
+                        dispatchTtsChunks(queued)
+                    }
+                } else {
+                    ttsReady = false
+                    isCurrentlySpeaking = false
+                    val cb = pendingTtsFinishedCallback
+                    pendingTtsFinishedCallback = null
+                    cb?.invoke()
                 }
             }
         }
     }
 
+    private fun dispatchTtsChunks(text: String) {
+        val engine = ttsEngine ?: return
+        val chunks = text.chunked(3200)
+        val baseId = "utt-${currentTimeMillis()}"
+        chunks.forEachIndexed { idx, chunk ->
+            val mode = if (idx == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val uttId = if (idx == chunks.lastIndex) "$baseId-last" else "$baseId-$idx"
+            engine.speak(chunk, mode, null, uttId)
+        }
+    }
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
     private fun resolveStorageDir(): File {
@@ -840,18 +876,35 @@ actual object PlatformBridge {
     actual fun speakTextAloud(text: String, onFinished: () -> Unit) {
         runCatching {
             val cleaned = text.trim()
-            if (cleaned.isEmpty()) return@runCatching
+            if (cleaned.isEmpty()) {
+                onFinished()
+                return@runCatching
+            }
+            // Reset any prior speaking turn's callback before starting the new utterance
+            pendingTtsFinishedCallback?.invoke()
             pendingTtsFinishedCallback = onFinished
             isCurrentlySpeaking = true
-            ttsEngine?.speak(cleaned.take(3900), TextToSpeech.QUEUE_FLUSH, null, "utt-${currentTimeMillis()}")
+            val ctx = appContext
+            if (ttsEngine == null || !ttsReady) {
+                pendingUtteranceToSpeak = cleaned
+                if (ctx != null) ensureTtsInitialized(ctx)
+            } else {
+                dispatchTtsChunks(cleaned)
+            }
+        }.onFailure {
+            isCurrentlySpeaking = false
+            onFinished()
         }
     }
 
     actual fun stopSpeakingAloud() {
         runCatching {
             isCurrentlySpeaking = false
+            pendingUtteranceToSpeak = null
+            val cb = pendingTtsFinishedCallback
             pendingTtsFinishedCallback = null
             ttsEngine?.stop()
+            cb?.invoke()
         }
     }
 
@@ -867,6 +920,8 @@ actual object PlatformBridge {
     }
 
     actual fun stopVoiceInput() {
-        // Handled by system recognizer dialog
+        runCatching {
+            mainActivityRef?.get()?.stopVoiceRecognizer()
+        }
     }
 }

@@ -19,6 +19,7 @@ import io.parchment.ai.protocol.CardAndPromptCodec
 import io.parchment.ai.ui.BUILTIN_LAB_SVG_PATHS
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
+import io.parchment.ai.ui.extractLatestThoughtPeek
 import io.parchment.ai.ui.formatDurationFromMs
 import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
@@ -585,6 +586,16 @@ class ParchmentProtocolAndHarnessTest {
                 )
             }
         }
+
+        // 14. Verify Live Single-Thought Peek Extractor
+        val multiThoughtVar = MessageVariant(
+            id = "v-peek",
+            content = "",
+            thinkingSummary = "**Crafting Some Comedy**\nOkay, so I'm trying to come up with something funny.\n\n**Refining Humorous Angles**\nI'm exploring genuinely funny ideas, rejecting clichés and focusing on fresh angles."
+        )
+        val (peekHeading, peekText) = extractLatestThoughtPeek(multiThoughtVar)
+        assertEquals("Refining Humorous Angles", peekHeading)
+        assertTrue(peekText.startsWith("I'm exploring genuinely funny ideas"))
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {

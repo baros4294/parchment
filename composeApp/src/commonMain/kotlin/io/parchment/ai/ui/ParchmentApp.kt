@@ -202,6 +202,46 @@ internal fun formatDurationFromMs(ms: Long): String {
     }
 }
 
+/**
+ * Extracts the latest single thought block (title + body) for the Compact Single-Thought Peek Window
+ * when the user presses `Hide ▲` while the model is still actively reasoning.
+ */
+internal fun extractLatestThoughtPeek(variant: MessageVariant): Pair<String, String> {
+    val raw = variant.trailingThinking.ifBlank { variant.thinkingSummary }.trim()
+    if (raw.isEmpty()) return "" to ""
+
+    // Split into logical thought sections by bold/markdown headings at line start or blank-line paragraphs
+    val blocks = raw.split(Regex("(?m)(?=^\\*\\*[^*\\n]+\\*\\*\\s*$|^#{1,4}\\s+)|\\n\\s*\\n+"))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    if (blocks.isEmpty()) return "" to raw
+
+    val lastIdx = blocks.lastIndex
+    val lastBlock = blocks[lastIdx]
+    val lines = lastBlock.lines()
+    val firstLine = lines.first().trim()
+    val isHeadingLine = (firstLine.startsWith("**") && firstLine.endsWith("**") && firstLine.length > 4) ||
+        firstLine.startsWith("#")
+    return if (isHeadingLine && lines.size > 1) {
+        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
+        val body = lines.drop(1).joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        cleanTitle to body
+    } else if (isHeadingLine && lines.size == 1) {
+        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
+        cleanTitle to ""
+    } else {
+        // Check if the immediately preceding block was a standalone heading line!
+        val prevBlock = if (lastIdx > 0) blocks[lastIdx - 1].trim() else ""
+        val prevIsStandaloneHeading = prevBlock.isNotEmpty() && !prevBlock.contains('\n') &&
+            ((prevBlock.startsWith("**") && prevBlock.endsWith("**") && prevBlock.length > 4) || prevBlock.startsWith("#"))
+        val cleanTitle = if (prevIsStandaloneHeading) {
+            prevBlock.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
+        } else ""
+        val cleanBody = lastBlock.replace(Regex("\\s+"), " ").trim()
+        cleanTitle to cleanBody
+    }
+}
+
 private val THINKING_EFFORT_PRESETS = listOf(
     "minimal",
     "none",
@@ -2264,29 +2304,45 @@ fun ParchmentApp(
                         else -> {}
                     }
 
-                    if (bannerNotification.isNotBlank()) {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(p.elevatedBg)
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            BasicText(
-                                text = bannerNotification,
-                                style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.Medium),
-                                modifier = Modifier.padding(top = 4.dp, end = 8.dp)
-                            )
-                            SepiaButton(
-                                text = "Dismiss",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = { bannerNotification = "" }
-                            )
+                    LaunchedEffect(bannerNotification, isVoiceListening) {
+                        if (bannerNotification.isNotBlank() && !isVoiceListening) {
+                            val snap = bannerNotification
+                            delay(5000L)
+                            if (bannerNotification == snap && !isVoiceListening) {
+                                bannerNotification = ""
+                            }
                         }
-                        SepiaDivider()
+                    }
+
+                    AnimatedVisibility(
+                        visible = bannerNotification.isNotBlank(),
+                        enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
+                        exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(140))
+                    ) {
+                        Column {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(p.elevatedBg)
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                BasicText(
+                                    text = bannerNotification,
+                                    style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.Medium),
+                                    modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                                )
+                                SepiaButton(
+                                    text = "Dismiss",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { bannerNotification = "" }
+                                )
+                            }
+                            SepiaDivider()
+                        }
                     }
 
                     // 2. Main Content Area:
@@ -3187,7 +3243,7 @@ private fun MobileTabSwitcherModal(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (emptyTabsCount >= 2) {
                         SepiaButton(
-                            text = "🗑 Close Empty ($emptyTabsCount)",
+                            text = "🗑 Empty ($emptyTabsCount)",
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = onCloseEmptyTabs
@@ -3281,7 +3337,7 @@ private fun MobileTabSwitcherModal(
                                                 )
                                                 BasicText(
                                                     text = sess.title.ifBlank { "New Chat" },
-                                                    maxLines = 1,
+                                                    maxLines = 2,
                                                     overflow = TextOverflow.Ellipsis,
                                                     style = p.uiBodyStyle.copy(
                                                         fontWeight = FontWeight.Bold,
@@ -3300,10 +3356,7 @@ private fun MobileTabSwitcherModal(
                                                 KissVectorIcon(icon = KissIcon.CLOSE, tint = p.mutedInk, size = 11.dp)
                                             }
                                         }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                             BasicText(
                                                 text = asstName,
                                                 maxLines = 1,
@@ -3312,7 +3365,7 @@ private fun MobileTabSwitcherModal(
                                             )
                                             if (modelLabel.isNotBlank()) {
                                                 BasicText(
-                                                    text = "• $modelLabel",
+                                                    text = modelLabel,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
                                                     style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
@@ -3458,7 +3511,7 @@ private fun TopEditorialBar(
                         ) {
                             BasicText(
                                 text = activeSession.title,
-                                maxLines = 1,
+                                maxLines = if (isCompactScreen) 2 else 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
                                 modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }
@@ -3480,11 +3533,16 @@ private fun TopEditorialBar(
                         }
                     }
 
-                    val asstPrefix = if (activeAssistant.id.isNotBlank()) "${activeAssistant.name} • " else ""
-                    val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
-                        "$asstPrefix${activeProfile.name} • $modelLabel"
+                    val shortModelLabel = if (isCompactScreen && modelLabel.contains('/')) {
+                        modelLabel.substringAfterLast('/')
                     } else {
-                        "$asstPrefix$modelLabel"
+                        modelLabel
+                    }
+                    val asstSuffix = if (activeAssistant.id.isNotBlank() && !isCompactScreen) " • ${activeAssistant.name}" else ""
+                    val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
+                        "$shortModelLabel • ${activeProfile.name}$asstSuffix"
+                    } else {
+                        "$shortModelLabel$asstSuffix"
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -3592,14 +3650,16 @@ private fun TopEditorialBar(
                     .padding(11.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 4.dp)
                     ) {
                         KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
                         BasicText(
@@ -3616,7 +3676,7 @@ private fun TopEditorialBar(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SepiaButton(
-                            text = "⚙ Manage Providers & Models",
+                            text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage Providers",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -3845,6 +3905,7 @@ private fun ParchmentSidebar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier.weight(1f).padding(end = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -3854,6 +3915,8 @@ private fun ParchmentSidebar(
                     KissVectorIcon(icon = hdrIcon, tint = p.accent, size = 13.dp)
                     BasicText(
                         text = "${activeAssistant.name} (${assistantTopics.size})",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
                     )
                 }
@@ -3914,7 +3977,7 @@ private fun ParchmentSidebar(
                                 }
                                 BasicText(
                                     text = sess.title,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(
                                         fontSize = 13.5.sp,
@@ -4039,42 +4102,79 @@ private fun ManuscriptViewport(
     val listState = rememberLazyListState()
     var showMinimapTreeModal by remember { mutableStateOf(false) }
 
-    // Auto-follow bottom during 60/120fps streaming when enabled
-    val lastMsgContentLen = activeSession.messages.lastOrNull()?.activeVariant?.let {
-        it.content.length + it.thinkingSummary.length
-    } ?: 0
+    // Smart Bottom-Edge Auto-Follow with Instant User-Scroll Disengage & 5-Second Cooldown:
+    // 1. Scrolls to the bottom spacer (`totalItemsCount - 1`) instead of `messages.size`, so long AI messages
+    //    pin their BOTTOM edge to the bottom of the viewport instead of snapping to the TOP of the message!
+    // 2. Immediately pauses auto-scroll for 5 seconds (and disengages while scrolled up) the moment the user
+    //    scrolls manually with the mouse wheel or touch drag to read thoughts or earlier paragraphs.
+    var userScrollPausedUntilMs by remember(activeSession.id) { mutableStateOf(0L) }
+    var userDisengagedAutoFollow by remember(activeSession.id) { mutableStateOf(false) }
 
-    LaunchedEffect(lastMsgContentLen, isStreaming) {
-        if (isStreaming && preferences.autoFollowBottom && activeSession.messages.isNotEmpty()) {
-            val targetIdx = (activeSession.messages.size).coerceAtLeast(0)
-            val layoutInfo = listState.layoutInfo
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (targetIdx - lastVisible <= 3) {
-                listState.scrollToItem(targetIdx)
+    LaunchedEffect(isStreaming) {
+        if (isStreaming) {
+            // Re-pin auto-follow when a brand-new generation starts if the user was near the bottom
+            if (!listState.canScrollForward) {
+                userDisengagedAutoFollow = false
+            }
+        } else {
+            userDisengagedAutoFollow = false
+        }
+    }
+
+    LaunchedEffect(listState.isScrollInProgress, listState.canScrollForward) {
+        if (listState.isScrollInProgress && listState.canScrollForward) {
+            userDisengagedAutoFollow = true
+            userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
+        } else if (!listState.isScrollInProgress && !listState.canScrollForward) {
+            val now = PlatformBridge.currentTimeMillis()
+            val remainingWait = userScrollPausedUntilMs - now
+            if (remainingWait > 0L) {
+                delay(remainingWait)
+            }
+            if (!listState.canScrollForward && !listState.isScrollInProgress) {
+                userDisengagedAutoFollow = false
             }
         }
     }
 
-    val activeContextNodes = remember(activeSession.messages) {
+    val lastMsgContentLen = activeSession.messages.lastOrNull()?.activeVariant?.let {
+        it.content.length + it.thinkingSummary.length + it.trailingThinking.length + it.toolCalls.size
+    } ?: 0
+
+    LaunchedEffect(lastMsgContentLen, isStreaming) {
+        val now = PlatformBridge.currentTimeMillis()
+        if (isStreaming &&
+            preferences.autoFollowBottom &&
+            activeSession.messages.isNotEmpty() &&
+            !listState.isScrollInProgress &&
+            !userDisengagedAutoFollow &&
+            now >= userScrollPausedUntilMs
+        ) {
+            val totalItems = listState.layoutInfo.totalItemsCount
+            val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
+            listState.scrollToItem(bottomSpacerIdx)
+        }
+    }
+
+    val activeContextNodes = remember(activeSession.id, activeSession.messages.size, isStreaming) {
         activeSession.messages.filter { it.includedInContext }
     }
-    val sessionTotalInputTok = remember(activeSession.messages) {
+    val sessionTotalInputTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.inputTokens }
     }
-    val sessionTotalReasoningTok = remember(activeSession.messages) {
+    val sessionTotalReasoningTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.reasoningTokens }
     }
-    val sessionTotalOutputTok = remember(activeSession.messages) {
+    val sessionTotalOutputTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
     }
     val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
-    val sessionTotalCostUsd = remember(activeSession.messages, activeProfile) {
+    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, isStreaming, activeProfile) {
         activeSession.messages.sumOf { node ->
             val m = node.activeVariant.tokenMetrics
             if (m.estimatedCostUsd > 0.0) m.estimatedCostUsd else activeProfile.calculateTurnCostUsd(m)
         }
     }
-
     val liveContextTokens = remember(
         activeSession,
         activeAssistant,
@@ -4115,7 +4215,7 @@ private fun ManuscriptViewport(
 
     val isScrolledUpFromBottom by remember {
         derivedStateOf {
-            activeSession.messages.size > 2 && listState.canScrollForward
+            activeSession.messages.isNotEmpty() && listState.canScrollForward
         }
     }
 
@@ -4246,6 +4346,26 @@ private fun ManuscriptViewport(
                     .fillMaxHeight()
                     .widthIn(max = p.maxReadingWidth)
                     .fillMaxWidth()
+                    .pointerInput(activeSession.id) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                if (ev.type == PointerEventType.Scroll) {
+                                    val dy = ev.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                                    if (dy < 0f) {
+                                        // User scrolled UP with mouse wheel / trackpad — immediately pause auto-follow for 5s!
+                                        userDisengagedAutoFollow = true
+                                        userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
+                                    }
+                                } else if (ev.type == PointerEventType.Press) {
+                                    // Touch or scrollbar press while streaming — pause auto-follow so user can read
+                                    if (isStreaming) {
+                                        userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
+                                    }
+                                }
+                            }
+                        }
+                    }
                     .padding(horizontal = if (win.isCompact) 12.dp else 18.dp),
                 verticalArrangement = Arrangement.spacedBy(
                     if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else 18.dp
@@ -4420,14 +4540,17 @@ private fun ManuscriptViewport(
                         label = "↓ Latest",
                         selected = true,
                         onClick = {
+                            userDisengagedAutoFollow = false
+                            userScrollPausedUntilMs = 0L
                             scope.launch {
-                                listState.animateScrollToItem(activeSession.messages.size.coerceAtLeast(0))
+                                val totalItems = listState.layoutInfo.totalItemsCount
+                                val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
+                                listState.scrollToItem(bottomSpacerIdx)
                             }
                         }
                     )
                 }
             }
-
             // Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`) with 5-Second Linger!
             val showNavButtons = when (preferences.messageNavButtons) {
                 MessageNavVisibility.ALWAYS -> activeSession.messages.isNotEmpty()
@@ -4646,8 +4769,12 @@ private fun ManuscriptViewport(
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
                                 minimapInteractionTick++
+                                userDisengagedAutoFollow = false
+                                userScrollPausedUntilMs = 0L
                                 scope.launch {
-                                    listState.animateScrollToItem(activeSession.messages.size.coerceAtLeast(0))
+                                    val totalItems = listState.layoutInfo.totalItemsCount
+                                    val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
+                                    listState.scrollToItem(bottomSpacerIdx)
                                 }
                             }
                         )
@@ -4719,7 +4846,7 @@ private fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         BasicText(
-                            text = "Queued Follow-Up (${queuedPrompts.size} — auto-sends when current reply finishes):",
+                            text = "Queued Next (${queuedPrompts.size} — auto-sends after reply):",
                             style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
                         )
                         queuedPrompts.forEach { qItem ->
@@ -4731,7 +4858,7 @@ private fun ManuscriptViewport(
                             ) {
                                 BasicText(
                                     text = "• ${qItem.text}",
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(fontSize = 12.sp),
                                     modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp)
@@ -4817,7 +4944,7 @@ private fun ManuscriptViewport(
                                 )
                             }
                             SepiaChip(
-                                label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode (/goal)",
+                                label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
                                 selected = isGoalModeEnabled,
                                 onClick = onToggleGoalMode
                             )
@@ -4851,7 +4978,7 @@ private fun ManuscriptViewport(
                                 }
                             )
                             SepiaChip(
-                                label = if (showPrefillBox) "▾ Start AI Reply With: ON" else "▸ Start AI Reply With…",
+                                label = if (showPrefillBox) "▾ Prefill Reply: ON" else "▸ Prefill Reply…",
                                 selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
                                 onClick = onTogglePrefillBox
                             )
@@ -5024,18 +5151,8 @@ private fun ManuscriptViewport(
                     showPrefillBox
 
                 val rawEffort = activeProfile.thinkingEffort.ifBlank { "default" }.lowercase()
-                val compactEffortCode = when (rawEffort) {
-                    "minimal" -> "MIN"
-                    "none" -> "NONE"
-                    "low" -> "LOW"
-                    "medium" -> "MED"
-                    "high" -> "HI"
-                    "xhigh" -> "XHI"
-                    "max" -> "MAX"
-                    else -> "DEF"
-                }
                 val thinkingLabel = if (preferences.showReasoningLevelOnButton) {
-                    if (win.isCompact) "🧠 $compactEffortCode" else "🧠 ${rawEffort.uppercase()}"
+                    "🧠 ${rawEffort.uppercase()}"
                 } else {
                     "🧠"
                 }
@@ -5056,11 +5173,6 @@ private fun ManuscriptViewport(
                             label = "📎",
                             selected = pendingAttachments.isNotEmpty(),
                             onClick = onAddAttachment
-                        )
-                        SepiaChip(
-                            label = "📋",
-                            selected = false,
-                            onClick = { onPasteClipboardMedia() }
                         )
                         SepiaChip(
                             label = "🎙",
@@ -5241,7 +5353,7 @@ private fun MessageTurnItem(
     onInspectGeneratedImage: (GeneratedMediaItem) -> Unit = {}
 ) {
     val p = LocalParchmentPalette.current
-    @Suppress("DEPRECATION")
+    val win = LocalParchmentWindowSize.current
     val clipboard = LocalClipboardManager.current
     val activeVar = node.activeVariant
     val isAssistant = node.role == MessageRole.ASSISTANT
@@ -5252,14 +5364,21 @@ private fun MessageTurnItem(
     var showRawWireDrawer by remember(node.id) { mutableStateOf(false) }
     var showMoreActions by remember(node.id) { mutableStateOf(false) }
     var copiedBadge by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
-
-    // Auto-open while actively thinking, then auto-collapse when prose starts (if autoCollapseThinking is ON),
-    // while always respecting manual user clicks (`manualThinkingToggle`)!
-    val isReasoningExpanded = manualThinkingToggle ?: when {
-        isActivelyThinkingThisNode -> true
+    val enableMd = if (isAssistant) preferences.renderAssistantMessagesWithMarkdown else preferences.renderUserMessagesWithMarkdown
+    // Live Reasoning Expansion & "Single-Thought Peek" State Machine:
+    // - While actively reasoning (`isActivelyThinkingThisNode == true`):
+    //   - Default (`manualThinkingToggle == null` or `true`): Full Reasoning & Tool Timeline open.
+    //   - When user presses `Hide ▲` (`manualThinkingToggle == false`): switches to Compact Single-Thought Peek
+    //     (`isLivePeekOnly = true`) showing ONLY the latest single thought block!
+    // - After reasoning finishes (`isActivelyThinkingThisNode == false`):
+    //   - Pressing `Hide ▲` (or auto-collapsing when `autoCollapseThinking` is ON) hides all thinking completely!
+    val isReasoningExpanded = when {
+        isActivelyThinkingThisNode -> manualThinkingToggle != false
+        manualThinkingToggle != null -> manualThinkingToggle == true
         !preferences.autoCollapseThinking && activeVar.thinkingSummary.isNotBlank() -> true
         else -> false
     }
+    val isLivePeekOnly = isActivelyThinkingThisNode && manualThinkingToggle == false
 
     val speakerTitle = if (isAssistant) {
         characterName.ifBlank { activeVar.modelUsed.ifBlank { "Assistant" } }
@@ -5269,6 +5388,8 @@ private fun MessageTurnItem(
 
     var variantSwipeDelta by remember(node.id, node.activeVariantIndex) { mutableStateOf(0f) }
 
+    // Disable outer `.animateContentSize` while `activeVar.isStreaming` is true so 60/120fps VSync character
+    // streaming never fights a lagging spring height animation on every wrapped line!
     val baseContainerModifier = if (viewMode == ViewMode.MANUSCRIPT) {
         Modifier
             .fillMaxWidth()
@@ -5276,7 +5397,10 @@ private fun MessageTurnItem(
                 if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                 else Modifier
             )
-            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+            .then(
+                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+                else Modifier
+            )
             .padding(vertical = 6.dp)
     } else {
         val shape = RoundedCornerShape(11.dp)
@@ -5286,7 +5410,10 @@ private fun MessageTurnItem(
             .clip(shape)
             .background(bg)
             .border(0.85.dp, p.border.copy(alpha = 0.8f), shape)
-            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+            .then(
+                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+                else Modifier
+            )
             .padding(14.dp)
     }
 
@@ -5318,8 +5445,8 @@ private fun MessageTurnItem(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
-                modifier = Modifier.padding(top = 2.dp, end = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f, fill = false).padding(top = 2.dp, end = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (isAssistant && preferences.showModelIcon) {
@@ -5353,71 +5480,81 @@ private fun MessageTurnItem(
                             .clip(CircleShape)
                             .background(p.elevatedBg)
                             .border(0.8.dp, p.border, CircleShape),
-                        contentAlignment = Alignment.Center
+                            contentAlignment = Alignment.Center
                     ) {
                         KissVectorIcon(icon = KissIcon.USER, tint = p.narrationInk, size = 12.5.dp)
                     }
                 }
 
-                if (isAssistant && preferences.showModelName) {
-                    val provSuffix = if (preferences.showProviderAfterModelName) " ($providerName)" else ""
-                    if (characterName.isNotBlank()) {
-                        BasicText(
-                            text = characterName.uppercase(),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = p.accent,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.7.sp
-                            )
-                        )
-                        if (activeVar.modelUsed.isNotBlank()) {
+                val showTurnTimestamp = (isAssistant && preferences.showModelTimestamp) || (!isAssistant && preferences.showUserTimestamp)
+                val timeSuffix = if (showTurnTimestamp && activeVar.createdAt > 0L) {
+                    " • ${formatCompactTimestamp(activeVar.createdAt)}"
+                } else ""
+
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        if (isAssistant && preferences.showModelName) {
+                            val provSuffix = if (preferences.showProviderAfterModelName && characterName.isBlank()) " ($providerName)" else ""
+                            val primaryHeader = if (characterName.isNotBlank()) {
+                                characterName.uppercase()
+                            } else {
+                                "${activeVar.modelUsed.ifBlank { "Assistant" }}$provSuffix"
+                            }
                             BasicText(
-                                text = "• ${activeVar.modelUsed}$provSuffix",
+                                text = primaryHeader,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                style = p.uiLabelStyle.copy(fontSize = 11.sp)
+                                style = p.uiLabelStyle.copy(
+                                    color = p.accent,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.5.sp,
+                                    letterSpacing = if (characterName.isNotBlank()) 0.6.sp else 0.sp
+                                )
+                            )
+                        } else if (!isAssistant && preferences.showUserName) {
+                            BasicText(
+                                text = speakerTitle.uppercase(),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiLabelStyle.copy(
+                                    color = p.narrationInk,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.6.sp
+                                )
                             )
                         }
-                    } else {
+                        if (timeSuffix.isNotEmpty()) {
+                            BasicText(
+                                text = timeSuffix.trimStart(),
+                                maxLines = 1,
+                                style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                            )
+                        }
+                        if (!node.includedInContext) {
+                            BasicText(
+                                text = "[Muted]",
+                                style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
+
+                    if (isAssistant && preferences.showModelName && characterName.isNotBlank() && activeVar.modelUsed.isNotBlank()) {
+                        val provSuffix = if (preferences.showProviderAfterModelName) " • $providerName" else ""
+                        val modelDisplay = if (win.isCompact && activeVar.modelUsed.contains('/')) {
+                            activeVar.modelUsed.substringAfterLast('/')
+                        } else {
+                            activeVar.modelUsed
+                        }
                         BasicText(
-                            text = "${activeVar.modelUsed.ifBlank { "Assistant" }}$provSuffix",
+                            text = "$modelDisplay$provSuffix",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = p.accent,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.5.sp
-                            )
+                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
                         )
                     }
-                } else if (!isAssistant && preferences.showUserName) {
-                    BasicText(
-                        text = speakerTitle.uppercase(),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(
-                            color = p.narrationInk,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.7.sp
-                        )
-                    )
-                }
-
-                val showTurnTimestamp = (isAssistant && preferences.showModelTimestamp) || (!isAssistant && preferences.showUserTimestamp)
-                if (showTurnTimestamp && activeVar.createdAt > 0L) {
-                    BasicText(
-                        text = "• ${formatCompactTimestamp(activeVar.createdAt)}",
-                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
-                    )
-                }
-
-                if (!node.includedInContext) {
-                    BasicText(
-                        text = "[Muted]",
-                        style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold)
-                    )
                 }
             }
 
@@ -5452,24 +5589,29 @@ private fun MessageTurnItem(
                 if (hasThinking || hasTools) {
                     val sec = if (activeVar.thinkingDurationMs > 0) " (${formatDurationFromMs(activeVar.thinkingDurationMs)})" else ""
                     val toolBadge = if (hasTools) " • ${activeVar.toolCalls.size} tools" else ""
-                    val chipText = if (isActivelyThinkingThisNode) {
-                        "🧠 Thinking$sec…"
-                    } else if (isReasoningExpanded) {
-                        "▾ Thought$sec$toolBadge"
-                    } else {
-                        "▸ Thought$sec$toolBadge"
+                    val chipText = when {
+                        isLivePeekOnly -> "🧠 Peek$sec…"
+                        isActivelyThinkingThisNode -> "🧠 Thinking$sec…"
+                        isReasoningExpanded -> "▾ Thought$sec$toolBadge"
+                        else -> "▸ Thought$sec$toolBadge"
                     }
                     SepiaChip(
                         label = chipText,
-                        selected = isReasoningExpanded || isActivelyThinkingThisNode,
-                        onClick = { manualThinkingToggle = !isReasoningExpanded }
+                        selected = isReasoningExpanded || isLivePeekOnly || isActivelyThinkingThisNode,
+                        onClick = {
+                            manualThinkingToggle = if (isActivelyThinkingThisNode) {
+                                if (isLivePeekOnly) true else false
+                            } else {
+                                !isReasoningExpanded
+                            }
+                        }
                     )
                 }
             }
         }
 
-        // Animated Collapsible Thinking (with FULL Markdown & LaTeX Rendering!) & Workspace Agent Tool Drawer
-        val showDrawer = isReasoningExpanded &&
+        // Animated Collapsible Thinking (Full Timeline OR Compact Single-Thought Peek while Reasoning)
+        val showDrawer = (isReasoningExpanded || isLivePeekOnly) &&
             ((preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()) ||
                 (preferences.showToolCards && activeVar.toolCalls.isNotEmpty()))
 
@@ -5498,7 +5640,7 @@ private fun MessageTurnItem(
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp, end = 6.dp)
+                        modifier = Modifier.weight(1f, fill = false).padding(top = 2.dp, end = 6.dp)
                     ) {
                         if (isActivelyThinkingThisNode) {
                             KissStreamingPulseDot(color = p.accent)
@@ -5508,8 +5650,12 @@ private fun MessageTurnItem(
                         val wordCount = countWordsFast(activeVar.thinkingSummary)
                         val toolCount = activeVar.toolCalls.size
                         val headerSummary = buildString {
-                            if (isActivelyThinkingThisNode) {
+                            if (isLivePeekOnly) {
+                                append("Latest Thought")
+                            } else if (isActivelyThinkingThisNode) {
                                 append("Thinking")
+                            } else if (win.isCompact) {
+                                append("Reasoning")
                             } else {
                                 append("Reasoning & Tool Timeline")
                             }
@@ -5526,13 +5672,52 @@ private fun MessageTurnItem(
                         )
                     }
                     SepiaButton(
-                        text = "Hide ▲",
+                        text = if (isLivePeekOnly) "▸ Expand All" else "Hide ▲",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
-                        onClick = { manualThinkingToggle = false }
+                        onClick = {
+                            manualThinkingToggle = if (isLivePeekOnly) true else false
+                        }
                     )
                 }
 
+                if (isLivePeekOnly) {
+                    // Compact Single-Thought Peek Window (shows ONLY the current/latest thought block while reasoning)
+                    val (peekTitle, peekBody) = remember(activeVar.thinkingSummary, activeVar.trailingThinking) {
+                        extractLatestThoughtPeek(activeVar)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (peekTitle.isNotEmpty()) {
+                            BasicText(
+                                text = peekTitle,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiBodyStyle.copy(
+                                    color = p.primaryInk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            )
+                        }
+                        if (peekBody.isNotEmpty()) {
+                            BasicText(
+                                text = peekBody,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.uiBodyStyle.copy(
+                                    color = p.narrationInk,
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 18.sp
+                                )
+                            )
+                        }
+                    }
+                } else {
                 val hasInterleavedSteps = activeVar.toolCalls.isNotEmpty() &&
                     (activeVar.toolCalls.any { it.precedingThinking.isNotBlank() } || activeVar.trailingThinking.isNotBlank())
 
@@ -5705,8 +5890,9 @@ private fun MessageTurnItem(
                         }
                     }
                 }
+                }
 
-                if (activeVar.thinkingSignature.isNotBlank()) {
+                if (!isLivePeekOnly && activeVar.thinkingSignature.isNotBlank()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -5717,7 +5903,7 @@ private fun MessageTurnItem(
                             size = 12.dp
                         )
                         BasicText(
-                            text = "Cryptographic Thought Signature Preserved (${activeVar.thinkingSignature.length} chars)",
+                            text = "Thought Signature Verified (${activeVar.thinkingSignature.length} chars)",
                             style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
                         )
                     }
@@ -5898,8 +6084,9 @@ private fun MessageTurnItem(
                 }
             }
         } else {
-            if (activeVar.content.isNotBlank() || (activeVar.mediaItems.isEmpty() && activeVar.attachments.isEmpty())) {
-                val enableMd = if (isAssistant) preferences.renderAssistantMessagesWithMarkdown else preferences.renderUserMessagesWithMarkdown
+            val hasNonEmptyProseOrIdle = activeVar.content.isNotBlank() ||
+                (!isActivelyThinkingThisNode && activeVar.mediaItems.isEmpty() && activeVar.attachments.isEmpty())
+            if (hasNonEmptyProseOrIdle) {
                 val isLongCollapsible = preferences.collapseLongMessages && !activeVar.isStreaming && activeVar.content.length > 1800
                 var isLongExpanded by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
                 val displayedProse = if (isLongCollapsible && !isLongExpanded) {
@@ -6332,13 +6519,14 @@ private fun MessageTurnItem(
                         val cacheStr = if (m.cachedInputTokens > 0) " (Cache ${formatCompactTokens(m.cachedInputTokens)})" else ""
                         val thinkStr = if (m.reasoningTokens > 0) " • Think ${formatCompactTokens(m.reasoningTokens)}" else ""
                         val durStr = if (m.durationMs > 0L) " • ${formatDurationFromMs(m.durationMs)}" else ""
-                        "first token ${formatDurationFromMs(m.ttftMs)}$durStr • ${m.tokensPerSec} tok/s • In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok$costStr"
+                        val sep = if (win.isCompact) "\n" else " • "
+                        "TTFT ${formatDurationFromMs(m.ttftMs)}$durStr • ${m.tokensPerSec} tok/s$costStr${sep}In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok"
                     } else {
                         "${m.tokensPerSec} tok/s • ${formatCompactTokens(m.totalTokens)} tok$costStr"
                     }
                     BasicText(
                         text = detailStr,
-                        style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                        style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily, lineHeight = 14.sp)
                     )
                 }
             }
@@ -6429,21 +6617,22 @@ private fun ParchmentAttachmentViewerModal(
                                 KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 15.dp)
                                 BasicText(
                                     text = item.title,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
                                 )
                             }
                             val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
                             BasicText(
-                                text = "$dimInfo${item.mimeType} • Pinch, Scroll Wheel, or Double-Tap to Zoom",
+                                text = "$dimInfo${item.mimeType} • Pinch or double-tap to zoom",
                                 style = p.uiLabelStyle
                             )
                         }
 
-                        Row(
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             SepiaButton(
                                 text = "−",
@@ -6478,7 +6667,7 @@ private fun ParchmentAttachmentViewerModal(
                             val openTarget = item.localFilePath.ifBlank { item.remoteUrl }
                             if (openTarget.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Open in OS",
+                                    text = "Open",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
@@ -6486,7 +6675,7 @@ private fun ParchmentAttachmentViewerModal(
                             }
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Save As",
+                                    text = "Save",
                                     compact = true,
                                     style = SepiaButtonStyle.SECONDARY,
                                     onClick = {
@@ -6499,7 +6688,7 @@ private fun ParchmentAttachmentViewerModal(
                                 )
                             }
                             SepiaButton(
-                                text = "✕ Close",
+                                text = "✕",
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose
@@ -6614,7 +6803,7 @@ private fun ParchmentAttachmentViewerModal(
                                 KissVectorIcon(icon = KissIcon.FILE_TEXT, tint = p.accent, size = 15.dp)
                                 BasicText(
                                     text = item.title,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
                                 )
@@ -6625,7 +6814,11 @@ private fun ParchmentAttachmentViewerModal(
                             )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             SepiaButton(
                                 text = if (copied) "✓ Copied" else "📋 Copy",
                                 compact = true,
@@ -6637,14 +6830,14 @@ private fun ParchmentAttachmentViewerModal(
                             )
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
-                                    text = "Open in OS",
+                                    text = "Open",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
                                 )
                             }
                             SepiaButton(
-                                text = "✕ Close",
+                                text = "✕",
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose

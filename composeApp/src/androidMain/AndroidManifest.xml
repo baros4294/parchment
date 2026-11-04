@@ -10,6 +10,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!--
+        Android 11+ (API 30-36) Package Visibility <queries> required so TextToSpeech (TTS)
+        and SpeechRecognizer / RecognizerIntent can discover and bind to system speech engines.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
 
     <!--
         allowBackup="true" and hasFragileUserData="true" ensure Android preserves user

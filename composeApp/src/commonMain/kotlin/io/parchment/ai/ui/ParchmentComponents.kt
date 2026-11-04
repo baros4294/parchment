@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -1351,10 +1352,10 @@ fun SepiaSearchableModelPicker(
                             )
                             BasicText(
                                 text = opt.modelId,
-                                maxLines = 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                                 style = p.monoStyle.copy(
-                                    fontSize = 12.5.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isSel || isHovered) p.accent else p.primaryInk
                                 )
@@ -1368,6 +1369,7 @@ fun SepiaSearchableModelPicker(
                             if (providerCounts.size > 1) {
                                 Box(
                                     modifier = Modifier
+                                        .widthIn(max = 105.dp)
                                         .clip(RoundedCornerShape(5.dp))
                                         .background(p.sheetBg)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -1375,6 +1377,7 @@ fun SepiaSearchableModelPicker(
                                     BasicText(
                                         text = opt.profileName,
                                         maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.narrationInk)
                                     )
                                 }
@@ -1652,6 +1655,9 @@ fun SepiaFileDiffCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val cleanPath = filePath.replace('\\', '/').ifBlank { "workspace file" }
+            val shortFileName = cleanPath.substringAfterLast('/')
+            val parentDir = if (cleanPath.contains('/')) cleanPath.substringBeforeLast('/') else ""
             Row(
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1662,16 +1668,31 @@ fun SepiaFileDiffCard(
                     tint = if (isError) p.danger else p.accent,
                     size = 13.5.dp
                 )
-                BasicText(
-                    text = actionLabel,
-                    style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                )
-                BasicText(
-                    text = filePath.ifBlank { "workspace file" },
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = actionLabel,
+                            style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                        )
+                        BasicText(
+                            text = shortFileName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                        )
+                    }
+                    if (parentDir.isNotEmpty()) {
+                        BasicText(
+                            text = parentDir,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.monoStyle.copy(color = p.mutedInk, fontSize = 9.5.sp)
+                        )
+                    }
+                }
             }
 
             Row(
@@ -1706,7 +1727,7 @@ fun SepiaFileDiffCard(
                 }
                 if (diffLines.isNotEmpty()) {
                     SepiaButton(
-                        text = if (showDiffBody) "▾ Hide Diff" else "▸ Show Diff",
+                        text = if (showDiffBody) "▾ Hide" else "▸ Diff",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showDiffBody = !showDiffBody }

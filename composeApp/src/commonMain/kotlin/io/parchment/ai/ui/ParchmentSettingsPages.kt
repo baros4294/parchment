@@ -2140,7 +2140,7 @@ private fun ProviderProtocolSubpage(
                 SepiaTextField(
                     value = profile.endpointPathOverride,
                     onValueChange = { ep -> onUpdateProfile { it.copy(endpointPathOverride = ep.trim()) } },
-                    label = "Custom Endpoint Path Override (Optional — leave blank for default ${profile.protocol.defaultEndpointPath})",
+                    label = "Custom Endpoint Path (Optional — default ${profile.protocol.defaultEndpointPath})",
                     placeholder = profile.protocol.defaultEndpointPath,
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
@@ -2199,8 +2199,8 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
                             }
                         },
-                        label = "Temperature (Blank = Strip)",
-                        placeholder = "Omitted from API request",
+                        label = "Temperature (blank = omit)",
+                        placeholder = "Omitted",
                         monospace = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -2215,8 +2215,8 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
                             }
                         },
-                        label = "Top-P (Blank = Strip)",
-                        placeholder = "Omitted from API request",
+                        label = "Top-P (blank = omit)",
+                        placeholder = "Omitted",
                         monospace = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -2234,8 +2234,8 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
                             }
                         },
-                        label = "Max Output Tokens (Blank or 0 = Unlimited / Strip)",
-                        placeholder = "Omitted / Unlimited",
+                        label = "Max Output Tokens (0 / blank = ∞)",
+                        placeholder = "Unlimited",
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2250,8 +2250,8 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
                             }
                         },
-                        label = "Thinking Budget Tokens (Blank or 0 = Adaptive / Strip)",
-                        placeholder = "Omitted / Adaptive",
+                        label = "Thinking Budget Tokens (0 / blank = auto)",
+                        placeholder = "Adaptive",
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2754,7 +2754,7 @@ private fun AssistantsSubpage(
                                 val t = v.trim()
                                 updateCurrent { it.copy(temperature = if (t.isEmpty()) null else t.toDoubleOrNull()) }
                             },
-                            label = "Temperature (Blank = Strip)",
+                            label = "Temperature (blank = omit)",
                             placeholder = "Omitted",
                             monospace = true,
                             modifier = Modifier.weight(1f)
@@ -2766,7 +2766,7 @@ private fun AssistantsSubpage(
                                 val t = v.trim()
                                 updateCurrent { it.copy(topP = if (t.isEmpty()) null else t.toDoubleOrNull()) }
                             },
-                            label = "Top-P (Blank = Strip)",
+                            label = "Top-P (blank = omit)",
                             placeholder = "Omitted",
                             monospace = true,
                             modifier = Modifier.weight(1f)
@@ -3332,8 +3332,8 @@ private fun WorldBookAndCardsSubpage(
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = if (isActive) p.accent else p.primaryInk)
                                 )
                                 BasicText(
-                                    text = savedCard.description.take(90).ifBlank { "No description" },
-                                    maxLines = 1,
+                                    text = savedCard.description.ifBlank { "No description" },
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiLabelStyle
                                 )
@@ -3397,7 +3397,7 @@ private fun WorldBookAndCardsSubpage(
                         ) {
                             Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                                 BasicText(text = preset.name, style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
-                                BasicText(text = preset.systemPrompt, maxLines = 1, overflow = TextOverflow.Ellipsis, style = p.uiLabelStyle)
+                                BasicText(text = preset.systemPrompt, maxLines = 2, overflow = TextOverflow.Ellipsis, style = p.uiLabelStyle)
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 SepiaButton(
@@ -4490,7 +4490,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                     if (v.trim().isEmpty()) onUpdateProfile { it.copy(temperature = null) }
                                     else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
                                 },
-                                label = "Temperature (Blank = Strip)",
+                                label = "Temperature (blank = omit)",
                                 monospace = true,
                                 modifier = Modifier.weight(1f)
                             )
@@ -4501,7 +4501,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                     if (v.trim().isEmpty()) onUpdateProfile { it.copy(topP = null) }
                                     else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
                                 },
-                                label = "Top-P (Blank = Strip)",
+                                label = "Top-P (blank = omit)",
                                 monospace = true,
                                 modifier = Modifier.weight(1f)
                             )
@@ -4679,7 +4679,9 @@ private fun GlobalSettingsSearchResultsSubpage(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     matchingAssistants.forEach { asst ->
                         BasicText(
-                            text = "• ${asst.name}: ${asst.systemPrompt.take(100).ifBlank { "(No system prompt)" }}",
+                            text = "• ${asst.name}: ${asst.systemPrompt.ifBlank { "(No system prompt)" }}",
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                             style = p.uiBodyStyle
                         )
                     }
