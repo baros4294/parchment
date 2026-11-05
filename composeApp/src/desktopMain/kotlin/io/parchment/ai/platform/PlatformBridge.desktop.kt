@@ -43,6 +43,9 @@ actual object PlatformBridge {
     var filesDroppedCallback: ((List<PickedBinaryFile>) -> Unit)? = null
     @Volatile
     private var stateFlushCallback: (() -> Unit)? = null
+    @Volatile
+    private var backHandlerCallback: (() -> Boolean)? = null
+    private val activeShellProcesses: MutableSet<Process> = java.util.Collections.synchronizedSet(HashSet())
 
     init {
         runCatching {
@@ -230,6 +233,14 @@ actual object PlatformBridge {
 
     actual fun flushPendingStateNow() {
         runCatching { stateFlushCallback?.invoke() }
+    }
+
+    actual fun registerBackHandler(handler: (() -> Boolean)?) {
+        backHandlerCallback = handler
+    }
+
+    actual fun handleSystemBackPressed(): Boolean {
+        return runCatching { backHandlerCallback?.invoke() == true }.getOrDefault(false)
     }
 
     actual fun isIgnoringBatteryOptimizations(): Boolean = true
@@ -670,7 +681,12 @@ actual object PlatformBridge {
         require(deleted) { "Failed to delete '$relativePath'." }
         "Deleted '$relativePath'."
     }
-    actual fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int): Result<String> = runCatching {
+    actual fun workspaceShellExec(
+        workspaceRoot: String,
+        command: String,
+        timeoutSeconds: Int,
+        onOutputDelta: ((String) -> Unit)?
+    ): Result<String> = runCatching {
         val rootDir = File(workspaceRoot).canonicalFile
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
@@ -684,22 +700,34 @@ actual object PlatformBridge {
         pb.directory(rootDir)
         pb.redirectErrorStream(true)
         val proc = pb.start()
+        activeShellProcesses.add(proc)
         // Close stdin immediately so child CLI processes checking piped stdin never hang waiting for EOF
         runCatching { proc.outputStream.close() }
 
         val outputBuf = StringBuilder()
+        var lastEmitMs = 0L
         val readerThread = Thread {
             runCatching {
                 proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    val chunk = CharArray(4096)
+                    val chunk = CharArray(1024)
                     while (true) {
                         val readCount = reader.read(chunk)
                         if (readCount < 0) break
+                        var snap: String? = null
                         synchronized(outputBuf) {
                             if (outputBuf.length < 64_000) {
                                 val allowed = (64_000 - outputBuf.length).coerceAtMost(readCount)
                                 outputBuf.append(chunk, 0, allowed)
                             }
+                            val now = System.currentTimeMillis()
+                            if (onOutputDelta != null && now - lastEmitMs >= 100L) {
+                                lastEmitMs = now
+                                snap = outputBuf.toString()
+                            }
+                        }
+                        val deltaSnap = snap
+                        if (deltaSnap != null) {
+                            runCatching { onOutputDelta?.invoke(deltaSnap) }
                         }
                     }
                 }
@@ -710,19 +738,53 @@ actual object PlatformBridge {
             start()
         }
 
-        val finished = proc.waitFor(timeoutSeconds.coerceIn(1, 300).toLong(), java.util.concurrent.TimeUnit.SECONDS)
-        if (!finished) {
-            runCatching { proc.descendants().forEach { it.destroyForcibly() } }
-            proc.destroyForcibly()
-            runCatching { proc.inputStream.close() }
-            runCatching { readerThread.join(1500L) }
-            val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
-            val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(4000)}" else ""
-            error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
+        try {
+            val maxWaitMs = timeoutSeconds.coerceIn(1, 300) * 1000L
+            val startMs = System.currentTimeMillis()
+            var finished = false
+            while (System.currentTimeMillis() - startMs < maxWaitMs) {
+                if (!activeShellProcesses.contains(proc)) {
+                    // Killed by user pressing Stop
+                    runCatching { proc.descendants().forEach { it.destroyForcibly() } }
+                    proc.destroyForcibly()
+                    error("Shell command terminated by user.")
+                }
+                if (proc.waitFor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    finished = true
+                    break
+                }
+            }
+            if (!finished) {
+                runCatching { proc.descendants().forEach { it.destroyForcibly() } }
+                proc.destroyForcibly()
+                runCatching { proc.inputStream.close() }
+                runCatching { readerThread.join(1500L) }
+                val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
+                val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(4000)}" else ""
+                error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
+            }
+            runCatching { readerThread.join(2000L) }
+            val output = synchronized(outputBuf) { outputBuf.toString().trim() }
+            if (onOutputDelta != null && output.isNotEmpty()) {
+                runCatching { onOutputDelta.invoke(output) }
+            }
+            "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
+        } finally {
+            activeShellProcesses.remove(proc)
         }
-        runCatching { readerThread.join(2000L) }
-        val output = synchronized(outputBuf) { outputBuf.toString().trim() }
-        "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
+    }
+
+    actual fun killActiveShellProcesses() {
+        val snapshot = synchronized(activeShellProcesses) {
+            val list = activeShellProcesses.toList()
+            activeShellProcesses.clear()
+            list
+        }
+        for (proc in snapshot) {
+            runCatching { proc.descendants().forEach { it.destroyForcibly() } }
+            runCatching { proc.destroyForcibly() }
+            runCatching { proc.inputStream.close() }
+        }
     }
 
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {

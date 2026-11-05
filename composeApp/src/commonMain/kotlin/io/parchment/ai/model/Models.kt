@@ -134,6 +134,7 @@ data class ToolCallRecord(
     val argumentsJson: String,
     val resultText: String = "",
     val isError: Boolean = false,
+    val isRunning: Boolean = false,
     val thoughtSignature: String = "",
     val precedingThinking: String = ""
 )

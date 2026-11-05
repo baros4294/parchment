@@ -740,9 +740,19 @@ fun ParchmentApp(
             var rawReq = ""
             var rawResp = ""
             var networkDone = false
-            var thinkingStartMs = 0L
+            var activeThinkingPhaseStartMs = 0L
+            var accumulatedThinkingMs = initialDurationMs
             var thinkingDurationMs = initialDurationMs
+            var lastStopwatchTickMs = 0L
             var lastDiskCheckpointMs = PlatformBridge.currentTimeMillis()
+            fun pauseActiveThinkingStopwatch() {
+                if (activeThinkingPhaseStartMs > 0L) {
+                    val now = PlatformBridge.currentTimeMillis()
+                    accumulatedThinkingMs += (now - activeThinkingPhaseStartMs).coerceAtLeast(0L)
+                    thinkingDurationMs = accumulatedThinkingMs.coerceAtLeast(100L)
+                    activeThinkingPhaseStartMs = 0L
+                }
+            }
             fun patchVariantMemory(updater: (MessageVariant) -> MessageVariant) {
                 updateActiveSessionInMemoryOnly(sessionId) { sess ->
                     sess.copy(
@@ -759,11 +769,16 @@ fun ParchmentApp(
             }
 
             fun flushCheckpointToDisk(isFinal: Boolean, finalUpdater: ((MessageVariant) -> MessageVariant)? = null) {
+                if (isFinal) pauseActiveThinkingStopwatch()
                 val curContent = if (isFinal) networkContentTarget.toString() else networkContentTarget.substring(0, displayedContentLen.coerceAtMost(networkContentTarget.length))
                 val curThink = if (isFinal) networkThinkingTarget.toString() else networkThinkingTarget.substring(0, displayedThinkingLen.coerceAtMost(networkThinkingTarget.length))
                 val curStepThink = if (accumulatedTools.isEmpty()) "" else if (isFinal) currentStepThinkingTarget.toString() else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
                 val curSig = signatureSb.toString()
-                val curTools = accumulatedTools.toList()
+                val curTools = if (isFinal) {
+                    accumulatedTools.map { if (it.isRunning) it.copy(isRunning = false) else it }
+                } else {
+                    accumulatedTools.toList()
+                }
                 val curGoal = latestGoalTracker
                 val curMedia = accumulatedMedia.toList()
                 val curWebSources = accumulatedWebSources
@@ -827,6 +842,20 @@ fun ParchmentApp(
                     }
                     val frameScale = (dtMs / 8.0f).coerceIn(0.4f, 3.5f)
                     var changed = false
+                    val now = PlatformBridge.currentTimeMillis()
+                    if (activeThinkingPhaseStartMs > 0L && now - lastStopwatchTickMs >= 100L) {
+                        lastStopwatchTickMs = now
+                        thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
+                        changed = true
+                        val thinkWords = countWordsFast(networkThinkingTarget)
+                        updateSessionStreamState(sessionId) { cur ->
+                            if (cur != null && cur.isThinkingPhase) {
+                                cur.copy(
+                                    statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                )
+                            } else cur
+                        }
+                    }
                     val targetThinkLen = networkThinkingTarget.length
                     if (displayedThinkingLen < targetThinkLen) {
                         val diff = targetThinkLen - displayedThinkingLen
@@ -868,7 +897,6 @@ fun ParchmentApp(
                         }
                     }
                     // Atomic background disk checkpoint every 1.5 seconds so switching apps NEVER loses progress
-                    val now = PlatformBridge.currentTimeMillis()
                     if (now - lastDiskCheckpointMs >= 1500L) {
                         lastDiskCheckpointMs = now
                         flushCheckpointToDisk(isFinal = false)
@@ -879,36 +907,59 @@ fun ParchmentApp(
             try {
                 var finalSessionForCall = mergedSessionForApi
                 var finalHistoryForCall = effectiveHistory
-
-                // Layer 1: Proactive Pre-Send Auto-Compaction when active context reaches >= 85% of contextWindowTokens
                 val effectiveCtxLimit = (effectiveProfileForApi.customModelSpecs[modelName]?.contextWindowTokens
                     ?: effectiveProfileForApi.contextWindowTokens)
-                val activeUnmutedIndices = finalHistoryForCall.mapIndexedNotNull { idx, n -> if (n.includedInContext) idx else null }
-                val lastAssistantMetrics = activeUnmutedIndices
-                    .map { finalHistoryForCall[it] }
-                    .lastOrNull { it.role == MessageRole.ASSISTANT }
-                    ?.activeVariant?.tokenMetrics
-                val approxTotalChars = finalSessionForCall.systemPrompt.length +
-                    finalSessionForCall.storySummary.length +
-                    finalSessionForCall.authorsNote.length +
-                    (finalSessionForCall.activeCard?.buildCompiledInstructions(finalSessionForCall.userName)?.length ?: 0) +
-                    finalSessionForCall.fragments.filter { it.mode != FragmentActivationMode.MUTED }.sumOf { it.content.length } +
-                    activeUnmutedIndices.sumOf { finalHistoryForCall[it].activeVariant.content.length }
-                val estimatedContextTokens = maxOf(
-                    approxTotalChars / 4,
-                    (lastAssistantMetrics?.inputTokens ?: 0) + (lastAssistantMetrics?.outputTokens ?: 0)
-                )
-                if (appState.preferences.autoCompactWhenNearContextLimit &&
-                    effectiveCtxLimit > 0 &&
-                    activeUnmutedIndices.size > 6 &&
-                    estimatedContextTokens >= (effectiveCtxLimit * 85) / 100
-                ) {
-                    val usagePct = ((estimatedContextTokens.toLong() * 100L) / effectiveCtxLimit.toLong()).coerceAtMost(999L)
-                    updateSessionStreamState(sessionId) { cur ->
-                        cur?.copy(statusText = "Context at $usagePct% — auto-compacting older turns into continuity memory…")
+                val autoCompactThresholdTokens = (effectiveCtxLimit * 85) / 100
+                var minTokensForNextAutoCompact = autoCompactThresholdTokens
+                var lastMidStreamCompactCheckMs = PlatformBridge.currentTimeMillis()
+
+                class MidStreamAutoCompactSignal(val usagePct: Long) : Exception("Auto-compact triggered at $usagePct%")
+
+                fun computeBaseContextTokens(): Int {
+                    return O200kTokenizer.computeContextWindowBreakdown(
+                        session = finalSessionForCall.copy(messages = finalHistoryForCall),
+                        assistant = assistantSnap,
+                        profile = effectiveProfileForApi,
+                        draftPrompt = "",
+                        draftPrefill = "",
+                        pendingAttachments = emptyList(),
+                        goalModeActive = latestGoalTracker != null,
+                        globalWorldBook = appState.globalWorldBook
+                    ).totalUsedTokens
+                }
+
+                var cachedBaseTokens = computeBaseContextTokens()
+
+                fun computeLiveTurnAndContextTokens(): Int {
+                    val liveAssistantTokens = O200kTokenizer.countTokens(networkContentTarget.toString()) +
+                        O200kTokenizer.countTokens(networkThinkingTarget.toString()) +
+                        accumulatedTools.sumOf { tc ->
+                            6 + O200kTokenizer.countTokens(tc.name) +
+                                O200kTokenizer.countTokens(tc.argumentsJson) +
+                                O200kTokenizer.countTokens(tc.resultText)
+                        }
+                    return cachedBaseTokens + liveAssistantTokens
+                }
+
+                suspend fun executeAutoCompactionInPlace(usagePct: Long, isMidStream: Boolean): Boolean {
+                    val plan = O200kTokenizer.prepareCompactionPlan(
+                        existingStorySummary = finalSessionForCall.storySummary,
+                        historyNodes = finalHistoryForCall,
+                        keepRecentTurnsCount = 2,
+                        liveTargetTools = accumulatedTools.toList(),
+                        liveTargetThinking = networkThinkingTarget.toString()
+                    )
+                    if (!plan.didCompactAnything) return false
+
+                    val statusPrefix = if (isMidStream) {
+                        "Context reached $usagePct% (≥85%) — paused agent & auto-compacting into Continuity Memory…"
+                    } else {
+                        "Context at $usagePct% (≥85%) — auto-compacting older turns & tool outputs into Continuity Memory…"
                     }
-                    val indicesToMute = activeUnmutedIndices.dropLast(6).toSet()
-                    val turnsToSummarize = indicesToMute.map { finalHistoryForCall[it] }
+                    updateSessionStreamState(sessionId) { cur ->
+                        cur?.copy(isThinkingPhase = false, statusText = statusPrefix)
+                    }
+
                     val dm = appState.defaultModels
                     val sumProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
                         appState.profiles.find { it.id == dm.summaryProfileId } ?: effectiveProfileForApi
@@ -916,224 +967,331 @@ fun ParchmentApp(
                     val sumModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
                         dm.summaryModelId
                     } else modelName
-                    val transcriptSnippet = buildString {
-                        if (finalSessionForCall.storySummary.isNotBlank()) {
-                            appendLine("Existing Continuity Summary:")
-                            appendLine(finalSessionForCall.storySummary.trim())
-                            appendLine()
-                        }
-                        appendLine("Older Conversation Turns to Fold into Continuity Summary:")
-                        for (turn in turnsToSummarize) {
-                            val roleLabel = if (turn.role == MessageRole.ASSISTANT) "Assistant" else "User"
-                            val txt = AiProviderEngine.stripInlineErrorNotices(turn.activeVariant.content).trim().take(800)
-                            if (txt.isNotEmpty()) appendLine("$roleLabel: $txt")
-                        }
-                    }
-                    val sumPrompt = "Update the concise bulleted continuity summary with all key events, facts, decisions, and character/project states from the turns below:\n\n$transcriptSnippet"
+
+                    val sumPrompt = "Update the concise bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below:\n\n${plan.transcriptToSummarize}"
                     val generatedSummary = withTimeoutOrNull(25_000L) {
                         AiProviderEngine.generateUtilityText(sumProf, sumModel, sumPrompt).getOrNull()
-                    }?.takeIf { it.isNotBlank() } ?: buildString {
-                        if (finalSessionForCall.storySummary.isNotBlank()) {
-                            appendLine(finalSessionForCall.storySummary.trim())
-                        }
-                        for (turn in turnsToSummarize.takeLast(12)) {
-                            val roleLabel = if (turn.role == MessageRole.ASSISTANT) "AI" else "User"
-                            val txt = AiProviderEngine.stripInlineErrorNotices(turn.activeVariant.content)
-                                .replace(Regex("\\s+"), " ").trim().take(200)
-                            if (txt.isNotEmpty()) appendLine("• $roleLabel: $txt")
-                        }
-                    }.trim()
+                    }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { finalSessionForCall.storySummary }
 
-                    val mutedIdSet = indicesToMute.map { finalHistoryForCall[it].id }.toSet()
                     finalSessionForCall = finalSessionForCall.copy(storySummary = generatedSummary)
-                    finalHistoryForCall = finalHistoryForCall.map { n ->
-                        if (n.id in mutedIdSet) n.copy(includedInContext = false) else n
+                    finalHistoryForCall = plan.compactedHistoryNodes
+                    accumulatedTools.clear()
+                    accumulatedTools.addAll(plan.compactedLiveTools)
+                    if (plan.compactedLiveThinking != networkThinkingTarget.toString()) {
+                        networkThinkingTarget.clear()
+                        networkThinkingTarget.append(plan.compactedLiveThinking)
+                        displayedThinkingLen = displayedThinkingLen.coerceAtMost(networkThinkingTarget.length)
                     }
+                    currentStepThinkingTarget.clear()
+                    displayedStepThinkingLen = 0
+                    localInteractionId = ""
+
+                    val compactedHistoryById = plan.compactedHistoryNodes.associateBy { it.id }
+                    val toolsSnap = accumulatedTools.toList()
+                    val thinkSnap = networkThinkingTarget.toString()
                     updateSessionById(sessionId, immediate = true) { sess ->
                         sess.copy(
                             storySummary = generatedSummary,
                             messages = sess.messages.map { n ->
-                                if (n.id in mutedIdSet) n.copy(includedInContext = false) else n
+                                when {
+                                    n.id == targetAssistantNodeId -> n.copy(
+                                        variants = n.variants.map { v ->
+                                            if (v.id == targetVariantId) {
+                                                v.copy(
+                                                    toolCalls = toolsSnap,
+                                                    thinkingSummary = thinkSnap,
+                                                    trailingThinking = "",
+                                                    providerInteractionId = "",
+                                                    pendingBackgroundInteractionId = ""
+                                                )
+                                            } else v
+                                        }
+                                    )
+                                    compactedHistoryById.containsKey(n.id) -> compactedHistoryById[n.id]!!
+                                    n.id in plan.mutedNodeIds -> n.copy(includedInContext = false)
+                                    else -> n
+                                }
                             }
                         )
                     }
+                    cachedBaseTokens = computeBaseContextTokens()
+                    val newTokens = computeLiveTurnAndContextTokens()
+                    val newPct = if (effectiveCtxLimit > 0) ((newTokens.toLong() * 100L) / effectiveCtxLimit.toLong()) else 0L
+                    minTokensForNextAutoCompact = maxOf(
+                        autoCompactThresholdTokens,
+                        newTokens + maxOf(1000, effectiveCtxLimit / 15)
+                    )
+                    updateSessionStreamState(sessionId) { cur ->
+                        cur?.copy(
+                            statusText = "Context compacted ($usagePct% → $newPct%) — auto-resuming agent ($modelName)…",
+                            interactionId = ""
+                        )
+                    }
+                    return true
                 }
 
-                AiProviderEngine.streamGeneration(
-                    profile = effectiveProfileForApi,
-                    session = finalSessionForCall,
-                    historyNodes = finalHistoryForCall,
-                    continueFromAssistantPrefix = cleanContinuePrefix,
-                    initialThinking = initialThinking,
-                    initialSignature = initialSignature,
-                    initialToolCalls = initialTools,
-                    initialMediaItems = initialMedia,
-                    initialWebSources = initialWebSources
-                ).collect { update ->
-                    when (update) {
-                        is StreamUpdate.Status -> {
-                            if (update.interactionId.isNotBlank()) {
-                                localInteractionId = update.interactionId
-                                flushCheckpointToDisk(isFinal = false)
-                            }
-                            updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(statusText = update.message, interactionId = localInteractionId)
-                            }
-                        }
-                        is StreamUpdate.ThinkingDelta -> {
-                            if (thinkingStartMs == 0L) thinkingStartMs = PlatformBridge.currentTimeMillis()
-                            thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(100L)
-                            networkThinkingTarget.append(update.delta)
-                            currentStepThinkingTarget.append(update.delta)
-                            signatureSb.append(update.signatureDelta)
-                            val thinkWords = countWordsFast(networkThinkingTarget)
-                            updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(
-                                    isThinkingPhase = true,
-                                    statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
-                                )
-                            }
-                        }
-                        is StreamUpdate.ContentDelta -> {
-                            if (thinkingStartMs > 0L) {
-                                thinkingDurationMs = (PlatformBridge.currentTimeMillis() - thinkingStartMs).coerceAtLeast(thinkingDurationMs)
-                            }
-                            networkContentTarget.append(update.delta)
-                            val wordCount = countWordsFast(networkContentTarget)
-                            updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(
-                                    isThinkingPhase = false,
-                                    statusText = "Writing ($modelName • +$wordCount words)…"
-                                )
-                            }
-                        }
-                        is StreamUpdate.ToolCallEvent -> {
-                            val stepThinkFallback = currentStepThinkingTarget.toString().trim()
-                            currentStepThinkingTarget.clear()
-                            displayedStepThinkingLen = 0
-                            val enrichedTool = if (update.toolCall.precedingThinking.isBlank() && stepThinkFallback.isNotEmpty()) {
-                                update.toolCall.copy(precedingThinking = stepThinkFallback)
-                            } else {
-                                update.toolCall
-                            }
-                            accumulatedTools.add(enrichedTool)
-                            val toolsSnap = accumulatedTools.toList()
-                            patchVariantMemory { v ->
-                                v.copy(
-                                    toolCalls = toolsSnap,
-                                    trailingThinking = ""
-                                )
-                            }
-                            updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(statusText = "Executed tool: ${enrichedTool.name}")
-                            }
-                            flushCheckpointToDisk(isFinal = false)
-                        }
-                        is StreamUpdate.GoalProgress -> {
-                            latestGoalTracker = update.goalTracker
-                            val done = update.goalTracker.completedCount
-                            val total = update.goalTracker.todos.size
-                            val goalMsg = if (total > 0) {
-                                "Goal Progress ($done/$total steps done)…"
-                            } else {
-                                "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
-                            }
-                            updateSessionStreamState(sessionId) { cur -> cur?.copy(statusText = goalMsg) }
-                            patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
-                            flushCheckpointToDisk(isFinal = false)
-                        }
-                        is StreamUpdate.MediaGenerated -> {
-                            accumulatedMedia.add(update.item)
-                            val mediaSnap = accumulatedMedia.toList()
-                            patchVariantMemory { v -> v.copy(mediaItems = mediaSnap) }
-                            updateSessionStreamState(sessionId) { cur ->
-                                cur?.copy(statusText = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})")
-                            }
-                        }
-                        is StreamUpdate.WebSourcesUpdated -> {
-                            accumulatedWebSources = update.sources
-                            patchVariantMemory { v -> v.copy(webSources = update.sources) }
-                        }
-                        is StreamUpdate.RawWireSnapshot -> {
-                            if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
-                            if (update.latestResponseChunk.isNotEmpty()) rawResp = update.latestResponseChunk.take(4096)
-                        }
-                        is StreamUpdate.Completed -> {
-                            if (update.fullContent.length > networkContentTarget.length) {
-                                networkContentTarget.clear()
-                                networkContentTarget.append(update.fullContent)
-                            }
-                            if (update.fullThinking.length > networkThinkingTarget.length) {
-                                networkThinkingTarget.clear()
-                                networkThinkingTarget.append(update.fullThinking)
-                            }
-                            if (update.goalTracker != null) {
-                                latestGoalTracker = update.goalTracker
-                            }
-                            networkDone = true
-                            pacerJob.join()
-                            flushCheckpointToDisk(isFinal = true) { v ->
-                                v.copy(
-                                    content = update.fullContent,
-                                    thinkingSummary = update.fullThinking,
-                                    trailingThinking = update.trailingThinking,
-                                    thinkingSignature = update.thinkingSignature,
-                                    thinkingDurationMs = thinkingDurationMs,
-                                    toolCalls = update.toolCalls,
-                                    goalTracker = update.goalTracker ?: latestGoalTracker,
-                                    mediaItems = update.mediaItems,
-                                    webSources = update.webSources.ifEmpty { accumulatedWebSources },
-                                    providerInteractionId = update.providerInteractionId,
-                                    pendingBackgroundInteractionId = "",
-                                    isStreaming = false,
-                                    providerProtocol = effectiveProfileForApi.protocol,
-                                    modelUsed = modelName,
-                                    tokenMetrics = update.metrics,
-                                    rawRequestPreview = update.rawRequest.take(4096),
-                                    rawResponsePreview = update.rawResponse.take(4096)
-                                )
-                            }
-                            if (isLiveVoiceMode && sessionId == appState.activeSessionId && update.fullContent.isNotBlank()) {
-                                PlatformBridge.speakTextAloud(stripMarkdownToPlainText(update.fullContent))
-                            }
-                        }
-                        is StreamUpdate.Error -> {
-                            networkDone = true
-                            pacerJob.cancel()
-                            val partialProse = networkContentTarget.toString()
-                            val hasPartialReasoningOrTools = networkThinkingTarget.isNotEmpty() || accumulatedTools.isNotEmpty()
-                            flushCheckpointToDisk(isFinal = true) { v ->
-                                val errorNotice = when {
-                                    partialProse.isNotBlank() -> {
-                                        "$partialProse\n\n*[Stream paused/interrupted: ${update.message} — tap '→ Continue' to resume seamlessly]*"
+                fun checkMidStreamAutoCompactAndThrowIfNeeded() {
+                    if (!appState.preferences.autoCompactWhenNearContextLimit || effectiveCtxLimit <= 0) return
+                    if (accumulatedTools.any { it.isRunning }) return
+                    val liveTokens = computeLiveTurnAndContextTokens()
+                    if (liveTokens >= minTokensForNextAutoCompact &&
+                        O200kTokenizer.hasCompactableContext(
+                            historyNodes = finalHistoryForCall,
+                            keepRecentTurnsCount = 2,
+                            liveTargetTools = accumulatedTools,
+                            liveTargetThinking = networkThinkingTarget.toString()
+                        )
+                    ) {
+                        val usagePct = ((liveTokens.toLong() * 100L) / effectiveCtxLimit.toLong()).coerceAtMost(999L)
+                        PlatformBridge.killActiveShellProcesses()
+                        throw MidStreamAutoCompactSignal(usagePct)
+                    }
+                }
+
+                // Layer 1: Proactive Pre-Send Auto-Compaction when active context is already >= 85%
+                val initialTokens = computeLiveTurnAndContextTokens()
+                if (appState.preferences.autoCompactWhenNearContextLimit &&
+                    effectiveCtxLimit > 0 &&
+                    initialTokens >= minTokensForNextAutoCompact &&
+                    O200kTokenizer.hasCompactableContext(
+                        historyNodes = finalHistoryForCall,
+                        keepRecentTurnsCount = 2,
+                        liveTargetTools = accumulatedTools,
+                        liveTargetThinking = networkThinkingTarget.toString()
+                    )
+                ) {
+                    val usagePct = ((initialTokens.toLong() * 100L) / effectiveCtxLimit.toLong()).coerceAtMost(999L)
+                    executeAutoCompactionInPlace(usagePct = usagePct, isMidStream = false)
+                }
+
+                // Layer 2: Real-Time Stream Loop with Mid-Stream >=85% Auto-Compaction & Instant Auto-Resume
+                while (true) {
+                    try {
+                        AiProviderEngine.streamGeneration(
+                            profile = effectiveProfileForApi,
+                            session = finalSessionForCall,
+                            historyNodes = finalHistoryForCall,
+                            continueFromAssistantPrefix = AiProviderEngine.stripInlineErrorNotices(networkContentTarget.toString()),
+                            initialThinking = networkThinkingTarget.toString(),
+                            initialSignature = signatureSb.toString(),
+                            initialToolCalls = accumulatedTools.toList(),
+                            initialMediaItems = accumulatedMedia.toList(),
+                            initialWebSources = accumulatedWebSources
+                        ).collect { update ->
+                            when (update) {
+                                is StreamUpdate.Status -> {
+                                    if (update.interactionId.isNotBlank()) {
+                                        localInteractionId = update.interactionId
+                                        flushCheckpointToDisk(isFinal = false)
                                     }
-                                    hasPartialReasoningOrTools -> {
-                                        "*[Stream paused/interrupted: ${update.message} — tap '→ Continue' or reply 'continue' to resume seamlessly]*"
-                                    }
-                                    else -> {
-                                        "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL (`${effectiveProfileForApi.baseUrl}`), or Model ID (`$modelName`) in **⚙ Settings → Providers**."
+                                    updateSessionStreamState(sessionId) { cur ->
+                                        cur?.copy(statusText = update.message, interactionId = localInteractionId)
                                     }
                                 }
-                                v.copy(
-                                    content = errorNotice,
-                                    thinkingSummary = networkThinkingTarget.toString(),
-                                    trailingThinking = if (accumulatedTools.isNotEmpty()) currentStepThinkingTarget.toString().trim() else "",
-                                    thinkingSignature = signatureSb.toString(),
-                                    thinkingDurationMs = thinkingDurationMs,
-                                    toolCalls = accumulatedTools.toList(),
-                                    goalTracker = latestGoalTracker ?: v.goalTracker,
-                                    mediaItems = accumulatedMedia.toList(),
-                                    webSources = accumulatedWebSources,
-                                    isStreaming = false,
-                                    rawRequestPreview = rawReq,
-                                    rawResponsePreview = update.rawDetails.ifBlank { rawResp }.take(4096)
-                                )
+                                is StreamUpdate.ThinkingDelta -> {
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
+                                    thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
+                                    networkThinkingTarget.append(update.delta)
+                                    currentStepThinkingTarget.append(update.delta)
+                                    signatureSb.append(update.signatureDelta)
+                                    val thinkWords = countWordsFast(networkThinkingTarget)
+                                    updateSessionStreamState(sessionId) { cur ->
+                                        cur?.copy(
+                                            isThinkingPhase = true,
+                                            statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                        )
+                                    }
+                                    if (now - lastMidStreamCompactCheckMs >= 1500L) {
+                                        lastMidStreamCompactCheckMs = now
+                                        checkMidStreamAutoCompactAndThrowIfNeeded()
+                                    }
+                                }
+                                is StreamUpdate.ContentDelta -> {
+                                    pauseActiveThinkingStopwatch()
+                                    networkContentTarget.append(update.delta)
+                                    val wordCount = countWordsFast(networkContentTarget)
+                                    updateSessionStreamState(sessionId) { cur ->
+                                        cur?.copy(
+                                            isThinkingPhase = false,
+                                            statusText = "Writing ($modelName • +$wordCount words)…"
+                                        )
+                                    }
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    if (now - lastMidStreamCompactCheckMs >= 1500L) {
+                                        lastMidStreamCompactCheckMs = now
+                                        checkMidStreamAutoCompactAndThrowIfNeeded()
+                                    }
+                                }
+                                is StreamUpdate.ToolCallEvent -> {
+                                    pauseActiveThinkingStopwatch()
+                                    val stepThinkFallback = currentStepThinkingTarget.toString().trim()
+                                    if (stepThinkFallback.isNotEmpty()) {
+                                        currentStepThinkingTarget.clear()
+                                        displayedStepThinkingLen = 0
+                                    }
+                                    val existingIdx = accumulatedTools.indexOfFirst {
+                                        it.id == update.toolCall.id && it.id.isNotBlank()
+                                    }
+                                    val enrichedTool = if (existingIdx >= 0) {
+                                        val prev = accumulatedTools[existingIdx]
+                                        update.toolCall.copy(
+                                            precedingThinking = update.toolCall.precedingThinking.ifBlank { prev.precedingThinking },
+                                            thoughtSignature = update.toolCall.thoughtSignature.ifBlank { prev.thoughtSignature }
+                                        )
+                                    } else if (update.toolCall.precedingThinking.isBlank() && stepThinkFallback.isNotEmpty()) {
+                                        update.toolCall.copy(precedingThinking = stepThinkFallback)
+                                    } else {
+                                        update.toolCall
+                                    }
+                                    if (existingIdx >= 0) {
+                                        accumulatedTools[existingIdx] = enrichedTool
+                                    } else {
+                                        accumulatedTools.add(enrichedTool)
+                                    }
+                                    val toolsSnap = accumulatedTools.toList()
+                                    patchVariantMemory { v ->
+                                        v.copy(
+                                            toolCalls = toolsSnap,
+                                            trailingThinking = "",
+                                            thinkingDurationMs = thinkingDurationMs
+                                        )
+                                    }
+                                    if (!enrichedTool.isRunning) {
+                                        updateSessionStreamState(sessionId) { cur ->
+                                            cur?.copy(
+                                                isThinkingPhase = false,
+                                                statusText = "Executed tool: ${enrichedTool.name}"
+                                            )
+                                        }
+                                        flushCheckpointToDisk(isFinal = false)
+                                        checkMidStreamAutoCompactAndThrowIfNeeded()
+                                    } else {
+                                        updateSessionStreamState(sessionId) { cur ->
+                                            cur?.copy(isThinkingPhase = false)
+                                        }
+                                    }
+                                }
+                                is StreamUpdate.GoalProgress -> {
+                                    latestGoalTracker = update.goalTracker
+                                    val done = update.goalTracker.completedCount
+                                    val total = update.goalTracker.todos.size
+                                    val goalMsg = if (total > 0) {
+                                        "Goal Progress ($done/$total steps done)…"
+                                    } else {
+                                        "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
+                                    }
+                                    updateSessionStreamState(sessionId) { cur -> cur?.copy(statusText = goalMsg) }
+                                    patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
+                                    flushCheckpointToDisk(isFinal = false)
+                                }
+                                is StreamUpdate.MediaGenerated -> {
+                                    accumulatedMedia.add(update.item)
+                                    val mediaSnap = accumulatedMedia.toList()
+                                    patchVariantMemory { v -> v.copy(mediaItems = mediaSnap) }
+                                    updateSessionStreamState(sessionId) { cur ->
+                                        cur?.copy(statusText = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})")
+                                    }
+                                }
+                                is StreamUpdate.WebSourcesUpdated -> {
+                                    accumulatedWebSources = update.sources
+                                    patchVariantMemory { v -> v.copy(webSources = update.sources) }
+                                }
+                                is StreamUpdate.RawWireSnapshot -> {
+                                    if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
+                                    if (update.latestResponseChunk.isNotEmpty()) rawResp = update.latestResponseChunk.take(4096)
+                                }
+                                is StreamUpdate.Completed -> {
+                                    if (update.fullContent.length > networkContentTarget.length) {
+                                        networkContentTarget.clear()
+                                        networkContentTarget.append(update.fullContent)
+                                    }
+                                    if (update.fullThinking.length > networkThinkingTarget.length) {
+                                        networkThinkingTarget.clear()
+                                        networkThinkingTarget.append(update.fullThinking)
+                                    }
+                                    if (update.goalTracker != null) {
+                                        latestGoalTracker = update.goalTracker
+                                    }
+                                    networkDone = true
+                                    pacerJob.join()
+                                    flushCheckpointToDisk(isFinal = true) { v ->
+                                        v.copy(
+                                            content = update.fullContent,
+                                            thinkingSummary = update.fullThinking,
+                                            trailingThinking = update.trailingThinking,
+                                            thinkingSignature = update.thinkingSignature,
+                                            thinkingDurationMs = thinkingDurationMs,
+                                            toolCalls = update.toolCalls,
+                                            goalTracker = update.goalTracker ?: latestGoalTracker,
+                                            mediaItems = update.mediaItems,
+                                            webSources = update.webSources.ifEmpty { accumulatedWebSources },
+                                            providerInteractionId = update.providerInteractionId,
+                                            pendingBackgroundInteractionId = "",
+                                            isStreaming = false,
+                                            providerProtocol = effectiveProfileForApi.protocol,
+                                            modelUsed = modelName,
+                                            tokenMetrics = update.metrics,
+                                            rawRequestPreview = update.rawRequest.take(4096),
+                                            rawResponsePreview = update.rawResponse.take(4096)
+                                        )
+                                    }
+                                    if (isLiveVoiceMode && sessionId == appState.activeSessionId && update.fullContent.isNotBlank()) {
+                                        PlatformBridge.speakTextAloud(stripMarkdownToPlainText(update.fullContent))
+                                    }
+                                }
+                                is StreamUpdate.Error -> {
+                                    networkDone = true
+                                    pacerJob.cancel()
+                                    val partialProse = networkContentTarget.toString()
+                                    val hasPartialReasoningOrTools = networkThinkingTarget.isNotEmpty() || accumulatedTools.isNotEmpty()
+                                    flushCheckpointToDisk(isFinal = true) { v ->
+                                        val errorNotice = when {
+                                            partialProse.isNotBlank() -> {
+                                                "$partialProse\n\n*[Stream paused/interrupted: ${update.message} — tap '→ Continue' to resume seamlessly]*"
+                                            }
+                                            hasPartialReasoningOrTools -> {
+                                                "*[Stream paused/interrupted: ${update.message} — tap '→ Continue' or reply 'continue' to resume seamlessly]*"
+                                            }
+                                            else -> {
+                                                "**[Provider Error: ${update.message}]**\n\nCheck your API Key, Base URL (`${effectiveProfileForApi.baseUrl}`), or Model ID (`$modelName`) in **⚙ Settings → Providers**."
+                                            }
+                                        }
+                                        v.copy(
+                                            content = errorNotice,
+                                            thinkingSummary = networkThinkingTarget.toString(),
+                                            trailingThinking = if (accumulatedTools.isNotEmpty()) currentStepThinkingTarget.toString().trim() else "",
+                                            thinkingSignature = signatureSb.toString(),
+                                            thinkingDurationMs = thinkingDurationMs,
+                                            toolCalls = accumulatedTools.toList(),
+                                            goalTracker = latestGoalTracker ?: v.goalTracker,
+                                            mediaItems = accumulatedMedia.toList(),
+                                            webSources = accumulatedWebSources,
+                                            isStreaming = false,
+                                            rawRequestPreview = rawReq,
+                                            rawResponsePreview = update.rawDetails.ifBlank { rawResp }.take(4096)
+                                        )
+                                    }
+                                }
                             }
                         }
+                        break
+                    } catch (compactSignal: MidStreamAutoCompactSignal) {
+                        pauseActiveThinkingStopwatch()
+                        flushCheckpointToDisk(isFinal = false)
+                        val compacted = executeAutoCompactionInPlace(
+                            usagePct = compactSignal.usagePct,
+                            isMidStream = true
+                        )
+                        if (!compacted) {
+                            minTokensForNextAutoCompact = Int.MAX_VALUE
+                        }
+                        continue
                     }
                 }
             } catch (c: kotlinx.coroutines.CancellationException) {
                 networkDone = true
+                PlatformBridge.killActiveShellProcesses()
                 pacerJob.cancel()
                 flushCheckpointToDisk(isFinal = true)
                 throw c
@@ -1292,101 +1450,6 @@ fun ParchmentApp(
         )
     }
 
-    fun triggerAutoSummarizeStory(autoMuteOlderTurns: Boolean = false) {
-        val targetSessId = activeSession.id
-        if (activeStreamsBySession.containsKey(targetSessId) || activeSession.messages.isEmpty()) return
-        val now = PlatformBridge.currentTimeMillis()
-        val dm = appState.defaultModels
-        val summaryProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
-            appState.profiles.find { it.id == dm.summaryProfileId } ?: activeProfile
-        } else activeProfile
-        val summaryModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
-            dm.summaryModelId
-        } else activeSession.modelOverride.ifBlank { summaryProf.defaultModel }
-
-        val summarizeNode = MessageNode(
-            id = "node-sum-$now",
-            role = MessageRole.USER,
-            variants = listOf(
-                MessageVariant(
-                    id = "var-sum-$now",
-                    content = "[Provide a concise, high-signal continuity summary of all key events, character states, unresolved threads, and established facts in the conversation so far. Use bullet points.]",
-                    createdAt = now
-                )
-            )
-        )
-        val historyForCall = activeSession.messages + summarizeNode
-
-        val sumStatus = if (autoMuteOlderTurns) {
-            "Compacting context & summarizing continuity ($summaryModel)…"
-        } else {
-            "Summarizing story continuity into memory ($summaryModel)…"
-        }
-
-        val sumJob = appProcessScope.launch {
-            val buf = StringBuilder()
-            try {
-                AiProviderEngine.streamGeneration(
-                    profile = summaryProf.copy(defaultModel = summaryModel),
-                    session = activeSession.copy(modelOverride = summaryModel),
-                    historyNodes = historyForCall
-                ).collect { update ->
-                    when (update) {
-                        is StreamUpdate.ContentDelta -> {
-                            buf.append(update.delta)
-                            updateSessionById(targetSessId) { it.copy(storySummary = buf.toString()) }
-                        }
-                        is StreamUpdate.Completed -> {
-                            val summaryText = update.fullContent.trim()
-                            updateSessionById(targetSessId, immediate = true) { sess ->
-                                val updatedMsgs = if (autoMuteOlderTurns && sess.messages.size > 4) {
-                                    val keepStartIdx = sess.messages.size - 4
-                                    sess.messages.mapIndexed { idx, node ->
-                                        if (idx < keepStartIdx) node.copy(includedInContext = false) else node
-                                    }
-                                } else {
-                                    sess.messages
-                                }
-                                sess.copy(
-                                    storySummary = summaryText,
-                                    messages = updatedMsgs
-                                )
-                            }
-                            bannerNotification = if (autoMuteOlderTurns) {
-                                "Context Compacted: summarized into Memory & muted older turns (last 4 turns kept active)."
-                            } else {
-                                "Updated Rolling Continuity Memory."
-                            }
-                        }
-                        is StreamUpdate.Error -> {
-                            bannerNotification = "Summarize error: ${update.message}"
-                        }
-                        else -> {}
-                    }
-                }
-            } finally {
-                updateSessionStreamState(targetSessId) { null }
-            }
-        }
-        updateSessionStreamState(targetSessId) {
-            SessionStreamRuntime(sessionId = targetSessId, statusText = sumStatus, job = sumJob)
-        }
-    }
-
-    fun clearCurrentChatMessages(targetSessionId: String = activeSession.id) {
-        val curStream = activeStreamsBySession[targetSessionId]
-        curStream?.job?.cancel()
-        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
-            appProcessScope.launch {
-                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
-            }
-        }
-        updateSessionStreamState(targetSessionId) { null }
-        queuedPromptsBySession = queuedPromptsBySession - targetSessionId
-        pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessionId
-        updateSessionById(targetSessionId, immediate = true) { it.copy(messages = emptyList()) }
-    }
-
     fun continueAssistantNodeAt(nodeIndex: Int) {
         val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return
         if (targetNode.role != MessageRole.ASSISTANT) return
@@ -1412,6 +1475,142 @@ fun ParchmentApp(
             targetVariantId = targetNode.activeVariant.id,
             continuePrefix = existingText
         )
+    }
+
+    fun triggerAutoSummarizeStory(autoMuteOlderTurns: Boolean = false) {
+        val targetSessId = activeSession.id
+        if (activeSession.messages.isEmpty()) return
+        val prevStream = activeStreamsBySession[targetSessId]
+        val wasStreaming = prevStream != null
+        val dm = appState.defaultModels
+        val summaryProf = if (!dm.summaryFollowGlobal && dm.summaryProfileId.isNotBlank()) {
+            appState.profiles.find { it.id == dm.summaryProfileId } ?: activeProfile
+        } else activeProfile
+        val summaryModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
+            dm.summaryModelId
+        } else activeSession.modelOverride.ifBlank { summaryProf.defaultModel }
+
+        val sumStatus = when {
+            wasStreaming && autoMuteOlderTurns ->
+                "Stopping agent — compacting context into Continuity Memory & auto-resuming ($summaryModel)…"
+            wasStreaming ->
+                "Stopping agent — summarizing continuity & auto-resuming ($summaryModel)…"
+            autoMuteOlderTurns ->
+                "Compacting context & summarizing continuity ($summaryModel)…"
+            else ->
+                "Summarizing story continuity into memory ($summaryModel)…"
+        }
+
+        val sumJob = appProcessScope.launch {
+            var shouldResumeTurnIndex = -1
+            try {
+                if (prevStream != null) {
+                    PlatformBridge.killActiveShellProcesses()
+                    prevStream.job?.cancel()
+                    if (prevStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+                        runCatching {
+                            AiProviderEngine.cancelBackgroundInteraction(activeProfile, prevStream.interactionId)
+                        }
+                    }
+                    prevStream.job?.join()
+                }
+                updateSessionStreamState(targetSessId) {
+                    SessionStreamRuntime(sessionId = targetSessId, statusText = sumStatus, job = coroutineContext[kotlinx.coroutines.Job]!!)
+                }
+
+                val sessSnap = appState.sessions.find { it.id == targetSessId } ?: activeSession
+                val keepTurnsCount = if (wasStreaming) 2 else 4
+                val plan = O200kTokenizer.prepareCompactionPlan(
+                    existingStorySummary = sessSnap.storySummary,
+                    historyNodes = sessSnap.messages,
+                    keepRecentTurnsCount = keepTurnsCount
+                )
+                val transcriptForPrompt = if (plan.transcriptToSummarize.isNotBlank()) {
+                    plan.transcriptToSummarize
+                } else {
+                    buildString {
+                        if (sessSnap.storySummary.isNotBlank()) {
+                            appendLine("Existing Continuity Summary:")
+                            appendLine(sessSnap.storySummary.trim())
+                            appendLine()
+                        }
+                        appendLine("Conversation Turns:")
+                        for (turn in sessSnap.messages.filter { it.includedInContext }.takeLast(16)) {
+                            val roleLabel = if (turn.role == MessageRole.ASSISTANT) "Assistant" else "User"
+                            val txt = AiProviderEngine.stripInlineErrorNotices(turn.activeVariant.content).trim().take(700)
+                            if (txt.isNotEmpty()) appendLine("$roleLabel: $txt")
+                        }
+                    }.trim()
+                }
+                val sumPrompt = "Update the concise bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below:\n\n$transcriptForPrompt"
+                val generatedSummary = withTimeoutOrNull(25_000L) {
+                    AiProviderEngine.generateUtilityText(summaryProf, summaryModel, sumPrompt).getOrNull()
+                }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { sessSnap.storySummary }
+
+                updateSessionById(targetSessId, immediate = true) { sess ->
+                    val updatedMsgs = if (autoMuteOlderTurns) {
+                        val compactedById = plan.compactedHistoryNodes.associateBy { it.id }
+                        sess.messages.map { n ->
+                            compactedById[n.id] ?: if (n.id in plan.mutedNodeIds) n.copy(includedInContext = false) else n
+                        }
+                    } else {
+                        sess.messages
+                    }
+                    sess.copy(
+                        storySummary = generatedSummary,
+                        messages = updatedMsgs
+                    )
+                }
+
+                if (wasStreaming) {
+                    val latestSess = appState.sessions.find { it.id == targetSessId }
+                    shouldResumeTurnIndex = latestSess?.messages?.indexOfLast { it.role == MessageRole.ASSISTANT } ?: -1
+                    bannerNotification = if (autoMuteOlderTurns) {
+                        "Context Compacted into Memory — auto-resuming agent."
+                    } else {
+                        "Updated Continuity Memory — auto-resuming agent."
+                    }
+                } else {
+                    bannerNotification = if (autoMuteOlderTurns) {
+                        "Context Compacted: summarized into Memory & muted older turns/tool outputs."
+                    } else {
+                        "Updated Rolling Continuity Memory."
+                    }
+                }
+            } catch (e: Throwable) {
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    bannerNotification = "Compaction error: ${e.message}"
+                }
+            } finally {
+                if (shouldResumeTurnIndex >= 0) {
+                    uiScope.launch {
+                        continueAssistantNodeAt(shouldResumeTurnIndex)
+                    }
+                } else {
+                    updateSessionStreamState(targetSessId) { null }
+                }
+            }
+        }
+        if (!wasStreaming) {
+            updateSessionStreamState(targetSessId) {
+                SessionStreamRuntime(sessionId = targetSessId, statusText = sumStatus, job = sumJob)
+            }
+        }
+    }
+
+    fun clearCurrentChatMessages(targetSessionId: String = activeSession.id) {
+        PlatformBridge.killActiveShellProcesses()
+        val curStream = activeStreamsBySession[targetSessionId]
+        curStream?.job?.cancel()
+        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+            appProcessScope.launch {
+                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
+            }
+        }
+        updateSessionStreamState(targetSessionId) { null }
+        queuedPromptsBySession = queuedPromptsBySession - targetSessionId
+        pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessionId
+        updateSessionById(targetSessionId, immediate = true) { it.copy(messages = emptyList()) }
     }
 
     fun sendUserTurn() {
@@ -1543,10 +1742,24 @@ fun ParchmentApp(
         val atts = pendingAttachmentsBySession[targetSessId].orEmpty()
         if (steerText.isEmpty() && prefill.isEmpty() && atts.isEmpty()) return
 
+        if (steerText.equals("/compact", ignoreCase = true) && atts.isEmpty()) {
+            userPromptInput = ""
+            updateActiveSession { it.copy(draftInput = "") }
+            triggerAutoSummarizeStory(autoMuteOlderTurns = true)
+            return
+        }
+        if (steerText.equals("/summarize", ignoreCase = true) && atts.isEmpty()) {
+            userPromptInput = ""
+            updateActiveSession { it.copy(draftInput = "") }
+            triggerAutoSummarizeStory(autoMuteOlderTurns = false)
+            return
+        }
+
         userPromptInput = ""
         assistantPrefillInput = ""
         pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessId
         uiScope.launch {
+            PlatformBridge.killActiveShellProcesses()
             val runningJob = activeStreamsBySession[targetSessId]?.job
             runningJob?.cancel()
             runningJob?.join()
@@ -2031,8 +2244,65 @@ fun ParchmentApp(
             val windowSize = ParchmentWindowSize(widthDp = maxWidth, heightDp = maxHeight)
             val isCompactScreen = maxWidth < 760.dp
 
+            // Register Android System Back Gesture / Back Button Navigation Stack
+            LaunchedEffect(
+                activeViewerItem,
+                pendingDeleteConfirmation,
+                pendingRegenerateConfirm,
+                showMobileTabSwitcher,
+                showQuickModelPopover,
+                showRightFilesSidebar,
+                showSessionInspector,
+                showSidebar,
+                isSettingsOpen,
+                isCompactScreen
+            ) {
+                PlatformBridge.registerBackHandler {
+                    when {
+                        activeViewerItem != null -> {
+                            activeViewerItem = null
+                            true
+                        }
+                        pendingDeleteConfirmation != null -> {
+                            pendingDeleteConfirmation = null
+                            true
+                        }
+                        pendingRegenerateConfirm != null -> {
+                            pendingRegenerateConfirm = null
+                            true
+                        }
+                        showMobileTabSwitcher -> {
+                            showMobileTabSwitcher = false
+                            true
+                        }
+                        showQuickModelPopover -> {
+                            showQuickModelPopover = false
+                            true
+                        }
+                        showRightFilesSidebar -> {
+                            showRightFilesSidebar = false
+                            true
+                        }
+                        showSessionInspector -> {
+                            showSessionInspector = false
+                            true
+                        }
+                        isCompactScreen && showSidebar && !isSettingsOpen -> {
+                            showSidebar = false
+                            true
+                        }
+                        isSettingsOpen -> {
+                            isSettingsOpen = false
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+
             CompositionLocalProvider(LocalParchmentWindowSize provides windowSize) {
                 var horizontalSwipeDelta by remember { mutableStateOf(0f) }
+                var startedNearLeftEdge by remember { mutableStateOf(false) }
 
                 Column(
                     modifier = Modifier
@@ -2045,17 +2315,21 @@ fun ParchmentApp(
                             if (isCompactScreen && !isSettingsOpen) {
                                 Modifier.pointerInput(showSidebar, isSettingsOpen) {
                                     detectHorizontalDragGestures(
-                                        onDragStart = { horizontalSwipeDelta = 0f },
+                                        onDragStart = { startOffset ->
+                                            horizontalSwipeDelta = 0f
+                                            startedNearLeftEdge = startOffset.x <= 36.dp.toPx()
+                                        },
                                         onHorizontalDrag = { _, dragAmount ->
                                             horizontalSwipeDelta += dragAmount
                                         },
                                         onDragEnd = {
-                                            if (!showSidebar && horizontalSwipeDelta > 56.dp.toPx()) {
+                                            if (!showSidebar && startedNearLeftEdge && horizontalSwipeDelta > 52.dp.toPx()) {
                                                 showSidebar = true
                                             } else if (showSidebar && horizontalSwipeDelta < -48.dp.toPx()) {
                                                 showSidebar = false
                                             }
                                             horizontalSwipeDelta = 0f
+                                            startedNearLeftEdge = false
                                         }
                                     )
                                 }
@@ -2852,6 +3126,7 @@ fun ParchmentApp(
                                     },
                                     onStopStream = {
                                         val targetSessId = activeSession.id
+                                        PlatformBridge.killActiveShellProcesses()
                                         val curStream = activeStreamsBySession[targetSessId]
                                         curStream?.job?.cancel()
                                         if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
@@ -3524,17 +3799,19 @@ private fun ManuscriptViewport(
                             modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val canCompactSession = activeSession.messages.count { it.includedInContext } > 1 ||
+                                activeSession.messages.any { it.includedInContext && it.activeVariant.toolCalls.isNotEmpty() }
                             SepiaButton(
-                                text = if (isStreaming) "Working…" else "✦ Summarize",
+                                text = if (isStreaming) "✦ Summarize & Resume" else "✦ Summarize",
                                 compact = true,
-                                enabled = !isStreaming && activeSession.messages.isNotEmpty(),
+                                enabled = activeSession.messages.isNotEmpty(),
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = onAutoSummarizeStory
                             )
                             SepiaButton(
-                                text = "⚡ Compact Context",
+                                text = if (isStreaming) "⚡ Compact & Resume" else "⚡ Compact Context",
                                 compact = true,
-                                enabled = !isStreaming && activeSession.messages.size > 4,
+                                enabled = canCompactSession,
                                 style = SepiaButtonStyle.SECONDARY,
                                 onClick = onCompactContext
                             )
@@ -4064,24 +4341,78 @@ private fun ManuscriptViewport(
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                // 1. Subtle Live Streaming Status Strip (No duplicate Stop button here — Stop is in the action bar below!)
+                // 1. Multi-Line Expandable Live Streaming Status Strip (Splits headline & detail onto clean newlines!)
+                var statusExpanded by remember { mutableStateOf(false) }
                 AnimatedVisibility(visible = isStreaming) {
-                    Row(
+                    val rawStatus = streamingStatus.ifBlank { "Generating reply…" }
+                    val (statusHeadline, statusDetail) = remember(rawStatus) {
+                        when {
+                            rawStatus.contains('\n') -> {
+                                val first = rawStatus.substringBefore('\n').trim()
+                                val rest = rawStatus.substringAfter('\n').trim()
+                                first to rest
+                            }
+                            rawStatus.contains(" — ") && rawStatus.length > 56 -> {
+                                val first = rawStatus.substringBefore(" — ").trim()
+                                val rest = rawStatus.substringAfter(" — ").trim()
+                                first to rest
+                            }
+                            else -> rawStatus to ""
+                        }
+                    }
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(p.sheetBg.copy(alpha = 0.75f))
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .background(p.sheetBg.copy(alpha = 0.78f))
+                            .border(0.65.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                            .clickable { statusExpanded = !statusExpanded }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        KissStreamingPulseDot(color = p.accent)
-                        BasicText(
-                            text = streamingStatus.ifBlank { "Generating reply…" },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiBodyStyle.copy(color = p.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                KissStreamingPulseDot(color = p.accent)
+                                BasicText(
+                                    text = statusHeadline,
+                                    maxLines = if (statusDetail.isEmpty() && statusExpanded) 6 else 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = p.uiBodyStyle.copy(
+                                        color = p.accent,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+                            if (statusDetail.isNotEmpty() || statusHeadline.length > 72) {
+                                KissVectorIcon(
+                                    icon = if (statusExpanded) KissIcon.CHEVRON_UP else KissIcon.CHEVRON_DOWN,
+                                    tint = p.mutedInk,
+                                    size = 11.dp
+                                )
+                            }
+                        }
+                        if (statusDetail.isNotEmpty()) {
+                            BasicText(
+                                text = statusDetail,
+                                maxLines = if (statusExpanded) 12 else 3,
+                                overflow = TextOverflow.Ellipsis,
+                                style = p.monoStyle.copy(
+                                    color = p.narrationInk,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.5.sp
+                                ),
+                                modifier = Modifier.padding(start = 16.dp)
+                            )
+                        }
                     }
                 }
 
@@ -4580,23 +4911,48 @@ private fun ManuscriptViewport(
                                         tint = p.accent,
                                         size = 13.5.dp
                                     )
-                                    BasicText(
-                                        text = spec.command,
-                                        style = p.monoStyle.copy(
-                                            color = p.accent,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp
+                                    if (win.isCompact) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                                        ) {
+                                            BasicText(
+                                                text = spec.command,
+                                                style = p.monoStyle.copy(
+                                                    color = p.accent,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                            )
+                                            BasicText(
+                                                text = spec.description,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiBodyStyle.copy(
+                                                    color = p.primaryInk,
+                                                    fontSize = 11.5.sp
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        BasicText(
+                                            text = spec.command,
+                                            style = p.monoStyle.copy(
+                                                color = p.accent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
                                         )
-                                    )
-                                    BasicText(
-                                        text = spec.description,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiBodyStyle.copy(
-                                            color = p.primaryInk,
-                                            fontSize = 12.sp
+                                        BasicText(
+                                            text = spec.description,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiBodyStyle.copy(
+                                                color = p.primaryInk,
+                                                fontSize = 12.sp
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                                 Box(
                                     modifier = Modifier
@@ -4814,25 +5170,52 @@ private fun ManuscriptViewport(
                                         tint = p.accent,
                                         size = 13.5.dp
                                     )
-                                    BasicText(
-                                        text = cleanBadge,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.monoStyle.copy(
-                                            color = p.accent,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp
+                                    if (win.isCompact) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                                        ) {
+                                            BasicText(
+                                                text = cleanBadge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.monoStyle.copy(
+                                                    color = p.accent,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                            )
+                                            BasicText(
+                                                text = descText,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiBodyStyle.copy(
+                                                    color = p.narrationInk,
+                                                    fontSize = 11.sp
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        BasicText(
+                                            text = cleanBadge,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.monoStyle.copy(
+                                                color = p.accent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
                                         )
-                                    )
-                                    BasicText(
-                                        text = descText,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiBodyStyle.copy(
-                                            color = p.narrationInk,
-                                            fontSize = 11.5.sp
+                                        BasicText(
+                                            text = descText,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiBodyStyle.copy(
+                                                color = p.narrationInk,
+                                                fontSize = 11.5.sp
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                                 KissVectorIcon(
                                     icon = KissIcon.PLUS,
@@ -4884,11 +5267,13 @@ private fun ManuscriptViewport(
 
                 // Interactive Context Window Breakdown Popover (Opened by clicking the Circular Context Ring)
                 AnimatedVisibility(visible = showContextBreakdownPopover) {
+                    val canCompactNow = activeSession.messages.count { it.includedInContext } > 1 ||
+                        activeSession.messages.any { it.includedInContext && it.activeVariant.toolCalls.isNotEmpty() }
                     ContextWindowBreakdownPopover(
                         breakdown = contextBreakdown,
                         sessionTotalCostUsd = sessionTotalCostUsd,
                         isStreaming = isStreaming,
-                        canCompact = activeSession.messages.size > 4,
+                        canCompact = canCompactNow,
                         canSummarize = activeSession.messages.isNotEmpty(),
                         onCompactContext = onCompactContext,
                         onSummarizeStory = onAutoSummarizeStory,
@@ -4923,7 +5308,7 @@ private fun ManuscriptViewport(
                 val leftChipsComposable: @Composable (Modifier) -> Unit = { rowMod ->
                     Row(
                         modifier = rowMod,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (win.isCompact) 3.dp else 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         SepiaChip(
@@ -4969,7 +5354,7 @@ private fun ManuscriptViewport(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            leftChipsComposable(Modifier.weight(1f).horizontalScroll(rememberScrollState()))
+                            leftChipsComposable(Modifier.weight(1f))
                             if (preferences.showTokenAndContextStats) {
                                 Spacer(Modifier.width(6.dp))
                                 SepiaContextGaugeRing(
@@ -5014,14 +5399,12 @@ private fun ManuscriptViewport(
                     }
                 } else {
                     // Single full-width SpaceBetween row on both Mobile (idle) and Desktop!
-                    // Passing Modifier.weight(1f) to the left row forces Compose to measure the unweighted right row (Context Ring + Send) FIRST,
-                    // guaranteeing the Send button can NEVER overflow or clip off the right edge!
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        leftChipsComposable(Modifier.weight(1f).horizontalScroll(rememberScrollState()))
+                        leftChipsComposable(Modifier.weight(1f))
 
                         Spacer(Modifier.width(6.dp))
 
@@ -5176,15 +5559,15 @@ private fun MessageTurnItem(
             )
             .padding(horizontal = 15.dp, vertical = 14.dp)
     }
-    val containerModifier = if (node.variants.size > 1) {
-        baseContainerModifier.pointerInput(node.id, node.activeVariantIndex, node.variants.size) {
+    val containerModifier = if (node.variants.size > 1 && !isEditing) {
+        baseContainerModifier.pointerInput(node.id, node.activeVariantIndex, node.variants.size, isEditing) {
             detectHorizontalDragGestures(
                 onDragStart = { variantSwipeDelta = 0f },
                 onHorizontalDrag = { _, dragAmount -> variantSwipeDelta += dragAmount },
                 onDragEnd = {
-                    if (variantSwipeDelta < -52.dp.toPx() && node.activeVariantIndex < node.variants.lastIndex) {
+                    if (variantSwipeDelta < -64.dp.toPx() && node.activeVariantIndex < node.variants.lastIndex) {
                         onSelectVariant(node.activeVariantIndex + 1)
-                    } else if (variantSwipeDelta > 52.dp.toPx() && node.activeVariantIndex > 0) {
+                    } else if (variantSwipeDelta > 64.dp.toPx() && node.activeVariantIndex > 0) {
                         onSelectVariant(node.activeVariantIndex - 1)
                     }
                     variantSwipeDelta = 0f
@@ -5264,8 +5647,9 @@ private fun MessageTurnItem(
                             }
                             BasicText(
                                 text = primaryHeader,
-                                maxLines = 1,
+                                maxLines = if (win.isCompact) 2 else 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                                 style = p.uiLabelStyle.copy(
                                     color = p.accent,
                                     fontWeight = FontWeight.Bold,
@@ -5278,6 +5662,7 @@ private fun MessageTurnItem(
                                 text = speakerTitle.uppercase(),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                                 style = p.uiLabelStyle.copy(
                                     color = p.narrationInk,
                                     fontWeight = FontWeight.Bold,
@@ -5524,6 +5909,8 @@ private fun MessageTurnItem(
                     }
 
                     var isToolResultExpanded by remember(tc.id) { mutableStateOf(false) }
+                    val effectiveExpanded = isToolResultExpanded || tc.isRunning
+                    val canExpandTool = tc.resultText.length > 160 || tc.argumentsJson.length > 80
                     val toolIcon = remember(tc.name) { resolveToolKissIcon(tc.name) }
                     Column(
                         modifier = Modifier
@@ -5531,15 +5918,21 @@ private fun MessageTurnItem(
                             .clip(RoundedCornerShape(7.dp))
                             .background(p.cardBg)
                             .border(
-                                0.85.dp,
-                                if (tc.isError) p.danger.copy(alpha = 0.7f) else p.border.copy(alpha = 0.75f),
-                                RoundedCornerShape(7.dp)
+                                width = if (tc.isRunning) 1.15.dp else 0.85.dp,
+                                color = when {
+                                    tc.isError -> p.danger.copy(alpha = 0.7f)
+                                    tc.isRunning -> p.accent
+                                    else -> p.border.copy(alpha = 0.75f)
+                                },
+                                shape = RoundedCornerShape(7.dp)
                             )
                             .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (canExpandTool) Modifier.clickable { isToolResultExpanded = !isToolResultExpanded } else Modifier),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -5548,33 +5941,63 @@ private fun MessageTurnItem(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                KissVectorIcon(
-                                    icon = toolIcon,
-                                    tint = if (tc.isError) p.danger else p.accentSecondary,
-                                    size = 13.dp
-                                )
+                                if (tc.isRunning) {
+                                    KissStreamingPulseDot(color = p.accent)
+                                } else {
+                                    KissVectorIcon(
+                                        icon = toolIcon,
+                                        tint = if (tc.isError) p.danger else p.accentSecondary,
+                                        size = 13.dp
+                                    )
+                                }
                                 BasicText(
                                     text = "${tc.name}(${tc.argumentsJson})",
-                                    maxLines = if (isToolResultExpanded) 6 else 2,
+                                    maxLines = if (effectiveExpanded) 8 else 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.monoStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.5.sp)
                                 )
                             }
-                            if (tc.resultText.length > 260) {
-                                SepiaButton(
-                                    text = if (isToolResultExpanded) "▴" else "▾",
-                                    compact = true,
-                                    style = SepiaButtonStyle.GHOST,
-                                    onClick = { isToolResultExpanded = !isToolResultExpanded }
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                if (tc.isRunning) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(p.accent.copy(alpha = 0.16f))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        BasicText(
+                                            text = "RUNNING",
+                                            style = p.monoStyle.copy(
+                                                color = p.accent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 9.5.sp
+                                            )
+                                        )
+                                    }
+                                }
+                                if (canExpandTool) {
+                                    SepiaButton(
+                                        text = if (effectiveExpanded) "▴" else "▾",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        onClick = { isToolResultExpanded = !isToolResultExpanded }
+                                    )
+                                }
                             }
                         }
-                        if (preferences.showToolResultSummary && tc.resultText.isNotBlank()) {
-                            val shownResult = if (isToolResultExpanded) tc.resultText.take(4000) else tc.resultText.take(360)
+                        if ((preferences.showToolResultSummary || tc.isRunning) && tc.resultText.isNotBlank()) {
+                            val shownResult = if (effectiveExpanded) tc.resultText.take(6000) else tc.resultText.take(360)
                             BasicText(
-                                text = if (!isToolResultExpanded && tc.resultText.length > 360) "$shownResult…" else shownResult,
+                                text = if (!effectiveExpanded && tc.resultText.length > 360) "$shownResult…" else shownResult,
                                 style = p.monoStyle.copy(
-                                    color = if (tc.isError) p.danger else p.narrationInk,
+                                    color = when {
+                                        tc.isError -> p.danger
+                                        tc.isRunning -> p.primaryInk
+                                        else -> p.narrationInk
+                                    },
                                     fontSize = 11.sp
                                 )
                             )
@@ -6557,7 +6980,7 @@ private fun MessageTurnItem(
                         KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accent, size = 13.5.dp)
                         BasicText(
                             text = "Grounded Web Sources (${activeVar.webSources.size}) — Tap a source to highlight its line",
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         )
@@ -6631,20 +7054,24 @@ private fun MessageTurnItem(
                                             style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
                                         )
                                     }
-                                    BasicText(
-                                        text = src.title.ifBlank { src.domain.ifBlank { src.url } },
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp),
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    if (src.domain.isNotBlank()) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                                    ) {
                                         BasicText(
-                                            text = "• ${src.domain}",
-                                            maxLines = 1,
+                                            text = src.title.ifBlank { src.domain.ifBlank { src.url } },
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 10.5.sp)
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                                         )
+                                        if (src.domain.isNotBlank()) {
+                                            BasicText(
+                                                text = src.domain,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 10.5.sp)
+                                            )
+                                        }
                                     }
                                 }
                                 SepiaButton(
@@ -6705,22 +7132,55 @@ private fun MessageTurnItem(
         }
 
         AnimatedVisibility(visible = showRawWireDrawer && activeVar.rawRequestPreview.isNotBlank()) {
-            Column(
-                modifier = Modifier
-                    .padding(top = 6.dp)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(p.sheetBg)
-                    .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                BasicText(text = "Outgoing Request Payload:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
-                BasicText(text = activeVar.rawRequestPreview.take(2000), style = p.monoStyle.copy(fontSize = 11.sp))
-                if (activeVar.rawResponsePreview.isNotBlank()) {
-                    SepiaDivider()
-                    BasicText(text = "Latest Wire Event / Response:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
-                    BasicText(text = activeVar.rawResponsePreview.take(2000), style = p.monoStyle.copy(fontSize = 11.sp))
+            var copiedRawWire by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
+            SelectionContainer {
+                Column(
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(p.sheetBg)
+                        .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(text = "Outgoing Request Payload:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                        SepiaButton(
+                            text = if (copiedRawWire == "req") "✓" else "📋",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = {
+                                clipboard.setText(AnnotatedString(activeVar.rawRequestPreview))
+                                copiedRawWire = "req"
+                            }
+                        )
+                    }
+                    BasicText(text = activeVar.rawRequestPreview.take(4000), style = p.monoStyle.copy(fontSize = 11.sp))
+                    if (activeVar.rawResponsePreview.isNotBlank()) {
+                        SepiaDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(text = "Latest Wire Event / Response:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                            SepiaButton(
+                                text = if (copiedRawWire == "resp") "✓" else "📋",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(activeVar.rawResponsePreview))
+                                    copiedRawWire = "resp"
+                                }
+                            )
+                        }
+                        BasicText(text = activeVar.rawResponsePreview.take(4000), style = p.monoStyle.copy(fontSize = 11.sp))
+                    }
                 }
             }
         }

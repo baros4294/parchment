@@ -443,7 +443,7 @@ internal fun MobileTabSwitcherModal(
                                             KissStreamingPulseDot(color = p.accent)
                                             BasicText(
                                                 text = streamInfo.statusText.ifBlank { "Running in background…" },
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
                                                 style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
                                             )
@@ -1809,14 +1809,14 @@ internal fun ParchmentRightFilesSidebar(
                                         KissVectorIcon(icon = KissIcon.DIFF, tint = p.accent, size = 13.5.dp)
                                         BasicText(
                                             text = shortName,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
                                             style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                                         )
                                     }
                                     BasicText(
                                         text = "${item.filePath} • Click to inspect",
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                         style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
                                     )
@@ -1887,7 +1887,7 @@ internal fun ParchmentRightFilesSidebar(
                                         )
                                         BasicText(
                                             text = fileLabel,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
                                             style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                                         )
@@ -1957,7 +1957,7 @@ internal fun ParchmentRightFilesSidebar(
                                         KissVectorIcon(icon = KissIcon.CODE, tint = p.accent, size = 13.5.dp)
                                         BasicText(
                                             text = item.fileName,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
                                             style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                                         )
@@ -2069,7 +2069,7 @@ internal fun ParchmentRightFilesSidebar(
                                     KissVectorIcon(icon = fileIcon, tint = p.accent, size = 13.5.dp)
                                     BasicText(
                                         text = att.fileName,
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                         style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                                     )
@@ -2370,9 +2370,9 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             if (canCompact) {
                 SepiaButton(
-                    text = "⚡ Compact Context",
+                    text = if (isStreaming) "⚡ Compact & Resume" else "⚡ Compact Context",
                     compact = true,
-                    enabled = !isStreaming,
+                    enabled = true,
                     style = SepiaButtonStyle.SECONDARY,
                     onClick = {
                         onCompactContext()
@@ -2382,9 +2382,9 @@ internal fun ContextWindowBreakdownPopover(
             }
             if (canSummarize) {
                 SepiaButton(
-                    text = "✦ Summarize",
+                    text = if (isStreaming) "✦ Summarize & Resume" else "✦ Summarize",
                     compact = true,
-                    enabled = !isStreaming,
+                    enabled = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = {
                         onSummarizeStory()

@@ -73,7 +73,10 @@ actual object PlatformBridge {
     @Volatile
     private var stateFlushCallback: (() -> Unit)? = null
     @Volatile
+    private var backHandlerCallback: (() -> Boolean)? = null
+    @Volatile
     private var filesDroppedCallback: ((List<PickedBinaryFile>) -> Unit)? = null
+    private val activeShellProcesses: MutableSet<Process> = java.util.Collections.synchronizedSet(HashSet())
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -294,6 +297,14 @@ actual object PlatformBridge {
 
     actual fun flushPendingStateNow() {
         runCatching { stateFlushCallback?.invoke() }
+    }
+
+    actual fun registerBackHandler(handler: (() -> Boolean)?) {
+        backHandlerCallback = handler
+    }
+
+    actual fun handleSystemBackPressed(): Boolean {
+        return runCatching { backHandlerCallback?.invoke() == true }.getOrDefault(false)
     }
 
     actual fun isIgnoringBatteryOptimizations(): Boolean = runCatching {
@@ -656,28 +667,45 @@ actual object PlatformBridge {
         require(deleted) { "Failed to delete '$relativePath'." }
         "Deleted '$relativePath'."
     }
-    actual fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int): Result<String> = runCatching {
+    actual fun workspaceShellExec(
+        workspaceRoot: String,
+        command: String,
+        timeoutSeconds: Int,
+        onOutputDelta: ((String) -> Unit)?
+    ): Result<String> = runCatching {
         val rootDir = File(workspaceRoot).canonicalFile
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val pb = ProcessBuilder("/system/bin/sh", "-c", command)
         pb.directory(rootDir)
         pb.redirectErrorStream(true)
         val proc = pb.start()
+        activeShellProcesses.add(proc)
         runCatching { proc.outputStream.close() }
 
         val outputBuf = StringBuilder()
+        var lastEmitMs = 0L
         val readerThread = Thread {
             runCatching {
                 proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    val chunk = CharArray(4096)
+                    val chunk = CharArray(1024)
                     while (true) {
                         val readCount = reader.read(chunk)
                         if (readCount < 0) break
+                        var snap: String? = null
                         synchronized(outputBuf) {
                             if (outputBuf.length < 48_000) {
                                 val allowed = (48_000 - outputBuf.length).coerceAtMost(readCount)
                                 outputBuf.append(chunk, 0, allowed)
                             }
+                            val now = System.currentTimeMillis()
+                            if (onOutputDelta != null && now - lastEmitMs >= 100L) {
+                                lastEmitMs = now
+                                snap = outputBuf.toString()
+                            }
+                        }
+                        val deltaSnap = snap
+                        if (deltaSnap != null) {
+                            runCatching { onOutputDelta?.invoke(deltaSnap) }
                         }
                     }
                 }
@@ -688,18 +716,49 @@ actual object PlatformBridge {
             start()
         }
 
-        val finished = proc.waitFor(timeoutSeconds.coerceIn(1, 120).toLong(), java.util.concurrent.TimeUnit.SECONDS)
-        if (!finished) {
-            proc.destroyForcibly()
-            runCatching { proc.inputStream.close() }
-            runCatching { readerThread.join(1000L) }
-            val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
-            val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(3000)}" else ""
-            error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
+        try {
+            val maxWaitMs = timeoutSeconds.coerceIn(1, 120) * 1000L
+            val startMs = System.currentTimeMillis()
+            var finished = false
+            while (System.currentTimeMillis() - startMs < maxWaitMs) {
+                if (!activeShellProcesses.contains(proc)) {
+                    proc.destroyForcibly()
+                    error("Shell command terminated by user.")
+                }
+                if (proc.waitFor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    finished = true
+                    break
+                }
+            }
+            if (!finished) {
+                proc.destroyForcibly()
+                runCatching { proc.inputStream.close() }
+                runCatching { readerThread.join(1000L) }
+                val partial = synchronized(outputBuf) { outputBuf.toString().trim() }
+                val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n${partial.take(3000)}" else ""
+                error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
+            }
+            runCatching { readerThread.join(1500L) }
+            val output = synchronized(outputBuf) { outputBuf.toString().trim() }
+            if (onOutputDelta != null && output.isNotEmpty()) {
+                runCatching { onOutputDelta.invoke(output) }
+            }
+            "Exit Code: ${proc.exitValue()}\n${output.take(6000)}"
+        } finally {
+            activeShellProcesses.remove(proc)
         }
-        runCatching { readerThread.join(1500L) }
-        val output = synchronized(outputBuf) { outputBuf.toString().trim() }
-        "Exit Code: ${proc.exitValue()}\n${output.take(6000)}"
+    }
+
+    actual fun killActiveShellProcesses() {
+        val snapshot = synchronized(activeShellProcesses) {
+            val list = activeShellProcesses.toList()
+            activeShellProcesses.clear()
+            list
+        }
+        for (proc in snapshot) {
+            runCatching { proc.destroyForcibly() }
+            runCatching { proc.inputStream.close() }
+        }
     }
 
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {

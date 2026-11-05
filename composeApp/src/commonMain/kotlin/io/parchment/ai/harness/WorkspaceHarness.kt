@@ -627,12 +627,15 @@ object WorkspaceHarness {
             "fs_move" -> "Moving ${strArg("source_path")} -> ${strArg("dest_path")}"
             "fs_delete" -> "Deleting ${strArg("path")}"
             "fs_list" -> "Listing workspace ${strArg("path").ifBlank { "root" }}"
-            "fs_glob" -> "Matching files with glob '${strArg("pattern").take(36)}'"
-            "fs_search" -> "Searching workspace for '${strArg("query").take(36)}'"
-            "web_search" -> "Searching the web for '${strArg("query").take(44)}'"
-            "web_fetch" -> "Fetching URL ${strArg("url").take(48)}"
-            "calc_eval" -> "Calculating ${strArg("expression").take(36)}"
-            "shell_exec" -> "Running shell: ${strArg("command").lineSequence().firstOrNull()?.take(52).orEmpty()}"
+            "fs_glob" -> "Matching files with glob '${strArg("pattern")}'"
+            "fs_search" -> "Searching workspace for '${strArg("query")}'"
+            "web_search" -> "Searching the web for '${strArg("query")}'"
+            "web_fetch" -> "Fetching URL ${strArg("url")}"
+            "calc_eval" -> "Calculating ${strArg("expression")}"
+            "shell_exec" -> {
+                val cmd = strArg("command").trim()
+                if (cmd.isNotEmpty()) "Running shell_exec\n$ $cmd" else "Running shell_exec"
+            }
             "todo_write" -> "Updating task checklist"
             "goal_complete" -> "Verifying & completing goal"
             "agent_memory" -> "Updating PARCHMENT_MEMORY.md (${strArg("action").ifBlank { "read" }})"
@@ -649,7 +652,8 @@ object WorkspaceHarness {
         mode: WorkspaceMode,
         callId: String,
         toolName: String,
-        argumentsJson: String
+        argumentsJson: String,
+        onOutputDelta: ((String) -> Unit)? = null
     ): ToolCallRecord {
         val isFolderFreeTool = toolName == "todo_write" ||
             toolName == "goal_complete" ||
@@ -838,7 +842,7 @@ object WorkspaceHarness {
                 } else {
                     val cmd = strArg("command")
                     val timeout = args["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 30
-                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout)
+                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout, onOutputDelta)
                 }
             }
             else -> Result.failure(IllegalArgumentException("Unknown workspace tool '$toolName'."))

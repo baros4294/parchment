@@ -161,6 +161,8 @@ expect object PlatformBridge {
     fun deleteChatSessionFile(sessionId: String)
     fun registerStateFlushCallback(callback: () -> Unit)
     fun flushPendingStateNow()
+    fun registerBackHandler(handler: (() -> Boolean)?)
+    fun handleSystemBackPressed(): Boolean
     fun isIgnoringBatteryOptimizations(): Boolean
     fun requestUnrestrictedBackgroundBattery()
     fun wipeAllLocalData(): Boolean
@@ -185,7 +187,13 @@ expect object PlatformBridge {
     fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String>
     fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String>
     fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String = ""): Result<String>
-    fun workspaceShellExec(workspaceRoot: String, command: String, timeoutSeconds: Int = 30): Result<String>
+    fun workspaceShellExec(
+        workspaceRoot: String,
+        command: String,
+        timeoutSeconds: Int = 30,
+        onOutputDelta: ((String) -> Unit)? = null
+    ): Result<String>
+    fun killActiveShellProcesses()
     fun fetchUrlText(url: String, maxChars: Int = 24000): Result<String>
     // Long Decode Lifecycle Hook (Android Foreground Service / Desktop status)
     fun notifyLongDecodeStart(modelName: String)

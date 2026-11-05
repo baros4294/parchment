@@ -9,7 +9,18 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
+import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
+
+data class ContextCompactionPlan(
+    val mutedNodeIds: Set<String>,
+    val compactedHistoryNodes: List<MessageNode>,
+    val compactedLiveTools: List<ToolCallRecord>,
+    val compactedLiveThinking: String,
+    val transcriptToSummarize: String,
+    val fallbackSummary: String,
+    val didCompactAnything: Boolean
+)
 
 /**
  * Unified `o200k_base` Tokenizer & Context Window Breakdown Engine.
@@ -287,7 +298,7 @@ object O200kTokenizer {
                 for (tc in v.toolCalls) {
                     turnProseAndTools += 6 + countTokens(tc.name) + countTokens(tc.argumentsJson) + countTokens(tc.resultText)
                 }
-                if (v.content.isBlank() && v.thinkingSummary.isNotBlank()) {
+                if ((v.content.isBlank() || v.isStreaming || node == effectiveMessages.lastOrNull()) && v.thinkingSummary.isNotBlank()) {
                     turnProseAndTools += countTokens(v.thinkingSummary)
                 }
             }
@@ -317,6 +328,196 @@ object O200kTokenizer {
             mutedTurnsCount = mutedTurnsCount,
             composerDraftTokens = composerDraftTokens,
             contextLimitTokens = contextLimit
+        )
+    }
+
+    const val COMPACTED_TOOL_MARKER = "[Compacted into Continuity Memory]"
+
+    fun isToolResultCompacted(tc: ToolCallRecord): Boolean =
+        tc.resultText.contains(COMPACTED_TOOL_MARKER)
+
+    fun compactToolCallRecord(tc: ToolCallRecord, maxKeepChars: Int = 220): ToolCallRecord {
+        if (tc.isRunning || tc.resultText.length <= maxKeepChars + 60 || isToolResultCompacted(tc)) {
+            return tc
+        }
+        val head = tc.resultText.trim().take(maxKeepChars).trimEnd()
+        return tc.copy(
+            resultText = "$head\n… $COMPACTED_TOOL_MARKER",
+            precedingThinking = if (tc.precedingThinking.length > 240) {
+                tc.precedingThinking.take(240).trimEnd() + "…"
+            } else tc.precedingThinking
+        )
+    }
+
+    /**
+     * Checks whether a session or in-flight generation has older unmuted turns, heavy completed
+     * tool call outputs, or long reasoning traces that can be compacted into `storySummary`.
+     */
+    fun hasCompactableContext(
+        historyNodes: List<MessageNode>,
+        keepRecentTurnsCount: Int = 2,
+        liveTargetTools: List<ToolCallRecord> = emptyList(),
+        liveTargetThinking: String = ""
+    ): Boolean {
+        val unmuted = historyNodes.filter { it.includedInContext }
+        if (unmuted.size > keepRecentTurnsCount) return true
+        val hasUncompactedNodeTools = unmuted.any { node ->
+            val completedTools = node.activeVariant.toolCalls.filter { !it.isRunning }
+            completedTools.size > 2 && completedTools.dropLast(2).any { tc ->
+                tc.resultText.length > 280 && !isToolResultCompacted(tc)
+            } || completedTools.any { tc -> tc.resultText.length > 1800 && !isToolResultCompacted(tc) }
+        }
+        if (hasUncompactedNodeTools) return true
+        val completedLiveTools = liveTargetTools.filter { !it.isRunning }
+        val hasUncompactedLiveTools = (completedLiveTools.size > 2 && completedLiveTools.dropLast(2).any { tc ->
+            tc.resultText.length > 280 && !isToolResultCompacted(tc)
+        }) || completedLiveTools.any { tc -> tc.resultText.length > 1800 && !isToolResultCompacted(tc) }
+        if (hasUncompactedLiveTools) return true
+        if (liveTargetThinking.length > 3600) return true
+        return false
+    }
+
+    /**
+     * Builds a comprehensive `ContextCompactionPlan` that:
+     * 1. Mutes older unmuted turns beyond `keepRecentTurnsCount`
+     * 2. Compacts older or oversized tool call outputs inside kept unmuted turns & `liveTargetTools`
+     * 3. Trims oversized `liveTargetThinking` while folding its contents into the summary transcript
+     * 4. Clears `providerInteractionId` on compacted variants so resumed requests use the compacted context
+     */
+    fun prepareCompactionPlan(
+        existingStorySummary: String,
+        historyNodes: List<MessageNode>,
+        keepRecentTurnsCount: Int = 2,
+        liveTargetTools: List<ToolCallRecord> = emptyList(),
+        liveTargetThinking: String = ""
+    ): ContextCompactionPlan {
+        val activeIndices = historyNodes.mapIndexedNotNull { idx, n -> if (n.includedInContext) idx else null }
+        val safeKeepCount = keepRecentTurnsCount.coerceAtLeast(1)
+        val indicesToMute = if (activeIndices.size > safeKeepCount) {
+            activeIndices.dropLast(safeKeepCount).toSet()
+        } else {
+            emptySet()
+        }
+        val mutedNodeIds = indicesToMute.map { historyNodes[it].id }.toSet()
+        val turnsToSummarize = indicesToMute.map { historyNodes[it] }
+
+        val compactedToolNotes = mutableListOf<String>()
+        var anyToolOrThinkingCompacted = false
+
+        fun compactToolListAndCollectNotes(tools: List<ToolCallRecord>): List<ToolCallRecord> {
+            if (tools.isEmpty()) return tools
+            val lastIndex = tools.lastIndex
+            return tools.mapIndexed { idx, tc ->
+                val isRecentTwo = idx >= lastIndex - 1
+                val shouldCompact = !tc.isRunning && !isToolResultCompacted(tc) && (
+                    (!isRecentTwo && tc.resultText.length > 280) ||
+                        (isRecentTwo && tc.resultText.length > 2400)
+                    )
+                if (shouldCompact) {
+                    anyToolOrThinkingCompacted = true
+                    val snippet = tc.resultText.replace(Regex("\\s+"), " ").trim().take(260)
+                    compactedToolNotes.add("${tc.name}(${tc.argumentsJson.take(120)}) -> $snippet")
+                    compactToolCallRecord(tc, maxKeepChars = if (isRecentTwo) 600 else 220)
+                } else {
+                    tc
+                }
+            }
+        }
+
+        val compactedHistoryNodes = historyNodes.mapIndexed { idx, node ->
+            if (idx in indicesToMute) {
+                node.copy(includedInContext = false)
+            } else if (node.includedInContext) {
+                val activeVar = node.activeVariant
+                val newTools = compactToolListAndCollectNotes(activeVar.toolCalls)
+                val newThinking = if (activeVar.thinkingSummary.length > 3600) {
+                    anyToolOrThinkingCompacted = true
+                    "… [Earlier reasoning compacted into Continuity Memory]\n" + activeVar.thinkingSummary.takeLast(1800)
+                } else activeVar.thinkingSummary
+                if (newTools != activeVar.toolCalls || newThinking != activeVar.thinkingSummary || activeVar.providerInteractionId.isNotEmpty()) {
+                    node.copy(
+                        variants = node.variants.mapIndexed { vIdx, v ->
+                            if (vIdx == node.activeVariantIndex) {
+                                v.copy(
+                                    toolCalls = newTools,
+                                    thinkingSummary = newThinking,
+                                    providerInteractionId = ""
+                                )
+                            } else v
+                        }
+                    )
+                } else node
+            } else node
+        }
+
+        val compactedLiveTools = compactToolListAndCollectNotes(liveTargetTools)
+        val compactedLiveThinking = if (liveTargetThinking.length > 3600) {
+            anyToolOrThinkingCompacted = true
+            "… [Earlier reasoning compacted into Continuity Memory]\n" + liveTargetThinking.takeLast(1800)
+        } else {
+            liveTargetThinking
+        }
+
+        val transcriptToSummarize = buildString {
+            if (existingStorySummary.isNotBlank()) {
+                appendLine("Existing Continuity Summary:")
+                appendLine(existingStorySummary.trim())
+                appendLine()
+            }
+            if (turnsToSummarize.isNotEmpty()) {
+                appendLine("Older Conversation Turns to Fold into Continuity Summary:")
+                for (turn in turnsToSummarize.takeLast(24)) {
+                    val roleLabel = if (turn.role == MessageRole.ASSISTANT) "Assistant" else "User"
+                    val v = turn.activeVariant
+                    val txt = v.content.trim().take(700)
+                    if (txt.isNotEmpty()) {
+                        appendLine("$roleLabel: $txt")
+                    }
+                    if (v.toolCalls.isNotEmpty()) {
+                        val toolSummary = v.toolCalls.takeLast(6).joinToString("; ") { tc ->
+                            "${tc.name}: ${tc.resultText.replace(Regex("\\s+"), " ").trim().take(160)}"
+                        }
+                        appendLine("$roleLabel Tools: $toolSummary")
+                    }
+                }
+                appendLine()
+            }
+            if (compactedToolNotes.isNotEmpty()) {
+                appendLine("Completed Agent Tool Executions to Fold into Continuity Summary:")
+                for (note in compactedToolNotes.takeLast(20)) {
+                    appendLine("• $note")
+                }
+                appendLine()
+            }
+            if (liveTargetThinking.length > 500) {
+                appendLine("Recent Agent Reasoning Context:")
+                appendLine(liveTargetThinking.takeLast(1200).trim())
+            }
+        }.trim()
+
+        val fallbackSummary = buildString {
+            if (existingStorySummary.isNotBlank()) {
+                appendLine(existingStorySummary.trim().takeLast(2400))
+            }
+            for (turn in turnsToSummarize.takeLast(10)) {
+                val roleLabel = if (turn.role == MessageRole.ASSISTANT) "AI" else "User"
+                val txt = turn.activeVariant.content.replace(Regex("\\s+"), " ").trim().take(200)
+                if (txt.isNotEmpty()) appendLine("• $roleLabel: $txt")
+            }
+            for (note in compactedToolNotes.takeLast(10)) {
+                appendLine("• Tool: ${note.take(220)}")
+            }
+        }.trim()
+
+        val didCompact = mutedNodeIds.isNotEmpty() || anyToolOrThinkingCompacted
+        return ContextCompactionPlan(
+            mutedNodeIds = mutedNodeIds,
+            compactedHistoryNodes = compactedHistoryNodes,
+            compactedLiveTools = compactedLiveTools,
+            compactedLiveThinking = compactedLiveThinking,
+            transcriptToSummarize = transcriptToSummarize,
+            fallbackSummary = fallbackSummary,
+            didCompactAnything = didCompact
         )
     }
 }

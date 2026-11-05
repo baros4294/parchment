@@ -254,7 +254,13 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
         messages = session.messages.map { node ->
             node.copy(
                 variants = node.variants.map { v ->
-                    if (v.isStreaming) v.copy(isStreaming = false) else v
+                    val hasRunningTools = v.toolCalls.any { it.isRunning }
+                    if (v.isStreaming || hasRunningTools) {
+                        v.copy(
+                            isStreaming = false,
+                            toolCalls = if (hasRunningTools) v.toolCalls.map { if (it.isRunning) it.copy(isRunning = false) else it } else v.toolCalls
+                        )
+                    } else v
                 }
             )
         }
@@ -382,7 +388,13 @@ internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot 
                 messages = sess.messages.map { node ->
                     node.copy(
                         variants = node.variants.map { v ->
-                            if (v.isStreaming) v.copy(isStreaming = false) else v
+                            val hasRunningTools = v.toolCalls.any { it.isRunning }
+                            if (v.isStreaming || hasRunningTools) {
+                                v.copy(
+                                    isStreaming = false,
+                                    toolCalls = if (hasRunningTools) v.toolCalls.map { if (it.isRunning) it.copy(isRunning = false) else it } else v.toolCalls
+                                )
+                            } else v
                         }
                     )
                 }

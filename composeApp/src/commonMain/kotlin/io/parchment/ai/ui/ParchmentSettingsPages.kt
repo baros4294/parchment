@@ -313,6 +313,25 @@ fun ParchmentSettingsScreen(
             }
             var dragX by remember { mutableStateOf(0f) }
 
+            LaunchedEffect(mobileOpenedCategory, settingsSearchQuery) {
+                PlatformBridge.registerBackHandler {
+                    when {
+                        settingsSearchQuery.isNotEmpty() -> {
+                            settingsSearchQuery = ""
+                            true
+                        }
+                        mobileOpenedCategory != null -> {
+                            mobileOpenedCategory = null
+                            true
+                        }
+                        else -> {
+                            onClose()
+                            true
+                        }
+                    }
+                }
+            }
+
             fun categorySubtitle(cat: SettingsCategory): String = when (cat) {
                 SettingsCategory.PREFERENCES -> "Theme (${appState.theme.name.substringBefore(" (")}), fonts, display & behavior"
                 SettingsCategory.PROVIDERS -> "${activeProfile.name} • ${appState.profiles.size} provider profile(s)"

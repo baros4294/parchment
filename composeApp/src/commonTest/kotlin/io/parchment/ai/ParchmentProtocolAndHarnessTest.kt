@@ -1032,4 +1032,92 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(KissIcon.AT_SIGN, atBtn.leadingIcon)
         assertEquals("", atBtn.cleanText)
     }
+
+    @Test
+    fun testExtractCleanApiErrorSummaryAndHttp400GenerateNonRetry() {
+        val raw400 = """Gemini Interactions HTTP 400: {"error":{"code":"invalid_request","message":"The model could not generate a valid response for this interaction."}}"""
+        val cleaned = AiProviderEngine.extractCleanApiErrorSummary(raw400)
+        assertEquals(
+            "Gemini Interactions HTTP 400 (invalid_request): The model could not generate a valid response for this interaction.",
+            cleaned
+        )
+
+        // Verify HTTP 400 containing the word "generate" (which has substring "rate") is NOT misclassified as a transient rate limit
+        val err = IllegalStateException(raw400)
+        assertTrue(!AiProviderEngine.isTransientOrProxyTimeoutError(err))
+
+        // Verify genuine HTTP 400 rate limit / resource_exhausted IS classified as retryable
+        val rateLimit400 = IllegalStateException("""HTTP 400: {"error":{"code":"resource_exhausted","message":"Rate limit exceeded, please try again"}}""")
+        assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(rateLimit400))
+    }
+
+    @Test
+    fun testContextCompactionPlanMutesOlderTurnsAndCompactsHeavyTools() {
+        val bigToolOutput1 = "Line of file content ".repeat(150) // ~3150 chars
+        val bigToolOutput2 = "Directory listing entry ".repeat(120) // ~2880 chars
+        val smallRecentOutput = "Exit Code: 0\nBuild succeeded"
+
+        val liveTools = listOf(
+            ToolCallRecord(id = "tc-1", name = "fs_read", argumentsJson = """{"path":"A.kt"}""", resultText = bigToolOutput1),
+            ToolCallRecord(id = "tc-2", name = "fs_search", argumentsJson = """{"query":"foo"}""", resultText = bigToolOutput2),
+            ToolCallRecord(id = "tc-3", name = "shell_exec", argumentsJson = """{"command":"echo ok"}""", resultText = smallRecentOutput)
+        )
+
+        val nodes = (1..5).map { idx ->
+            MessageNode(
+                id = "node-$idx",
+                role = if (idx % 2 == 1) MessageRole.USER else MessageRole.ASSISTANT,
+                variants = listOf(
+                    MessageVariant(
+                        id = "var-$idx",
+                        content = "Turn #$idx content with important project decisions.",
+                        providerInteractionId = "inter-$idx"
+                    )
+                )
+            )
+        }
+
+        assertTrue(O200kTokenizer.hasCompactableContext(nodes, keepRecentTurnsCount = 2, liveTargetTools = liveTools))
+
+        val plan = O200kTokenizer.prepareCompactionPlan(
+            existingStorySummary = "• Initial project setup completed.",
+            historyNodes = nodes,
+            keepRecentTurnsCount = 2,
+            liveTargetTools = liveTools,
+            liveTargetThinking = "Reasoning step ".repeat(300)
+        )
+
+        assertTrue(plan.didCompactAnything)
+        // First 3 of 5 turns should be muted, keeping the last 2 turns active
+        assertEquals(setOf("node-1", "node-2", "node-3"), plan.mutedNodeIds)
+        assertEquals(2, plan.compactedHistoryNodes.count { it.includedInContext })
+        // Kept turns must have their stale providerInteractionId cleared so resumed calls use compacted history
+        assertTrue(plan.compactedHistoryNodes.filter { it.includedInContext }.all { it.activeVariant.providerInteractionId.isEmpty() })
+
+        // First tool call in liveTools (> 2 tools ago) must be compacted, while recent small tool call stays intact
+        assertTrue(O200kTokenizer.isToolResultCompacted(plan.compactedLiveTools[0]))
+        assertEquals(smallRecentOutput, plan.compactedLiveTools[2].resultText)
+        assertTrue(plan.transcriptToSummarize.contains("Initial project setup completed"))
+        assertTrue(plan.fallbackSummary.isNotBlank())
+    }
+
+    @Test
+    fun testLiveShellExecStreamingAndProcessKill() {
+        val deltas = mutableListOf<String>()
+        val rec = WorkspaceHarness.executeToolCall(
+            workspaceRoot = ".",
+            mode = WorkspaceMode.READ_WRITE,
+            callId = "call-live-shell",
+            toolName = "shell_exec",
+            argumentsJson = """{"command":"echo parchment_live_stream_ok","timeout_seconds":10}""",
+            onOutputDelta = { partial ->
+                synchronized(deltas) { deltas.add(partial) }
+            }
+        )
+        assertTrue(!rec.isError, "Expected shell_exec to succeed: ${rec.resultText}")
+        assertTrue(rec.resultText.contains("parchment_live_stream_ok"))
+        assertTrue(deltas.any { it.contains("parchment_live_stream_ok") })
+        // Ensure killActiveShellProcesses is safe to call when idle
+        io.parchment.ai.platform.PlatformBridge.killActiveShellProcesses()
+    }
 }

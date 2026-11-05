@@ -39,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -102,6 +103,61 @@ object AiProviderEngine {
     private val discoveredModelModalities = mutableMapOf<String, List<String>>()
 
     internal class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
+
+    /**
+     * Unwraps raw JSON API error payloads (such as `{"error":{"code":"invalid_request","message":"..."}}`)
+     * into clean, human-readable summaries without raw JSON braces or mid-word truncation.
+     */
+    internal fun extractCleanApiErrorSummary(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        val braceIdx = trimmed.indexOf('{')
+        val bracketIdx = trimmed.indexOf('[')
+        val jsonStart = when {
+            braceIdx >= 0 && bracketIdx >= 0 -> minOf(braceIdx, bracketIdx)
+            braceIdx >= 0 -> braceIdx
+            bracketIdx >= 0 -> bracketIdx
+            else -> -1
+        }
+        if (jsonStart >= 0) {
+            val prefix = trimmed.substring(0, jsonStart).trim().removeSuffix(":").trim()
+            val jsonCandidate = trimmed.substring(jsonStart).trim()
+            val parsedSummary = runCatching {
+                val rootEl = json.parseToJsonElement(jsonCandidate)
+                val rootObj = when (rootEl) {
+                    is JsonObject -> rootEl
+                    is JsonArray -> rootEl.firstOrNull() as? JsonObject
+                    else -> null
+                }
+                if (rootObj != null) {
+                    val errObj = (rootObj["error"] as? JsonObject) ?: rootObj
+                    val code = errObj["code"]?.jsonPrimitive?.contentOrNull
+                        ?: errObj["status"]?.jsonPrimitive?.contentOrNull
+                        ?: errObj["type"]?.jsonPrimitive?.contentOrNull
+                    val msg = errObj["message"]?.jsonPrimitive?.contentOrNull
+                        ?: errObj["detail"]?.jsonPrimitive?.contentOrNull
+                        ?: (rootObj["error"] as? JsonPrimitive)?.contentOrNull
+                    if (!msg.isNullOrBlank()) {
+                        val cleanMsg = msg.replace(Regex("\\s+"), " ").trim()
+                        if (prefix.isNotEmpty()) {
+                            val codeTag = if (!code.isNullOrBlank() && !prefix.contains(code, ignoreCase = true)) {
+                                " ($code)"
+                            } else ""
+                            "$prefix$codeTag: $cleanMsg"
+                        } else {
+                            val codeTag = if (!code.isNullOrBlank()) "[$code] " else ""
+                            "$codeTag$cleanMsg"
+                        }
+                    } else null
+                } else null
+            }.getOrNull()
+            if (!parsedSummary.isNullOrBlank()) {
+                return parsedSummary
+            }
+        }
+        return trimmed.replace(Regex("\\s+"), " ").trim()
+    }
+
     private suspend fun waitWithRetryCountdown(
         attempt: Int,
         maxAttempts: Int,
@@ -109,12 +165,90 @@ object AiProviderEngine {
         reasonSummary: String,
         onStatus: suspend (String) -> Unit
     ) {
-        val cleanReason = reasonSummary.lineSequence().firstOrNull()?.trim()?.take(90).orEmpty()
+        val cleanReason = extractCleanApiErrorSummary(reasonSummary)
         for (remaining in waitSeconds downTo 1) {
-            onStatus("Auto-retrying ($attempt/$maxAttempts in ${remaining}s) — $cleanReason")
+            val statusMsg = if (cleanReason.isNotBlank()) {
+                "Auto-retrying ($attempt/$maxAttempts in ${remaining}s)\n$cleanReason"
+            } else {
+                "Auto-retrying ($attempt/$maxAttempts in ${remaining}s)…"
+            }
+            onStatus(statusMsg)
             delay(1000L)
         }
         onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
+    }
+
+    private suspend fun executeWorkspaceToolWithLiveProgress(
+        workspaceRoot: String,
+        mode: io.parchment.ai.model.WorkspaceMode,
+        callId: String,
+        toolName: String,
+        argumentsJson: String,
+        thoughtSignature: String = "",
+        precedingThinking: String = "",
+        onStatus: suspend (String) -> Unit,
+        onToolCall: suspend (ToolCallRecord) -> Unit
+    ): ToolCallRecord {
+        val intent = WorkspaceHarness.describeToolCallIntent(toolName, argumentsJson)
+        onStatus("$intent…")
+        val initialRunningRecord = ToolCallRecord(
+            id = callId,
+            name = toolName,
+            argumentsJson = argumentsJson,
+            resultText = if (toolName.equals("shell_exec", ignoreCase = true)) "Running shell command…" else "Running $toolName…",
+            isRunning = true,
+            thoughtSignature = thoughtSignature,
+            precedingThinking = precedingThinking
+        )
+        onToolCall(initialRunningRecord)
+
+        val liveChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val startMs = PlatformBridge.currentTimeMillis()
+        return kotlinx.coroutines.coroutineScope {
+            val forwarderJob = launch {
+                for (partialOut in liveChannel) {
+                    val elapsedSec = ((PlatformBridge.currentTimeMillis() - startMs) / 100L) / 10.0
+                    val lastNonEmptyLine = partialOut.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
+                    val statusHeader = intent.lineSequence().firstOrNull().orEmpty()
+                    val liveStatus = if (lastNonEmptyLine.isNotEmpty()) {
+                        "$statusHeader (${elapsedSec}s)\n$lastNonEmptyLine"
+                    } else {
+                        "$intent (${elapsedSec}s)…"
+                    }
+                    onStatus(liveStatus)
+                    onToolCall(
+                        initialRunningRecord.copy(
+                            resultText = "[Running ${elapsedSec}s]\n$partialOut",
+                            isRunning = true
+                        )
+                    )
+                }
+            }
+            try {
+                val rawRecord = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    WorkspaceHarness.executeToolCall(
+                        workspaceRoot = workspaceRoot,
+                        mode = mode,
+                        callId = callId,
+                        toolName = toolName,
+                        argumentsJson = argumentsJson,
+                        onOutputDelta = { partial ->
+                            liveChannel.trySend(partial)
+                        }
+                    )
+                }
+                liveChannel.close()
+                forwarderJob.join()
+                rawRecord.copy(
+                    isRunning = false,
+                    thoughtSignature = thoughtSignature.ifBlank { rawRecord.thoughtSignature },
+                    precedingThinking = precedingThinking.ifBlank { rawRecord.precedingThinking }
+                )
+            } finally {
+                liveChannel.close()
+                forwarderJob.cancel()
+            }
+        }
     }
     private val json = Json {
         ignoreUnknownKeys = true
@@ -219,6 +353,27 @@ object AiProviderEngine {
                 emit(StreamUpdate.WebSourcesUpdated(bound))
             }
         }
+        suspend fun upsertToolCallAndEmit(tc: ToolCallRecord) {
+            val existingIdx = executedTools.indexOfFirst { it.id == tc.id && tc.id.isNotBlank() }
+            val enriched = if (existingIdx >= 0) {
+                val prev = executedTools[existingIdx]
+                tc.copy(
+                    precedingThinking = tc.precedingThinking.ifBlank { prev.precedingThinking },
+                    thoughtSignature = tc.thoughtSignature.ifBlank { prev.thoughtSignature }
+                )
+            } else {
+                attachStepThinkingToToolCall(tc)
+            }
+            if (existingIdx >= 0) {
+                executedTools[existingIdx] = enriched
+            } else {
+                executedTools.add(enriched)
+            }
+            emit(StreamUpdate.ToolCallEvent(enriched))
+            if (!enriched.isRunning) {
+                extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+            }
+        }
         val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
         val circuitBreaker = WorkspaceHarness.LoopCircuitBreaker(
             initialGoal = if (initialGoalObjective.isNotBlank()) {
@@ -311,10 +466,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        val enriched = attachStepThinkingToToolCall(tc)
-                                        executedTools.add(enriched)
-                                        emit(StreamUpdate.ToolCallEvent(enriched))
-                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                        upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -371,10 +523,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        val enriched = attachStepThinkingToToolCall(tc)
-                                        executedTools.add(enriched)
-                                        emit(StreamUpdate.ToolCallEvent(enriched))
-                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                        upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -395,10 +544,10 @@ object AiProviderEngine {
                             } catch (e: Throwable) {
                                 if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
                                     val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
-                                    val reasonShort = actualCause.message?.lineSequence()?.firstOrNull()?.trim()?.take(72) ?: "endpoint error"
+                                    val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
                                     emit(
                                         StreamUpdate.Status(
-                                            "Primary /v1beta/interactions failed ($reasonShort) — falling back to :streamGenerateContent…",
+                                            "Primary /v1beta/interactions failed — falling back to :streamGenerateContent…\n$reasonClean",
                                             lastInteractionId
                                         )
                                     )
@@ -462,10 +611,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        val enriched = attachStepThinkingToToolCall(tc)
-                                        executedTools.add(enriched)
-                                        emit(StreamUpdate.ToolCallEvent(enriched))
-                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                        upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -667,10 +813,10 @@ object AiProviderEngine {
                                         )
                                     } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
                                         val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
-                                        val reasonShort = actualCause.message?.lineSequence()?.firstOrNull()?.trim()?.take(72) ?: "endpoint error"
+                                        val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
                                         emit(
                                             StreamUpdate.Status(
-                                                "Primary /v1/responses failed ($reasonShort) — falling back to /v1/chat/completions…",
+                                                "Primary /v1/responses failed — falling back to /v1/chat/completions…\n$reasonClean",
                                                 lastInteractionId
                                             )
                                         )
@@ -880,10 +1026,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onToolCall = { tc ->
-                                        val enriched = attachStepThinkingToToolCall(tc)
-                                        executedTools.add(enriched)
-                                        emit(StreamUpdate.ToolCallEvent(enriched))
-                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                        upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -977,11 +1120,12 @@ object AiProviderEngine {
                         continuationPass++
                         retryAttempt = 0
                         currentContinuePrefix = contentBuilder.toString()
+                        val cleanInterruptReason = extractCleanApiErrorSummary(actualErr.message ?: "connection reset")
                         waitWithRetryCountdown(
                             attempt = continuationPass,
                             maxAttempts = if (isLongGoalRun) MAX_GOAL_NETWORK_RETRIES else MAX_MID_STREAM_CONTINUATION_PASSES,
                             waitSeconds = RETRY_WAIT_SECONDS,
-                            reasonSummary = "Stream interrupted (${actualErr.message?.take(60) ?: "connection reset"}) — resuming seamlessly",
+                            reasonSummary = "Stream interrupted — resuming seamlessly: $cleanInterruptReason",
                             onStatus = { msg -> emit(StreamUpdate.Status(msg, lastInteractionId)) }
                         )
                         continue
@@ -1058,9 +1202,11 @@ object AiProviderEngine {
                 )
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
+            PlatformBridge.killActiveShellProcesses()
             throw e
         } catch (t: Throwable) {
-            emit(StreamUpdate.Error(message = t.message ?: t::class.simpleName ?: "Unknown network error", rawDetails = lastRawResp))
+            val cleanErr = extractCleanApiErrorSummary(t.message ?: t::class.simpleName ?: "Unknown network error")
+            emit(StreamUpdate.Error(message = cleanErr, rawDetails = lastRawResp))
         } finally {
             PlatformBridge.notifyLongDecodeComplete()
         }
@@ -2187,23 +2333,18 @@ object AiProviderEngine {
                     put("arguments", parsedArgs)
                 })
 
-                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…", currentPrevInteractionId)
-                val rawRecord = WorkspaceHarness.executeToolCall(
+                val stepThoughtTxt = roundThoughtText.toString().trim()
+                val signedRecord = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
-                    argumentsJson = fnPair.second
+                    argumentsJson = fnPair.second,
+                    thoughtSignature = if (idx == 0) stepSigString else "",
+                    precedingThinking = if (idx == 0) stepThoughtTxt else "",
+                    onStatus = { st -> onStatus(st, currentPrevInteractionId) },
+                    onToolCall = onToolCall
                 )
-                val stepThoughtTxt = roundThoughtText.toString().trim()
-                val signedRecord = if (idx == 0 && (stepSigString.isNotEmpty() || stepThoughtTxt.isNotEmpty())) {
-                    rawRecord.copy(
-                        thoughtSignature = stepSigString,
-                        precedingThinking = stepThoughtTxt
-                    )
-                } else {
-                    rawRecord
-                }
                 val record = circuitBreaker.onToolExecuted(signedRecord)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(record)
@@ -2927,19 +3068,16 @@ object AiProviderEngine {
             val responseParts = mutableListOf<JsonObject>()
             for ((idx, triple) in roundToolCalls.withIndex()) {
                 val (callId, fnName, argsJson) = triple
-                onStatus("${WorkspaceHarness.describeToolCallIntent(fnName, argsJson)}…")
-                val rawRec = WorkspaceHarness.executeToolCall(
+                val signedRec = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnName,
-                    argumentsJson = argsJson
+                    argumentsJson = argsJson,
+                    thoughtSignature = if (idx == 0) roundThoughtSig.toString() else "",
+                    onStatus = onStatus,
+                    onToolCall = onToolCall
                 )
-                val signedRec = if (idx == 0 && roundThoughtSig.isNotEmpty()) {
-                    rawRec.copy(thoughtSignature = roundThoughtSig.toString())
-                } else {
-                    rawRec
-                }
                 val rec = circuitBreaker.onToolExecuted(signedRec)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
@@ -3667,22 +3805,17 @@ object AiProviderEngine {
                     put("arguments", fnPair.second)
                     put("status", "completed")
                 })
-                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
-                val rawRec = WorkspaceHarness.executeToolCall(
+                val signedRec = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
-                    argumentsJson = fnPair.second
+                    argumentsJson = fnPair.second,
+                    thoughtSignature = if (idx == 0) roundEncryptedReasoning else "",
+                    precedingThinking = if (idx == 0) roundReasoningBuilder.toString().trim() else "",
+                    onStatus = onStatus,
+                    onToolCall = onToolCall
                 )
-                val signedRec = if (idx == 0 && (roundEncryptedReasoning.isNotEmpty() || roundReasoningBuilder.isNotEmpty())) {
-                    rawRec.copy(
-                        thoughtSignature = roundEncryptedReasoning,
-                        precedingThinking = roundReasoningBuilder.toString().trim()
-                    )
-                } else {
-                    rawRec
-                }
                 val rec = circuitBreaker.onToolExecuted(signedRec)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
@@ -4178,13 +4311,14 @@ object AiProviderEngine {
 
             for ((callId, fnName, argsSb) in validCalls) {
                 val cleanArgs = argsSb.toString().ifBlank { "{}" }
-                onStatus("${WorkspaceHarness.describeToolCallIntent(fnName, cleanArgs)}…")
-                val rawRec = WorkspaceHarness.executeToolCall(
+                val rawRec = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnName,
-                    argumentsJson = cleanArgs
+                    argumentsJson = cleanArgs,
+                    onStatus = onStatus,
+                    onToolCall = onToolCall
                 )
                 val rec = circuitBreaker.onToolExecuted(rawRec)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
@@ -4873,19 +5007,16 @@ object AiProviderEngine {
                 .firstOrNull { it.signature.isNotEmpty() }?.signature?.toString().orEmpty()
             for ((idx, callEntry) in turnToolCalls.withIndex()) {
                 val (callId, fnPair) = callEntry
-                onStatus("${WorkspaceHarness.describeToolCallIntent(fnPair.first, fnPair.second)}…")
-                val rawRec = WorkspaceHarness.executeToolCall(
+                val signedRec = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = session.workspacePath,
                     mode = session.workspaceMode,
                     callId = callId,
                     toolName = fnPair.first,
-                    argumentsJson = fnPair.second
+                    argumentsJson = fnPair.second,
+                    thoughtSignature = if (idx == 0) firstSignedThinking else "",
+                    onStatus = onStatus,
+                    onToolCall = onToolCall
                 )
-                val signedRec = if (idx == 0 && firstSignedThinking.isNotEmpty()) {
-                    rawRec.copy(thoughtSignature = firstSignedThinking)
-                } else {
-                    rawRec
-                }
                 val rec = circuitBreaker.onToolExecuted(signedRec)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
@@ -5584,16 +5715,24 @@ object AiProviderEngine {
             return false
         }
         val msg = (err.message ?: err.toString()).lowercase()
-        // Fail fast on client-side bad request (HTTP 400) unless it is a rate-limit / overload / timeout wrapped in 400
-        if (msg.contains("http 400") &&
-            !msg.contains("rate") &&
-            !msg.contains("overload") &&
-            !msg.contains("timeout") &&
-            !msg.contains("busy") &&
-            !msg.contains("capacity") &&
-            !msg.contains("try again")
-        ) {
-            return false
+        // Fail fast on client-side bad request (HTTP 400) unless it is an explicit rate-limit / overload / timeout wrapped in 400
+        if (msg.contains("http 400")) {
+            if (msg.contains("invalid_request") || msg.contains("invalid_argument") || msg.contains("bad_request")) {
+                return false
+            }
+            val isRateOrOverload400 = msg.contains("rate limit") ||
+                msg.contains("rate_limit") ||
+                msg.contains("ratelimit") ||
+                msg.contains("too many requests") ||
+                msg.contains("resource_exhausted") ||
+                msg.contains("overload") ||
+                msg.contains("timeout") ||
+                msg.contains("busy") ||
+                msg.contains("capacity") ||
+                msg.contains("try again")
+            if (!isRateOrOverload400) {
+                return false
+            }
         }
         // Inspired by `omp`: treat all other network, socket, EOF, stream, rate-limit (429),
         // gateway (502/503/504/520-529), and upstream proxy interruptions as retryable!
