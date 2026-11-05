@@ -61,7 +61,8 @@ data class ModelPricingSpec(
     val cacheWritePricePerM: Double = 0.0,
     val reasoningPricePerM: Double = 0.0,
     val contextWindowTokens: Int = 128000,
-    val maxOutputTokens: Int? = null
+    val maxOutputTokens: Int? = null,
+    val outputModalities: List<String> = emptyList()
 )
 
 @Serializable
@@ -188,6 +189,17 @@ data class PromptAttachment(
 )
 
 @Serializable
+data class WebSourceCitation(
+    val index: Int = 1,
+    val url: String,
+    val title: String = "",
+    val domain: String = "",
+    val groundedLineNumbers: List<Int> = emptyList(),
+    val groundedLines: List<String> = emptyList(),
+    val snippet: String = ""
+)
+
+@Serializable
 data class MessageVariant(
     val id: String,
     val content: String,
@@ -199,6 +211,7 @@ data class MessageVariant(
     val goalTracker: GoalTrackerState? = null,
     val mediaItems: List<GeneratedMediaItem> = emptyList(),
     val attachments: List<PromptAttachment> = emptyList(),
+    val webSources: List<WebSourceCitation> = emptyList(),
     val providerInteractionId: String = "",
     val pendingBackgroundInteractionId: String = "",
     val isStreaming: Boolean = false,

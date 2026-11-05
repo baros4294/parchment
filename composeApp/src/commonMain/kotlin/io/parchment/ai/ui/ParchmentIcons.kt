@@ -113,7 +113,7 @@ fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()
     "fs_list", "fs_glob", "fs_move" -> KissIcon.FOLDER
     "fs_delete" -> KissIcon.TRASH
     "fs_search" -> KissIcon.SEARCH
-    "web_fetch" -> KissIcon.GLOBE
+    "web_fetch", "web_search" -> KissIcon.GLOBE
     "calc_eval" -> KissIcon.SLIDERS
     "shell_exec" -> KissIcon.TERMINAL
     "todo_write" -> KissIcon.TARGET
@@ -166,7 +166,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "🖥" -> return ParsedLabelWithIcons(KissIcon.MONITOR, "", null)
         "🖧" -> return ParsedLabelWithIcons(KissIcon.SERVER_NETWORK, "", null)
         "♡" -> return ParsedLabelWithIcons(KissIcon.HEART_PULSE, "", null)
-        "📂" -> return ParsedLabelWithIcons(KissIcon.FOLDER, "", null)
+        "📂", "📁" -> return ParsedLabelWithIcons(KissIcon.FOLDER, "", null)
         "☁" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
         "○" -> return ParsedLabelWithIcons(KissIcon.CIRCLE_EMPTY, "", null)
         "⋯" -> return ParsedLabelWithIcons(KissIcon.MORE_HORIZONTAL, "", null)
@@ -236,6 +236,8 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "♡ " to KissIcon.HEART_PULSE,
         "📌 " to KissIcon.PIN,
         "📂 " to KissIcon.FOLDER,
+        "📁 " to KissIcon.FOLDER,
+        "↑ " to KissIcon.UPLOAD,
         "📖 " to KissIcon.BOOK_OPEN,
         "▤ " to KissIcon.MENU,
         "☁ " to KissIcon.CLOUD,
@@ -278,6 +280,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         " ↵" to KissIcon.SEND_ENTER,
         " →" to KissIcon.ARROW_RIGHT,
         " ▲" to KissIcon.CHEVRON_UP,
+        " ▴" to KissIcon.CHEVRON_UP,
         " ▼" to KissIcon.CHEVRON_DOWN,
         " ▾" to KissIcon.CHEVRON_DOWN,
         " •" to KissIcon.CIRCLE_DOT

@@ -3699,19 +3699,7 @@ private fun BackupAndOtaSubpage(
  * skipping utility/research/embedding endpoints like `deep-research*` or `text-embedding*`.
  */
 fun pickBestInitialChatModel(models: List<String>): String {
-    if (models.isEmpty()) return ""
-    val nonUtility = models.filterNot { m ->
-        val low = m.lowercase()
-        low.contains("deep-research") ||
-            low.contains("embedding") ||
-            low.contains("tts") ||
-            low.contains("whisper") ||
-            low.contains("moderation") ||
-            low.contains("aqa") ||
-            low.contains("imagen") ||
-            low.contains("veo")
-    }
-    return nonUtility.firstOrNull() ?: models.first()
+    return models.firstOrNull() ?: ""
 }
 
 // ============================================================================================
@@ -4532,11 +4520,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 label = "🔗 URL Context",
                                 selected = activeProfile.enableUrlContext,
                                 onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
-                            )
-                            SepiaChip(
-                                label = "🖼 Image Gen",
-                                selected = activeProfile.enableImageGeneration,
-                                onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
                             )
                         }
                     }

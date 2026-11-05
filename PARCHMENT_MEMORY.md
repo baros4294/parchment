@@ -2,6 +2,12 @@
 
 ## 1. Hard Rules & Three-Command Workflow
 - **NEVER overwrite or copy-paste local builds into the user's local installation directory** (`%LOCALAPPDATA%\Programs\Parchment` or similar). The user updates their installed app exclusively via in-app OTA from GitHub Releases (`baros4294/parchment`).
+- **ZERO Hardcoded Models — Universal & Future-Proof Generality**:
+  - **NEVER hardcode specific model IDs, model version numbers, or vendor model lists** anywhere in the codebase (e.g., never branch on `"gemini-4"`, `"3.8-flash"`, `"gpt-image"`, `"dall-e"`, `"flux"`, `"seedream"`, `"seedance"`).
+  - All model routing, modality handling (text, reasoning, image generation, video generation, audio, multimodal), and parameter shaping MUST work **universally for any present or future model** via live metadata discovery (`/v1/models`, `/v1beta/models`, `models.dev/api.json` modalities) and **bidirectional self-healing HTTP protocol/parameter cascades**.
+- **"Show, Don't Tell" Timeless Editorial UI (2020–2026 KISS Philosophy)**:
+  - Never pair redundant text labels with universally understood icons (e.g., Copy, Save, Speak, Redo, Edit, Delete, Expand/Collapse, Dismiss/Reset). Let crisp vector icons speak for themselves.
+  - Never use horizontal scrolling bars for autocomplete (`/` or `@`) or filter pills; always use bounded **Vertical Command/Mention Palettes** and wrapped `FlowRow`s.
 - **Three-Command Workflow**:
   1. `plan`: Plan extensively — analyze edge cases, loopholes, developer POV, and end-user POV to design the best architecture, UI, and UX possible. **Do not modify project code during `plan`.**
   2. `execute`: Implement the planned code changes directly in project files and verify builds/tests locally (without touching the local installation directory).

@@ -8,6 +8,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.parchment.ai.model.ModelPricingSpec
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -36,6 +37,18 @@ object ModelsDevClient {
 
     private var cachedCatalog: Map<String, ModelPricingSpec>? = null
 
+
+    fun getCachedOutputModalities(modelId: String): List<String> {
+        val catalog = cachedCatalog ?: return emptyList()
+        val cleanTarget = modelId.trim().removePrefix("models/").lowercase()
+        if (cleanTarget.isEmpty()) return emptyList()
+        catalog[cleanTarget]?.let { return it.outputModalities }
+        val withoutSlash = cleanTarget.substringAfter("/")
+        catalog[withoutSlash]?.let { return it.outputModalities }
+        return catalog.entries.firstOrNull { (k, _) ->
+            k == withoutSlash || withoutSlash.startsWith(k) || k.startsWith(withoutSlash)
+        }?.value?.outputModalities.orEmpty()
+    }
     suspend fun fetchModelSpec(modelId: String, forceRefresh: Boolean = false): Result<ModelPricingSpec> = runCatching {
         val cleanTarget = modelId.trim().removePrefix("models/").lowercase()
         require(cleanTarget.isNotEmpty()) { "Enter or select a Model ID first." }
@@ -102,6 +115,11 @@ object ModelsDevClient {
 
                 val ctxLimit = limitObj?.get("context")?.jsonPrimitive?.intOrNull ?: 128000
                 val outLimit = limitObj?.get("output")?.jsonPrimitive?.intOrNull ?: 32768
+                val modalitiesObj = mObj["modalities"] as? JsonObject
+                val outModalities = (modalitiesObj?.get("output") as? JsonArray)
+                    ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.lowercase() }
+                    ?.filter { it.isNotEmpty() }
+                    .orEmpty()
 
                 val spec = ModelPricingSpec(
                     modelId = id,
@@ -113,7 +131,8 @@ object ModelsDevClient {
                     cacheWritePricePerM = cacheWriteCost,
                     reasoningPricePerM = reasoningCost,
                     contextWindowTokens = if (ctxLimit > 0) ctxLimit else 128000,
-                    maxOutputTokens = if (outLimit > 0) outLimit else 32768
+                    maxOutputTokens = if (outLimit > 0) outLimit else 32768,
+                    outputModalities = outModalities
                 )
 
                 val normKey = id.removePrefix("models/").lowercase()

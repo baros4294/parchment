@@ -102,6 +102,7 @@ import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
+import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
@@ -112,6 +113,7 @@ import io.parchment.ai.network.StreamUpdate
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
+import io.parchment.ai.protocol.O200kTokenizer
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -142,6 +144,7 @@ fun ParchmentApp(
     var showSidebar by remember { mutableStateOf(!PlatformBridge.isAndroid) }
     var sidebarTab by remember { mutableStateOf(SidebarTab.TOPICS) }
     var showSessionInspector by remember { mutableStateOf(false) }
+    var showRightFilesSidebar by remember { mutableStateOf(false) }
     var showQuickModelPopover by remember { mutableStateOf(false) }
     var showMobileTabSwitcher by remember { mutableStateOf(false) }
     var bannerNotification by remember { mutableStateOf("") }
@@ -680,6 +683,7 @@ fun ParchmentApp(
         val initialSignature = existingTargetVariant?.thinkingSignature.orEmpty()
         val initialTools = existingTargetVariant?.toolCalls.orEmpty()
         val initialMedia = existingTargetVariant?.mediaItems.orEmpty()
+        val initialWebSources = existingTargetVariant?.webSources.orEmpty()
         val initialDurationMs = existingTargetVariant?.thinkingDurationMs ?: 0L
 
         val newJob = appProcessScope.launch {
@@ -693,6 +697,7 @@ fun ParchmentApp(
             val accumulatedTools = initialTools.toMutableList()
             var latestGoalTracker: GoalTrackerState? = existingTargetVariant?.goalTracker
             val accumulatedMedia = initialMedia.toMutableList()
+            var accumulatedWebSources = initialWebSources
             var localInteractionId = existingTargetVariant?.providerInteractionId.orEmpty()
             var rawReq = ""
             var rawResp = ""
@@ -723,6 +728,7 @@ fun ParchmentApp(
                 val curTools = accumulatedTools.toList()
                 val curGoal = latestGoalTracker
                 val curMedia = accumulatedMedia.toList()
+                val curWebSources = accumulatedWebSources
                 updateSessionById(sessionId, immediate = true) { sess ->
                     sess.copy(
                         messages = sess.messages.map { node ->
@@ -744,6 +750,7 @@ fun ParchmentApp(
                                                 toolCalls = curTools,
                                                 goalTracker = curGoal ?: v.goalTracker,
                                                 mediaItems = curMedia,
+                                                webSources = curWebSources,
                                                 pendingBackgroundInteractionId = if (isFinal) "" else localInteractionId,
                                                 isStreaming = !isFinal
                                             )
@@ -922,7 +929,8 @@ fun ParchmentApp(
                     initialThinking = initialThinking,
                     initialSignature = initialSignature,
                     initialToolCalls = initialTools,
-                    initialMediaItems = initialMedia
+                    initialMediaItems = initialMedia,
+                    initialWebSources = initialWebSources
                 ).collect { update ->
                     when (update) {
                         is StreamUpdate.Status -> {
@@ -1004,6 +1012,10 @@ fun ParchmentApp(
                                 cur?.copy(statusText = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})")
                             }
                         }
+                        is StreamUpdate.WebSourcesUpdated -> {
+                            accumulatedWebSources = update.sources
+                            patchVariantMemory { v -> v.copy(webSources = update.sources) }
+                        }
                         is StreamUpdate.RawWireSnapshot -> {
                             if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
                             if (update.latestResponseChunk.isNotEmpty()) rawResp = update.latestResponseChunk.take(4096)
@@ -1032,6 +1044,7 @@ fun ParchmentApp(
                                     toolCalls = update.toolCalls,
                                     goalTracker = update.goalTracker ?: latestGoalTracker,
                                     mediaItems = update.mediaItems,
+                                    webSources = update.webSources.ifEmpty { accumulatedWebSources },
                                     providerInteractionId = update.providerInteractionId,
                                     pendingBackgroundInteractionId = "",
                                     isStreaming = false,
@@ -1072,6 +1085,7 @@ fun ParchmentApp(
                                     toolCalls = accumulatedTools.toList(),
                                     goalTracker = latestGoalTracker ?: v.goalTracker,
                                     mediaItems = accumulatedMedia.toList(),
+                                    webSources = accumulatedWebSources,
                                     isStreaming = false,
                                     rawRequestPreview = rawReq,
                                     rawResponsePreview = update.rawDetails.ifBlank { rawResp }.take(4096)
@@ -1106,6 +1120,7 @@ fun ParchmentApp(
                         toolCalls = accumulatedTools.toList(),
                         goalTracker = latestGoalTracker ?: v.goalTracker,
                         mediaItems = accumulatedMedia.toList(),
+                        webSources = accumulatedWebSources,
                         isStreaming = false
                     )
                 }
@@ -2014,6 +2029,10 @@ fun ParchmentApp(
                     // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
                     if (!isSettingsOpen) {
                         val bgStreamingCount = activeStreamsBySession.keys.count { it != activeSession.id }
+                        val chatVaultCount = remember(activeSession.id, activeSession.messages, pendingAttachments) {
+                            val (aiItems, uploads, sources) = extractSessionVaultItems(activeSession, pendingAttachments)
+                            aiItems.size + uploads.size + sources.size
+                        }
                         TopEditorialBar(
                             appState = appState,
                             activeSession = activeSession,
@@ -2022,6 +2041,8 @@ fun ParchmentApp(
                             isCompactScreen = isCompactScreen,
                             showSidebar = showSidebar,
                             showSessionInspector = showSessionInspector,
+                            showRightFilesSidebar = showRightFilesSidebar,
+                            chatArtifactsCount = chatVaultCount,
                             showQuickModelPopover = showQuickModelPopover,
                             openTabCount = openTabIds.size,
                             backgroundStreamingCount = bgStreamingCount,
@@ -2029,6 +2050,7 @@ fun ParchmentApp(
                             onNewChatTab = { createNewTopicForAssistant(activeAssistant, openInNewTab = true) },
                             onToggleSidebar = { showSidebar = !showSidebar },
                             onToggleSessionInspector = { showSessionInspector = !showSessionInspector },
+                            onToggleRightFilesSidebar = { showRightFilesSidebar = !showRightFilesSidebar },
                             onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
                             onSelectModelQuick = { profId, modId ->
                                 updateProfileById(profId) { it.copy(defaultModel = modId) }
@@ -2748,6 +2770,44 @@ fun ParchmentApp(
                                 )
                             }
                         }
+
+                        AnimatedVisibility(
+                            visible = !isCompactScreen && showRightFilesSidebar && !isSettingsOpen,
+                            enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
+                            exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                        ) {
+                            Row(modifier = Modifier.fillMaxHeight()) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(0.85.dp)
+                                        .fillMaxHeight()
+                                        .background(p.border.copy(alpha = 0.7f))
+                                )
+                                ParchmentRightFilesSidebar(
+                                    activeSession = activeSession,
+                                    pendingAttachments = pendingAttachments,
+                                    onInspectAttachment = ::openAttachmentInViewer,
+                                    onInspectGeneratedImage = { media ->
+                                        activeViewerItem = ActiveMediaViewerItem.ImageViewer(
+                                            title = media.revisedPrompt.take(48).ifBlank { "Generated Image" },
+                                            mimeType = media.mimeType.ifBlank { "image/png" },
+                                            localFilePath = media.localFilePath,
+                                            remoteUrl = media.remoteUrl
+                                        )
+                                    },
+                                    onReattachAttachment = { existingAtt ->
+                                        val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
+                                        if (curList.none { it.fileName == existingAtt.fileName }) {
+                                            pendingAttachmentsBySession = pendingAttachmentsBySession +
+                                                (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
+                                            bannerNotification = "Re-attached '${existingAtt.fileName}' to prompt."
+                                        }
+                                    },
+                                    onClose = { showRightFilesSidebar = false },
+                                    modifier = Modifier.width(300.dp).fillMaxHeight()
+                                )
+                            }
+                        }
                         } // Closes Row(modifier = Modifier.fillMaxSize()) so Crossfade(Modifier.weight(1f)) gets 100% width!
 
                         // Mobile 86%-Width Slide-Over Sidebar Drawer + Dimmed Tap-to-Dismiss Backdrop Scrim
@@ -2785,6 +2845,65 @@ fun ParchmentApp(
                                                 .width(1.dp)
                                                 .fillMaxHeight()
                                                 .background(p.border)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Mobile 86%-Width Right Slide-Over Files & Sources Drawer
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                AnimatedVisibility(
+                                    visible = showRightFilesSidebar && !isSettingsOpen,
+                                    enter = fadeIn(tween(150)),
+                                    exit = fadeOut(tween(130))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.34f))
+                                            .clickable { showRightFilesSidebar = false }
+                                    )
+                                }
+                            }
+
+                            Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.End) {
+                                AnimatedVisibility(
+                                    visible = showRightFilesSidebar && !isSettingsOpen,
+                                    enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
+                                    exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                                ) {
+                                    Row(modifier = Modifier.fillMaxHeight()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(1.dp)
+                                                .fillMaxHeight()
+                                                .background(p.border)
+                                        )
+                                        ParchmentRightFilesSidebar(
+                                            activeSession = activeSession,
+                                            pendingAttachments = pendingAttachments,
+                                            onInspectAttachment = ::openAttachmentInViewer,
+                                            onInspectGeneratedImage = { media ->
+                                                activeViewerItem = ActiveMediaViewerItem.ImageViewer(
+                                                    title = media.revisedPrompt.take(48).ifBlank { "Generated Image" },
+                                                    mimeType = media.mimeType.ifBlank { "image/png" },
+                                                    localFilePath = media.localFilePath,
+                                                    remoteUrl = media.remoteUrl
+                                                )
+                                            },
+                                            onReattachAttachment = { existingAtt ->
+                                                val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
+                                                if (curList.none { it.fileName == existingAtt.fileName }) {
+                                                    pendingAttachmentsBySession = pendingAttachmentsBySession +
+                                                        (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
+                                                    bannerNotification = "Re-attached '${existingAtt.fileName}' to prompt."
+                                                }
+                                            },
+                                            onClose = { showRightFilesSidebar = false },
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.86f)
+                                                .fillMaxHeight()
+                                                .clickable(enabled = false) {}
                                         )
                                     }
                                 }
@@ -3079,6 +3198,7 @@ private fun ManuscriptViewport(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var showMinimapTreeModal by remember { mutableStateOf(false) }
+    var showContextBreakdownPopover by remember { mutableStateOf(false) }
 
     // Smart Bottom-Edge Auto-Follow with Instant User-Scroll Disengage & 5-Second Cooldown:
     // 1. Scrolls to the bottom spacer (`totalItemsCount - 1`) instead of `messages.size`, so long AI messages
@@ -3147,35 +3267,40 @@ private fun ManuscriptViewport(
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
     }
     val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
-    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, isStreaming, activeProfile) {
+    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, lastMsgContentLen, isStreaming, activeProfile) {
         activeSession.messages.sumOf { node ->
-            val m = node.activeVariant.tokenMetrics
-            if (m.estimatedCostUsd > 0.0) m.estimatedCostUsd else activeProfile.calculateTurnCostUsd(m)
+            val v = node.activeVariant
+            if (node.role == MessageRole.USER) {
+                val uTok = O200kTokenizer.countMessageVariantTokens(MessageRole.USER, v)
+                (uTok / 1_000_000.0) * activeProfile.inputPricePerM
+            } else {
+                val m = v.tokenMetrics
+                if (m.estimatedCostUsd > 0.0) m.estimatedCostUsd else activeProfile.calculateTurnCostUsd(m)
+            }
         }
     }
-    val liveContextTokens = remember(
+    val contextBreakdown = remember(
         activeSession,
         activeAssistant,
+        activeProfile,
         activeContextNodes,
         userPromptInput,
         assistantPrefillInput,
-        pendingAttachments
+        pendingAttachments,
+        isGoalModeEnabled,
+        lastMsgContentLen
     ) {
-        val baseChars = activeAssistant.systemPrompt.length +
-            activeSession.systemPrompt.length +
-            (activeSession.activeCard?.buildCompiledInstructions(activeSession.userName)?.length ?: 0) +
-            activeSession.storySummary.length +
-            activeSession.authorsNote.length +
-            activeSession.fragments.filter { it.mode != FragmentActivationMode.MUTED }.sumOf { it.content.length } +
-            activeContextNodes.sumOf { it.activeVariant.content.length } +
-            userPromptInput.length +
-            assistantPrefillInput.length +
-            pendingAttachments.sumOf { it.textContent.length }
-        val lastReportedContext = activeContextNodes.lastOrNull { it.role == MessageRole.ASSISTANT }
-            ?.activeVariant?.tokenMetrics?.let { it.inputTokens + it.outputTokens } ?: 0
-        val typedDraftTokens = (userPromptInput.length + assistantPrefillInput.length) / 4
-        maxOf(baseChars / 4, lastReportedContext + typedDraftTokens)
+        O200kTokenizer.computeContextWindowBreakdown(
+            session = activeSession,
+            assistant = activeAssistant,
+            profile = activeProfile,
+            draftPrompt = userPromptInput,
+            draftPrefill = assistantPrefillInput,
+            pendingAttachments = pendingAttachments,
+            goalModeActive = isGoalModeEnabled
+        )
     }
+    val liveContextTokens = contextBreakdown.totalUsedTokens
 
     // 5-Second Minimap Linger Timer (`5000ms` after scrolling stops or after any minimap button tap!)
     var isMinimapScrollLingering by remember { mutableStateOf(false) }
@@ -3421,6 +3546,8 @@ private fun ManuscriptViewport(
                             ?: activeAssistant.name.takeIf { activeAssistant.id.isNotBlank() }.orEmpty(),
                         assistantIconEmoji = activeAssistant.iconEmoji,
                         providerName = activeProfile.name,
+                        inputPricePerM = activeProfile.inputPricePerM,
+                        outputPricePerM = activeProfile.outputPricePerM,
                         isActivelyThinkingThisNode = isStreaming && isCurrentlyThinkingPhase && streamingTargetNodeId == node.id,
                         onSelectVariant = { newIdx ->
                             onUpdateSession { sess ->
@@ -3902,25 +4029,6 @@ private fun ManuscriptViewport(
                                 selected = activeProfile.enableWebSearch,
                                 onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
                             )
-                            if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS ||
-                                activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES ||
-                                activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK
-                            ) {
-                                SepiaChip(
-                                    label = "🖼 Image Gen",
-                                    selected = activeProfile.enableImageGeneration,
-                                    onClick = { onUpdateProfile { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
-                                )
-                            }
-                            if (activeProfile.protocol == ProviderProtocol.BYTEDANCE_ARK ||
-                                activeProfile.protocol == ProviderProtocol.OPENAI_RESPONSES
-                            ) {
-                                SepiaChip(
-                                    label = "🎬 Video Gen",
-                                    selected = activeProfile.enableVideoGeneration,
-                                    onClick = { onUpdateProfile { it.copy(enableVideoGeneration = !it.enableVideoGeneration) } }
-                                )
-                            }
                             SepiaChip(
                                 label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
                                 selected = isGoalModeEnabled,
@@ -4438,12 +4546,24 @@ private fun ManuscriptViewport(
                     onClipboardPaste = onPasteClipboardMedia
                 )
 
+                // Interactive Context Window Breakdown Popover (Opened by clicking the Circular Context Ring)
+                AnimatedVisibility(visible = showContextBreakdownPopover) {
+                    ContextWindowBreakdownPopover(
+                        breakdown = contextBreakdown,
+                        sessionTotalCostUsd = sessionTotalCostUsd,
+                        isStreaming = isStreaming,
+                        canCompact = activeSession.messages.size > 4,
+                        canSummarize = activeSession.messages.isNotEmpty(),
+                        onCompactContext = onCompactContext,
+                        onSummarizeStory = onAutoSummarizeStory,
+                        onOpenPricingSettings = onOpenPricingSettings,
+                        onClose = { showContextBreakdownPopover = false }
+                    )
+                }
                 SepiaDivider()
 
                 // 5. Zen Composer Footer: Dynamically scaled for both Mobile & Desktop (zero right-side whitespace!)
                 val hasActiveTools = activeProfile.enableWebSearch ||
-                    activeProfile.enableImageGeneration ||
-                    activeProfile.enableVideoGeneration ||
                     activeProfile.enableCodeExecution ||
                     activeProfile.enableUrlContext ||
                     activeSession.workspaceMode != WorkspaceMode.OFF ||
@@ -4514,13 +4634,13 @@ private fun ManuscriptViewport(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             leftChipsComposable(Modifier.weight(1f).horizontalScroll(rememberScrollState()))
-                            if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
+                            if (preferences.showTokenAndContextStats) {
                                 Spacer(Modifier.width(6.dp))
                                 SepiaContextGaugeRing(
                                     usedTokens = liveContextTokens,
-                                    contextLimitTokens = activeProfile.contextWindowTokens,
+                                    contextLimitTokens = contextBreakdown.contextLimitTokens,
                                     sessionCostUsd = sessionTotalCostUsd,
-                                    onClick = onOpenPricingSettings
+                                    onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
                                 )
                             }
                         }
@@ -4573,15 +4693,12 @@ private fun ManuscriptViewport(
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (preferences.showTokenAndContextStats && (activeSession.messages.isNotEmpty() || hasTypedInput)) {
-                                val activeModId = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-                                val effectiveCtxWindow = activeProfile.customModelSpecs[activeModId]?.contextWindowTokens
-                                    ?: activeProfile.contextWindowTokens
+                            if (preferences.showTokenAndContextStats) {
                                 SepiaContextGaugeRing(
                                     usedTokens = liveContextTokens,
-                                    contextLimitTokens = effectiveCtxWindow,
+                                    contextLimitTokens = contextBreakdown.contextLimitTokens,
                                     sessionCostUsd = sessionTotalCostUsd,
-                                    onClick = onOpenPricingSettings
+                                    onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
                                 )
                             }
 
@@ -4639,6 +4756,8 @@ private fun MessageTurnItem(
     characterName: String,
     assistantIconEmoji: String = "💬",
     providerName: String,
+    inputPricePerM: Double = 0.0,
+    outputPricePerM: Double = 0.0,
     isActivelyThinkingThisNode: Boolean,
     onSelectVariant: (Int) -> Unit,
     onSaveEditedText: (String, Boolean, Boolean) -> Unit,
@@ -4665,6 +4784,8 @@ private fun MessageTurnItem(
     var manualThinkingToggle by remember(node.id, node.activeVariantIndex) { mutableStateOf<Boolean?>(null) }
     var showRawWireDrawer by remember(node.id) { mutableStateOf(false) }
     var showMoreActions by remember(node.id) { mutableStateOf(false) }
+    var showSourcesDrawer by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
+    var highlightedSourceLineText by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
     var copiedBadge by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
     val enableMd = if (isAssistant) preferences.renderAssistantMessagesWithMarkdown else preferences.renderUserMessagesWithMarkdown
     // Live Reasoning Expansion & "Single-Thought Peek" State Machine:
@@ -5417,7 +5538,8 @@ private fun MessageTurnItem(
                     enableMarkdown = enableMd,
                     enableMath = preferences.mathFormulaRendering,
                     enableInlineDollarMath = preferences.inlineDollarMathRendering,
-                    autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks
+                    autoCollapseCodeBlocks = preferences.autoCollapseCodeBlocks,
+                    highlightedLineSubstring = highlightedSourceLineText
                 )
                 if (isLongCollapsible) {
                     Spacer(Modifier.height(4.dp))
@@ -5744,6 +5866,19 @@ private fun MessageTurnItem(
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showMoreActions = !showMoreActions }
                     )
+                    if (isAssistant && activeVar.webSources.isNotEmpty()) {
+                        val srcCount = activeVar.webSources.size
+                        val srcLabel = if (srcCount == 1) "🌐 1 Source" else "🌐 $srcCount Sources"
+                        val chevron = if (showSourcesDrawer) " ▴" else " ▾"
+                        SepiaChip(
+                            label = "$srcLabel$chevron",
+                            selected = showSourcesDrawer,
+                            onClick = {
+                                showSourcesDrawer = !showSourcesDrawer
+                                if (!showSourcesDrawer) highlightedSourceLineText = ""
+                            }
+                        )
+                    }
 
                     if (showMoreActions) {
                         SepiaButton(
@@ -5831,29 +5966,341 @@ private fun MessageTurnItem(
                     }
                 }
 
-                // Telemetry Readout on its own full-width line underneath
+                // Clean, Scannable Pill Telemetry for Assistant Messages (Unified with `o200k_base` Context Ring!)
                 val m = activeVar.tokenMetrics
-                if (preferences.showTokenAndContextStats && (m.outputTokens > 0 || m.inputTokens > 0)) {
-                    val costStr = if (m.estimatedCostUsd > 0.0) " • ${formatUsdCost(m.estimatedCostUsd)}" else ""
-                    val detailStr = if (showMoreActions || preferences.showTokensForEntireTurn) {
-                        val cacheStr = if (m.cachedInputTokens > 0) " (Cache ${formatCompactTokens(m.cachedInputTokens)})" else ""
-                        val thinkStr = if (m.reasoningTokens > 0) " • Think ${formatCompactTokens(m.reasoningTokens)}" else ""
-                        val durStr = if (m.durationMs > 0L) " • ${formatDurationFromMs(m.durationMs)}" else ""
-                        val sep = if (win.isCompact) "\n" else " • "
-                        "TTFT ${formatDurationFromMs(m.ttftMs)}$durStr • ${m.tokensPerSec} tok/s$costStr${sep}In ${formatCompactTokens(m.inputTokens)}$cacheStr$thinkStr • Out ${formatCompactTokens(m.outputTokens)} • Total ${formatCompactTokens(m.totalTokens)} tok"
-                    } else {
-                        "${m.tokensPerSec} tok/s • ${formatCompactTokens(m.totalTokens)} tok$costStr"
+                if (isAssistant && preferences.showTokenAndContextStats &&
+                    (activeVar.content.isNotBlank() || activeVar.toolCalls.isNotEmpty() || m.outputTokens > 0)
+                ) {
+                    val turnContextTok = remember(
+                        activeVar.content,
+                        activeVar.thinkingSummary,
+                        activeVar.toolCalls,
+                        activeVar.attachments
+                    ) {
+                        O200kTokenizer.countMessageVariantTokens(
+                            role = MessageRole.ASSISTANT,
+                            variant = activeVar,
+                            includeReasoningAndTools = false
+                        ) + activeVar.toolCalls.sumOf { tc ->
+                            6 + O200kTokenizer.countTokens(tc.name) +
+                                O200kTokenizer.countTokens(tc.argumentsJson) +
+                                O200kTokenizer.countTokens(tc.resultText)
+                        }
                     }
+                    val thinkTok = remember(activeVar.thinkingSummary, m.reasoningTokens) {
+                        if (activeVar.thinkingSummary.isNotBlank()) {
+                            O200kTokenizer.countTokens(activeVar.thinkingSummary)
+                        } else {
+                            m.reasoningTokens
+                        }
+                    }
+                    val costVal = if (m.estimatedCostUsd > 0.0) {
+                        m.estimatedCostUsd
+                    } else if (outputPricePerM > 0.0) {
+                        ((turnContextTok + thinkTok) / 1_000_000.0) * outputPricePerM
+                    } else 0.0
+
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // Pill 1: Turn Context Tokens (+ Reasoning Tokens if present)
+                        val tokPillText = buildString {
+                            append("${formatCompactTokens(turnContextTok)} tok")
+                            if (thinkTok > 0) {
+                                append(" • 🧠 ${formatCompactTokens(thinkTok)}")
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(p.elevatedBg.copy(alpha = 0.72f))
+                                .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
+                                .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                        ) {
+                            BasicText(
+                                text = tokPillText,
+                                style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                            )
+                        }
+
+                        // Pill 2: Speed & Duration
+                        if (m.tokensPerSec > 0.0 || m.durationMs > 0L) {
+                            val speedText = buildString {
+                                if (m.tokensPerSec > 0.0) append("⚡ ${m.tokensPerSec} tok/s")
+                                if (m.durationMs > 0L) {
+                                    if (isNotEmpty()) append(" • ")
+                                    append(formatDurationFromMs(m.durationMs))
+                                }
+                                if ((showMoreActions || preferences.showTokensForEntireTurn) && m.ttftMs > 0L) {
+                                    append(" (TTFT ${formatDurationFromMs(m.ttftMs)})")
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(p.elevatedBg.copy(alpha = 0.72f))
+                                    .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
+                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                            ) {
+                                BasicText(
+                                    text = speedText,
+                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                )
+                            }
+                        }
+
+                        // Pill 3: Cost Badge
+                        if (costVal > 0.0) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(p.accent.copy(alpha = 0.12f))
+                                    .border(0.65.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(5.dp))
+                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                            ) {
+                                BasicText(
+                                    text = formatUsdCost(costVal),
+                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
+                                )
+                            }
+                        }
+
+                        // Optional Expanded Wire Input/Cache Pill when `⋯` More is open
+                        if ((showMoreActions || preferences.showTokensForEntireTurn) && m.inputTokens > 0) {
+                            val wireText = buildString {
+                                append("Wire ↑ ${formatCompactTokens(m.inputTokens)}")
+                                if (m.cachedInputTokens > 0) {
+                                    append(" (⚡${formatCompactTokens(m.cachedInputTokens)} cached)")
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(p.elevatedBg.copy(alpha = 0.55f))
+                                    .border(0.65.dp, p.border.copy(alpha = 0.5f), RoundedCornerShape(5.dp))
+                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                            ) {
+                                BasicText(
+                                    text = wireText,
+                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean User Message Token & Price Pill Row (Shown below every User message when token stats are enabled)
+        if (!isAssistant && preferences.showTokenAndContextStats &&
+            (activeVar.content.isNotBlank() || activeVar.attachments.isNotEmpty())
+        ) {
+            val userTok = remember(activeVar.content, activeVar.attachments) {
+                O200kTokenizer.countMessageVariantTokens(MessageRole.USER, activeVar)
+            }
+            val userCost = (userTok / 1_000_000.0) * inputPricePerM
+            @OptIn(ExperimentalLayoutApi::class)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                val attSuffix = if (activeVar.attachments.isNotEmpty()) {
+                    " • ${activeVar.attachments.size} file${if (activeVar.attachments.size > 1) "s" else ""}"
+                } else ""
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(p.elevatedBg.copy(alpha = 0.72f))
+                        .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
+                        .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                ) {
                     BasicText(
-                        text = detailStr,
-                        modifier = Modifier.padding(top = 2.dp),
-                        style = p.uiLabelStyle.copy(
-                            fontSize = 10.sp,
-                            fontFamily = p.codeFontFamily,
-                            lineHeight = 14.sp,
-                            color = p.mutedInk.copy(alpha = 0.8f)
-                        )
+                        text = "${formatCompactTokens(userTok)} tok$attSuffix",
+                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk, fontWeight = FontWeight.Medium)
                     )
+                }
+                if (userCost > 0.0) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(p.accent.copy(alpha = 0.12f))
+                            .border(0.65.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(5.dp))
+                            .padding(horizontal = 7.dp, vertical = 2.5.dp)
+                    ) {
+                        BasicText(
+                            text = formatUsdCost(userCost),
+                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+        }
+
+        // ========================================================================================
+        // EXPANDABLE LINE-GROUNDED WEB SOURCES DRAWER (Toggled by `🌐 N Sources` pill in footer)
+        // Clearly shows which exact line(s) in the assistant message each source grounds!
+        // ========================================================================================
+        AnimatedVisibility(visible = isAssistant && showSourcesDrawer && activeVar.webSources.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(p.sheetBg.copy(alpha = 0.85f))
+                    .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .padding(11.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accent, size = 13.5.dp)
+                        BasicText(
+                            text = "Grounded Web Sources (${activeVar.webSources.size}) — Tap a source to highlight its line",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        )
+                    }
+                    SepiaButton(
+                        text = "×",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = {
+                            showSourcesDrawer = false
+                            highlightedSourceLineText = ""
+                        }
+                    )
+                }
+
+                SepiaDivider()
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    activeVar.webSources.forEach { src ->
+                        val firstGroundedLine = src.groundedLines.firstOrNull().orEmpty()
+                        val isSelectedLine = highlightedSourceLineText.isNotBlank() &&
+                            highlightedSourceLineText == firstGroundedLine
+                        val lineBadgeText = if (src.groundedLineNumbers.isNotEmpty()) {
+                            if (src.groundedLineNumbers.size == 1) {
+                                "↳ Line ${src.groundedLineNumbers.first()}"
+                            } else {
+                                "↳ Lines ${src.groundedLineNumbers.joinToString(", ")}"
+                            }
+                        } else {
+                            "↳ Grounded"
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelectedLine) p.accent.copy(alpha = 0.12f) else p.cardBg)
+                                .border(
+                                    width = if (isSelectedLine) 1.15.dp else 0.85.dp,
+                                    color = if (isSelectedLine) p.accent else p.border,
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    if (firstGroundedLine.isNotBlank()) {
+                                        highlightedSourceLineText = if (isSelectedLine) "" else firstGroundedLine
+                                    } else {
+                                        PlatformBridge.openOrPlayMedia(src.url)
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.weight(1f).padding(end = 6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(p.accent.copy(alpha = 0.18f))
+                                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                    ) {
+                                        BasicText(
+                                            text = "[${src.index}]",
+                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                        )
+                                    }
+                                    BasicText(
+                                        text = src.title.ifBlank { src.domain.ifBlank { src.url } },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp),
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (src.domain.isNotBlank()) {
+                                        BasicText(
+                                            text = "• ${src.domain}",
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 10.5.sp)
+                                        )
+                                    }
+                                }
+                                SepiaButton(
+                                    text = "↗",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = { PlatformBridge.openOrPlayMedia(src.url) }
+                                )
+                            }
+
+                            if (firstGroundedLine.isNotBlank()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isSelectedLine) p.accent.copy(alpha = 0.24f) else p.elevatedBg)
+                                            .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                    ) {
+                                        BasicText(
+                                            text = lineBadgeText,
+                                            style = p.uiLabelStyle.copy(
+                                                color = p.accent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                    BasicText(
+                                        text = "\"$firstGroundedLine\"",
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiLabelStyle.copy(
+                                            color = if (isSelectedLine) p.primaryInk else p.narrationInk,
+                                            fontStyle = FontStyle.Italic,
+                                            fontSize = 11.sp
+                                        ),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

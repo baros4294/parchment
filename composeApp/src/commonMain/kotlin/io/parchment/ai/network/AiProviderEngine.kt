@@ -31,7 +31,9 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.model.ToolCallRecord
+import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -63,6 +65,7 @@ sealed class StreamUpdate {
     data class ToolCallEvent(val toolCall: ToolCallRecord) : StreamUpdate()
     data class GoalProgress(val goalTracker: GoalTrackerState) : StreamUpdate()
     data class MediaGenerated(val item: GeneratedMediaItem) : StreamUpdate()
+    data class WebSourcesUpdated(val sources: List<WebSourceCitation>) : StreamUpdate()
     data class RawWireSnapshot(val requestJson: String, val latestResponseChunk: String) : StreamUpdate()
     data class Completed(
         val fullContent: String,
@@ -72,6 +75,7 @@ sealed class StreamUpdate {
         val toolCalls: List<ToolCallRecord>,
         val goalTracker: GoalTrackerState?,
         val mediaItems: List<GeneratedMediaItem>,
+        val webSources: List<WebSourceCitation> = emptyList(),
         val providerInteractionId: String,
         val metrics: TokenMetrics,
         val rawRequest: String,
@@ -95,7 +99,7 @@ object AiProviderEngine {
     internal const val LEGACY_FALLBACK_PRIMARY_WAIT_SECONDS = 3
     private const val MAX_GOAL_NETWORK_RETRIES = 120
     private const val MAX_MID_STREAM_CONTINUATION_PASSES = 64
-    private val GEMINI_4_REGEX = Regex("""(^|[/:_-])gemini-4(?:\.\d+)?-""")
+    private val discoveredModelModalities = mutableMapOf<String, List<String>>()
 
     internal class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
     private suspend fun waitWithRetryCountdown(
@@ -149,7 +153,8 @@ object AiProviderEngine {
         initialThinking: String = "",
         initialSignature: String = "",
         initialToolCalls: List<ToolCallRecord> = emptyList(),
-        initialMediaItems: List<GeneratedMediaItem> = emptyList()
+        initialMediaItems: List<GeneratedMediaItem> = emptyList(),
+        initialWebSources: List<WebSourceCitation> = emptyList()
     ): Flow<StreamUpdate> = flow {
         val model = session.modelOverride.ifBlank { profile.defaultModel }.trim()
         if (model.isBlank()) {
@@ -170,6 +175,17 @@ object AiProviderEngine {
         val signatureBuilder = StringBuilder(initialSignature)
         val executedTools = initialToolCalls.toMutableList()
         val generatedMedia = initialMediaItems.toMutableList()
+        val rawWebCitations = mutableListOf<RawWebCitation>()
+        for (existingSrc in initialWebSources) {
+            rawWebCitations.add(
+                RawWebCitation(
+                    url = existingSrc.url,
+                    title = existingSrc.title,
+                    snippet = existingSrc.snippet,
+                    groundedText = existingSrc.groundedLines.firstOrNull().orEmpty()
+                )
+            )
+        }
         var lastInteractionId = ""
         var inputTokens = 0
         var cachedTokens = 0
@@ -193,6 +209,14 @@ object AiProviderEngine {
                 tc.copy(precedingThinking = stepThink)
             } else {
                 tc
+            }
+        }
+        suspend fun recordRawCitationAndEmit(citation: RawWebCitation) {
+            if (citation.url.isBlank()) return
+            rawWebCitations.add(citation)
+            val bound = bindSourcesToMessageLines(contentBuilder.toString(), rawWebCitations)
+            if (bound.isNotEmpty()) {
+                emit(StreamUpdate.WebSourcesUpdated(bound))
             }
         }
         val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
@@ -290,6 +314,7 @@ object AiProviderEngine {
                                         val enriched = attachStepThinkingToToolCall(tc)
                                         executedTools.add(enriched)
                                         emit(StreamUpdate.ToolCallEvent(enriched))
+                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -301,7 +326,8 @@ object AiProviderEngine {
                                         cachedTokens = cacheTok
                                         reasoningTokens = thinkTok
                                         outputTokens = outTok
-                                    }
+                                    },
+                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             }
                             // Always attempt the newer /v1beta/interactions protocol first; if it errors out
@@ -348,6 +374,7 @@ object AiProviderEngine {
                                         val enriched = attachStepThinkingToToolCall(tc)
                                         executedTools.add(enriched)
                                         emit(StreamUpdate.ToolCallEvent(enriched))
+                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -360,7 +387,8 @@ object AiProviderEngine {
                                         cachedTokens = cacheTok
                                         reasoningTokens = thinkTok
                                         outputTokens = outTok
-                                    }
+                                    },
+                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
@@ -395,23 +423,13 @@ object AiProviderEngine {
                         }
 
                         ProviderProtocol.OPENAI_RESPONSES -> {
-                            val lowerModel = model.lowercase()
-                            val isByteDanceMediaModel = lowerModel.contains("seedream") ||
-                                lowerModel.contains("seedance") ||
-                                profile.enableVideoGeneration
-                            val isStandaloneImageModel = lowerModel.contains("gpt-image") ||
-                                lowerModel.contains("dall-e") ||
-                                lowerModel.contains("imagen") ||
-                                lowerModel.contains("flux") ||
-                                lowerModel.contains("stable-diffusion") ||
-                                lowerModel.contains("sdxl") ||
-                                lowerModel.contains("ideogram") ||
-                                lowerModel.contains("recraft") ||
-                                lowerModel.contains("kolors")
-
+                            val knownModalities = resolveKnownOutputModalities(effectiveProfileForPass, model)
+                            val isKnownVideoModel = knownModalities.contains("video") && !knownModalities.contains("text")
+                            val isKnownImageOnlyModel = knownModalities.contains("image") && !knownModalities.contains("text")
+                            val isExplicitVideoPath = profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
+                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
                             val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
-                                (profile.enableImageGeneration && isStandaloneImageModel)
-
+                                isKnownImageOnlyModel
                             suspend fun runLegacyOpenAiChatCompletions(
                                 targetHistoryNodes: List<MessageNode>,
                                 targetContinuePrefix: String
@@ -447,6 +465,7 @@ object AiProviderEngine {
                                         val enriched = attachStepThinkingToToolCall(tc)
                                         executedTools.add(enriched)
                                         emit(StreamUpdate.ToolCallEvent(enriched))
+                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -458,17 +477,19 @@ object AiProviderEngine {
                                         cachedTokens = cacheTok
                                         reasoningTokens = thinkTok
                                         outputTokens = outTok
-                                    }
+                                    },
+                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             }
 
-                            if (isByteDanceMediaModel) {
+                            if (isKnownVideoModel || isExplicitVideoPath) {
                                 executeByteDanceArkGeneration(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     circuitBreaker = circuitBreaker,
+                                    forceVideoMode = true,
                                     onStatus = { st, id ->
                                         if (id.isNotBlank()) lastInteractionId = id
                                         emit(StreamUpdate.Status(st, lastInteractionId))
@@ -497,8 +518,15 @@ object AiProviderEngine {
                                 executeOpenAiDirectImagesEndpoint(
                                     profile = profile,
                                     model = model,
+                                    session = session,
                                     historyNodes = historyNodes,
+                                    circuitBreaker = circuitBreaker,
                                     onStatus = { st -> emit(StreamUpdate.Status(st)) },
+                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onThinking = { delta ->
+                                        thinkingBuilder.append(delta)
+                                        emit(StreamUpdate.ThinkingDelta(delta))
+                                    },
                                     onMedia = { item ->
                                         onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
                                         generatedMedia.add(item)
@@ -553,6 +581,7 @@ object AiProviderEngine {
                                             val enriched = attachStepThinkingToToolCall(tc)
                                             executedTools.add(enriched)
                                             emit(StreamUpdate.ToolCallEvent(enriched))
+                                            extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                         },
                                         onRawWire = { req, resp ->
                                             lastRawReq = req
@@ -565,12 +594,78 @@ object AiProviderEngine {
                                             cachedTokens = cacheTok
                                             reasoningTokens = thinkTok
                                             outputTokens = outTok
-                                        }
+                                        },
+                                        onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
                                 } catch (e: kotlinx.coroutines.CancellationException) {
                                     throw e
                                 } catch (e: Throwable) {
-                                    if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
+                                    val routeHint = detectMediaEndpointRedirectFromError(e)
+                                    if (routeHint == "image") {
+                                        recordDiscoveredModality(model, listOf("image"))
+                                        emit(StreamUpdate.Status("Model requires Image Generation endpoint — routing automatically…", lastInteractionId))
+                                        executeOpenAiDirectImagesEndpoint(
+                                            profile = profile,
+                                            model = model,
+                                            session = session,
+                                            historyNodes = historyNodes,
+                                            circuitBreaker = circuitBreaker,
+                                            onStatus = { st -> emit(StreamUpdate.Status(st)) },
+                                            onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                            onThinking = { delta ->
+                                                thinkingBuilder.append(delta)
+                                                emit(StreamUpdate.ThinkingDelta(delta))
+                                            },
+                                            onMedia = { item ->
+                                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                                generatedMedia.add(item)
+                                                emit(StreamUpdate.MediaGenerated(item))
+                                            },
+                                            onContent = { delta ->
+                                                contentBuilder.append(delta)
+                                                emit(StreamUpdate.ContentDelta(delta))
+                                            },
+                                            onRawWire = { req, resp ->
+                                                lastRawReq = req
+                                                lastRawResp = resp
+                                                emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                            }
+                                        )
+                                    } else if (routeHint == "video") {
+                                        recordDiscoveredModality(model, listOf("video"))
+                                        emit(StreamUpdate.Status("Model requires Video Generation endpoint — routing automatically…", lastInteractionId))
+                                        executeByteDanceArkGeneration(
+                                            profile = profile,
+                                            model = model,
+                                            session = session,
+                                            historyNodes = historyNodes,
+                                            circuitBreaker = circuitBreaker,
+                                            forceVideoMode = true,
+                                            onStatus = { st, id ->
+                                                if (id.isNotBlank()) lastInteractionId = id
+                                                emit(StreamUpdate.Status(st, lastInteractionId))
+                                            },
+                                            onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                            onThinking = { delta ->
+                                                thinkingBuilder.append(delta)
+                                                emit(StreamUpdate.ThinkingDelta(delta))
+                                            },
+                                            onMedia = { item ->
+                                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                                generatedMedia.add(item)
+                                                emit(StreamUpdate.MediaGenerated(item))
+                                            },
+                                            onContent = { delta ->
+                                                contentBuilder.append(delta)
+                                                emit(StreamUpdate.ContentDelta(delta))
+                                            },
+                                            onRawWire = { req, resp ->
+                                                lastRawReq = req
+                                                lastRawResp = resp
+                                                emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                            }
+                                        )
+                                    } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
                                         val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
                                         val reasonShort = actualCause.message?.lineSequence()?.firstOrNull()?.trim()?.take(72) ?: "endpoint error"
                                         emit(
@@ -591,7 +686,76 @@ object AiProviderEngine {
                                             model = model,
                                             passTag = "fallback-openai-$continuationPass"
                                         )
-                                        runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
+                                        try {
+                                            runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
+                                        } catch (chatErr: Throwable) {
+                                            val chatHint = detectMediaEndpointRedirectFromError(chatErr)
+                                            if (chatHint == "image") {
+                                                recordDiscoveredModality(model, listOf("image"))
+                                                executeOpenAiDirectImagesEndpoint(
+                                                    profile = profile,
+                                                    model = model,
+                                                    session = session,
+                                                    historyNodes = historyNodes,
+                                                    circuitBreaker = circuitBreaker,
+                                                    onStatus = { st -> emit(StreamUpdate.Status(st)) },
+                                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                                    onThinking = { delta ->
+                                                        thinkingBuilder.append(delta)
+                                                        emit(StreamUpdate.ThinkingDelta(delta))
+                                                    },
+                                                    onMedia = { item ->
+                                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                                        generatedMedia.add(item)
+                                                        emit(StreamUpdate.MediaGenerated(item))
+                                                    },
+                                                    onContent = { delta ->
+                                                        contentBuilder.append(delta)
+                                                        emit(StreamUpdate.ContentDelta(delta))
+                                                    },
+                                                    onRawWire = { req, resp ->
+                                                        lastRawReq = req
+                                                        lastRawResp = resp
+                                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                    }
+                                                )
+                                            } else if (chatHint == "video") {
+                                                recordDiscoveredModality(model, listOf("video"))
+                                                executeByteDanceArkGeneration(
+                                                    profile = profile,
+                                                    model = model,
+                                                    session = session,
+                                                    historyNodes = historyNodes,
+                                                    circuitBreaker = circuitBreaker,
+                                                    forceVideoMode = true,
+                                                    onStatus = { st, id ->
+                                                        if (id.isNotBlank()) lastInteractionId = id
+                                                        emit(StreamUpdate.Status(st, lastInteractionId))
+                                                    },
+                                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                                    onThinking = { delta ->
+                                                        thinkingBuilder.append(delta)
+                                                        emit(StreamUpdate.ThinkingDelta(delta))
+                                                    },
+                                                    onMedia = { item ->
+                                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                                        generatedMedia.add(item)
+                                                        emit(StreamUpdate.MediaGenerated(item))
+                                                    },
+                                                    onContent = { delta ->
+                                                        contentBuilder.append(delta)
+                                                        emit(StreamUpdate.ContentDelta(delta))
+                                                    },
+                                                    onRawWire = { req, resp ->
+                                                        lastRawReq = req
+                                                        lastRawResp = resp
+                                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                    }
+                                                )
+                                            } else {
+                                                throw chatErr
+                                            }
+                                        }
                                     } else {
                                         throw e
                                     }
@@ -630,6 +794,7 @@ object AiProviderEngine {
                                     val enriched = attachStepThinkingToToolCall(tc)
                                     executedTools.add(enriched)
                                     emit(StreamUpdate.ToolCallEvent(enriched))
+                                    extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                 },
                                 onRawWire = { req, resp ->
                                     lastRawReq = req
@@ -641,23 +806,27 @@ object AiProviderEngine {
                                     inputTokens = inTok
                                     cachedTokens = cacheTok
                                     outputTokens = outTok
-                                }
+                                },
+                                onCitation = { cit -> recordRawCitationAndEmit(cit) }
                             )
                         }
 
                         ProviderProtocol.BYTEDANCE_ARK -> {
-                            val lowerModel = model.lowercase()
-                            val isMediaMode = profile.enableVideoGeneration ||
-                                profile.enableImageGeneration ||
-                                lowerModel.contains("seedream") ||
-                                lowerModel.contains("seedance")
-                            if (isMediaMode) {
+                            val knownModalities = resolveKnownOutputModalities(effectiveProfileForPass, model)
+                            val isKnownTextOnly = knownModalities.contains("text") &&
+                                !knownModalities.contains("image") &&
+                                !knownModalities.contains("video")
+                            val isKnownVideo = knownModalities.contains("video") ||
+                                profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
+                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
+                            if (!isKnownTextOnly) {
                                 executeByteDanceArkGeneration(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     circuitBreaker = circuitBreaker,
+                                    forceVideoMode = isKnownVideo,
                                     onStatus = { st, id ->
                                         if (id.isNotBlank()) lastInteractionId = id
                                         emit(StreamUpdate.Status(st, lastInteractionId))
@@ -714,6 +883,7 @@ object AiProviderEngine {
                                         val enriched = attachStepThinkingToToolCall(tc)
                                         executedTools.add(enriched)
                                         emit(StreamUpdate.ToolCallEvent(enriched))
+                                        extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
                                     },
                                     onRawWire = { req, resp ->
                                         lastRawReq = req
@@ -725,7 +895,8 @@ object AiProviderEngine {
                                         cachedTokens = cacheTok
                                         reasoningTokens = thinkTok
                                         outputTokens = outTok
-                                    }
+                                    },
+                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             }
                         }
@@ -826,16 +997,22 @@ object AiProviderEngine {
             val finalInTokens = if (inputTokens > 0) {
                 inputTokens
             } else {
-                val approxChars = buildCompiledSystemPrompt(session, circuitBreaker.goalState).length +
-                    historyNodes.filter { it.includedInContext }.sumOf { it.activeVariant.content.length }
-                (approxChars / 4).coerceAtLeast(1)
+                val sysTok = O200kTokenizer.countTokens(buildCompiledSystemPrompt(session, circuitBreaker.goalState))
+                val histTok = historyNodes.filter { it.includedInContext }.sumOf {
+                    O200kTokenizer.countMessageVariantTokens(it.role, it.activeVariant, includeReasoningAndTools = false)
+                }
+                (sysTok + histTok).coerceAtLeast(1)
             }
             val finalThinkTokens = if (reasoningTokens > 0) {
                 reasoningTokens
             } else if (thinkingBuilder.isNotEmpty()) {
-                (thinkingBuilder.length / 4).coerceAtLeast(1)
+                O200kTokenizer.countTokens(thinkingBuilder.toString()).coerceAtLeast(1)
             } else 0
-            val finalOutTokens = if (outputTokens > 0) outputTokens else (contentBuilder.length / 4).coerceAtLeast(1)
+            val finalOutTokens = if (outputTokens > 0) {
+                outputTokens
+            } else {
+                O200kTokenizer.countTokens(contentBuilder.toString()).coerceAtLeast(1)
+            }
             val tokPerSec = (finalOutTokens * 1000.0) / totalDurationMs.toDouble()
 
             val rawMetrics = TokenMetrics(
@@ -849,6 +1026,21 @@ object AiProviderEngine {
             )
             val costUsd = profile.calculateTurnCostUsd(rawMetrics)
 
+            // If web search or URL tools were active and the model included inline markdown citations, bind them too
+            if (profile.enableWebSearch || profile.enableUrlContext || executedTools.any {
+                it.name.equals("web_fetch", ignoreCase = true) || it.name.equals("web_search", ignoreCase = true)
+            }) {
+                extractMarkdownLinksAsCitations(contentBuilder.toString()).forEach { mdCit ->
+                    if (rawWebCitations.none { it.url.equals(mdCit.url, ignoreCase = true) }) {
+                        rawWebCitations.add(mdCit)
+                    }
+                }
+            }
+            val finalWebSources = bindSourcesToMessageLines(contentBuilder.toString(), rawWebCitations)
+            if (finalWebSources.isNotEmpty()) {
+                emit(StreamUpdate.WebSourcesUpdated(finalWebSources))
+            }
+
             emit(
                 StreamUpdate.Completed(
                     fullContent = contentBuilder.toString(),
@@ -858,6 +1050,7 @@ object AiProviderEngine {
                     toolCalls = executedTools,
                     goalTracker = circuitBreaker.goalState,
                     mediaItems = generatedMedia,
+                    webSources = finalWebSources,
                     providerInteractionId = lastInteractionId,
                     metrics = rawMetrics.copy(estimatedCostUsd = costUsd),
                     rawRequest = lastRawReq,
@@ -987,9 +1180,91 @@ object AiProviderEngine {
         }
     }
 
-    private fun parseModelsListJson(bodyText: String): List<String> {
+    internal fun recordDiscoveredModality(modelId: String, modalities: List<String>) {
+        val clean = modelId.trim().removePrefix("models/").lowercase()
+        if (clean.isEmpty() || modalities.isEmpty()) return
+        val normalized = modalities.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
+        if (normalized.isNotEmpty()) {
+            discoveredModelModalities[clean] = normalized
+            val shortKey = clean.substringAfter("/")
+            if (shortKey.isNotEmpty()) {
+                discoveredModelModalities[shortKey] = normalized
+            }
+        }
+    }
+
+    internal fun resolveKnownOutputModalities(profile: ProviderProfile, modelId: String): List<String> {
+        val clean = modelId.trim().removePrefix("models/").lowercase()
+        if (clean.isEmpty()) return emptyList()
+        val shortKey = clean.substringAfter("/")
+        profile.customModelSpecs[modelId.trim()]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
+        profile.customModelSpecs[clean]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
+        discoveredModelModalities[clean]?.takeIf { it.isNotEmpty() }?.let { return it }
+        discoveredModelModalities[shortKey]?.takeIf { it.isNotEmpty() }?.let { return it }
+        ModelsDevClient.getCachedOutputModalities(modelId).takeIf { it.isNotEmpty() }?.let { return it }
+        return emptyList()
+    }
+
+    internal fun detectMediaEndpointRedirectFromError(err: Throwable): String? {
+        val msg = (err.message ?: err.toString()).lowercase()
+        if (msg.contains("contents/generations/tasks") ||
+            msg.contains("videos/generations") ||
+            msg.contains("video generation") ||
+            msg.contains("video model")
+        ) {
+            return "video"
+        }
+        if (msg.contains("images/generations") ||
+            msg.contains("v1/images") ||
+            msg.contains("only supports image") ||
+            msg.contains("image generation model") ||
+            (msg.contains("not a chat model") && msg.contains("image"))
+        ) {
+            return "image"
+        }
+        return null
+    }
+
+    internal fun parseModelsListJson(bodyText: String): List<String> {
         val rootEl = runCatching { json.parseToJsonElement(bodyText) }.getOrNull() ?: return emptyList()
         val results = LinkedHashSet<String>()
+
+        fun extractModalitiesFromModelObject(item: JsonObject): List<String> {
+            val outList = mutableListOf<String>()
+            (item["output_modalities"] as? JsonArray)?.forEach {
+                it.jsonPrimitive.contentOrNull?.trim()?.lowercase()?.takeIf { s -> s.isNotEmpty() }?.let(outList::add)
+            }
+            val modObj = item["modalities"] as? JsonObject
+            (modObj?.get("output") as? JsonArray)?.forEach {
+                it.jsonPrimitive.contentOrNull?.trim()?.lowercase()?.takeIf { s -> s.isNotEmpty() }?.let(outList::add)
+            }
+            val archObj = item["architecture"] as? JsonObject
+            (archObj?.get("output_modalities") as? JsonArray)?.forEach {
+                it.jsonPrimitive.contentOrNull?.trim()?.lowercase()?.takeIf { s -> s.isNotEmpty() }?.let(outList::add)
+            }
+            val archMod = archObj?.get("modality")?.jsonPrimitive?.contentOrNull?.lowercase().orEmpty()
+            if (archMod.contains("->")) {
+                val rhs = archMod.substringAfter("->")
+                rhs.split("+", ",", "/").map { it.trim() }.filter { it.isNotEmpty() }.forEach(outList::add)
+            }
+            val modelType = (item["type"]?.jsonPrimitive?.contentOrNull
+                ?: item["task_type"]?.jsonPrimitive?.contentOrNull)?.trim()?.lowercase().orEmpty()
+            when {
+                modelType == "image" || modelType == "text-to-image" || modelType == "image-generation" -> outList.add("image")
+                modelType == "video" || modelType == "text-to-video" || modelType == "video-generation" -> outList.add("video")
+                modelType == "chat" || modelType == "text" || modelType == "language" -> outList.add("text")
+            }
+            val genMethods = (item["supportedGenerationMethods"] as? JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() }.orEmpty()
+            if (genMethods.any { it.contains("predict") || it.contains("generateimages") } &&
+                genMethods.none { it.contains("generatecontent") }
+            ) {
+                outList.add("image")
+            } else if (genMethods.any { it.contains("generatevideo") }) {
+                outList.add("video")
+            }
+            return outList.distinct()
+        }
 
         fun extractFromArray(arr: JsonArray) {
             for (item in arr) {
@@ -1003,7 +1278,12 @@ object AiProviderEngine {
                             ?: item["name"]?.jsonPrimitive?.contentOrNull
                             ?: item["model"]?.jsonPrimitive?.contentOrNull
                         if (!idCandidate.isNullOrBlank()) {
-                            results.add(idCandidate.trim().removePrefix("models/"))
+                            val cleanId = idCandidate.trim().removePrefix("models/")
+                            results.add(cleanId)
+                            val discovered = extractModalitiesFromModelObject(item)
+                            if (discovered.isNotEmpty()) {
+                                recordDiscoveredModality(cleanId, discovered)
+                            }
                         }
                     }
                     else -> {}
@@ -1059,7 +1339,8 @@ object AiProviderEngine {
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit
+        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
@@ -1075,16 +1356,18 @@ object AiProviderEngine {
         var currentPrevInteractionId = previousInteractionId
         var currentContinuationToken = ""
         var stripSamplingOnRetry = false
+        var upgradeMinimalToLowOnRetry = false
         var simplifyThinkingOnRetry = false
         var omitResponseFormatOnRetry = false
+        var forceImageResponseFormatOnRetry = false
+        var omitBuiltInToolsOnRetry = false
         val extraLoopSteps = mutableListOf<JsonObject>()
         var pendingToolResults: List<ToolCallRecord> = emptyList()
         var pendingStopHookPrompt: String = ""
         var loopStep = 0
 
-        val lowerModel = model.lowercase()
-        val isGemini4 = GEMINI_4_REGEX.containsMatchIn(lowerModel) || lowerModel.startsWith("gemini-4")
-
+        val knownModalities = resolveKnownOutputModalities(profile, model)
+        val modelOutputsImages = knownModalities.contains("image")
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>() // callId -> (name, argsJson)
@@ -1196,8 +1479,8 @@ object AiProviderEngine {
                         }
                     }
 
-                    // Official June 2026 GA polymorphic `response_format` array for text + image output
-                    if (profile.enableImageGeneration && !isGemini4 && !omitResponseFormatOnRetry) {
+                    // Official polymorphic `response_format` array when model outputs images
+                    if ((modelOutputsImages || forceImageResponseFormatOnRetry) && !omitResponseFormatOnRetry) {
                         putJsonArray("response_format") {
                             add(buildJsonObject { put("type", "text") })
                             add(buildJsonObject {
@@ -1212,9 +1495,9 @@ object AiProviderEngine {
                         }
                     }
 
-                    // Generation config (nullable parameters are stripped when null or <= 0)
+                    // Generation config (self-heals sampling & thinking_level dynamically on HTTP 400)
                     putJsonObject("generation_config") {
-                        if (!isGemini4 && !stripSamplingOnRetry) {
+                        if (!stripSamplingOnRetry) {
                             profile.temperature?.let { put("temperature", it) }
                             profile.topP?.let { put("top_p", it) }
                         }
@@ -1228,7 +1511,7 @@ object AiProviderEngine {
                             put("thinking_summaries", "auto")
                             if (!simplifyThinkingOnRetry && rawEffort.isNotEmpty() && lowerEffort != "default" && lowerEffort != "auto") {
                                 val mappedLevel = when (lowerEffort) {
-                                    "minimal" -> if (isGemini4) "low" else "minimal"
+                                    "minimal" -> if (upgradeMinimalToLowOnRetry) "low" else "minimal"
                                     "low" -> "low"
                                     "medium" -> "medium"
                                     "high", "xhigh", "max" -> "high"
@@ -1240,22 +1523,26 @@ object AiProviderEngine {
                     }
 
                     // Built-in Tools + Local Workspace Harness Tools
+                    val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
+                        session.workspaceMode,
+                        session.workspacePath,
+                        profile.allowShellExecution,
+                        goalModeActive = circuitBreaker.goalState != null,
+                        enableWebTools = (profile.enableWebSearch && omitBuiltInToolsOnRetry) || profile.enableUrlContext,
+                        includeLocalWebSearchTool = profile.enableWebSearch && omitBuiltInToolsOnRetry
+                    )
                     val toolsArray = buildJsonArray {
-                        if (profile.enableWebSearch) {
-                            add(buildJsonObject { put("type", "google_search") })
+                        if (!omitBuiltInToolsOnRetry || workspaceTools.isEmpty()) {
+                            if (profile.enableWebSearch) {
+                                add(buildJsonObject { put("type", "google_search") })
+                            }
+                            if (profile.enableCodeExecution) {
+                                add(buildJsonObject { put("type", "code_execution") })
+                            }
+                            if (profile.enableUrlContext) {
+                                add(buildJsonObject { put("type", "url_context") })
+                            }
                         }
-                        if (profile.enableCodeExecution) {
-                            add(buildJsonObject { put("type", "code_execution") })
-                        }
-                        if (profile.enableUrlContext) {
-                            add(buildJsonObject { put("type", "url_context") })
-                        }
-                        val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
-                            session.workspaceMode,
-                            session.workspacePath,
-                            profile.allowShellExecution,
-                            goalModeActive = circuitBreaker.goalState != null
-                        )
                         workspaceTools.forEach { add(it) }
                     }
                     if (toolsArray.isNotEmpty()) {
@@ -1319,7 +1606,8 @@ object AiProviderEngine {
                             onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                 if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
                                 onUsage(id, inTok, cacheTok, thinkTok, outTok)
-                            }
+                            },
+                            onCitation = onCitation
                         )
                     }
                 }
@@ -1425,6 +1713,7 @@ object AiProviderEngine {
                                                 }
                                             }
                                         }
+                                        extractCitationsFromGeminiObject(contentObj, onCitation)
                                     }
                                     "content.delta", "step.delta" -> {
                                         val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
@@ -1561,6 +1850,7 @@ object AiProviderEngine {
                                                 }
                                             }
                                         }
+                                        extractCitationsFromGeminiObject(deltaObj, onCitation)
                                     }
                                     "content.stop", "step.stop", "content.complete", "step.complete" -> {
                                         val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
@@ -1583,6 +1873,7 @@ object AiProviderEngine {
                                                 pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(argsStr))
                                             }
                                         }
+                                        extractCitationsFromGeminiObject(contentObj, onCitation)
                                     }
                                     "interaction.complete", "interaction.completed" -> {
                                         val completedObj = interactionSub ?: evObj
@@ -1613,7 +1904,9 @@ object AiProviderEngine {
                                                     onThinking("", uniqueSig)
                                                 }
                                             }
+                                            extractCitationsFromGeminiObject(item, onCitation)
                                         }
+                                        extractCitationsFromGeminiObject(completedObj, onCitation)
                                         val usageObj = completedObj["usage"] as? JsonObject
                                         if (usageObj != null) {
                                             val inTok = usageObj["total_input_tokens"]?.jsonPrimitive?.intOrNull
@@ -1658,7 +1951,8 @@ object AiProviderEngine {
                                                 onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                                     if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
                                                     onUsage(id, inTok, cacheTok, thinkTok, outTok)
-                                                }
+                                                },
+                                                onCitation = onCitation
                                             )
                                         }
                                     }
@@ -1697,7 +1991,8 @@ object AiProviderEngine {
                                         onUsage = { uId, inTok, cacheTok, thinkTok, outTok ->
                                             if (profile.useStatefulChaining && uId.isNotBlank()) currentPrevInteractionId = uId
                                             onUsage(uId, inTok, cacheTok, thinkTok, outTok)
-                                        }
+                                        },
+                                        onCitation = onCitation
                                     )
                                 }
                             }
@@ -1724,14 +2019,34 @@ object AiProviderEngine {
                             onStatus("Endpoint rejected sampling parameters — retrying with model defaults…", currentPrevInteractionId)
                             continue
                         }
+                        if (!upgradeMinimalToLowOnRetry && profile.thinkingEffort.equals("minimal", ignoreCase = true) &&
+                            (errMsg.contains("minimal") || errMsg.contains("thinking_level") || errMsg.contains("thinking"))
+                        ) {
+                            upgradeMinimalToLowOnRetry = true
+                            onStatus("Model does not support minimal thinking_level — stepping up to low…", currentPrevInteractionId)
+                            continue
+                        }
                         if (!simplifyThinkingOnRetry && (errMsg.contains("thinking") || errMsg.contains("thinking_level"))) {
                             simplifyThinkingOnRetry = true
                             onStatus("Endpoint rejected thinking_level — retrying with automatic thinking…", currentPrevInteractionId)
                             continue
                         }
-                        if (!omitResponseFormatOnRetry && (errMsg.contains("response_format") || errMsg.contains("image"))) {
+                        if (!forceImageResponseFormatOnRetry && !omitResponseFormatOnRetry &&
+                            (errMsg.contains("only supports image") || (errMsg.contains("response_format") && errMsg.contains("image")))
+                        ) {
+                            forceImageResponseFormatOnRetry = true
+                            recordDiscoveredModality(model, listOf("text", "image"))
+                            onStatus("Model outputs images — enabling image response_format…", currentPrevInteractionId)
+                            continue
+                        }
+                        if (!omitResponseFormatOnRetry && (errMsg.contains("response_format") || errMsg.contains("image_size") || errMsg.contains("aspect_ratio"))) {
                             omitResponseFormatOnRetry = true
                             onStatus("Endpoint rejected response_format — retrying without response_format…", currentPrevInteractionId)
+                            continue
+                        }
+                        if (!omitBuiltInToolsOnRetry && (errMsg.contains("google_search") || errMsg.contains("url_context") || errMsg.contains("built-in") || errMsg.contains("multiple tools"))) {
+                            omitBuiltInToolsOnRetry = true
+                            onStatus("Endpoint rejected mixed built-in + function tools — retrying with workspace tools…", currentPrevInteractionId)
                             continue
                         }
                     }
@@ -1920,7 +2235,8 @@ object AiProviderEngine {
         onContent: suspend (String) -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onFunctionCall: (String, String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit
+        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val id = interactionObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
         val itemsArray = (interactionObj["steps"] as? JsonArray)
@@ -1993,7 +2309,9 @@ object AiProviderEngine {
                     }
                 }
             }
+            extractCitationsFromGeminiObject(item, onCitation)
         }
+        extractCitationsFromGeminiObject(interactionObj, onCitation)
 
         val usageObj = interactionObj["usage"] as? JsonObject
         val inTok = usageObj?.get("total_input_tokens")?.jsonPrimitive?.intOrNull
@@ -2224,15 +2542,12 @@ object AiProviderEngine {
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (Int, Int, Int, Int) -> Unit
+        onUsage: (Int, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val cleanModel = model.trim().removePrefix("models/")
-        val lowerModel = cleanModel.lowercase()
-        val isGemini4 = GEMINI_4_REGEX.containsMatchIn(lowerModel) || lowerModel.startsWith("gemini-4")
-        val isGemini3 = lowerModel.contains("gemini-3")
-        val isGemma4 = lowerModel.contains("gemma-4") || lowerModel.contains("gemma4")
-        val isThinkingLevelDialect = isGemini4 || isGemini3 || isGemma4
-        val supportsMixedTools = isGemini4 || isGemini3
+        val knownModalities = resolveKnownOutputModalities(profile, cleanModel)
+        val modelOutputsImages = knownModalities.contains("image")
 
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
@@ -2240,8 +2555,12 @@ object AiProviderEngine {
 
         val hasBuiltInTools = profile.enableWebSearch || profile.enableCodeExecution || profile.enableUrlContext
         var stripSamplingOnRetry = false
+        var upgradeMinimalToLowOnRetry = false
+        var useBudgetDialectOnRetry = false
         var simplifyThinkingOnRetry = false
-
+        var disableMixedToolsOnRetry = false
+        var forceImageModalityOnRetry = false
+        var omitImageModalityOnRetry = false
         var loopStep = 0
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
@@ -2249,7 +2568,9 @@ object AiProviderEngine {
                 session.workspaceMode,
                 session.workspacePath,
                 profile.allowShellExecution,
-                goalModeActive = circuitBreaker.goalState != null
+                goalModeActive = circuitBreaker.goalState != null,
+                enableWebTools = (profile.enableWebSearch && disableMixedToolsOnRetry) || profile.enableUrlContext,
+                includeLocalWebSearchTool = profile.enableWebSearch && disableMixedToolsOnRetry
             )
             var roundModelParts = mutableListOf<JsonObject>()
             val roundToolCalls = mutableListOf<Triple<String, String, String>>() // (callId, name, argsJson)
@@ -2274,14 +2595,15 @@ object AiProviderEngine {
 
                     put("contents", JsonArray(rollingContents))
 
-                    // Tools & toolConfig (handling Gemini 3+ / Gemini 4 coexistence vs 2.x)
+                    // Tools & toolConfig (attempts mixed built-in + function tools with VALIDATED, self-healing to AUTO on HTTP 400)
+                    val allowMixedTools = !disableMixedToolsOnRetry
                     val toolsArr = buildJsonArray {
-                        if (supportsMixedTools || activeWorkspaceTools.isEmpty()) {
+                        if (allowMixedTools || activeWorkspaceTools.isEmpty()) {
                             if (profile.enableCodeExecution) add(buildJsonObject { putJsonObject("code_execution") {} })
                             if (profile.enableWebSearch) add(buildJsonObject { putJsonObject("google_search") {} })
                             if (profile.enableUrlContext) add(buildJsonObject { putJsonObject("url_context") {} })
                         }
-                        if (activeWorkspaceTools.isNotEmpty() && (supportsMixedTools || !hasBuiltInTools)) {
+                        if (activeWorkspaceTools.isNotEmpty() && (allowMixedTools || !hasBuiltInTools)) {
                             add(buildJsonObject {
                                 putJsonArray("function_declarations") {
                                     for (t in activeWorkspaceTools) {
@@ -2299,7 +2621,7 @@ object AiProviderEngine {
                         put("tools", toolsArr)
                         if (activeWorkspaceTools.isNotEmpty()) {
                             putJsonObject("toolConfig") {
-                                if (supportsMixedTools && hasBuiltInTools) {
+                                if (allowMixedTools && hasBuiltInTools) {
                                     putJsonObject("function_calling_config") {
                                         put("mode", "VALIDATED")
                                     }
@@ -2314,7 +2636,7 @@ object AiProviderEngine {
                     }
 
                     putJsonObject("generationConfig") {
-                        if (!isGemini4 && !stripSamplingOnRetry) {
+                        if (!stripSamplingOnRetry) {
                             profile.temperature?.let { put("temperature", it) }
                             profile.topP?.let { put("topP", it) }
                         }
@@ -2322,49 +2644,41 @@ object AiProviderEngine {
                         if (maxOut != null && maxOut > 0) {
                             put("maxOutputTokens", maxOut)
                         }
-                        if (profile.enableImageGeneration && !isGemini4) {
+                        if ((modelOutputsImages || forceImageModalityOnRetry) && !omitImageModalityOnRetry) {
                             putJsonArray("responseModalities") {
                                 add(JsonPrimitive("TEXT"))
                                 add(JsonPrimitive("IMAGE"))
                             }
                         }
 
-                        if ((!profile.enableImageGeneration || !lowerModel.contains("pro-image")) && !simplifyThinkingOnRetry) {
+                        if (!simplifyThinkingOnRetry) {
                             val rawEffort = profile.thinkingEffort.trim()
                             val lowerEffort = rawEffort.lowercase()
                             val thinkBudget = profile.thinkingBudgetTokens
-                            if (isThinkingLevelDialect) {
-                                val hideThoughts = lowerEffort == "none" || lowerEffort == "off"
-                                val resolvedLevel = when {
-                                    isGemini4 -> {
-                                        when (lowerEffort) {
-                                            "none", "off", "minimal", "low" -> "LOW"
-                                            "medium", "default", "auto", "" -> if (lowerModel.contains("cyber-permissive")) "HIGH" else "MEDIUM"
-                                            "high", "xhigh", "max" -> "HIGH"
-                                            else -> rawEffort.uppercase()
-                                        }
-                                    }
-                                    else -> {
-                                        when (lowerEffort) {
-                                            "none", "off" -> if (lowerModel.contains("3.8-flash") || lowerModel.contains("3.7-flash") || lowerModel.contains("3.1-pro")) "LOW" else "MINIMAL"
-                                            "minimal" -> "MINIMAL"
-                                            "low" -> "LOW"
-                                            "medium", "default", "auto", "" -> "MEDIUM"
-                                            "high", "xhigh", "max" -> "HIGH"
-                                            else -> rawEffort.uppercase()
-                                        }
-                                    }
+                            val hideThoughts = lowerEffort == "none" || lowerEffort == "off"
+                            if (!useBudgetDialectOnRetry && (thinkBudget == null || thinkBudget <= 0)) {
+                                val resolvedLevel = when (lowerEffort) {
+                                    "none", "off", "minimal" -> if (upgradeMinimalToLowOnRetry) "LOW" else "MINIMAL"
+                                    "low" -> "LOW"
+                                    "medium", "default", "auto", "" -> "MEDIUM"
+                                    "high", "xhigh", "max" -> "HIGH"
+                                    else -> rawEffort.uppercase()
                                 }
                                 putJsonObject("thinkingConfig") {
                                     put("includeThoughts", !hideThoughts)
                                     put("thinkingLevel", resolvedLevel)
                                 }
-                            } else if (thinkBudget != null && thinkBudget > 0) {
-                                val hideThoughts = lowerEffort == "none" || lowerEffort == "off"
+                            } else {
+                                val resolvedBudget = when {
+                                    thinkBudget != null && thinkBudget > 0 -> thinkBudget
+                                    lowerEffort == "minimal" || lowerEffort == "low" -> 2048
+                                    lowerEffort == "high" || lowerEffort == "xhigh" || lowerEffort == "max" -> 16384
+                                    else -> 8192
+                                }
                                 putJsonObject("thinkingConfig") {
                                     put("includeThoughts", !hideThoughts)
                                     if (!hideThoughts) {
-                                        put("thinkingBudget", thinkBudget)
+                                        put("thinkingBudget", resolvedBudget)
                                     }
                                 }
                             }
@@ -2478,6 +2792,7 @@ object AiProviderEngine {
                                 if (parts != null) {
                                     processCandidateParts(parts)
                                 }
+                                extractCitationsFromGeminiCandidate(firstCand, onCitation)
 
                                 val usage = obj["usageMetadata"] as? JsonObject
                                 if (usage != null) {
@@ -2497,6 +2812,7 @@ object AiProviderEngine {
                                 if (parts != null) {
                                     processCandidateParts(parts)
                                 }
+                                extractCitationsFromGeminiCandidate(firstCand, onCitation)
                             }
                         )
                     }
@@ -2509,6 +2825,42 @@ object AiProviderEngine {
                         if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("topp") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                             stripSamplingOnRetry = true
                             onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                            continue
+                        }
+                        if (!forceImageModalityOnRetry && !omitImageModalityOnRetry &&
+                            (errMsg.contains("responsemodalities") || errMsg.contains("response_modalities") || errMsg.contains("image")) &&
+                            (errMsg.contains("only supports") || errMsg.contains("must include") || errMsg.contains("modality"))
+                        ) {
+                            forceImageModalityOnRetry = true
+                            recordDiscoveredModality(cleanModel, listOf("text", "image"))
+                            onStatus("Model outputs images — enabling TEXT + IMAGE responseModalities…")
+                            continue
+                        }
+                        if (!omitImageModalityOnRetry && (modelOutputsImages || forceImageModalityOnRetry) &&
+                            (errMsg.contains("responsemodalities") || errMsg.contains("response_modalities"))
+                        ) {
+                            omitImageModalityOnRetry = true
+                            onStatus("Endpoint rejected responseModalities — retrying with text modality…")
+                            continue
+                        }
+                        if (!disableMixedToolsOnRetry && hasBuiltInTools && activeWorkspaceTools.isNotEmpty() &&
+                            (errMsg.contains("validated") || errMsg.contains("includeserversidetoolinvocations") || errMsg.contains("tool") || errMsg.contains("function_declarations") || errMsg.contains("google_search"))
+                        ) {
+                            disableMixedToolsOnRetry = true
+                            onStatus("Endpoint rejected mixed built-in + function tools — retrying with workspace tools…")
+                            continue
+                        }
+                        if (!upgradeMinimalToLowOnRetry && !useBudgetDialectOnRetry &&
+                            (profile.thinkingEffort.equals("minimal", ignoreCase = true) || profile.thinkingEffort.equals("none", ignoreCase = true) || profile.thinkingEffort.equals("off", ignoreCase = true)) &&
+                            (errMsg.contains("minimal") || errMsg.contains("thinkinglevel") || errMsg.contains("thinking_level"))
+                        ) {
+                            upgradeMinimalToLowOnRetry = true
+                            onStatus("Model rejected MINIMAL thinkingLevel — stepping up to LOW…")
+                            continue
+                        }
+                        if (!useBudgetDialectOnRetry && (errMsg.contains("thinkinglevel") || errMsg.contains("thinking_level"))) {
+                            useBudgetDialectOnRetry = true
+                            onStatus("Model uses thinkingBudget dialect — switching from thinkingLevel to thinkingBudget…")
                             continue
                         }
                         if (!simplifyThinkingOnRetry && (errMsg.contains("thinking") || errMsg.contains("thinkinglevel") || errMsg.contains("thinkingbudget"))) {
@@ -2800,7 +3152,8 @@ object AiProviderEngine {
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit
+        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
@@ -2818,11 +3171,19 @@ object AiProviderEngine {
         val extraResponsesLoopItems = mutableListOf<JsonObject>()
         var stripSamplingOnRetry = false
         var omitReasoningOnRetry = false
+        var useLegacyWebSearchPreviewOnRetry = false
+        var omitOpenAiNativeWebSearchOnRetry = false
+        var omitEncryptedContentIncludeOnRetry = false
+        var omitImageGenToolOnRetry = false
+        val knownModalities = resolveKnownOutputModalities(profile, model)
+        val modelOutputsImages = knownModalities.contains("image")
         var loopStep = 0
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
             val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>()
             val roundTextBuilder = StringBuilder()
+            val roundReasoningBuilder = StringBuilder()
+            var roundEncryptedReasoning = ""
             var stepEmittedOutput = false
             var stepRetryAttempt = 0
 
@@ -2843,8 +3204,9 @@ object AiProviderEngine {
             while (true) {
                 turnToolCalls.clear()
                 roundTextBuilder.clear()
+                roundReasoningBuilder.clear()
+                roundEncryptedReasoning = ""
                 stepEmittedOutput = false
-
                 val useChainedId = profile.useStatefulChaining && currentPrevResponseId.isNotBlank()
                 val baseInputItems = if (useChainedId && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
                     val trailing = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
@@ -2899,7 +3261,9 @@ object AiProviderEngine {
 
                     val effort = profile.thinkingEffort.trim()
                     val lowerEffort = effort.lowercase()
-                    if (!omitReasoningOnRetry && effort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
+                    val isReasoningEnabled = !omitReasoningOnRetry && effort.isNotEmpty() &&
+                        lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default"
+                    if (isReasoningEnabled) {
                         val normalizedEffort = when (lowerEffort) {
                             "max" -> "high"
                             else -> lowerEffort
@@ -2908,15 +3272,21 @@ object AiProviderEngine {
                             put("effort", normalizedEffort)
                             put("summary", "auto")
                         }
+                        if (!useChainedId && !omitEncryptedContentIncludeOnRetry) {
+                            putJsonArray("include") {
+                                add(JsonPrimitive("reasoning.encrypted_content"))
+                            }
+                        }
                     } else if (!stripSamplingOnRetry) {
                         profile.temperature?.let { put("temperature", it) }
                         profile.topP?.let { put("top_p", it) }
                     }
                     val toolsArr = buildJsonArray {
-                        if (profile.enableWebSearch) {
-                            add(buildJsonObject { put("type", "web_search_preview") })
+                        if (profile.enableWebSearch && !omitOpenAiNativeWebSearchOnRetry) {
+                            val wsType = if (useLegacyWebSearchPreviewOnRetry) "web_search_preview" else "web_search"
+                            add(buildJsonObject { put("type", wsType) })
                         }
-                        if (profile.enableImageGeneration) {
+                        if (modelOutputsImages && !omitImageGenToolOnRetry) {
                             add(buildJsonObject {
                                 put("type", "image_generation")
                                 val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
@@ -2928,7 +3298,8 @@ object AiProviderEngine {
                             session.workspacePath,
                             profile.allowShellExecution,
                             goalModeActive = circuitBreaker.goalState != null,
-                            enableWebTools = profile.enableUrlContext
+                            enableWebTools = profile.enableWebSearch || profile.enableUrlContext,
+                            includeLocalWebSearchTool = profile.enableWebSearch && omitOpenAiNativeWebSearchOnRetry
                         )
                         wsTools.forEach { add(it) }
                     }
@@ -2992,7 +3363,14 @@ object AiProviderEngine {
                                         val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
                                         if (delta.isNotEmpty()) {
                                             onFirstToken()
+                                            roundReasoningBuilder.append(delta)
                                             onThinking(delta)
+                                        }
+                                    }
+                                    "response.output_text.annotation.added" -> {
+                                        val ann = evObj["annotation"] as? JsonObject
+                                        if (ann != null) {
+                                            extractCitationFromOpenAiAnnotation(ann, onCitation)
                                         }
                                     }
                                     "response.output_item.added" -> {
@@ -3045,6 +3423,12 @@ object AiProviderEngine {
                                                 stepEmittedOutput = true
                                                 saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
                                             }
+                                        } else if (itemType == "reasoning") {
+                                            val enc = item["encrypted_content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                            if (enc.isNotBlank()) roundEncryptedReasoning = enc
+                                        }
+                                        if (item != null) {
+                                            extractCitationsFromOpenAiResponsesItem(item, onCitation)
                                         }
                                     }
                                     "response.completed" -> {
@@ -3061,6 +3445,11 @@ object AiProviderEngine {
                                                 val args = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
                                                 addUniqueToolCall(callId, name, args)
                                             }
+                                            if (item["type"]?.jsonPrimitive?.contentOrNull == "reasoning") {
+                                                val enc = item["encrypted_content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                                if (enc.isNotBlank()) roundEncryptedReasoning = enc
+                                            }
+                                            extractCitationsFromOpenAiResponsesItem(item, onCitation)
                                         }
                                         val usage = respSub?.get("usage") as? JsonObject
                                         if (usage != null) {
@@ -3117,6 +3506,7 @@ object AiProviderEngine {
                                             }
                                         }
                                     }
+                                    extractCitationsFromOpenAiResponsesItem(item, onCitation)
                                 }
                             }
                         )
@@ -3134,6 +3524,30 @@ object AiProviderEngine {
                         if (useChainedId) {
                             currentPrevResponseId = ""
                             onStatus("Stateful response chain rejected — retrying step with full history…")
+                            continue
+                        }
+                        if (!omitEncryptedContentIncludeOnRetry && (errMsg.contains("encrypted_content") || errMsg.contains("include"))) {
+                            omitEncryptedContentIncludeOnRetry = true
+                            onStatus("Endpoint rejected reasoning.encrypted_content include — retrying without include…")
+                            continue
+                        }
+                        if (!useLegacyWebSearchPreviewOnRetry && profile.enableWebSearch &&
+                            (errMsg.contains("web_search") && !errMsg.contains("web_search_preview"))
+                        ) {
+                            useLegacyWebSearchPreviewOnRetry = true
+                            onStatus("Endpoint uses legacy web_search_preview tool — switching automatically…")
+                            continue
+                        }
+                        if (useLegacyWebSearchPreviewOnRetry && !omitOpenAiNativeWebSearchOnRetry && profile.enableWebSearch &&
+                            errMsg.contains("web_search")
+                        ) {
+                            omitOpenAiNativeWebSearchOnRetry = true
+                            onStatus("Endpoint does not support native web search — switching to free local web_search cascade…")
+                            continue
+                        }
+                        if (!omitImageGenToolOnRetry && modelOutputsImages && errMsg.contains("image_generation")) {
+                            omitImageGenToolOnRetry = true
+                            onStatus("Endpoint rejected image_generation tool — retrying without image_generation tool…")
                             continue
                         }
                         if (!omitReasoningOnRetry && (errMsg.contains("reasoning") || errMsg.contains("effort") || errMsg.contains("summary"))) {
@@ -3212,6 +3626,23 @@ object AiProviderEngine {
             }
             pendingStopHookPrompt = ""
 
+            if (roundReasoningBuilder.isNotEmpty() || roundEncryptedReasoning.isNotEmpty()) {
+                extraResponsesLoopItems.add(buildJsonObject {
+                    put("type", "reasoning")
+                    putJsonArray("summary") {
+                        if (roundReasoningBuilder.isNotEmpty()) {
+                            add(buildJsonObject {
+                                put("type", "summary_text")
+                                put("text", roundReasoningBuilder.toString())
+                            })
+                        }
+                    }
+                    if (roundEncryptedReasoning.isNotEmpty()) {
+                        put("encrypted_content", roundEncryptedReasoning)
+                    }
+                })
+            }
+
             if (roundTextBuilder.isNotEmpty()) {
                 extraResponsesLoopItems.add(buildJsonObject {
                     put("type", "message")
@@ -3227,7 +3658,8 @@ object AiProviderEngine {
             }
 
             val results = mutableListOf<ToolCallRecord>()
-            for ((callId, fnPair) in turnToolCalls) {
+            for ((idx, entry) in turnToolCalls.withIndex()) {
+                val (callId, fnPair) = entry
                 extraResponsesLoopItems.add(buildJsonObject {
                     put("type", "function_call")
                     put("call_id", callId)
@@ -3243,7 +3675,15 @@ object AiProviderEngine {
                     toolName = fnPair.first,
                     argumentsJson = fnPair.second
                 )
-                val rec = circuitBreaker.onToolExecuted(rawRec)
+                val signedRec = if (idx == 0 && (roundEncryptedReasoning.isNotEmpty() || roundReasoningBuilder.isNotEmpty())) {
+                    rawRec.copy(
+                        thoughtSignature = roundEncryptedReasoning,
+                        precedingThinking = roundReasoningBuilder.toString().trim()
+                    )
+                } else {
+                    rawRec
+                }
+                val rec = circuitBreaker.onToolExecuted(signedRec)
                 circuitBreaker.goalState?.let { onGoalProgress(it) }
                 onToolCall(rec)
                 results.add(rec)
@@ -3332,10 +3772,30 @@ object AiProviderEngine {
             if (role == MessageRole.ASSISTANT) {
                 val cleanText = stripInlineErrorNotices(text)
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
+                val thinkSig = nodeVar?.thinkingSignature.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
                 var emittedAny = false
 
-                for (tc in toolCalls) {
+                for ((tcIdx, tc) in toolCalls.withIndex()) {
+                    val stepEnc = tc.thoughtSignature.ifBlank { if (tcIdx == 0) thinkSig else "" }
+                    val stepSummary = tc.precedingThinking.ifBlank { if (tcIdx == 0) thinkSummary else "" }
+                    if (stepEnc.isNotBlank() || stepSummary.isNotBlank()) {
+                        items.add(buildJsonObject {
+                            put("type", "reasoning")
+                            putJsonArray("summary") {
+                                if (stepSummary.isNotBlank()) {
+                                    add(buildJsonObject {
+                                        put("type", "summary_text")
+                                        put("text", stepSummary)
+                                    })
+                                }
+                            }
+                            if (stepEnc.isNotBlank()) {
+                                put("encrypted_content", stepEnc)
+                            }
+                        })
+                        emittedAny = true
+                    }
                     val callId = tc.id.ifBlank { "call_${tc.name}" }
                     items.add(buildJsonObject {
                         put("type", "function_call")
@@ -3405,7 +3865,8 @@ object AiProviderEngine {
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (Int, Int, Int, Int) -> Unit
+        onUsage: (Int, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
@@ -3414,7 +3875,9 @@ object AiProviderEngine {
         var stripSamplingOnRetry = false
         var omitReasoningEffortOnRetry = false
         var omitStreamOptionsOnRetry = false
-
+        var omitModalitiesOnRetry = false
+        val knownModalities = resolveKnownOutputModalities(profile, model)
+        val modelOutputsImages = knownModalities.contains("image")
         var loopStep = 0
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
@@ -3457,7 +3920,7 @@ object AiProviderEngine {
                         }
                         put("reasoning_effort", normalizedEffort)
                     }
-                    if (profile.enableImageGeneration) {
+                    if (modelOutputsImages && !omitModalitiesOnRetry) {
                         putJsonArray("modalities") {
                             add(JsonPrimitive("text"))
                             add(JsonPrimitive("image"))
@@ -3576,7 +4039,9 @@ object AiProviderEngine {
                                             }
                                         }
                                     }
+                                    extractCitationsFromChatCompletionsObject(delta, onCitation)
                                 }
+                                extractCitationsFromChatCompletionsObject(obj, onCitation)
                                 val usage = obj["usage"] as? JsonObject
                                 if (usage != null) {
                                     val inTok = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
@@ -3619,6 +4084,8 @@ object AiProviderEngine {
                                         roundToolCalls[idx] = Triple(idPart, namePart, StringBuilder(argsPart))
                                     }
                                 }
+                                if (firstMsg != null) extractCitationsFromChatCompletionsObject(firstMsg, onCitation)
+                                extractCitationsFromChatCompletionsObject(root, onCitation)
                             }
                         )
                     }
@@ -3641,6 +4108,11 @@ object AiProviderEngine {
                         if (!omitStreamOptionsOnRetry && errMsg.contains("stream_options")) {
                             omitStreamOptionsOnRetry = true
                             onStatus("Endpoint rejected stream_options — retrying without stream_options…")
+                            continue
+                        }
+                        if (!omitModalitiesOnRetry && modelOutputsImages && errMsg.contains("modalities")) {
+                            omitModalitiesOnRetry = true
+                            onStatus("Endpoint rejected modalities array — retrying without modalities…")
                             continue
                         }
                     }
@@ -3900,7 +4372,8 @@ object AiProviderEngine {
         onContent: suspend (String) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int) -> Unit
+        onUsage: (String, Int, Int, Int) -> Unit,
+        onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
@@ -3911,6 +4384,7 @@ object AiProviderEngine {
         var stripSamplingOnRetry = false
         // "auto" -> adaptive (or budget if thinkingBudgetTokens >= 1024); "budget" -> fallback enabled+budget; "omit" -> omit thinking object
         var thinkingModeOverride = "auto"
+        var omitNativeWebSearchOnRetry = false
         var loopStep = 0
 
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
@@ -3963,12 +4437,19 @@ object AiProviderEngine {
                             put("type", "enabled")
                             put("budget_tokens", effectiveBudget)
                         }
-                    } else if (!stripSamplingOnRetry) {
-                        // Anthropic rejects requests that specify both temperature and top_p; prefer temperature when set
-                        if (profile.temperature != null) {
-                            put("temperature", profile.temperature)
-                        } else if (profile.topP != null) {
-                            put("top_p", profile.topP)
+                    } else {
+                        if (thinkingModeOverride != "omit" && (lowerEffort == "none" || lowerEffort == "off")) {
+                            putJsonObject("thinking") {
+                                put("type", "disabled")
+                            }
+                        }
+                        if (!stripSamplingOnRetry) {
+                            // Anthropic rejects requests that specify both temperature and top_p; prefer temperature when set
+                            if (profile.temperature != null) {
+                                put("temperature", profile.temperature)
+                            } else if (profile.topP != null) {
+                                put("top_p", profile.topP)
+                            }
                         }
                     }
 
@@ -4019,10 +4500,21 @@ object AiProviderEngine {
                         session.workspacePath,
                         profile.allowShellExecution,
                         goalModeActive = circuitBreaker.goalState != null,
-                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext
+                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext,
+                        includeLocalWebSearchTool = profile.enableWebSearch && omitNativeWebSearchOnRetry
                     )
-                    if (wsTools.isNotEmpty()) {
-                        put("tools", wsTools)
+                    val allAnthropicTools = buildJsonArray {
+                        if (profile.enableWebSearch && !omitNativeWebSearchOnRetry) {
+                            add(buildJsonObject {
+                                put("type", "web_search_20250305")
+                                put("name", "web_search")
+                                put("max_uses", 5)
+                            })
+                        }
+                        wsTools.forEach { add(it) }
+                    }
+                    if (allAnthropicTools.isNotEmpty()) {
+                        put("tools", allAnthropicTools)
                     }
                 }
 
@@ -4121,6 +4613,12 @@ object AiProviderEngine {
                                                     initialInputJson = initInput
                                                 )
                                             }
+                                            "web_search_tool_result" -> {
+                                                extractCitationsFromAnthropicBlock(cb, onCitation)
+                                            }
+                                        }
+                                        if (cb != null) {
+                                            extractCitationsFromAnthropicBlock(cb, onCitation)
                                         }
                                     }
                                     "content_block_delta" -> {
@@ -4162,11 +4660,20 @@ object AiProviderEngine {
                                                 val toolBlock = streamBlocksByIndex[idx] as? AnthropicStreamBlock.ToolUse
                                                 toolBlock?.streamedInputJson?.append(partial)
                                             }
+                                            "citations_delta" -> {
+                                                val citObj = deltaObj["citation"] as? JsonObject ?: deltaObj
+                                                val currentBlockTxt = (streamBlocksByIndex[idx] as? AnthropicStreamBlock.Text)?.text?.toString().orEmpty()
+                                                extractCitationFromAnthropicCitationObj(citObj, currentBlockTxt, onCitation)
+                                            }
                                         }
                                     }
                                     "message_delta" -> {
                                         val usage = evObj["usage"] as? JsonObject
                                         if (usage != null) {
+                                            val dIn = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val dCache = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            if (dIn > 0) inTok = dIn
+                                            if (dCache > 0) cacheReadTok = dCache
                                             outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: outTok
                                             onUsage(msgId, inTok, cacheReadTok, outTok)
                                         }
@@ -4230,6 +4737,7 @@ object AiProviderEngine {
                                             )
                                         }
                                     }
+                                    extractCitationsFromAnthropicBlock(cb, onCitation)
                                 }
                             }
                         )
@@ -4244,6 +4752,13 @@ object AiProviderEngine {
                         if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("top_k") || errMsg.contains("sampling"))) {
                             stripSamplingOnRetry = true
                             onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                            continue
+                        }
+                        if (!omitNativeWebSearchOnRetry && profile.enableWebSearch &&
+                            (errMsg.contains("web_search_20250305") || errMsg.contains("web_search"))
+                        ) {
+                            omitNativeWebSearchOnRetry = true
+                            onStatus("Endpoint does not support native web_search_20250305 — falling back to local web_fetch tool…")
                             continue
                         }
                         if (thinkingModeOverride == "auto" && (errMsg.contains("adaptive") || errMsg.contains("output_config") || errMsg.contains("effort") || errMsg.contains("display"))) {
@@ -4574,8 +5089,12 @@ object AiProviderEngine {
     private suspend fun executeOpenAiDirectImagesEndpoint(
         profile: ProviderProfile,
         model: String,
+        session: ChatSession,
         historyNodes: List<MessageNode>,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
         onStatus: suspend (String) -> Unit,
+        onFirstToken: () -> Unit,
+        onThinking: suspend (String) -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onContent: suspend (String) -> Unit,
         onRawWire: suspend (String, String) -> Unit
@@ -4610,9 +5129,33 @@ object AiProviderEngine {
             setBody(reqStr)
         }
         val bodyText = resp.bodyAsText()
+        val statusVal = resp.status.value
         onRawWire(reqStr, bodyText)
+        if (statusVal == 404 || statusVal == 405 || statusVal == 501 ||
+            (statusVal == 400 && (bodyText.contains("chat", ignoreCase = true) || bodyText.contains("messages", ignoreCase = true)))
+        ) {
+            onStatus("Proxy serves $model via /v1/chat/completions — routing automatically…")
+            executeOpenAiChatCompletionsLoop(
+                profile = profile,
+                model = model,
+                session = session,
+                historyNodes = historyNodes,
+                continuePrefix = "",
+                circuitBreaker = circuitBreaker,
+                onStatus = onStatus,
+                onGoalProgress = {},
+                onFirstToken = onFirstToken,
+                onThinking = onThinking,
+                onContent = onContent,
+                onMedia = onMedia,
+                onToolCall = {},
+                onRawWire = onRawWire,
+                onUsage = { _, _, _, _ -> }
+            )
+            return
+        }
         if (!resp.status.isSuccess()) {
-            error("Image Generation HTTP ${resp.status.value}: $bodyText")
+            error("Image Generation HTTP $statusVal: $bodyText")
         }
 
         val root = json.parseToJsonElement(bodyText).jsonObject
@@ -4642,6 +5185,7 @@ object AiProviderEngine {
         session: ChatSession,
         historyNodes: List<MessageNode>,
         circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        forceVideoMode: Boolean = false,
         onStatus: suspend (String, String) -> Unit,
         onFirstToken: () -> Unit,
         onThinking: suspend (String) -> Unit,
@@ -4656,12 +5200,13 @@ object AiProviderEngine {
         val baseClean = profile.baseUrl.trimEnd('/')
         val rootBase = baseClean.removeSuffix("/v1").removeSuffix("/api/v3").trimEnd('/')
 
-        val isSeedanceVideo = profile.enableVideoGeneration ||
-            model.contains("seedance", ignoreCase = true) ||
-            profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true)
+        val knownModalities = resolveKnownOutputModalities(profile, model)
+        val isVideoTaskMode = forceVideoMode ||
+            knownModalities.contains("video") ||
+            profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
+            profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
 
-        if (isSeedanceVideo) {
-            // Seedance Video Generation Task API
+        if (isVideoTaskMode) {
             val videoRes = if (profile.mediaResolution in listOf("480p", "720p", "1080p")) {
                 profile.mediaResolution
             } else "720p"
@@ -4892,7 +5437,26 @@ object AiProviderEngine {
             }
 
             if (lastStatus !in 200..299) {
-                error("ByteDance Seedream HTTP $lastStatus: $bodyText")
+                val lowerBody = bodyText.lowercase()
+                if (!forceVideoMode && (lowerBody.contains("video") || lowerBody.contains("tasks") || lowerBody.contains("content"))) {
+                    recordDiscoveredModality(model, listOf("video"))
+                    executeByteDanceArkGeneration(
+                        profile = profile,
+                        model = model,
+                        session = session,
+                        historyNodes = historyNodes,
+                        circuitBreaker = circuitBreaker,
+                        forceVideoMode = true,
+                        onStatus = onStatus,
+                        onFirstToken = onFirstToken,
+                        onThinking = onThinking,
+                        onMedia = onMedia,
+                        onContent = onContent,
+                        onRawWire = onRawWire
+                    )
+                    return
+                }
+                error("Image Generation HTTP $lastStatus: $bodyText")
             }
 
             val root = json.parseToJsonElement(bodyText).jsonObject
@@ -5666,6 +6230,451 @@ object AiProviderEngine {
             onSseEvent(currentEvent, dataLines.joinToString("\n"))
         } else if (!sawSseLine && rawFallbackBuffer.isNotBlank()) {
             onPlainJsonFallback(rawFallbackBuffer.toString().trim())
+        }
+    }
+
+    // ============================================================================================
+    // UNIVERSAL LINE-GROUNDED WEB SOURCE CITATION ENGINE
+    // Extracts citations across Gemini, OpenAI Responses, OpenAI Chat Completions, Anthropic Messages,
+    // and local `web_fetch` tool executions, and binds each source to the exact line(s) it grounds!
+    // ============================================================================================
+    internal data class RawWebCitation(
+        val url: String,
+        val title: String = "",
+        val snippet: String = "",
+        val groundedText: String = "",
+        val startIndex: Int = -1,
+        val endIndex: Int = -1
+    )
+
+    internal fun extractDomainFromUrl(rawUrl: String): String {
+        val withoutScheme = rawUrl.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .removePrefix("www.")
+        return withoutScheme.substringBefore("/").substringBefore("?").substringBefore("#").lowercase()
+    }
+
+    internal fun extractCitationsFromToolCall(tc: ToolCallRecord): List<RawWebCitation> {
+        if (tc.isError) return emptyList()
+        if (tc.name.equals("web_search", ignoreCase = true)) {
+            val results = mutableListOf<RawWebCitation>()
+            val lines = tc.resultText.lines().map { it.trim() }
+            val itemLinkRegex = Regex("""\*\*\[([^\]]+)\]\((https?://[^\s)]+)\)\*\*""")
+            for ((idx, line) in lines.withIndex()) {
+                val match = itemLinkRegex.find(line) ?: continue
+                val title = match.groupValues[1].trim()
+                val url = match.groupValues[2].trim()
+                val snippet = lines.drop(idx + 1).take(3)
+                    .firstOrNull { it.startsWith("Snippet:", ignoreCase = true) }
+                    ?.removePrefix("Snippet:")?.removePrefix("snippet:")?.trim().orEmpty()
+                if (url.isNotBlank()) {
+                    results.add(RawWebCitation(url = url, title = title, snippet = snippet))
+                }
+            }
+            return results
+        }
+        if (!tc.name.equals("web_fetch", ignoreCase = true)) return emptyList()
+        val argObj = runCatching { json.parseToJsonElement(tc.argumentsJson).jsonObject }.getOrNull()
+        val url = argObj?.get("url")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        if (url.isBlank() || (!url.startsWith("http://") && !url.startsWith("https://"))) return emptyList()
+        val lines = tc.resultText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val titleLine = lines.firstOrNull { it.startsWith("# ") || it.startsWith("Title:", ignoreCase = true) }
+            ?.removePrefix("# ")?.removePrefix("Title:")?.removePrefix("title:")?.trim()
+            ?: extractDomainFromUrl(url)
+        val snippetLine = lines.firstOrNull {
+            !it.startsWith("URL:", ignoreCase = true) &&
+                !it.startsWith("Title:", ignoreCase = true) &&
+                !it.startsWith("#") &&
+                it.length > 24
+        }?.take(180).orEmpty()
+        return listOf(RawWebCitation(url = url, title = titleLine, snippet = snippetLine))
+    }
+
+    internal fun extractCitationFromToolCall(tc: ToolCallRecord): RawWebCitation? =
+        extractCitationsFromToolCall(tc).firstOrNull()
+
+    internal fun extractMarkdownLinksAsCitations(text: String): List<RawWebCitation> {
+        if (!text.contains("http")) return emptyList()
+        val out = mutableListOf<RawWebCitation>()
+        val mdLinkRegex = Regex("""\[([^\]]+)\]\((https?://[^\s)]+)\)""")
+        for (match in mdLinkRegex.findAll(text)) {
+            val label = match.groupValues.getOrNull(1)?.trim().orEmpty()
+            val url = match.groupValues.getOrNull(2)?.trim().orEmpty()
+            if (url.isNotBlank() && !url.endsWith(".png", ignoreCase = true) &&
+                !url.endsWith(".jpg", ignoreCase = true) && !url.endsWith(".mp4", ignoreCase = true)
+            ) {
+                out.add(
+                    RawWebCitation(
+                        url = url,
+                        title = label.ifBlank { extractDomainFromUrl(url) },
+                        startIndex = match.range.first,
+                        endIndex = match.range.last + 1
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    private suspend fun extractCitationsFromGeminiCandidate(
+        candidateObj: JsonObject?,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        if (candidateObj == null) return
+        val gm = (candidateObj["groundingMetadata"] as? JsonObject)
+            ?: (candidateObj["grounding_metadata"] as? JsonObject) ?: return
+        val chunks = (gm["groundingChunks"] as? JsonArray) ?: (gm["grounding_chunks"] as? JsonArray)
+        val chunkList = mutableListOf<Pair<String, String>>() // url to title
+        chunks?.forEach { chEl ->
+            val chObj = chEl as? JsonObject ?: return@forEach
+            val webObj = (chObj["web"] as? JsonObject) ?: chObj
+            val uri = webObj["uri"]?.jsonPrimitive?.contentOrNull
+                ?: webObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+            val title = webObj["title"]?.jsonPrimitive?.contentOrNull ?: ""
+            chunkList.add(uri to title)
+            if (uri.isNotBlank()) {
+                onCitation(RawWebCitation(url = uri, title = title))
+            }
+        }
+        val supports = (gm["groundingSupports"] as? JsonArray) ?: (gm["grounding_supports"] as? JsonArray)
+        supports?.forEach { supEl ->
+            val supObj = supEl as? JsonObject ?: return@forEach
+            val segObj = supObj["segment"] as? JsonObject
+            val segText = segObj?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
+            val startIdx = segObj?.get("startIndex")?.jsonPrimitive?.intOrNull
+                ?: segObj?.get("start_index")?.jsonPrimitive?.intOrNull ?: -1
+            val endIdx = segObj?.get("endIndex")?.jsonPrimitive?.intOrNull
+                ?: segObj?.get("end_index")?.jsonPrimitive?.intOrNull ?: -1
+            val indices = (supObj["groundingChunkIndices"] as? JsonArray)
+                ?: (supObj["grounding_chunk_indices"] as? JsonArray)
+            indices?.forEach { idxEl ->
+                val cIdx = idxEl.jsonPrimitive.intOrNull ?: return@forEach
+                val pair = chunkList.getOrNull(cIdx) ?: return@forEach
+                if (pair.first.isNotBlank()) {
+                    onCitation(
+                        RawWebCitation(
+                            url = pair.first,
+                            title = pair.second,
+                            groundedText = segText,
+                            startIndex = startIdx,
+                            endIndex = endIdx
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun extractCitationsFromGeminiObject(
+        obj: JsonObject?,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        if (obj == null) return
+        extractCitationsFromGeminiCandidate(obj, onCitation)
+        val cType = obj["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (cType == "google_search_result" || cType == "url_context_result" || cType == "web_search_result") {
+            val directUrl = obj["url"]?.jsonPrimitive?.contentOrNull
+                ?: obj["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val directTitle = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (directUrl.isNotBlank()) {
+                onCitation(RawWebCitation(url = directUrl, title = directTitle))
+            }
+            val resultsArr = (obj["results"] as? JsonArray) ?: (obj["content"] as? JsonArray)
+            resultsArr?.forEach { rEl ->
+                val rObj = rEl as? JsonObject ?: return@forEach
+                val u = rObj["url"]?.jsonPrimitive?.contentOrNull
+                    ?: rObj["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val t = rObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val s = rObj["snippet"]?.jsonPrimitive?.contentOrNull
+                    ?: rObj["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (u.isNotBlank()) {
+                    onCitation(RawWebCitation(url = u, title = t, snippet = s.take(180)))
+                }
+            }
+        }
+        val annotations = (obj["annotations"] as? JsonArray) ?: (obj["citations"] as? JsonArray)
+        annotations?.forEach { aEl ->
+            val aObj = aEl as? JsonObject ?: return@forEach
+            val u = aObj["url"]?.jsonPrimitive?.contentOrNull
+                ?: aObj["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val t = aObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val st = aObj["start_index"]?.jsonPrimitive?.intOrNull
+                ?: aObj["startIndex"]?.jsonPrimitive?.intOrNull ?: -1
+            val en = aObj["end_index"]?.jsonPrimitive?.intOrNull
+                ?: aObj["endIndex"]?.jsonPrimitive?.intOrNull ?: -1
+            if (u.isNotBlank()) {
+                onCitation(RawWebCitation(url = u, title = t, startIndex = st, endIndex = en))
+            }
+        }
+        (obj["content"] as? JsonArray)?.forEach { cEl ->
+            extractCitationsFromGeminiObject(cEl as? JsonObject, onCitation)
+        }
+    }
+
+    private suspend fun extractCitationFromOpenAiAnnotation(
+        ann: JsonObject,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        val sub = (ann["url_citation"] as? JsonObject) ?: ann
+        val url = sub["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (url.isBlank()) return
+        val title = sub["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val startIdx = sub["start_index"]?.jsonPrimitive?.intOrNull ?: -1
+        val endIdx = sub["end_index"]?.jsonPrimitive?.intOrNull ?: -1
+        onCitation(RawWebCitation(url = url, title = title, startIndex = startIdx, endIndex = endIdx))
+    }
+
+    private suspend fun extractCitationsFromOpenAiResponsesItem(
+        item: JsonObject,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        val itemType = item["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (itemType == "web_search_call") {
+            val actionObj = item["action"] as? JsonObject
+            val sourcesArr = (actionObj?.get("sources") as? JsonArray)
+                ?: (item["sources"] as? JsonArray)
+                ?: (item["results"] as? JsonArray)
+            sourcesArr?.forEach { sEl ->
+                val sObj = sEl as? JsonObject ?: return@forEach
+                val u = sObj["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val t = sObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (u.isNotBlank()) {
+                    onCitation(RawWebCitation(url = u, title = t))
+                }
+            }
+        }
+        val contentArr = item["content"] as? JsonArray
+        contentArr?.forEach { cEl ->
+            val cObj = cEl as? JsonObject ?: return@forEach
+            val cTxt = cObj["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val anns = cObj["annotations"] as? JsonArray
+            anns?.forEach { aEl ->
+                val aObj = aEl as? JsonObject ?: return@forEach
+                val sub = (aObj["url_citation"] as? JsonObject) ?: aObj
+                val u = sub["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val t = sub["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val st = sub["start_index"]?.jsonPrimitive?.intOrNull ?: -1
+                val en = sub["end_index"]?.jsonPrimitive?.intOrNull ?: -1
+                if (u.isNotBlank()) {
+                    onCitation(RawWebCitation(url = u, title = t, groundedText = if (st < 0) cTxt else "", startIndex = st, endIndex = en))
+                }
+            }
+        }
+    }
+
+    private suspend fun extractCitationsFromChatCompletionsObject(
+        obj: JsonObject,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        val anns = obj["annotations"] as? JsonArray
+        anns?.forEach { aEl ->
+            val aObj = aEl as? JsonObject ?: return@forEach
+            extractCitationFromOpenAiAnnotation(aObj, onCitation)
+        }
+        val citations = obj["citations"] as? JsonArray
+        citations?.forEach { cEl ->
+            when (cEl) {
+                is JsonPrimitive -> {
+                    val u = cEl.contentOrNull?.trim().orEmpty()
+                    if (u.startsWith("http")) onCitation(RawWebCitation(url = u))
+                }
+                is JsonObject -> {
+                    val u = cEl["url"]?.jsonPrimitive?.contentOrNull
+                        ?: cEl["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    val t = cEl["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    if (u.isNotBlank()) onCitation(RawWebCitation(url = u, title = t))
+                }
+                else -> {}
+            }
+        }
+    }
+
+    private suspend fun extractCitationFromAnthropicCitationObj(
+        citObj: JsonObject,
+        blockText: String,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        val u = citObj["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (u.isBlank()) return
+        val t = citObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val cited = citObj["cited_text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        onCitation(
+            RawWebCitation(
+                url = u,
+                title = t,
+                snippet = cited.take(180),
+                groundedText = blockText.ifBlank { cited }
+            )
+        )
+    }
+
+    private suspend fun extractCitationsFromAnthropicBlock(
+        cb: JsonObject,
+        onCitation: suspend (RawWebCitation) -> Unit
+    ) {
+        val bType = cb["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (bType == "web_search_tool_result") {
+            val contentArr = cb["content"] as? JsonArray
+            contentArr?.forEach { rEl ->
+                val rObj = rEl as? JsonObject ?: return@forEach
+                val u = rObj["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val t = rObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (u.isNotBlank()) {
+                    onCitation(RawWebCitation(url = u, title = t))
+                }
+            }
+        }
+        val blockTxt = cb["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val citationsArr = cb["citations"] as? JsonArray
+        citationsArr?.forEach { cEl ->
+            val cObj = cEl as? JsonObject ?: return@forEach
+            extractCitationFromAnthropicCitationObj(cObj, blockTxt, onCitation)
+        }
+    }
+
+    /**
+     * Deduplicates raw web citations and binds each source to the exact 1-based line number(s)
+     * and line excerpt(s) in `assistantContent` that it grounds!
+     */
+    internal fun bindSourcesToMessageLines(
+        assistantContent: String,
+        rawCitations: List<RawWebCitation>
+    ): List<WebSourceCitation> {
+        if (rawCitations.isEmpty()) return emptyList()
+
+        data class IndexedLine(
+            val lineNumber: Int,
+            val startChar: Int,
+            val endChar: Int,
+            val cleanText: String
+        )
+
+        val indexedLines = mutableListOf<IndexedLine>()
+        var cursor = 0
+        var nonBlankCounter = 0
+        for (rawLine in assistantContent.split('\n')) {
+            val start = cursor
+            val end = cursor + rawLine.length
+            cursor = end + 1
+            val trimmed = rawLine.trim()
+                .removePrefix("- ")
+                .removePrefix("* ")
+                .replace(Regex("^#+\\s*"), "")
+                .trim()
+            if (trimmed.isNotEmpty() && !trimmed.startsWith("```")) {
+                nonBlankCounter++
+                indexedLines.add(
+                    IndexedLine(
+                        lineNumber = nonBlankCounter,
+                        startChar = start,
+                        endChar = end,
+                        cleanText = trimmed
+                    )
+                )
+            }
+        }
+
+        // Group by normalized URL while merging titles, snippets, groundedText, and character spans
+        val groupedByUrl = LinkedHashMap<String, MutableList<RawWebCitation>>()
+        for (cit in rawCitations) {
+            val normUrl = cit.url.trim()
+            if (normUrl.isEmpty()) continue
+            groupedByUrl.getOrPut(normUrl) { mutableListOf() }.add(cit)
+        }
+
+        val stopWords = setOf(
+            "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+            "have", "has", "had", "not", "but", "what", "when", "where", "which", "who",
+            "how", "why", "can", "will", "into", "your", "more", "about", "http", "https", "www", "com", "org", "io", "dev"
+        )
+
+        fun extractSignificantTokens(s: String): Set<String> =
+            s.lowercase()
+                .split(Regex("[^a-z0-9.]+"))
+                .map { it.trim('.') }
+                .filter { it.length >= 3 && it !in stopWords }
+                .toSet()
+
+        return groupedByUrl.entries.mapIndexed { idx, (url, group) ->
+            val citationIndex = idx + 1
+            val domain = extractDomainFromUrl(url)
+            val bestTitle = group.firstNotNullOfOrNull { it.title.takeIf { t -> t.isNotBlank() } }
+                ?: domain
+            val bestSnippet = group.firstNotNullOfOrNull { it.snippet.takeIf { s -> s.isNotBlank() } }.orEmpty()
+
+            val matchedLines = LinkedHashMap<Int, String>()
+
+            if (indexedLines.isNotEmpty()) {
+                // 1. Direct character-offset or segment-text match from provider grounding metadata
+                for (g in group) {
+                    if (g.startIndex >= 0 || g.endIndex > 0) {
+                        val targetPos = if (g.startIndex >= 0) g.startIndex else g.endIndex
+                        val hit = indexedLines.firstOrNull { targetPos in it.startChar..it.endChar }
+                            ?: indexedLines.minByOrNull { kotlin.math.abs(it.startChar - targetPos) }
+                        if (hit != null) {
+                            matchedLines[hit.lineNumber] = hit.cleanText
+                        }
+                    }
+                    if (g.groundedText.isNotBlank()) {
+                        val segClean = g.groundedText.trim()
+                        for (line in indexedLines) {
+                            if (line.cleanText.contains(segClean, ignoreCase = true) ||
+                                segClean.contains(line.cleanText, ignoreCase = true)
+                            ) {
+                                matchedLines[line.lineNumber] = line.cleanText
+                            }
+                        }
+                    }
+                }
+
+                // 2. Inline URL, domain, or [index] citation marker match
+                if (matchedLines.isEmpty()) {
+                    val domainRoot = domain.substringBefore(".")
+                    for (line in indexedLines) {
+                        val lowerLine = line.cleanText.lowercase()
+                        if (lowerLine.contains(url.lowercase()) ||
+                            (domain.isNotBlank() && lowerLine.contains(domain)) ||
+                            (domainRoot.length >= 4 && lowerLine.contains(domainRoot)) ||
+                            line.cleanText.contains("[$citationIndex]")
+                        ) {
+                            matchedLines[line.lineNumber] = line.cleanText
+                        }
+                    }
+                }
+
+                // 3. Lexical overlap match between source title/snippet and message lines
+                if (matchedLines.isEmpty()) {
+                    val sourceTokens = extractSignificantTokens("$bestTitle $bestSnippet $domain")
+                    if (sourceTokens.isNotEmpty()) {
+                        val scored = indexedLines.map { line ->
+                            val lineTokens = extractSignificantTokens(line.cleanText)
+                            val overlap = lineTokens.intersect(sourceTokens).size
+                            line to overlap
+                        }.filter { it.second > 0 }
+                            .sortedByDescending { it.second }
+                        for ((line, _) in scored.take(2)) {
+                            matchedLines[line.lineNumber] = line.cleanText
+                        }
+                    }
+                }
+
+                // 4. Fallback: point to the primary substantive line so every source has a clear line reference
+                if (matchedLines.isEmpty()) {
+                    val fallbackLine = indexedLines.getOrNull(idx % indexedLines.size) ?: indexedLines.first()
+                    matchedLines[fallbackLine.lineNumber] = fallbackLine.cleanText
+                }
+            }
+
+            WebSourceCitation(
+                index = citationIndex,
+                url = url,
+                title = bestTitle,
+                domain = domain,
+                groundedLineNumbers = matchedLines.keys.toList(),
+                groundedLines = matchedLines.values.map { it.take(180) },
+                snippet = bestSnippet
+            )
         }
     }
 }

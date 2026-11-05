@@ -255,6 +255,28 @@ object WorkspaceHarness {
             }
         ),
         ToolDefinition(
+            name = "web_search",
+            description = "Search the live internet for up-to-date information, documentation, news, and facts using a free multi-engine search cascade (DuckDuckGo, Wikipedia, HackerNews), returning titles, URLs, and snippets.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("query") {
+                        put("type", "string")
+                        put("description", "Search query keywords or question.")
+                    }
+                    putJsonObject("max_results") {
+                        put("type", "integer")
+                        put("description", "Maximum number of search results to return (default 6).")
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("query"))
+                }
+            }
+        ),
+        ToolDefinition(
             name = "web_fetch",
             description = "Fetch the contents of any HTTP/HTTPS URL and extract clean readable Markdown/text or JSON.",
             requiresWritePermission = false,
@@ -432,14 +454,18 @@ object WorkspaceHarness {
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
     ): List<ToolDefinition> {
         val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
-        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools) return emptyList()
+        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool) return emptyList()
         return ALL_TOOLS.filter { tool ->
+            if (tool.name == "web_search" && !includeLocalWebSearchTool) {
+                return@filter false
+            }
             if (!hasMountedWorkspace) {
-                if (!goalModeActive && enableWebTools) {
-                    tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll"
+                if (!goalModeActive && (enableWebTools || includeLocalWebSearchTool)) {
+                    tool.name == "web_search" || tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll"
                 } else {
                     !tool.requiresWorkspaceFolder
                 }
@@ -479,9 +505,10 @@ object WorkspaceHarness {
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -496,16 +523,18 @@ object WorkspaceHarness {
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
-    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools)
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)
 
     fun buildOpenAiResponsesTools(
         mode: WorkspaceMode,
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
-    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools)
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)
 
     /**
      * Formats active workspace & utility tools for OpenAI `/v1/chat/completions`.
@@ -515,9 +544,10 @@ object WorkspaceHarness {
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
             add(buildJsonObject {
                 put("type", "function")
                 putJsonObject("function") {
@@ -537,9 +567,10 @@ object WorkspaceHarness {
         workspacePath: String,
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
-        enableWebTools: Boolean = false
+        enableWebTools: Boolean = false,
+        includeLocalWebSearchTool: Boolean = enableWebTools
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
             add(buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
@@ -576,6 +607,7 @@ object WorkspaceHarness {
             "fs_list" -> "Listing workspace ${strArg("path").ifBlank { "root" }}"
             "fs_glob" -> "Matching files with glob '${strArg("pattern").take(36)}'"
             "fs_search" -> "Searching workspace for '${strArg("query").take(36)}'"
+            "web_search" -> "Searching the web for '${strArg("query").take(44)}'"
             "web_fetch" -> "Fetching URL ${strArg("url").take(48)}"
             "calc_eval" -> "Calculating ${strArg("expression").take(36)}"
             "shell_exec" -> "Running shell: ${strArg("command").lineSequence().firstOrNull()?.take(52).orEmpty()}"
@@ -601,6 +633,7 @@ object WorkspaceHarness {
             toolName == "goal_complete" ||
             toolName == "dice_roll" ||
             toolName == "calc_eval" ||
+            toolName == "web_search" ||
             toolName == "web_fetch"
         if (!isFolderFreeTool && (mode == WorkspaceMode.OFF || workspaceRoot.isBlank())) {
             return ToolCallRecord(
@@ -729,6 +762,11 @@ object WorkspaceHarness {
                     PlatformBridge.workspaceDelete(workspaceRoot, rel)
                 }
             }
+            "web_search" -> {
+                val query = strArg("query")
+                val maxRes = (args["max_results"]?.jsonPrimitive?.intOrNull ?: 6).coerceIn(1, 15)
+                executeFreeWebSearch(query, maxRes)
+            }
             "web_fetch" -> {
                 val url = strArg("url")
                 val maxChars = args["max_chars"]?.jsonPrimitive?.intOrNull ?: 24000
@@ -843,7 +881,12 @@ object WorkspaceHarness {
             .replace(Regex("(?is)<h3\\b[^>]*>(.*?)</h3>"), "\n### $1\n")
             .replace(Regex("(?is)<h[4-6]\\b[^>]*>(.*?)</h[4-6]>"), "\n#### $1\n")
             .replace(Regex("(?is)<li\\b[^>]*>(.*?)</li>"), "\n- $1")
-            .replace(Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>"), "[$2]($1)")
+            .replace(Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")) { m ->
+                val rawHref = m.groupValues[1].trim()
+                val cleanHref = unwrapDuckDuckGoRedirectUrl(rawHref)
+                val label = m.groupValues[2].replace(Regex("(?is)<[^>]+>"), "").trim()
+                if (label.isNotEmpty() && cleanHref.startsWith("http")) "[$label]($cleanHref)" else label
+            }
             .replace(Regex("(?is)<(br|hr)\\s*/?>"), "\n")
             .replace(Regex("(?is)</(p|div|section|article|tr|blockquote|pre|ul|ol|table)>"), "\n")
             .replace(Regex("(?is)<[^>]+>"), "")
@@ -859,6 +902,212 @@ object WorkspaceHarness {
             .joinToString("\n")
             .replace(Regex("\n{3,}"), "\n\n")
             .trim()
+    }
+
+    internal data class FreeSearchResultItem(
+        val title: String,
+        val url: String,
+        val snippet: String
+    )
+
+    internal fun urlEncodeQuery(raw: String): String {
+        val sb = StringBuilder()
+        for (b in raw.encodeToByteArray()) {
+            val c = b.toInt() and 0xFF
+            if ((c in 'a'.code..'z'.code) || (c in 'A'.code..'Z'.code) || (c in '0'.code..'9'.code) ||
+                c == '-'.code || c == '_'.code || c == '.'.code
+            ) {
+                sb.append(c.toChar())
+            } else if (c == ' '.code) {
+                sb.append('+')
+            } else {
+                sb.append('%')
+                sb.append(c.toString(16).uppercase().padStart(2, '0'))
+            }
+        }
+        return sb.toString()
+    }
+
+    internal fun urlDecodeComponent(encoded: String): String {
+        val clean = encoded.replace('+', ' ')
+        val out = ByteArray(clean.length)
+        var outIdx = 0
+        var i = 0
+        while (i < clean.length) {
+            val ch = clean[i]
+            if (ch == '%' && i + 2 < clean.length) {
+                val hex = clean.substring(i + 1, i + 3).toIntOrNull(16)
+                if (hex != null) {
+                    out[outIdx++] = hex.toByte()
+                    i += 3
+                    continue
+                }
+            }
+            val bytes = ch.toString().encodeToByteArray()
+            for (b in bytes) {
+                if (outIdx < out.size) out[outIdx++] = b
+            }
+            i++
+        }
+        return out.decodeToString(0, outIdx)
+    }
+
+    internal fun unwrapDuckDuckGoRedirectUrl(rawUrl: String): String {
+        val trimmed = rawUrl.trim().let {
+            if (it.startsWith("//")) "https:$it" else it
+        }
+        if (trimmed.contains("uddg=")) {
+            val uddgParam = trimmed.substringAfter("uddg=").substringBefore("&")
+            val decoded = urlDecodeComponent(uddgParam).trim()
+            if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+                return decoded
+            }
+        }
+        return trimmed
+    }
+
+    internal fun parseDuckDuckGoMarkdownResults(markdownText: String, maxResults: Int): List<FreeSearchResultItem> {
+        val results = mutableListOf<FreeSearchResultItem>()
+        val seenUrls = HashSet<String>()
+        val lines = markdownText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val linkRegex = Regex("""\[([^\]]+)\]\((https?://[^\s)]+)\)""")
+
+        for ((idx, line) in lines.withIndex()) {
+            for (match in linkRegex.findAll(line)) {
+                val title = match.groupValues[1].trim()
+                val rawUrl = match.groupValues[2].trim()
+                val url = unwrapDuckDuckGoRedirectUrl(rawUrl)
+                val lowerUrl = url.lowercase()
+                if (!url.startsWith("http") ||
+                    lowerUrl.contains("duckduckgo.com") ||
+                    lowerUrl.contains("bing.com/aclick") ||
+                    title.length < 3 ||
+                    !seenUrls.add(lowerUrl)
+                ) {
+                    continue
+                }
+                val nextSnippet = lines.drop(idx + 1).take(3)
+                    .firstOrNull { cand ->
+                        !cand.startsWith("[") && cand.length > 24 && !cand.startsWith("http")
+                    }.orEmpty()
+                results.add(
+                    FreeSearchResultItem(
+                        title = title,
+                        url = url,
+                        snippet = nextSnippet.take(240)
+                    )
+                )
+                if (results.size >= maxResults) return results
+            }
+        }
+        return results
+    }
+
+    internal fun parseWikipediaSearchJson(rawJson: String, maxResults: Int): List<FreeSearchResultItem> {
+        val root = runCatching { json.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return emptyList()
+        val searchArr = (root["query"] as? JsonObject)?.get("search") as? JsonArray ?: return emptyList()
+        val results = mutableListOf<FreeSearchResultItem>()
+        for (el in searchArr) {
+            val obj = el as? JsonObject ?: continue
+            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (title.isEmpty()) continue
+            val rawSnippet = obj["snippet"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .replace(Regex("<[^>]+>"), "")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .trim()
+            val wikiSlug = title.replace(' ', '_')
+            val url = "https://en.wikipedia.org/wiki/$wikiSlug"
+            results.add(FreeSearchResultItem(title = "$title — Wikipedia", url = url, snippet = rawSnippet))
+            if (results.size >= maxResults) break
+        }
+        return results
+    }
+
+    internal fun parseHackerNewsAlgoliaJson(rawJson: String, maxResults: Int): List<FreeSearchResultItem> {
+        val root = runCatching { json.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return emptyList()
+        val hitsArr = root["hits"] as? JsonArray ?: return emptyList()
+        val results = mutableListOf<FreeSearchResultItem>()
+        for (el in hitsArr) {
+            val obj = el as? JsonObject ?: continue
+            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (title.isEmpty()) continue
+            val objId = obj["objectID"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val url = obj["url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("http") }
+                ?: if (objId.isNotEmpty()) "https://news.ycombinator.com/item?id=$objId" else continue
+            val points = obj["points"]?.jsonPrimitive?.intOrNull ?: 0
+            val comments = obj["num_comments"]?.jsonPrimitive?.intOrNull ?: 0
+            results.add(
+                FreeSearchResultItem(
+                    title = title,
+                    url = url,
+                    snippet = "Hacker News discussion ($points points, $comments comments)."
+                )
+            )
+            if (results.size >= maxResults) break
+        }
+        return results
+    }
+
+    /**
+     * Executes a 100% free, zero-API-key multi-engine web search cascade:
+     * 1. DuckDuckGo HTML (`https://html.duckduckgo.com/html/?q=...`)
+     * 2. Wikipedia OpenSearch / Query API (`https://en.wikipedia.org/w/api.php?...`)
+     * 3. HackerNews Algolia Search API (`https://hn.algolia.com/api/v1/search?query=...`)
+     */
+    fun executeFreeWebSearch(query: String, maxResults: Int = 6): Result<String> = runCatching {
+        val cleanQuery = query.trim()
+        require(cleanQuery.isNotEmpty()) { "Search query must not be blank." }
+        val encoded = urlEncodeQuery(cleanQuery)
+        val collected = mutableListOf<FreeSearchResultItem>()
+        val seenUrls = HashSet<String>()
+
+        fun addUnique(items: List<FreeSearchResultItem>) {
+            for (item in items) {
+                val key = item.url.lowercase()
+                if (seenUrls.add(key)) {
+                    collected.add(item)
+                    if (collected.size >= maxResults) return
+                }
+            }
+        }
+
+        // 1. Primary: DuckDuckGo HTML search
+        val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
+        PlatformBridge.fetchUrlText(ddgUrl, maxChars = 48_000).onSuccess { ddgMd ->
+            addUnique(parseDuckDuckGoMarkdownResults(ddgMd, maxResults))
+        }
+
+        // 2. Fallback / Supplement: Wikipedia Search API
+        if (collected.size < maxResults) {
+            val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=1&format=json&srlimit=${maxResults.coerceAtMost(5)}"
+            PlatformBridge.fetchUrlText(wikiUrl, maxChars = 32_000).onSuccess { wikiJson ->
+                addUnique(parseWikipediaSearchJson(wikiJson, maxResults - collected.size))
+            }
+        }
+
+        // 3. Fallback / Supplement: HackerNews Algolia Search API
+        if (collected.size < maxResults) {
+            val hnUrl = "https://hn.algolia.com/api/v1/search?query=$encoded&tags=story&hitsPerPage=${maxResults.coerceAtMost(5)}"
+            PlatformBridge.fetchUrlText(hnUrl, maxChars = 32_000).onSuccess { hnJson ->
+                addUnique(parseHackerNewsAlgoliaJson(hnJson, maxResults - collected.size))
+            }
+        }
+
+        if (collected.isEmpty()) {
+            "No web search results found for '$cleanQuery'."
+        } else {
+            buildString {
+                appendLine("### Web Search Results for \"$cleanQuery\"")
+                collected.forEachIndexed { idx, item ->
+                    appendLine("${idx + 1}. **[${item.title}](${item.url})**")
+                    appendLine("   URL: ${item.url}")
+                    if (item.snippet.isNotBlank()) {
+                        appendLine("   Snippet: ${item.snippet}")
+                    }
+                }
+            }.trim()
+        }
     }
 
     /**

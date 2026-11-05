@@ -85,7 +85,8 @@ fun LiteraryProseRenderer(
     enableMarkdown: Boolean = true,
     enableMath: Boolean = true,
     enableInlineDollarMath: Boolean = true,
-    autoCollapseCodeBlocks: Boolean = false
+    autoCollapseCodeBlocks: Boolean = false,
+    highlightedLineSubstring: String = ""
 ) {
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
@@ -159,6 +160,9 @@ fun LiteraryProseRenderer(
                                 enableInlineDollarMath = enableInlineDollarMath
                             )
                         }
+                        val isHighlightedHeading = highlightedLineSubstring.isNotBlank() &&
+                            (block.text.contains(highlightedLineSubstring, ignoreCase = true) ||
+                                stripMarkdownToPlainText(block.text).contains(highlightedLineSubstring, ignoreCase = true))
                         BasicText(
                             text = styledHeading,
                             style = baseTextStyle.copy(
@@ -166,10 +170,20 @@ fun LiteraryProseRenderer(
                                 fontWeight = FontWeight.SemiBold,
                                 color = p.primaryInk
                             ),
-                            modifier = Modifier.padding(
-                                top = if (compactReasoningMode) 3.dp else 6.dp,
-                                bottom = if (compactReasoningMode) 2.dp else 4.dp
-                            )
+                            modifier = Modifier
+                                .then(
+                                    if (isHighlightedHeading) {
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
+                                            .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    } else Modifier
+                                )
+                                .padding(
+                                    top = if (compactReasoningMode) 3.dp else 6.dp,
+                                    bottom = if (compactReasoningMode) 2.dp else 4.dp
+                                )
                         )
                     }
 
@@ -433,9 +447,20 @@ fun LiteraryProseRenderer(
                                 enableInlineDollarMath = enableInlineDollarMath
                             )
                         }
+                        val isHighlightedPara = highlightedLineSubstring.isNotBlank() &&
+                            (block.text.contains(highlightedLineSubstring, ignoreCase = true) ||
+                                stripMarkdownToPlainText(block.text).contains(highlightedLineSubstring, ignoreCase = true) ||
+                                (block.text.length >= 24 && highlightedLineSubstring.contains(stripMarkdownToPlainText(block.text), ignoreCase = true)))
                         BasicText(
                             text = styled,
-                            style = baseTextStyle
+                            style = baseTextStyle,
+                            modifier = if (isHighlightedPara) {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
+                                    .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            } else Modifier
                         )
                     }
                 }

@@ -2,6 +2,7 @@ package io.parchment.ai
 
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.CharacterOrScenarioCard
+import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
@@ -12,11 +13,16 @@ import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
+import io.parchment.ai.model.GeneratedMediaItem
+import io.parchment.ai.model.MediaKind
+import io.parchment.ai.model.ProviderProfile
+import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
+import io.parchment.ai.protocol.O200kTokenizer
 import io.parchment.ai.ui.BUILTIN_LAB_SVG_PATHS
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
@@ -27,6 +33,8 @@ import io.parchment.ai.ui.parseSvgColorString
 import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.parseSvgSceneDocument
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
+import io.parchment.ai.ui.AiGeneratedChatArtifact
+import io.parchment.ai.ui.extractSessionVaultItems
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -407,7 +415,8 @@ class ParchmentProtocolAndHarnessTest {
         // 3. Verify OpenAI Responses API (/v1/responses) input items
         val responsesItems = AiProviderEngine.buildOpenAiResponsesInputArray(sanitized, session, "")
         val respTypes = responsesItems.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: it.jsonObject["role"]?.jsonPrimitive?.contentOrNull }
-        assertEquals(listOf("user", "function_call", "function_call_output", "user"), respTypes)
+        assertEquals(listOf("user", "reasoning", "function_call", "function_call_output", "user"), respTypes)
+        assertEquals("sig_argon_crypto_991", responsesItems[1].jsonObject["encrypted_content"]?.jsonPrimitive?.contentOrNull)
         val firstRespUserContent = responsesItems[0].jsonObject["content"]!!.jsonArray
         assertEquals("input_file", firstRespUserContent[1].jsonObject["type"]?.jsonPrimitive?.contentOrNull)
 
@@ -703,6 +712,173 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(7, svgDoc.drawItems.size, "Must parse all 7 shape primitives (<rect>, 2 <circle>, <line>, <polygon>, <ellipse>, <path>)")
         assertTrue(parseSvgColorString("skyblue") != null)
         assertTrue(parseSvgColorString("rgb(255, 128, 0)") != null)
+
+        // 19. Verify Line-Grounded Web Source Citation Binding (`bindSourcesToMessageLines`)
+        val sampleReply = """
+            Kotlin 2.4.21 is the current stable release on Maven Central.
+            Compose Multiplatform 1.12.2 updates Skia to Milestone 150 and adds Window API v2.
+            For OpenAI Responses API, use {"type": "web_search"} for native grounding.
+        """.trimIndent()
+        val rawCitations = listOf(
+            AiProviderEngine.RawWebCitation(
+                url = "https://kotlinlang.org/docs/releases.html",
+                title = "Kotlin Release Process & 2.4.21",
+                groundedText = "Kotlin 2.4.21 is the current stable release"
+            ),
+            AiProviderEngine.RawWebCitation(
+                url = "https://blog.jetbrains.com/kotlin/2026/08/compose-multiplatform-1-12-0/",
+                title = "Compose Multiplatform 1.12.2 Skia Milestone 150"
+            ),
+            AiProviderEngine.RawWebCitation(
+                url = "https://developers.openai.com/api/docs/guides/tools-web-search",
+                title = "OpenAI Responses API Web Search Tool"
+            )
+        )
+        val boundSources = AiProviderEngine.bindSourcesToMessageLines(sampleReply, rawCitations)
+        assertEquals(3, boundSources.size)
+        assertEquals(listOf(1), boundSources[0].groundedLineNumbers)
+        assertTrue(boundSources[0].groundedLines.first().contains("Kotlin 2.4.21"))
+        assertEquals("kotlinlang.org", boundSources[0].domain)
+        assertTrue(boundSources[1].groundedLineNumbers.contains(2))
+        assertTrue(boundSources[1].groundedLines.first().contains("Compose Multiplatform 1.12.2"))
+        assertTrue(boundSources[2].groundedLineNumbers.contains(3))
+        assertTrue(boundSources[2].groundedLines.first().contains("OpenAI Responses API"))
+
+        // 20. Verify Dynamic Modality Discovery from `/v1/models` JSON (Zero Hardcoded Model Names)
+        val modelsJson = """
+            {
+              "data": [
+                {"id": "future-omni-chat-2027", "output_modalities": ["text", "image"]},
+                {"id": "future-studio-painter-v9", "type": "text-to-image"},
+                {"id": "future-cinema-director-x1", "architecture": {"modality": "text->video"}}
+              ]
+            }
+        """.trimIndent()
+        val parsedIds = AiProviderEngine.parseModelsListJson(modelsJson)
+        assertEquals(3, parsedIds.size)
+        val dummyProf = ProviderProfile(id = "p1", name = "Test", protocol = ProviderProtocol.OPENAI_RESPONSES)
+        assertEquals(listOf("text", "image"), AiProviderEngine.resolveKnownOutputModalities(dummyProf, "future-omni-chat-2027"))
+        assertEquals(listOf("image"), AiProviderEngine.resolveKnownOutputModalities(dummyProf, "future-studio-painter-v9"))
+        assertEquals(listOf("video"), AiProviderEngine.resolveKnownOutputModalities(dummyProf, "future-cinema-director-x1"))
+        assertEquals("image", AiProviderEngine.detectMediaEndpointRedirectFromError(RuntimeException("HTTP 400: This model only supports v1/images/generations")))
+        assertEquals("video", AiProviderEngine.detectMediaEndpointRedirectFromError(RuntimeException("HTTP 400: Use /api/v3/contents/generations/tasks for video generation")))
+
+        // 21. Verify Right Sidebar Vault Extraction (`extractSessionVaultItems` — AI Generated, User Uploaded, Web Sources)
+        val vaultSession = ChatSession(
+            id = "sess-vault",
+            title = "Vault Test",
+            createdAt = 0L,
+            updatedAt = 0L,
+            profileId = "p1",
+            messages = listOf(
+                MessageNode(
+                    id = "u1",
+                    role = MessageRole.USER,
+                    variants = listOf(
+                        MessageVariant(
+                            id = "vu1",
+                            content = "Here is the spec.",
+                            attachments = listOf(
+                                PromptAttachment(
+                                    id = "att1",
+                                    fileName = "spec.pdf",
+                                    mimeType = "application/pdf",
+                                    localFilePath = "/tmp/spec.pdf"
+                                )
+                            )
+                        )
+                    )
+                ),
+                MessageNode(
+                    id = "a1",
+                    role = MessageRole.ASSISTANT,
+                    variants = listOf(
+                        MessageVariant(
+                            id = "va1",
+                            content = "I generated the module and searched the docs.",
+                            toolCalls = listOf(
+                                ToolCallRecord(
+                                    id = "tc-write",
+                                    name = "fs_write",
+                                    argumentsJson = """{"path":"src/Engine.kt","content":"class Engine {}\n"}""",
+                                    resultText = "Wrote file"
+                                )
+                            ),
+                            mediaItems = listOf(
+                                GeneratedMediaItem(
+                                    id = "m1",
+                                    kind = MediaKind.IMAGE,
+                                    localFilePath = "/tmp/diagram.png",
+                                    aspectRatio = "16:9"
+                                )
+                            ),
+                            webSources = boundSources
+                        )
+                    )
+                )
+            )
+        )
+        val (aiVaultItems, uploadedVaultItems, sourceVaultItems) = extractSessionVaultItems(vaultSession)
+        assertEquals(2, aiVaultItems.size, "Must extract both AI workspace file write and AI generated image")
+        assertTrue(aiVaultItems[0] is AiGeneratedChatArtifact.WorkspaceFileArtifact)
+        assertTrue(aiVaultItems[1] is AiGeneratedChatArtifact.MediaArtifact)
+        assertEquals(1, uploadedVaultItems.size, "Must extract user uploaded PDF")
+        assertEquals("spec.pdf", uploadedVaultItems[0].attachment.fileName)
+        assertEquals(3, sourceVaultItems.size, "Must extract all 3 grounded web sources")
+
+        // 22. Verify Unified `o200k_base` Tokenizer & Context Window Breakdown Sum Invariant
+        val testAsst = AssistantAgent(id = "a1", name = "Scholar", systemPrompt = "You are a precise research assistant.")
+        val breakdown = O200kTokenizer.computeContextWindowBreakdown(
+            session = vaultSession.copy(systemPrompt = "Always cite line numbers.", storySummary = "Prior chapter summary."),
+            assistant = testAsst,
+            profile = dummyProf.copy(contextWindowTokens = 128_000, enableWebSearch = true),
+            draftPrompt = "Drafting next question about Kotlin 2.4.21",
+            draftPrefill = "",
+            pendingAttachments = emptyList(),
+            goalModeActive = false
+        )
+        assertTrue(breakdown.systemAndPersonaTokens > 0)
+        assertTrue(breakdown.lorebookAndMemoryTokens > 0)
+        assertTrue(breakdown.workspaceAndToolsTokens > 0)
+        assertEquals(1024, breakdown.uploadedFilesTokens, "PDF attachment must count 1024 document tokens")
+        assertEquals(1, breakdown.uploadedFilesCount)
+        assertEquals(2, breakdown.activeTurnsCount)
+        assertTrue(breakdown.chatHistoryTokens > 0)
+        assertTrue(breakdown.composerDraftTokens > 0)
+        assertEquals(
+            breakdown.systemAndPersonaTokens +
+                breakdown.lorebookAndMemoryTokens +
+                breakdown.workspaceAndToolsTokens +
+                breakdown.uploadedFilesTokens +
+                breakdown.chatHistoryTokens +
+                breakdown.composerDraftTokens,
+            breakdown.totalUsedTokens,
+            "totalUsedTokens in Context Ring must equal exact sum of all 6 breakdown categories"
+        )
+        assertEquals(128_000 - breakdown.totalUsedTokens, breakdown.freeSpaceTokens)
+
+        // 23. Verify Free Multi-Engine `web_search` URL Unwrapping & Multi-Result Citation Extraction
+        val ddgRedirect = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fkotlinlang.org%2Fdocs%2Freleases.html&rut=abc"
+        assertEquals("https://kotlinlang.org/docs/releases.html", WorkspaceHarness.unwrapDuckDuckGoRedirectUrl(ddgRedirect))
+        val webSearchToolRecord = ToolCallRecord(
+            id = "call_ws_1",
+            name = "web_search",
+            argumentsJson = """{"query":"kotlin 2.4.21 compose 1.12.2"}""",
+            resultText = """
+                ### Web Search Results for "kotlin 2.4.21 compose 1.12.2"
+                1. **[Kotlin Release Process](https://kotlinlang.org/docs/releases.html)**
+                   URL: https://kotlinlang.org/docs/releases.html
+                   Snippet: Kotlin 2.4.21 is the latest stable release.
+                2. **[Compose Multiplatform 1.12.2](https://blog.jetbrains.com/kotlin/2026/08/compose-multiplatform-1-12-0/)**
+                   URL: https://blog.jetbrains.com/kotlin/2026/08/compose-multiplatform-1-12-0/
+                   Snippet: Compose Multiplatform 1.12.2 updates Skia to Milestone 150.
+            """.trimIndent()
+        )
+        val extractedSearchCits = AiProviderEngine.extractCitationsFromToolCall(webSearchToolRecord)
+        assertEquals(2, extractedSearchCits.size, "Must extract all search results from web_search tool output")
+        assertEquals("https://kotlinlang.org/docs/releases.html", extractedSearchCits[0].url)
+        assertEquals("Kotlin Release Process", extractedSearchCits[0].title)
+        assertTrue(extractedSearchCits[0].snippet.contains("2.4.21"))
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {
