@@ -159,7 +159,17 @@ actual object PlatformBridge {
 
     actual fun getAppStorageDirectoryPath(): String = resolveStorageDir().absolutePath
 
-    private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
+    private fun chatsDir(): File = File(resolveStorageDir(), "chats").also {
+        if (!it.exists()) it.mkdirs()
+    }
+
+    actual fun getChatsStorageDirectoryPath(): String = chatsDir().absolutePath
+
+    private fun settingsFile(): File = File(resolveStorageDir(), "parchment-settings.json")
+    private fun legacyStateFile(): File = File(resolveStorageDir(), "parchment-state.json")
+
+    private fun sanitizeSessionFileName(sessionId: String): String =
+        sessionId.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "session" }
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
         val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
@@ -170,22 +180,31 @@ actual object PlatformBridge {
         val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
         val hasNoSavedCards = !json.contains("\"savedCards\":[{")
         val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
-        return hasNoApiKeys && hasNoAssistants && hasNoMessages && hasNoSavedCards && hasNoPresets
+        val hasNoGlobalWorldBook = !json.contains("\"globalWorldBook\":[{")
+        val isInitialSessionId = json.contains("\"activeSessionId\":\"sess-initial\"") ||
+            json.contains("\"activeSessionId\":\"\"")
+        return hasNoApiKeys && hasNoAssistants && hasNoMessages &&
+            hasNoSavedCards && hasNoPresets && hasNoGlobalWorldBook && isInitialSessionId
     }
 
     actual fun loadAppStateJson(): String? = runCatching {
         val dir = resolveStorageDir()
-        val f = stateFile()
-        val tmp = File(dir, "parchment-state.json.tmp")
-        val prev = File(dir, "parchment-state.prev.json")
-        val userBak = File(dir, "parchment-state.user-backup.json")
-        val legacy = appContext?.noBackupFilesDir?.let { File(it, "parchment-state.json") }
-        val candidates = listOfNotNull(f, tmp, prev, userBak, legacy)
+        val f = settingsFile()
+        val tmp = File(dir, "parchment-settings.json.tmp")
+        val prev = File(dir, "parchment-settings.prev.json")
+        val userBak = File(dir, "parchment-settings.user-backup.json")
+        val legacy = legacyStateFile()
+        val legacyTmp = File(dir, "parchment-state.json.tmp")
+        val legacyPrev = File(dir, "parchment-state.prev.json")
+        val legacyBak = File(dir, "parchment-state.user-backup.json")
+        val legacyNoBackup = appContext?.noBackupFilesDir?.let { File(it, "parchment-state.json") }
+        val candidates = listOfNotNull(f, tmp, prev, userBak, legacy, legacyTmp, legacyPrev, legacyBak, legacyNoBackup)
         for (cand in candidates) {
             if (cand.exists() && cand.isFile && cand.length() > 10L) {
                 val content = cand.readText(Charsets.UTF_8)
-                if (cand != userBak && isBlankDefaultStateJson(content) && userBak.exists() && userBak.length() > 50L) {
-                    val bakContent = runCatching { userBak.readText(Charsets.UTF_8) }.getOrNull()
+                val activeBak = if (userBak.exists() && userBak.length() > 50L) userBak else legacyBak
+                if (cand != activeBak && isBlankDefaultStateJson(content) && activeBak.exists() && activeBak.length() > 50L) {
+                    val bakContent = runCatching { activeBak.readText(Charsets.UTF_8) }.getOrNull()
                     if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
                         return@runCatching bakContent
                     }
@@ -201,10 +220,10 @@ actual object PlatformBridge {
         runCatching {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
-            val tmp = File(dir, "parchment-state.json.tmp")
-            val prev = File(dir, "parchment-state.prev.json")
-            val userBak = File(dir, "parchment-state.user-backup.json")
-            val target = stateFile()
+            val tmp = File(dir, "parchment-settings.json.tmp")
+            val prev = File(dir, "parchment-settings.prev.json")
+            val userBak = File(dir, "parchment-settings.user-backup.json")
+            val target = settingsFile()
 
             val incomingIsBlankDefault = isBlankDefaultStateJson(json)
             if (incomingIsBlankDefault && userBak.exists() && userBak.length() > 50L) {
@@ -222,6 +241,50 @@ actual object PlatformBridge {
             if (!incomingIsBlankDefault && json.length > 50) {
                 runCatching { target.copyTo(userBak, overwrite = true) }
             }
+        }
+    }
+
+    actual fun loadAllChatSessionJsons(): List<String> = runCatching {
+        val dir = chatsDir()
+        val files = dir.listFiles()?.toList().orEmpty()
+        files.filter { it.name.endsWith(".json.tmp") }.forEach { tmpFile ->
+            val targetName = tmpFile.name.removeSuffix(".tmp")
+            val targetFile = File(dir, targetName)
+            if ((!targetFile.exists() || targetFile.length() <= 5L) && tmpFile.length() > 10L) {
+                runCatching { tmpFile.copyTo(targetFile, overwrite = true) }
+            }
+        }
+        dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".json", ignoreCase = true) && it.length() > 5L }
+            ?.sortedByDescending { it.lastModified() }
+            ?.mapNotNull { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            .orEmpty()
+    }.getOrDefault(emptyList())
+
+    @Synchronized
+    actual fun saveChatSessionJson(sessionId: String, json: String) {
+        if (sessionId.isBlank() || json.isBlank()) return
+        runCatching {
+            val dir = chatsDir()
+            val safeId = sanitizeSessionFileName(sessionId)
+            val target = File(dir, "$safeId.json")
+            val tmp = File(dir, "$safeId.json.tmp")
+            tmp.writeText(json, Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.writeText(json, Charsets.UTF_8)
+                tmp.delete()
+            }
+        }
+    }
+
+    @Synchronized
+    actual fun deleteChatSessionFile(sessionId: String) {
+        if (sessionId.isBlank()) return
+        runCatching {
+            val dir = chatsDir()
+            val safeId = sanitizeSessionFileName(sessionId)
+            File(dir, "$safeId.json").delete()
+            File(dir, "$safeId.json.tmp").delete()
         }
     }
 
@@ -265,9 +328,24 @@ actual object PlatformBridge {
         return act.requestImportFile(arrayOf("image/png", "application/json", "text/plain", "*/*"))
     }
 
+    actual suspend fun pickFilesForImport(allowedExtensions: List<String>): List<PickedBinaryFile> {
+        val act = mainActivityRef?.get() ?: return emptyList()
+        val mimes = if (allowedExtensions.any { it.equals("json", ignoreCase = true) } && allowedExtensions.size == 1) {
+            arrayOf("application/json", "text/plain", "*/*")
+        } else {
+            arrayOf("image/png", "application/json", "text/plain", "*/*")
+        }
+        return act.requestImportMultipleFiles(mimes)
+    }
+
     actual suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String? {
         val act = mainActivityRef?.get() ?: return null
         return act.requestExportFile(defaultFileName, bytes)
+    }
+
+    actual suspend fun exportMultipleFilesToDirectory(files: List<Pair<String, ByteArray>>): String? {
+        val act = mainActivityRef?.get() ?: return null
+        return act.requestExportMultipleFilesToTree(files)
     }
 
     actual suspend fun pickWorkspaceDirectory(currentPath: String): String? {
@@ -368,14 +446,21 @@ actual object PlatformBridge {
         return resolved
     }
 
+    private fun isIgnoredWorkspaceDir(name: String): Boolean {
+        val low = name.lowercase()
+        return low == ".git" || low == "build" || low == ".gradle" ||
+            low == "node_modules" || low == ".idea" || low == ".kotlin"
+    }
+
     actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         val rootPath = File(workspaceRoot).canonicalFile.toPath().normalize()
         require(target.exists() && target.isDirectory) { "Directory not found: $relativePath" }
         val entries = if (recursive) {
             target.walkTopDown()
-                .maxDepth(5)
-                .filter { it != target && !it.name.startsWith(".git") && !it.name.equals("build", ignoreCase = true) }
+                .onEnter { d -> d == target || !isIgnoredWorkspaceDir(d.name) }
+                .maxDepth(24)
+                .filter { it != target && !isIgnoredWorkspaceDir(it.name) }
                 .take(400)
                 .map { f ->
                     val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
@@ -430,8 +515,9 @@ actual object PlatformBridge {
         }
         val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
         val matches = rootFile.walkTopDown()
-            .maxDepth(7)
-            .filter { f -> f != rootFile && !f.path.contains(".git") && !f.name.equals("build", ignoreCase = true) }
+            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .maxDepth(24)
+            .filter { f -> f != rootFile && !isIgnoredWorkspaceDir(f.name) }
             .mapNotNull { f ->
                 val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
                 val matchTarget = if (!cleanPat.contains('/')) f.name else rel
@@ -624,10 +710,11 @@ actual object PlatformBridge {
         val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
         val matches = mutableListOf<String>()
         rootFile.walkTopDown()
-            .maxDepth(5)
+            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .maxDepth(24)
             .filter { f ->
                 f.isFile &&
-                    !f.path.contains(".git") &&
+                    !isIgnoredWorkspaceDir(f.name) &&
                     f.length() < 1_500_000L &&
                     (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
             }

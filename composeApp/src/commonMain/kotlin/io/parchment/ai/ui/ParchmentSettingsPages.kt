@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.AuthHeaderMode
@@ -112,6 +113,7 @@ fun ParchmentSettingsScreen(
     onCheckOtaNow: () -> Unit,
     onInstallOtaRelease: (OtaReleaseInfo) -> Unit,
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
+    onImportChatSessions: (List<ChatSession>) -> Unit = {},
     onWipeAllData: () -> Unit,
     onNotify: (String) -> Unit,
     onClose: () -> Unit
@@ -297,6 +299,7 @@ fun ParchmentSettingsScreen(
                         onCheckOtaNow = onCheckOtaNow,
                         onInstallOtaRelease = onInstallOtaRelease,
                         onRestoreFullBackup = onRestoreFullBackup,
+                        onImportChatSessions = onImportChatSessions,
                         onWipeAllData = onWipeAllData,
                         onNotify = onNotify
                     )
@@ -464,6 +467,7 @@ fun ParchmentSettingsScreen(
                             onCheckOtaNow = onCheckOtaNow,
                             onInstallOtaRelease = onInstallOtaRelease,
                             onRestoreFullBackup = onRestoreFullBackup,
+                            onImportChatSessions = onImportChatSessions,
                             onWipeAllData = onWipeAllData,
                             onNotify = onNotify
                         )
@@ -568,6 +572,7 @@ private fun SettingsSubpageContent(
     onCheckOtaNow: () -> Unit,
     onInstallOtaRelease: (OtaReleaseInfo) -> Unit,
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
+    onImportChatSessions: (List<ChatSession>) -> Unit,
     onWipeAllData: () -> Unit,
     onNotify: (String) -> Unit
 ) {
@@ -630,10 +635,12 @@ private fun SettingsSubpageContent(
             onNotify = onNotify
         )
         SettingsCategory.WORKSPACE -> WorkspaceSubpage(
+            appState = appState,
             activeSession = activeSession,
             activeProfile = activeProfile,
             onUpdateSession = onUpdateSession,
-            onUpdateProfile = onUpdateProfile
+            onUpdateProfile = onUpdateProfile,
+            onNotify = onNotify
         )
         SettingsCategory.WORLD_BOOK -> WorldBookAndCardsSubpage(
             appState = appState,
@@ -648,11 +655,13 @@ private fun SettingsSubpageContent(
         )
         SettingsCategory.BACKUP_OTA -> BackupAndOtaSubpage(
             appState = appState,
+            activeSession = activeSession,
             otaState = otaState,
             onUpdateOtaSettings = onUpdateOtaSettings,
             onCheckOtaNow = onCheckOtaNow,
             onInstallOtaRelease = onInstallOtaRelease,
             onRestoreFullBackup = onRestoreFullBackup,
+            onImportChatSessions = onImportChatSessions,
             onWipeAllData = onWipeAllData,
             onNotify = onNotify
         )
@@ -3100,18 +3109,54 @@ private fun DefaultModelSubpage(
 }
 
 // ============================================================================================
-// SUBPAGE 5: WORKSPACE
+// SUBPAGE 5: WORKSPACE & LOCAL AGENT HARNESS (Full 16-Tool Live Registry + 1-Tap Mount)
 // ============================================================================================
 @Composable
 private fun WorkspaceSubpage(
+    appState: AppStateSnapshot,
     activeSession: ChatSession,
     activeProfile: ProviderProfile,
     onUpdateSession: ((ChatSession) -> ChatSession) -> Unit,
-    onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit
+    onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
+    onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
+
+    val activeAssistant = appState.assistants.find { it.id == activeSession.assistantId }
+        ?: appState.assistants.find { it.id == appState.activeAssistantId }
+        ?: appState.assistants.firstOrNull()
+    val effectiveWsPath = activeSession.workspacePath.ifBlank { activeAssistant?.workspacePath.orEmpty() }
+    val effectiveWsMode = if (activeSession.workspaceMode != WorkspaceMode.OFF) {
+        activeSession.workspaceMode
+    } else if (activeSession.workspacePath.isBlank() && activeAssistant != null) {
+        activeAssistant.workspaceMode
+    } else {
+        WorkspaceMode.OFF
+    }
+
+    val allTools = remember { WorkspaceHarness.allTools() }
+    val activeToolNames = remember(
+        effectiveWsMode,
+        effectiveWsPath,
+        activeProfile.allowShellExecution,
+        activeProfile.enableWebSearch,
+        activeProfile.enableUrlContext
+    ) {
+        WorkspaceHarness.activeToolsForMode(
+            mode = effectiveWsMode,
+            workspacePath = effectiveWsPath,
+            allowShell = activeProfile.allowShellExecution,
+            goalModeActive = true,
+            enableWebTools = activeProfile.enableWebSearch || activeProfile.enableUrlContext,
+            includeLocalWebSearchTool = true
+        ).map { it.name }.toSet()
+    }
+
+    val discoveredFiles = remember(effectiveWsPath) {
+        WorkspaceHarness.listDiscoveredContextFileNames(effectiveWsPath)
+    }
 
     Column(
         modifier = Modifier
@@ -3123,39 +3168,77 @@ private fun WorkspaceSubpage(
         BasicText(text = "Workspace & Local Agent Harness", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Sandboxed Local File System Agent",
-            subtitle = "Exposes fs_list, fs_read, fs_search, fs_write, fs_edit, dice_roll, agent_memory, and shell_exec"
+            title = "Sandboxed Local File System & Autonomous Agent Harness",
+            subtitle = "Exposes all ${allTools.size} built-in file, search, atomic edit, memory, goal checklist, web search, math, and shell tools"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    BasicText(
-                        text = if (activeSession.workspacePath.isBlank()) "Mounted Folder: None" else "Mounted: ${activeSession.workspacePath}",
-                        style = p.uiBodyStyle.copy(fontFamily = p.codeFontFamily),
-                        modifier = Modifier.padding(top = 4.dp, end = 8.dp)
-                    )
-                    SepiaButton(
-                        text = "📂 Mount Folder…",
-                        style = SepiaButtonStyle.PRIMARY,
-                        onClick = {
-                            scope.launch {
-                                val picked = PlatformBridge.pickWorkspaceDirectory(activeSession.workspacePath)
-                                if (!picked.isNullOrBlank()) {
-                                    onUpdateSession {
-                                        it.copy(
-                                            workspacePath = picked,
-                                            workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
-                                        )
+                    Column(
+                        modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        BasicText(
+                            text = if (effectiveWsPath.isBlank()) "Mounted Folder: None" else "Mounted: $effectiveWsPath",
+                            style = p.uiBodyStyle.copy(fontFamily = p.codeFontFamily, fontWeight = FontWeight.SemiBold)
+                        )
+                        BasicText(
+                            text = if (effectiveWsPath.isBlank()) {
+                                "Mount a local project or manuscript folder to unlock fs_list, fs_glob, fs_read, fs_search, fs_write, fs_edit, fs_multi_edit, and shell_exec."
+                            } else {
+                                "Sandboxed to this directory (depth 24, auto-ignores .git, build, .gradle, node_modules)."
+                            },
+                            style = p.uiLabelStyle.copy(color = p.mutedInk)
+                        )
+                    }
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SepiaButton(
+                            text = if (effectiveWsPath.isBlank()) "📂 Mount Folder…" else "📂 Change Folder…",
+                            style = SepiaButtonStyle.PRIMARY,
+                            onClick = {
+                                scope.launch {
+                                    val picked = PlatformBridge.pickWorkspaceDirectory(effectiveWsPath)
+                                    if (!picked.isNullOrBlank()) {
+                                        onUpdateSession {
+                                            it.copy(
+                                                workspacePath = picked,
+                                                workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
+                                            )
+                                        }
+                                        onNotify("Mounted workspace: $picked")
                                     }
                                 }
                             }
+                        )
+                        if (effectiveWsPath.isNotBlank()) {
+                            SepiaButton(
+                                text = "📂 Open in OS",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = { PlatformBridge.openOrPlayMedia(effectiveWsPath) }
+                            )
+                            SepiaButton(
+                                text = "× Unmount",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = {
+                                    onUpdateSession { it.copy(workspacePath = "", workspaceMode = WorkspaceMode.OFF) }
+                                    onNotify("Unmounted workspace folder.")
+                                }
+                            )
                         }
-                    )
+                    }
                 }
+
+                SepiaDivider()
 
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
@@ -3165,18 +3248,224 @@ private fun WorkspaceSubpage(
                     WorkspaceMode.entries.forEach { mode ->
                         SepiaChip(
                             label = mode.label,
-                            selected = activeSession.workspaceMode == mode,
-                            onClick = { onUpdateSession { it.copy(workspaceMode = mode) } }
+                            selected = effectiveWsMode == mode,
+                            onClick = {
+                                if (mode != WorkspaceMode.OFF && effectiveWsPath.isBlank()) {
+                                    scope.launch {
+                                        val picked = PlatformBridge.pickWorkspaceDirectory("")
+                                        if (!picked.isNullOrBlank()) {
+                                            onUpdateSession { it.copy(workspacePath = picked, workspaceMode = mode) }
+                                            onNotify("Mounted '$picked' in ${mode.label}")
+                                        } else {
+                                            onUpdateSession { it.copy(workspaceMode = mode) }
+                                        }
+                                    }
+                                } else {
+                                    onUpdateSession { it.copy(workspaceMode = mode) }
+                                }
+                            }
                         )
                     }
                 }
 
                 SepiaToggleRow(
                     title = "Allow Sandboxed Shell Execution (shell_exec)",
-                    subtitle = "Available when Workspace Mode is set to Agent R/W",
+                    subtitle = "Available when Workspace Mode is set to Agent R/W (runs PowerShell on Windows or sh on Unix/Android)",
                     checked = activeProfile.allowShellExecution,
                     onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
                 )
+
+                SepiaToggleRow(
+                    title = "Enable Web Search & URL Fetching (web_search, web_fetch)",
+                    subtitle = "Exposes live internet search (native provider search + free DuckDuckGo/Wikipedia/HN cascade) and URL reader",
+                    checked = activeProfile.enableWebSearch,
+                    onCheckedChange = { ws -> onUpdateProfile { it.copy(enableWebSearch = ws) } }
+                )
+
+                if (effectiveWsPath.isNotBlank()) {
+                    SepiaDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            BasicText(
+                                text = "Auto-Loaded Project Memory & Context Files",
+                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            )
+                            BasicText(
+                                text = if (discoveredFiles.isEmpty()) {
+                                    "No AGENTS.md, CLAUDE.md, PARCHMENT.md, or PARCHMENT_MEMORY.md found in root yet."
+                                } else {
+                                    "Auto-injected into system prompt: ${discoveredFiles.joinToString(", ")}"
+                                },
+                                style = p.uiLabelStyle.copy(color = if (discoveredFiles.isNotEmpty()) p.accent else p.mutedInk)
+                            )
+                        }
+                        if ("PARCHMENT_MEMORY.md" !in discoveredFiles) {
+                            SepiaButton(
+                                text = "+ Init PARCHMENT_MEMORY.md",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = {
+                                    PlatformBridge.workspaceWrite(
+                                        effectiveWsPath,
+                                        "PARCHMENT_MEMORY.md",
+                                        "# Project & Story Memory\n\n- Record key architectural rules, character notes, and decisions here.\n"
+                                    ).onSuccess {
+                                        onNotify("Created PARCHMENT_MEMORY.md in workspace root.")
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Complete 16-Tool Interactive Registry
+        SepiaSectionCard(
+            title = "Complete Agent Harness Tool Registry (${activeToolNames.size} / ${allTools.size} Active)",
+            subtitle = "Click any locked tool badge below to immediately enable its required mode"
+        ) {
+            val readTools = remember(allTools) {
+                allTools.filter { it.requiresWorkspaceFolder && !it.requiresWritePermission }
+            }
+            val writeTools = remember(allTools) {
+                allTools.filter { (it.requiresWorkspaceFolder && it.requiresWritePermission && !it.requiresShellPermission) || it.name == "agent_memory" }
+            }
+            val shellTools = remember(allTools) {
+                allTools.filter { it.requiresShellPermission }
+            }
+            val standaloneTools = remember(allTools) {
+                allTools.filter { !it.requiresWorkspaceFolder && it.name != "agent_memory" }
+            }
+
+            val categories = listOf(
+                Triple("1. Workspace Read & Search Tools (Read-Only or Agent R/W)", "Requires a mounted folder + Read-Only or Agent R/W mode", readTools),
+                Triple("2. Workspace Write, Atomic Edit & Memory Tools (Agent R/W)", "Requires a mounted folder + Agent R/W mode", writeTools),
+                Triple("3. Sandboxed Terminal Execution (Agent R/W + Shell)", "Requires a mounted folder + Agent R/W mode + Allow Shell Execution", shellTools),
+                Triple("4. Autonomous Goal, Web Search & Utility Tools (Always Available)", "Works with or without a mounted workspace folder", standaloneTools)
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                categories.forEachIndexed { catIdx, (catTitle, catSub, toolsInGroup) ->
+                    if (catIdx > 0) SepiaDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BasicText(
+                            text = catTitle,
+                            style = p.uiHeaderStyle.copy(fontSize = 14.sp, color = p.accent)
+                        )
+                        BasicText(
+                            text = catSub,
+                            style = p.uiLabelStyle.copy(color = p.mutedInk)
+                        )
+                        toolsInGroup.forEach { tool ->
+                            val isActive = tool.name in activeToolNames
+                            val signature = remember(tool.name) { WorkspaceHarness.extractParameterSignature(tool) }
+                            val toolIcon = remember(tool.name) { resolveToolKissIcon(tool.name) }
+                            val statusText = when {
+                                isActive -> "✓ Active"
+                                tool.requiresShellPermission -> "Enable R/W + Shell"
+                                tool.requiresWritePermission -> "Enable Agent R/W"
+                                tool.requiresWorkspaceFolder -> if (effectiveWsPath.isBlank()) "Mount Folder" else "Enable Read-Only"
+                                else -> "✓ Ready"
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isActive) p.elevatedBg.copy(alpha = 0.55f) else p.sheetBg.copy(alpha = 0.4f))
+                                    .border(
+                                        width = 0.8.dp,
+                                        color = if (isActive) p.accent.copy(alpha = 0.55f) else p.border.copy(alpha = 0.6f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f).padding(end = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        KissVectorIcon(
+                                            icon = toolIcon,
+                                            tint = if (isActive) p.accent else p.mutedInk,
+                                            size = 13.5.dp
+                                        )
+                                        BasicText(
+                                            text = signature,
+                                            style = p.monoStyle.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                color = if (isActive) p.primaryInk else p.narrationInk
+                                            )
+                                        )
+                                    }
+                                    BasicText(
+                                        text = tool.description,
+                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.5.sp)
+                                    )
+                                }
+
+                                SepiaChip(
+                                    label = statusText,
+                                    selected = isActive,
+                                    onClick = {
+                                        scope.launch {
+                                            var targetPath = effectiveWsPath
+                                            if (tool.requiresWorkspaceFolder && targetPath.isBlank()) {
+                                                targetPath = PlatformBridge.pickWorkspaceDirectory("").orEmpty()
+                                            }
+                                            when {
+                                                tool.requiresShellPermission -> {
+                                                    onUpdateProfile { it.copy(allowShellExecution = true) }
+                                                    onUpdateSession {
+                                                        it.copy(
+                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
+                                                            workspaceMode = WorkspaceMode.READ_WRITE
+                                                        )
+                                                    }
+                                                    onNotify("Enabled Agent R/W + Shell Execution for ${tool.name}.")
+                                                }
+                                                tool.requiresWritePermission -> {
+                                                    onUpdateSession {
+                                                        it.copy(
+                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
+                                                            workspaceMode = WorkspaceMode.READ_WRITE
+                                                        )
+                                                    }
+                                                    onNotify("Switched Workspace to Agent R/W for ${tool.name}.")
+                                                }
+                                                tool.requiresWorkspaceFolder -> {
+                                                    val nextMode = if (effectiveWsMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else effectiveWsMode
+                                                    onUpdateSession {
+                                                        it.copy(
+                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
+                                                            workspaceMode = nextMode
+                                                        )
+                                                    }
+                                                    onNotify("Enabled Workspace Read-Only for ${tool.name}.")
+                                                }
+                                                tool.name == "web_search" || tool.name == "web_fetch" -> {
+                                                    onUpdateProfile { it.copy(enableWebSearch = true) }
+                                                    onNotify("Enabled Web Search for ${tool.name}.")
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3542,16 +3831,18 @@ private fun WorldBookAndCardsSubpage(
 }
 
 // ============================================================================================
-// SUBPAGE 7: BACKUP & OTA
+// SUBPAGE 7: BACKUP & OTA (Split Storage: Settings & Assistants vs Per-Chat .json Files)
 // ============================================================================================
 @Composable
 private fun BackupAndOtaSubpage(
     appState: AppStateSnapshot,
+    activeSession: ChatSession,
     otaState: OtaUpdateState,
     onUpdateOtaSettings: (String, Boolean) -> Unit,
     onCheckOtaNow: () -> Unit,
     onInstallOtaRelease: (OtaReleaseInfo) -> Unit,
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
+    onImportChatSessions: (List<ChatSession>) -> Unit,
     onWipeAllData: () -> Unit,
     onNotify: (String) -> Unit
 ) {
@@ -3652,43 +3943,114 @@ private fun BackupAndOtaSubpage(
             }
         }
 
+        // Card 2: Separate Per-Chat JSON Export & Import (Never mixed with Settings!)
         SepiaSectionCard(
-            title = "Portable Full Backup & Zero-Trace Storage",
-            subtitle = "Storage directory: ${PlatformBridge.getAppStorageDirectoryPath()}"
+            title = "Portable Chats Export & Import (Separate .json Per Chat)",
+            subtitle = "Each chat is stored in its own .json file at: ${PlatformBridge.getChatsStorageDirectoryPath()}"
         ) {
-            @OptIn(ExperimentalLayoutApi::class)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                SepiaButton(
-                    text = "📤 Export Full Backup (.json)",
-                    style = SepiaButtonStyle.PRIMARY,
-                    onClick = {
-                        scope.launch {
-                            val bytes = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), appState).encodeToByteArray()
-                            val saved = PlatformBridge.saveFileForExport("parchment-full-backup.json", bytes)
-                            if (saved != null) onNotify("Exported backup to $saved")
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                BasicText(
+                    text = "Export your conversations as individual .chat.json files (preserving all messages, swipe versions, thinking summaries, tool calls, web citations, and lore fragments) to move between Desktop and Mobile without touching your device settings.",
+                    style = p.uiLabelStyle.copy(color = p.narrationInk)
+                )
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaButton(
+                        text = "📤 Export All Chats (${appState.sessions.size} Separate .json)",
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = {
+                            scope.launch {
+                                val files = appState.sessions.map { sess ->
+                                    val fileName = buildExportFileNameForChat(sess)
+                                    val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), sess).encodeToByteArray()
+                                    fileName to bytes
+                                }
+                                val exported = PlatformBridge.exportMultipleFilesToDirectory(files)
+                                if (exported != null) {
+                                    onNotify("Exported $exported")
+                                }
+                            }
                         }
-                    }
-                )
-                SepiaButton(
-                    text = "📥 Restore Full Backup (.json)",
-                    style = SepiaButtonStyle.SECONDARY,
-                    onClick = {
-                        scope.launch {
-                            val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
-                            runCatching {
-                                CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(picked.bytes.decodeToString())
-                            }.fold(
-                                onSuccess = { restored -> onRestoreFullBackup(restored) },
-                                onFailure = { err -> onNotify("Backup restore failed: ${err.message}") }
-                            )
+                    )
+                    SepiaButton(
+                        text = "📤 Export Current Chat (.json)",
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = {
+                            scope.launch {
+                                val fileName = buildExportFileNameForChat(activeSession)
+                                val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
+                                val saved = PlatformBridge.saveFileForExport(fileName, bytes)
+                                if (saved != null) onNotify("Exported chat to $saved")
+                            }
                         }
-                    }
+                    )
+                    SepiaButton(
+                        text = "📥 Import Chat(s) (.json)",
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = {
+                            scope.launch {
+                                val pickedFiles = PlatformBridge.pickFilesForImport(listOf("json"))
+                                if (pickedFiles.isEmpty()) return@launch
+                                val importedChats = pickedFiles.flatMap { picked ->
+                                    runCatching { decodeChatSessionsFromRawJson(picked.bytes.decodeToString()) }.getOrDefault(emptyList())
+                                }
+                                if (importedChats.isNotEmpty()) {
+                                    onImportChatSessions(importedChats)
+                                } else {
+                                    onNotify("No valid chat sessions found in selected .json file(s).")
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
+        // Card 3: Settings, Providers, Assistants & System Prompts Backup (Decoupled from Chats!)
+        SepiaSectionCard(
+            title = "Settings, Providers & Assistants Backup (.json — Zero Chats Inside)",
+            subtitle = "Settings file: ${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                BasicText(
+                    text = "Exports only your Provider Profiles, Assistants, System Prompts, Default Models, Theme, and Global World Book in a clean settings file without bundling chat histories.",
+                    style = p.uiLabelStyle.copy(color = p.narrationInk)
                 )
-                SepiaButton(
-                    text = "Wipe All Local Data & Reset",
-                    style = SepiaButtonStyle.DANGER,
-                    onClick = onWipeAllData
-                )
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaButton(
+                        text = "📤 Export Settings & Assistants (.json)",
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = {
+                            scope.launch {
+                                val settingsOnly = appState.copy(sessions = emptyList())
+                                val bytes = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), settingsOnly).encodeToByteArray()
+                                val saved = PlatformBridge.saveFileForExport("parchment-settings.json", bytes)
+                                if (saved != null) onNotify("Exported settings & assistants to $saved")
+                            }
+                        }
+                    )
+                    SepiaButton(
+                        text = "📥 Import Settings & Assistants (.json)",
+                        style = SepiaButtonStyle.SECONDARY,
+                        onClick = {
+                            scope.launch {
+                                val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
+                                runCatching {
+                                    CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(picked.bytes.decodeToString())
+                                }.fold(
+                                    onSuccess = { restored -> onRestoreFullBackup(restored) },
+                                    onFailure = { err -> onNotify("Settings import failed: ${err.message}") }
+                                )
+                            }
+                        }
+                    )
+                    SepiaButton(
+                        text = "Wipe All Local Data & Reset",
+                        style = SepiaButtonStyle.DANGER,
+                        onClick = onWipeAllData
+                    )
+                }
             }
         }
     }

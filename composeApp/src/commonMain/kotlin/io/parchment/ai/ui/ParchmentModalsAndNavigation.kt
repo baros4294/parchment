@@ -1095,7 +1095,7 @@ internal fun ParchmentSidebar(
 }
 
 // ============================================================================================
-// BUILT-IN ZOOMABLE IMAGE LIGHTBOX & TEXT/CODE ATTACHMENT VIEWER MODAL (KISS)
+// BUILT-IN ZOOMABLE IMAGE LIGHTBOX & TEXT/CODE ATTACHMENT VIEWER MODAL (ZERO-DIM STUDIO CARD)
 // ============================================================================================
 @Composable
 internal fun ParchmentAttachmentViewerModal(
@@ -1111,8 +1111,11 @@ internal fun ParchmentAttachmentViewerModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.82f))
-            .clickable { onClose() },
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClose
+            ),
         contentAlignment = Alignment.Center
     ) {
         when (item) {
@@ -1126,9 +1129,14 @@ internal fun ParchmentAttachmentViewerModal(
 
                 Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp)
-                        .clickable(enabled = false) {},
+                        .widthIn(max = 1040.dp)
+                        .fillMaxWidth(0.94f)
+                        .fillMaxHeight(0.88f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(p.cardBg)
+                        .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
+                        .clickable(enabled = false) {}
+                        .padding(14.dp),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
                     @OptIn(ExperimentalLayoutApi::class)
@@ -1136,7 +1144,7 @@ internal fun ParchmentAttachmentViewerModal(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .background(p.cardBg.copy(alpha = 0.96f))
+                            .background(p.sheetBg.copy(alpha = 0.85f))
                             .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1157,7 +1165,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
                             BasicText(
-                                text = "$dimInfo${item.mimeType} • Pinch or double-tap to zoom",
+                                text = "$dimInfo${item.mimeType} • Scroll, pinch, or double-tap to zoom",
                                 style = p.uiLabelStyle
                             )
                         }
@@ -1233,8 +1241,10 @@ internal fun ParchmentAttachmentViewerModal(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(vertical = 8.dp)
+                            .padding(top = 8.dp)
                             .clip(RoundedCornerShape(10.dp))
+                            .background(p.sheetBg.copy(alpha = 0.55f))
+                            .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
                             .pointerInput(item) {
                                 detectTapGestures(
                                     onDoubleTap = {
@@ -1298,7 +1308,7 @@ internal fun ParchmentAttachmentViewerModal(
                         } else {
                             BasicText(
                                 text = "Unable to decode image preview (${item.localFilePath.ifBlank { item.remoteUrl }})",
-                                style = p.uiHeaderStyle.copy(color = Color.White)
+                                style = p.uiHeaderStyle.copy(color = p.narrationInk)
                             )
                         }
                     }
@@ -1308,15 +1318,26 @@ internal fun ParchmentAttachmentViewerModal(
             is ActiveMediaViewerItem.TextOrCodeViewer -> {
                 var copied by remember(item) { mutableStateOf(false) }
                 val linesCount = remember(item.textContent) { item.textContent.lines().size }
+                val lowerTitle = remember(item.title) { item.title.lowercase() }
+                val isSvgContent = remember(item.title, item.mimeType, item.textContent) {
+                    lowerTitle.endsWith(".svg") || item.mimeType.equals("image/svg+xml", ignoreCase = true) ||
+                        (item.textContent.contains("<svg", ignoreCase = true) && item.textContent.contains("</svg>", ignoreCase = true))
+                }
+                val isMarkdownContent = remember(item.title, item.mimeType) {
+                    lowerTitle.endsWith(".md") || lowerTitle.endsWith(".markdown") || item.mimeType.equals("text/markdown", ignoreCase = true)
+                }
+                var showRenderedPreview by remember(item, isSvgContent, isMarkdownContent) {
+                    mutableStateOf(isSvgContent || isMarkdownContent)
+                }
 
                 Column(
                     modifier = Modifier
                         .widthIn(max = 940.dp)
                         .fillMaxWidth(0.94f)
                         .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
                         .background(p.cardBg)
-                        .border(1.dp, p.border, RoundedCornerShape(12.dp))
+                        .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
                         .clickable(enabled = false) {}
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1351,6 +1372,14 @@ internal fun ParchmentAttachmentViewerModal(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            if (isSvgContent || isMarkdownContent) {
+                                SepiaButton(
+                                    text = if (showRenderedPreview) "‹/›" else "👁",
+                                    compact = true,
+                                    style = if (showRenderedPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
+                                    onClick = { showRenderedPreview = !showRenderedPreview }
+                                )
+                            }
                             SepiaButton(
                                 text = if (copied) "✓" else "📋",
                                 compact = true,
@@ -1358,6 +1387,18 @@ internal fun ParchmentAttachmentViewerModal(
                                 onClick = {
                                     clipboard.setText(AnnotatedString(item.textContent))
                                     copied = true
+                                }
+                            )
+                            SepiaButton(
+                                text = "📥",
+                                compact = true,
+                                style = SepiaButtonStyle.SECONDARY,
+                                onClick = {
+                                    scope.launch {
+                                        val fileName = item.title.substringAfterLast('/').substringAfterLast('\\').ifBlank { "file.txt" }
+                                        val saved = PlatformBridge.saveFileForExport(fileName, item.textContent.encodeToByteArray())
+                                        if (saved != null) onNotify("Saved file to $saved")
+                                    }
                                 }
                             )
                             if (item.localFilePath.isNotBlank()) {
@@ -1389,10 +1430,24 @@ internal fun ParchmentAttachmentViewerModal(
                             .padding(12.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
-                        BasicText(
-                            text = item.textContent.ifEmpty { "(Empty file)" },
-                            style = p.monoStyle.copy(fontSize = 12.5.sp, lineHeight = 18.sp)
-                        )
+                        when {
+                            isSvgContent && showRenderedPreview -> {
+                                InlineSvgArtifactPreview(rawSvg = item.textContent)
+                            }
+                            isMarkdownContent && showRenderedPreview -> {
+                                LiteraryProseRenderer(
+                                    text = item.textContent,
+                                    enableMarkdown = true,
+                                    enableMath = true
+                                )
+                            }
+                            else -> {
+                                BasicText(
+                                    text = item.textContent.ifEmpty { "(Empty file)" },
+                                    style = p.monoStyle.copy(fontSize = 12.5.sp, lineHeight = 18.sp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1693,12 +1748,22 @@ internal fun ParchmentRightFilesSidebar(
                                         .background(p.cardBg)
                                         .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                                         .clickable {
+                                            val wsRoot = activeSession.workspacePath
+                                            val liveText = if (wsRoot.isNotBlank()) {
+                                                PlatformBridge.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
+                                                    raw.lines().drop(1).joinToString("\n") { it.replaceFirst(Regex("^\\d+:\\s?"), "") }
+                                                }
+                                            } else null
+                                            val fullLocalPath = if (wsRoot.isNotBlank()) {
+                                                "${wsRoot.trimEnd('/', '\\')}/${item.filePath.trimStart('/', '\\')}"
+                                            } else ""
                                             onInspectAttachment(
                                                 PromptAttachment(
                                                     id = "ai-ws-${item.turnNumber}-${item.filePath}",
                                                     fileName = item.filePath,
                                                     mimeType = "text/plain",
-                                                    textContent = item.content
+                                                    textContent = liveText?.takeIf { it.isNotBlank() } ?: item.content,
+                                                    localFilePath = fullLocalPath
                                                 )
                                             )
                                         }

@@ -449,6 +449,28 @@ object WorkspaceHarness {
         )
     )
 
+    fun allTools(): List<ToolDefinition> = ALL_TOOLS
+
+    fun extractParameterSignature(tool: ToolDefinition): String {
+        val props = tool.parametersSchema["properties"] as? JsonObject ?: return "${tool.name}()"
+        val reqSet = (tool.parametersSchema["required"] as? JsonArray)
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?.toSet()
+            .orEmpty()
+        val params = props.keys.joinToString(", ") { k -> if (k in reqSet) k else "$k?" }
+        return "${tool.name}($params)"
+    }
+
+    fun listDiscoveredContextFileNames(workspaceRoot: String): List<String> {
+        if (workspaceRoot.isBlank()) return emptyList()
+        val candidates = listOf("AGENTS.md", "CLAUDE.md", "PARCHMENT.md", "PARCHMENT_MEMORY.md")
+        return candidates.filter { fileName ->
+            PlatformBridge.workspaceRead(workspaceRoot, fileName, startLine = 1, maxLines = 5)
+                .getOrNull()
+                ?.isNotBlank() == true
+        }
+    }
+
     fun activeToolsForMode(
         mode: WorkspaceMode,
         workspacePath: String,

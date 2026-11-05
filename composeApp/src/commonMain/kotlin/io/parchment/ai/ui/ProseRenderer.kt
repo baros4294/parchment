@@ -815,19 +815,29 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Spoken Dialogue: "..." or “...”
+            // Spoken Dialogue: "..." or “...” (recursively parses inner *italic*, **bold**, and `code` spans!)
             (ch == '"' || ch == '“') && palette.config.highlightDialogueAndNarration -> {
                 val closeChar = if (ch == '“') '”' else '"'
                 val endIdx = text.indexOf(closeChar, startIndex = i + 1)
                 if (endIdx != -1) {
-                    val segment = text.substring(i, endIdx + 1)
+                    val innerDialogue = text.substring(i + 1, endIdx)
                     pushStyle(
                         SpanStyle(
                             color = palette.dialogueInk,
                             fontWeight = FontWeight.Normal
                         )
                     )
-                    append(segment)
+                    append(ch)
+                    append(
+                        styleLiteraryParagraph(
+                            raw = innerDialogue,
+                            palette = palette.copy(config = palette.config.copy(highlightDialogueAndNarration = false)),
+                            indentChars = 0,
+                            enableMath = enableMath,
+                            enableInlineDollarMath = enableInlineDollarMath
+                        )
+                    )
+                    append(closeChar)
                     pop()
                     i = endIdx + 1
                 } else {

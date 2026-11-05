@@ -193,24 +193,32 @@ object O200kTokenizer {
         draftPrompt: String,
         draftPrefill: String,
         pendingAttachments: List<PromptAttachment>,
-        goalModeActive: Boolean = false
+        goalModeActive: Boolean = false,
+        globalWorldBook: List<io.parchment.ai.model.ContextFragment> = emptyList()
     ): ContextWindowBreakdown {
-        val activeModelId = session.modelOverride.ifBlank { profile.defaultModel }.trim()
+        val activeModelId = session.modelOverride.ifBlank {
+            assistant.defaultModelId.ifBlank { profile.defaultModel }
+        }.trim()
         val contextLimit = profile.customModelSpecs[activeModelId]?.contextWindowTokens
             ?: profile.contextWindowTokens
 
         // 1. System & Persona Prompt (Assistant systemPrompt + Session systemPrompt + Card + Author's Note)
         val cardCompiled = session.activeCard?.buildCompiledInstructions(session.userName)
             ?: assistant.activeCard?.buildCompiledInstructions(session.userName).orEmpty()
+        val effectiveAuthorsNote = session.authorsNote.ifBlank { assistant.authorsNote }
         val systemAndPersonaTokens = countTokens(assistant.systemPrompt) +
             countTokens(session.systemPrompt) +
             countTokens(cardCompiled) +
-            countTokens(session.authorsNote)
+            countTokens(effectiveAuthorsNote)
 
-        // 2. Lorebook & Story Continuity Memory (Active Pinned/Keyword Fragments + Story Summary)
-        val allFragments = session.fragments +
-            session.activeCard?.embeddedFragments.orEmpty() +
-            assistant.activeCard?.embeddedFragments.orEmpty()
+        // 2. Lorebook & Story Continuity Memory (Global World Book + Assistant + Session + Card Fragments + Story Summary)
+        val allFragments = (
+            globalWorldBook +
+                assistant.fragments +
+                session.fragments +
+                session.activeCard?.embeddedFragments.orEmpty() +
+                assistant.activeCard?.embeddedFragments.orEmpty()
+            ).distinctBy { it.id }
         val recentWindowText = session.messages.takeLast(8).joinToString("\n") { it.activeVariant.content }
         val activeFragments = allFragments.filter { frag ->
             when (frag.mode) {
@@ -228,30 +236,43 @@ object O200kTokenizer {
 
         // 3. Workspace & Harness Tool Schemas
         val wsPath = session.workspacePath.ifBlank { assistant.workspacePath }
+        val effectiveWsMode = if (session.workspaceMode != WorkspaceMode.OFF) {
+            session.workspaceMode
+        } else if (session.workspacePath.isBlank()) {
+            assistant.workspaceMode
+        } else {
+            WorkspaceMode.OFF
+        }
+        val enableWeb = profile.enableWebSearch || profile.enableUrlContext || assistant.enableWebSearch
         val activeTools = WorkspaceHarness.activeToolsForMode(
-            mode = session.workspaceMode,
+            mode = effectiveWsMode,
             workspacePath = wsPath,
             allowShell = profile.allowShellExecution,
             goalModeActive = goalModeActive,
-            enableWebTools = profile.enableWebSearch || profile.enableUrlContext
+            enableWebTools = enableWeb
         )
         val toolSchemaTokens = activeTools.sumOf { t ->
             countTokens(t.name) + countTokens(t.description) + countTokens(t.parametersSchema.toString()) + 8
         }
-        val wsContextTokens = if (session.workspaceMode != WorkspaceMode.OFF && wsPath.isNotBlank()) {
+        val wsContextTokens = if (effectiveWsMode != WorkspaceMode.OFF && wsPath.isNotBlank()) {
             countTokens(WorkspaceHarness.discoverWorkspaceContextFiles(wsPath)) + 95
         } else 0
         val goalModeTokens = if (goalModeActive) 110 else 0
         val workspaceAndToolsTokens = toolSchemaTokens + wsContextTokens + goalModeTokens
 
-        // 4 & 5. Active Unmuted Conversation Turns (separating Uploaded Files from Chat History)
+        // 4 & 5. Active Unmuted Conversation Turns (honoring assistant.contextMessageLimit)
+        val effectiveMessages = if (assistant.contextMessageLimit > 0 && session.messages.size > assistant.contextMessageLimit) {
+            session.messages.takeLast(assistant.contextMessageLimit)
+        } else {
+            session.messages
+        }
         var uploadedFilesTokens = 0
         var uploadedFilesCount = 0
         var chatHistoryTokens = 0
         var activeTurnsCount = 0
-        var mutedTurnsCount = 0
+        var mutedTurnsCount = (session.messages.size - effectiveMessages.size).coerceAtLeast(0)
 
-        for (node in session.messages) {
+        for (node in effectiveMessages) {
             if (!node.includedInContext) {
                 mutedTurnsCount++
                 continue

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -27,14 +28,19 @@ import kotlinx.coroutines.CompletableDeferred
 class MainActivity : ComponentActivity() {
 
     private var pendingImportDeferred: CompletableDeferred<PickedBinaryFile?>? = null
+    private var pendingMultiImportDeferred: CompletableDeferred<List<PickedBinaryFile>>? = null
     private var pendingExportBytes: ByteArray? = null
     private var pendingExportDeferred: CompletableDeferred<String?>? = null
+    private var pendingBatchExportFiles: List<Pair<String, ByteArray>>? = null
+    private var pendingBatchExportDeferred: CompletableDeferred<String?>? = null
     private var pendingVoiceCallback: ((String) -> Unit)? = null
     private var pendingVoiceErrorCallback: ((String) -> Unit)? = null
     private var activeSpeechRecognizer: SpeechRecognizer? = null
 
     private lateinit var openDocumentLauncher: ActivityResultLauncher<Array<String>>
+    private lateinit var openMultipleDocumentsLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var createDocumentLauncher: ActivityResultLauncher<String>
+    private lateinit var openDocumentTreeLauncher: ActivityResultLauncher<Uri?>
     private lateinit var voiceRecognizerLauncher: ActivityResultLauncher<Intent>
     private lateinit var audioPermissionLauncher: ActivityResultLauncher<String>
 
@@ -55,6 +61,17 @@ class MainActivity : ComponentActivity() {
             deferred.complete(result)
         }
 
+        openMultipleDocumentsLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
+            val deferred = pendingMultiImportDeferred
+            pendingMultiImportDeferred = null
+            if (uris.isEmpty() || deferred == null) {
+                deferred?.complete(emptyList())
+                return@registerForActivityResult
+            }
+            val results = uris.mapNotNull { PlatformBridge.readUriAsPickedFile(it) }
+            deferred.complete(results)
+        }
+
         createDocumentLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri: Uri? ->
             val deferred = pendingExportDeferred
             val bytes = pendingExportBytes
@@ -72,6 +89,36 @@ class MainActivity : ComponentActivity() {
                 uri.toString()
             }.getOrNull()
             deferred.complete(pathResult)
+        }
+
+        openDocumentTreeLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
+            val deferred = pendingBatchExportDeferred
+            val files = pendingBatchExportFiles
+            pendingBatchExportDeferred = null
+            pendingBatchExportFiles = null
+            if (treeUri == null || files.isNullOrEmpty() || deferred == null) {
+                deferred?.complete(null)
+                return@registerForActivityResult
+            }
+            val summary = runCatching {
+                val docId = DocumentsContract.getTreeDocumentId(treeUri)
+                val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                var written = 0
+                for ((fileName, bytes) in files) {
+                    val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "chat-${written + 1}.json" }
+                    val mime = if (safeName.endsWith(".json", ignoreCase = true)) "application/json" else "text/plain"
+                    val childUri = DocumentsContract.createDocument(contentResolver, parentUri, mime, safeName)
+                    if (childUri != null) {
+                        contentResolver.openOutputStream(childUri)?.use { out ->
+                            out.write(bytes)
+                            out.flush()
+                        }
+                        written++
+                    }
+                }
+                "$written file(s) exported"
+            }.getOrNull()
+            deferred.complete(summary)
         }
 
         voiceRecognizerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -195,12 +242,39 @@ class MainActivity : ComponentActivity() {
         return deferred.await()
     }
 
+    suspend fun requestImportMultipleFiles(mimeTypes: Array<String>): List<PickedBinaryFile> {
+        val deferred = CompletableDeferred<List<PickedBinaryFile>>()
+        pendingMultiImportDeferred = deferred
+        runCatching {
+            openMultipleDocumentsLauncher.launch(mimeTypes)
+        }.onFailure {
+            deferred.complete(emptyList())
+        }
+        return deferred.await()
+    }
+
     suspend fun requestExportFile(defaultFileName: String, bytes: ByteArray): String? {
         val deferred = CompletableDeferred<String?>()
         pendingExportBytes = bytes
         pendingExportDeferred = deferred
         runCatching {
             createDocumentLauncher.launch(defaultFileName)
+        }.onFailure {
+            deferred.complete(null)
+        }
+        return deferred.await()
+    }
+
+    suspend fun requestExportMultipleFilesToTree(files: List<Pair<String, ByteArray>>): String? {
+        if (files.isEmpty()) return null
+        if (files.size == 1) {
+            return requestExportFile(files.first().first, files.first().second)
+        }
+        val deferred = CompletableDeferred<String?>()
+        pendingBatchExportFiles = files
+        pendingBatchExportDeferred = deferred
+        runCatching {
+            openDocumentTreeLauncher.launch(null)
         }.onFailure {
             deferred.complete(null)
         }

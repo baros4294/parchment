@@ -34,7 +34,12 @@ import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.parseSvgSceneDocument
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import io.parchment.ai.ui.AiGeneratedChatArtifact
+import io.parchment.ai.ui.buildExportFileNameForChat
+import io.parchment.ai.ui.decodeChatSessionsFromRawJson
 import io.parchment.ai.ui.extractSessionVaultItems
+import io.parchment.ai.ui.loadOrCreateDefaultAppState
+import io.parchment.ai.ui.saveSingleChatSessionToDisk
+import io.parchment.ai.ui.saveSplitAppStateToDisk
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -879,6 +884,47 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("https://kotlinlang.org/docs/releases.html", extractedSearchCits[0].url)
         assertEquals("Kotlin Release Process", extractedSearchCits[0].title)
         assertTrue(extractedSearchCits[0].snippet.contains("2.4.21"))
+
+        // 24. Verify Complete 17-Tool Harness Registry & Parameter Signatures
+        val allHarnessTools = WorkspaceHarness.allTools()
+        assertEquals(17, allHarnessTools.size, "WorkspaceHarness must expose all 17 built-in tools")
+        assertTrue(WorkspaceHarness.extractParameterSignature(allHarnessTools.first { it.name == "fs_edit" }).contains("old_text"))
+        assertTrue(WorkspaceHarness.extractParameterSignature(allHarnessTools.first { it.name == "shell_exec" }).contains("command"))
+
+        // 25. Verify Split Storage Architecture (parchment-settings.json + per-chat files in chats/) & Standalone Chat JSON Import/Export
+        val chatA = vaultSession.copy(id = "sess-split-a", title = "Architecture Notes", updatedAt = 1000L)
+        val chatB = vaultSession.copy(id = "sess-split-b", title = "Mobile Migration Test", updatedAt = 2000L)
+        saveSingleChatSessionToDisk(chatA)
+        saveSingleChatSessionToDisk(chatB)
+        val loadedChatsFromDisk = PlatformBridge.loadAllChatSessionJsons().flatMap { decodeChatSessionsFromRawJson(it) }
+        assertTrue(loadedChatsFromDisk.any { it.id == "sess-split-a" && it.title == "Architecture Notes" })
+        assertTrue(loadedChatsFromDisk.any { it.id == "sess-split-b" && it.title == "Mobile Migration Test" })
+        val exportedSingleJson = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), chatB)
+        val decodedImported = decodeChatSessionsFromRawJson(exportedSingleJson)
+        assertEquals(1, decodedImported.size)
+        assertEquals("Mobile Migration Test", decodedImported.first().title)
+        assertTrue(buildExportFileNameForChat(chatB).endsWith(".chat.json"))
+        PlatformBridge.deleteChatSessionFile("sess-split-a")
+        PlatformBridge.deleteChatSessionFile("sess-split-b")
+
+        // 26. Verify Deep Package Tree Traversal (depth >= 10) for workspaceList, workspaceGlob, and workspaceSearch
+        val deepRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-deep-ws-${PlatformBridge.currentTimeMillis()}"
+        val deepPath = "composeApp/src/commonMain/kotlin/io/parchment/ai/harness/DeepModule.kt"
+        val deepWrite = WorkspaceHarness.executeToolCall(
+            workspaceRoot = deepRoot,
+            mode = WorkspaceMode.READ_WRITE,
+            callId = "call_deep_w",
+            toolName = "fs_write",
+            argumentsJson = """{"path":"$deepPath","content":"object DeepHarnessMarker { val version = 36 }"}"""
+        )
+        assertFalse(deepWrite.isError, "Deep fs_write should succeed")
+        val deepSearch = PlatformBridge.workspaceSearch(deepRoot, "DeepHarnessMarker", ".kt").getOrThrow()
+        assertTrue(deepSearch.contains("DeepModule.kt"), "workspaceSearch must find files at depth 9+: $deepSearch")
+        val deepGlob = PlatformBridge.workspaceGlob(deepRoot, "**/*.kt", 50).getOrThrow()
+        assertTrue(deepGlob.contains("DeepModule.kt"), "workspaceGlob must find files at depth 9+: $deepGlob")
+        val deepList = PlatformBridge.workspaceList(deepRoot, "", recursive = true).getOrThrow()
+        assertTrue(deepList.contains("DeepModule.kt"), "workspaceList(recursive=true) must find files at depth 9+: $deepList")
+        PlatformBridge.workspaceDelete(deepRoot, "composeApp")
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {

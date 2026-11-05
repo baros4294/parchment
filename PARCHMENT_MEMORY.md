@@ -46,3 +46,23 @@ Do not simply make superficial visual changes. Thoroughly inspect the entire cod
 
 ### Definition of Done
 The application should look premium, feel responsive, work reliably, remain maintainable, and provide a consistent experience across every screen and interaction. Do not stop after the first round of improvements—inspect, implement, test, refine, and repeat until no obvious problems or meaningful improvements remain.
+
+## 3. Current Architecture & Dependency Matrix (`v2.0.36`)
+- **Split Storage Architecture (`parchment-settings.json` + Per-Chat `.json` Files in `chats/`)**:
+  - Local disk persistence (`PlatformBridge` & `ParchmentStatePersistence.kt`) is cleanly split into `parchment-settings.json` (Providers, Preferences, Assistants, System Prompts, Default Models, Theme, World Book — zero embedded chat histories) and individual `chats/<sessionId>.json` files (one file per chat, with automatic migration from legacy `parchment-state.json`).
+  - `Settings → Backup & OTA` provides separate **Export All Chats (`N` Separate `.chat.json` Files)**, **Export Current Chat (`.json`)**, **Import Chat(s) (`.json` multi-file picker)**, and **Export / Import Settings & Assistants (`.json`)**.
+- **Complete 17-Tool Workspace Agent Harness & 1-Tap Folder Mount**:
+  - `WorkspaceHarness.allTools()` exposes all 17 built-in tools (`fs_list`, `fs_glob`, `fs_read`, `fs_search`, `fs_write`, `fs_edit`, `fs_multi_edit`, `fs_move`, `fs_delete`, `agent_memory`, `shell_exec`, `web_search`, `web_fetch`, `calc_eval`, `dice_roll`, `todo_write`, `goal_complete`) with live status and 1-tap activation in both `Settings → Workspace` and the Composer `⚙ Tools` tray (`📂 Mount Folder…`, `@mount`, `🔧 N/17 Tools`).
+  - Deep package tree traversal (`maxDepth = 24` with `.onEnter` pruning for `.git`, `build`, `.gradle`, `node_modules`) across Desktop and Android.
+- **Zero-Dim Studio Attachment Viewer & High-Contrast Frosted `"↓ Latest"` Pill**:
+  - `ParchmentAttachmentViewerModal` opens images, code, `.svg` (with live vector preview), and `.md` (with rendered prose preview) in an elevated Studio Card without dimming the background UI.
+  - Floating `"↓ Latest"` button uses an opaque frosted halo + solid `p.accent` pill so underlying manuscript text never bleeds through.
+- **Unified `o200k_base` Tokenizer & Context Breakdown Popover (`protocol/O200kTokenizer.kt`)**:
+  - Implements OpenAI's official `o200k_base` pre-tokenization regex + UTF-8 subword BPE counter across the Circular Context Ring, `ContextWindowBreakdownPopover` (7 itemized categories: `System & Persona`, `Lorebook & Memory`, `Workspace & Tool Schemas`, `Uploaded Files`, `Chat History`, `Current Composer Draft`, and `Free Space Remaining`), User message token/cost pills, and Assistant message token/speed/cost pills.
+- **Line-Grounded `"🌐 N Sources"` Button & Free Multi-Engine `web_search` Cascade**:
+  - Extracts `WebSourceCitation`s across all 5 protocols (`AiProviderEngine.kt`) and binds each source to exact 1-based line numbers (`Line N`) and quotes in the assistant's reply (`bindSourcesToMessageLines`). Clicking a source highlights the grounded paragraph in `ProseRenderer.kt`.
+  - When native provider web search is unavailable or rejected, automatically falls back to `WorkspaceHarness.executeFreeWebSearch()` (zero-key **DuckDuckGo HTML/Lite** $\rightarrow$ **Wikipedia API** $\rightarrow$ **HackerNews Algolia API** cascade).
+- **Collapsible Right Sidebar (`ParchmentRightFilesSidebar` in `ParchmentModalsAndNavigation.kt`)**:
+  - Toggled via `📁 N` in `TopEditorialBar`; organizes active chat artifacts into `✦ AI-Generated Files & Media`, `↑ User-Uploaded Documents`, and `🌐 Grounded Web Sources`.
+- **Android CI / AGP `8.13.2` Compatibility Ceiling (`gradle/libs.versions.toml`)**:
+  - Uses `agp = "8.13.2"`, `android-compileSdk = "36"`, `kotlin = "2.3.21"`, `compose-multiplatform = "1.10.3"`, `ktor = "3.5.2"` (`okhttp 5.3.2`), `kotlinx-serialization = "1.11.0"`, `kotlinx-coroutines = "1.11.0"`, and `androidx-activityCompose = "1.12.4"`. Keep Android AAR dependencies within `minCompileSdk <= 36` unless migrating AGP to `9.2+`.

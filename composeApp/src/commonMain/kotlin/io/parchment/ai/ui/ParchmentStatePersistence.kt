@@ -243,27 +243,122 @@ internal fun buildFreshSessionForAssistant(
     )
 }
 
-internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
-    val raw = PlatformBridge.loadAppStateJson()
-    if (!raw.isNullOrBlank()) {
-        val directResult = runCatching {
-            val loaded = compactStateJson.decodeFromString<AppStateSnapshot>(raw)
-            sanitizeLoadedSnapshot(loaded)
-        }.getOrNull()
+internal fun saveSettingsOnlyToDisk(snapshot: AppStateSnapshot) {
+    val settingsSnapshot = snapshot.copy(sessions = emptyList())
+    val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), settingsSnapshot)
+    PlatformBridge.saveAppStateJson(encoded)
+}
 
-        if (directResult != null) {
-            return directResult
+internal fun saveSingleChatSessionToDisk(session: ChatSession) {
+    val cleanSession = session.copy(
+        messages = session.messages.map { node ->
+            node.copy(
+                variants = node.variants.map { v ->
+                    if (v.isStreaming) v.copy(isStreaming = false) else v
+                }
+            )
         }
+    )
+    val encoded = compactStateJson.encodeToString(ChatSession.serializer(), cleanSession)
+    PlatformBridge.saveChatSessionJson(cleanSession.id, encoded)
+}
 
-        val recovered = runCatching {
-            recoverAppStateFromPartialJson(raw)
-        }.getOrNull()
+internal fun saveSplitAppStateToDisk(snapshot: AppStateSnapshot) {
+    saveSettingsOnlyToDisk(snapshot)
+    for (sess in snapshot.sessions) {
+        saveSingleChatSessionToDisk(sess)
+    }
+}
 
-        if (recovered != null) {
-            return sanitizeLoadedSnapshot(recovered)
+internal fun decodeChatSessionsFromRawJson(rawJsonText: String): List<ChatSession> {
+    val trimmed = rawJsonText.trim()
+    if (trimmed.isEmpty()) return emptyList()
+    // 1. Single ChatSession JSON object
+    runCatching {
+        val elem = compactStateJson.parseToJsonElement(trimmed)
+        if (elem is JsonObject) {
+            if (elem.containsKey("messages") && elem.containsKey("title") && !elem.containsKey("profiles")) {
+                return listOf(compactStateJson.decodeFromJsonElement(ChatSession.serializer(), elem))
+            }
+            if (elem.containsKey("sessions")) {
+                val arr = elem["sessions"] as? JsonArray
+                if (arr != null) {
+                    return arr.mapNotNull { item ->
+                        runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item) }.getOrNull()
+                    }
+                }
+            }
+        } else if (elem is JsonArray) {
+            return elem.mapNotNull { item ->
+                runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item) }.getOrNull()
+            }
         }
     }
-    return createDefaultAppState()
+    return emptyList()
+}
+
+internal fun buildExportFileNameForChat(session: ChatSession): String {
+    val safeTitle = session.title.trim()
+        .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+        .take(42)
+        .ifBlank { "chat" }
+    val shortId = session.id.takeLast(8).replace(Regex("[^a-zA-Z0-9_-]"), "")
+    return if (shortId.isNotEmpty()) "$safeTitle-$shortId.chat.json" else "$safeTitle.chat.json"
+}
+
+internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
+    val rawSettings = PlatformBridge.loadAppStateJson()
+    val rawChatFiles = PlatformBridge.loadAllChatSessionJsons()
+    val diskSessions = rawChatFiles.mapNotNull { rawChat ->
+        runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull()
+    }
+
+    if (!rawSettings.isNullOrBlank()) {
+        val baseLoaded = runCatching {
+            compactStateJson.decodeFromString<AppStateSnapshot>(rawSettings)
+        }.getOrElse {
+            runCatching { recoverAppStateFromPartialJson(rawSettings) }.getOrNull()
+        }
+
+        if (baseLoaded != null) {
+            // Merge sessions from chats/*.json with any legacy embedded sessions in parchment-state.json
+            val mergedById = LinkedHashMap<String, ChatSession>()
+            for (ds in diskSessions) {
+                if (ds.id.isNotBlank()) mergedById[ds.id] = ds
+            }
+            var migratedLegacySessions = false
+            for (legacySess in baseLoaded.sessions) {
+                if (legacySess.id.isBlank()) continue
+                val existing = mergedById[legacySess.id]
+                if (existing == null || legacySess.updatedAt > existing.updatedAt) {
+                    mergedById[legacySess.id] = legacySess
+                    saveSingleChatSessionToDisk(legacySess)
+                    migratedLegacySessions = true
+                }
+            }
+            val combinedSessions = mergedById.values
+                .sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+            val sanitized = sanitizeLoadedSnapshot(baseLoaded.copy(sessions = combinedSessions))
+            if (migratedLegacySessions || baseLoaded.sessions.isNotEmpty() || diskSessions.isEmpty()) {
+                // Ensure parchment-settings.json is persisted without embedded chats and all chats exist in chats/
+                saveSplitAppStateToDisk(sanitized)
+            }
+            return sanitized
+        }
+    }
+
+    if (diskSessions.isNotEmpty()) {
+        val fallback = createDefaultAppState()
+        val sanitized = sanitizeLoadedSnapshot(fallback.copy(sessions = diskSessions))
+        saveSplitAppStateToDisk(sanitized)
+        return sanitized
+    }
+
+    val fresh = createDefaultAppState()
+    saveSplitAppStateToDisk(fresh)
+    return fresh
 }
 
 internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {

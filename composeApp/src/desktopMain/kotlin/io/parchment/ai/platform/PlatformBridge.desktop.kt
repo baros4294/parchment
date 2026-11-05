@@ -81,7 +81,17 @@ actual object PlatformBridge {
 
     actual fun getAppStorageDirectoryPath(): String = resolveStorageDir().absolutePath
 
-    private fun stateFile(): File = File(resolveStorageDir(), "parchment-state.json")
+    private fun chatsDir(): File = File(resolveStorageDir(), "chats").also {
+        if (!it.exists()) it.mkdirs()
+    }
+
+    actual fun getChatsStorageDirectoryPath(): String = chatsDir().absolutePath
+
+    private fun settingsFile(): File = File(resolveStorageDir(), "parchment-settings.json")
+    private fun legacyStateFile(): File = File(resolveStorageDir(), "parchment-state.json")
+
+    private fun sanitizeSessionFileName(sessionId: String): String =
+        sessionId.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "session" }
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
         val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
@@ -92,19 +102,27 @@ actual object PlatformBridge {
         val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
         val hasNoSavedCards = !json.contains("\"savedCards\":[{")
         val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
-        return hasNoApiKeys && hasNoAssistants && hasNoMessages && hasNoSavedCards && hasNoPresets
+        val hasNoGlobalWorldBook = !json.contains("\"globalWorldBook\":[{")
+        val isInitialSessionId = json.contains("\"activeSessionId\":\"sess-initial\"") ||
+            json.contains("\"activeSessionId\":\"\"")
+        return hasNoApiKeys && hasNoAssistants && hasNoMessages &&
+            hasNoSavedCards && hasNoPresets && hasNoGlobalWorldBook && isInitialSessionId
     }
 
     actual fun loadAppStateJson(): String? {
         val dir = resolveStorageDir()
-        val f = stateFile()
-        val tmp = File(dir, "parchment-state.json.tmp")
-        val prev = File(dir, "parchment-state.prev.json")
-        val userBak = File(dir, "parchment-state.user-backup.json")
+        val f = settingsFile()
+        val tmp = File(dir, "parchment-settings.json.tmp")
+        val prev = File(dir, "parchment-settings.prev.json")
+        val userBak = File(dir, "parchment-settings.user-backup.json")
+        val legacy = legacyStateFile()
+        val legacyTmp = File(dir, "parchment-state.json.tmp")
+        val legacyPrev = File(dir, "parchment-state.prev.json")
+        val legacyBak = File(dir, "parchment-state.user-backup.json")
 
         // Retry up to 6 times (50ms apart) in case the previous process during an OTA restart is still releasing its file handle
         repeat(6) { attempt ->
-            val candidates = listOf(f, tmp, prev, userBak)
+            val candidates = listOf(f, tmp, prev, userBak, legacy, legacyTmp, legacyPrev, legacyBak)
             for (cand in candidates) {
                 val content = runCatching {
                     if (cand.exists() && cand.isFile && cand.length() > 10L) {
@@ -112,9 +130,9 @@ actual object PlatformBridge {
                     } else null
                 }.getOrNull()
                 if (!content.isNullOrBlank()) {
-                    // If the primary file was somehow overwritten by a blank default state, but userBak has real user data, prefer userBak!
-                    if (cand != userBak && isBlankDefaultStateJson(content) && userBak.exists() && userBak.length() > 50L) {
-                        val bakContent = runCatching { userBak.readText(Charsets.UTF_8) }.getOrNull()
+                    val activeBak = if (userBak.exists() && userBak.length() > 50L) userBak else legacyBak
+                    if (cand != activeBak && isBlankDefaultStateJson(content) && activeBak.exists() && activeBak.length() > 50L) {
+                        val bakContent = runCatching { activeBak.readText(Charsets.UTF_8) }.getOrNull()
                         if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
                             return bakContent
                         }
@@ -122,7 +140,7 @@ actual object PlatformBridge {
                     return content
                 }
             }
-            if (attempt < 5 && (f.exists() || tmp.exists() || prev.exists() || userBak.exists())) {
+            if (attempt < 5 && candidates.any { it.exists() }) {
                 runCatching { Thread.sleep(50L) }
             }
         }
@@ -134,14 +152,14 @@ actual object PlatformBridge {
         runCatching {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
-            val tmp = File(dir, "parchment-state.json.tmp")
-            val prev = File(dir, "parchment-state.prev.json")
-            val userBak = File(dir, "parchment-state.user-backup.json")
-            val target = stateFile()
+            val tmp = File(dir, "parchment-settings.json.tmp")
+            val prev = File(dir, "parchment-settings.prev.json")
+            val userBak = File(dir, "parchment-settings.user-backup.json")
+            val target = settingsFile()
 
             val incomingIsBlankDefault = isBlankDefaultStateJson(json)
 
-            // Guard: Never allow a blank default state to overwrite an existing populated user state file on disk!
+            // Guard: Never allow a blank default state to overwrite an existing populated user settings file on disk!
             if (incomingIsBlankDefault && userBak.exists() && userBak.length() > 50L) {
                 return
             }
@@ -158,6 +176,51 @@ actual object PlatformBridge {
             if (!incomingIsBlankDefault && json.length > 50) {
                 runCatching { target.copyTo(userBak, overwrite = true) }
             }
+        }
+    }
+
+    actual fun loadAllChatSessionJsons(): List<String> = runCatching {
+        val dir = chatsDir()
+        val files = dir.listFiles()?.toList().orEmpty()
+        // Recover any interrupted .tmp files if their primary .json is missing
+        files.filter { it.name.endsWith(".json.tmp") }.forEach { tmpFile ->
+            val targetName = tmpFile.name.removeSuffix(".tmp")
+            val targetFile = File(dir, targetName)
+            if ((!targetFile.exists() || targetFile.length() <= 5L) && tmpFile.length() > 10L) {
+                runCatching { tmpFile.copyTo(targetFile, overwrite = true) }
+            }
+        }
+        dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".json", ignoreCase = true) && it.length() > 5L }
+            ?.sortedByDescending { it.lastModified() }
+            ?.mapNotNull { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            .orEmpty()
+    }.getOrDefault(emptyList())
+
+    @Synchronized
+    actual fun saveChatSessionJson(sessionId: String, json: String) {
+        if (sessionId.isBlank() || json.isBlank()) return
+        runCatching {
+            val dir = chatsDir()
+            val safeId = sanitizeSessionFileName(sessionId)
+            val target = File(dir, "$safeId.json")
+            val tmp = File(dir, "$safeId.json.tmp")
+            tmp.writeText(json, Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.writeText(json, Charsets.UTF_8)
+                tmp.delete()
+            }
+        }
+    }
+
+    @Synchronized
+    actual fun deleteChatSessionFile(sessionId: String) {
+        if (sessionId.isBlank()) return
+        runCatching {
+            val dir = chatsDir()
+            val safeId = sanitizeSessionFileName(sessionId)
+            File(dir, "$safeId.json").delete()
+            File(dir, "$safeId.json.tmp").delete()
         }
     }
 
@@ -182,11 +245,15 @@ actual object PlatformBridge {
     }.getOrDefault(false)
 
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? =
+        pickFilesForImport(allowedExtensions).firstOrNull()
+
+    actual suspend fun pickFilesForImport(allowedExtensions: List<String>): List<PickedBinaryFile> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val allowAll = allowedExtensions.isEmpty() || allowedExtensions.contains("*")
-                val title = if (allowAll) "Attach Image, Video, or File" else "Import File into Parchment"
+                val title = if (allowAll) "Attach Image, Video, or File(s)" else "Import File(s) into Parchment"
                 val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD)
+                dialog.isMultipleMode = true
                 if (!allowAll && allowedExtensions.isNotEmpty()) {
                     dialog.file = allowedExtensions.joinToString(";") { "*.$it" }
                     dialog.filenameFilter = FilenameFilter { _, name ->
@@ -194,19 +261,22 @@ actual object PlatformBridge {
                     }
                 }
                 dialog.isVisible = true
-                val dir = dialog.directory
-                val file = dialog.file
-                if (dir != null && file != null) {
-                    val target = File(dir, file)
+                val selectedFiles = dialog.files?.toList().orEmpty().ifEmpty {
+                    val dir = dialog.directory
+                    val file = dialog.file
+                    if (dir != null && file != null) listOf(File(dir, file)) else emptyList()
+                }
+                val baseTs = currentTimeMillis()
+                selectedFiles.mapIndexedNotNull { idx, target ->
                     if (target.exists() && target.isFile) {
                         normalizePickedBinaryFile(
                             rawFileName = target.name,
                             bytes = target.readBytes(),
-                            fallbackTimestamp = currentTimeMillis()
+                            fallbackTimestamp = baseTs + idx
                         )
                     } else null
-                } else null
-            }.getOrNull()
+                }
+            }.getOrDefault(emptyList())
         }
 
     actual suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String? =
@@ -221,6 +291,28 @@ actual object PlatformBridge {
                     val out = File(dir, file)
                     out.writeBytes(bytes)
                     out.absolutePath
+                } else null
+            }.getOrNull()
+        }
+
+    actual suspend fun exportMultipleFilesToDirectory(files: List<Pair<String, ByteArray>>): String? =
+        withContext(Dispatchers.IO) {
+            if (files.isEmpty()) return@withContext null
+            runCatching {
+                val chooser = JFileChooser()
+                chooser.dialogTitle = "Select Destination Folder to Export ${files.size} Chat File(s)"
+                chooser.fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
+                val res = chooser.showSaveDialog(null)
+                if (res == JFileChooser.APPROVE_OPTION && chooser.selectedFile != null) {
+                    val outDir = chooser.selectedFile
+                    if (!outDir.exists()) outDir.mkdirs()
+                    var written = 0
+                    for ((fileName, bytes) in files) {
+                        val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "chat-${written + 1}.json" }
+                        File(outDir, safeName).writeBytes(bytes)
+                        written++
+                    }
+                    "$written file(s) in ${outDir.absolutePath}"
                 } else null
             }.getOrNull()
         }
@@ -357,6 +449,12 @@ actual object PlatformBridge {
         return resolved
     }
 
+    private fun isIgnoredWorkspaceDir(name: String): Boolean {
+        val low = name.lowercase()
+        return low == ".git" || low == "build" || low == ".gradle" ||
+            low == "node_modules" || low == ".idea" || low == ".kotlin"
+    }
+
     actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath)
         val rootPath = File(workspaceRoot).canonicalFile.toPath().normalize()
@@ -366,8 +464,9 @@ actual object PlatformBridge {
 
         val entries = if (recursive) {
             dirFile.walkTopDown()
-                .maxDepth(5)
-                .filter { it != dirFile && !it.name.startsWith(".git") && !it.name.equals("build", ignoreCase = true) }
+                .onEnter { d -> d == dirFile || !isIgnoredWorkspaceDir(d.name) }
+                .maxDepth(24)
+                .filter { it != dirFile && !isIgnoredWorkspaceDir(it.name) }
                 .take(400)
                 .map { f ->
                     val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
@@ -423,13 +522,9 @@ actual object PlatformBridge {
         }
         val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
         val matches = rootFile.walkTopDown()
-            .maxDepth(8)
-            .filter { f ->
-                f != rootFile &&
-                    !f.path.contains(".git") &&
-                    !f.name.equals("build", ignoreCase = true) &&
-                    !f.name.equals("node_modules", ignoreCase = true)
-            }
+            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .maxDepth(24)
+            .filter { f -> f != rootFile && !isIgnoredWorkspaceDir(f.name) }
             .mapNotNull { f ->
                 val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
                 val matchTarget = if (!cleanPat.contains('/')) f.name else rel
@@ -640,10 +735,11 @@ actual object PlatformBridge {
         val matches = mutableListOf<String>()
 
         rootFile.walkTopDown()
-            .maxDepth(6)
+            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .maxDepth(24)
             .filter { f ->
                 f.isFile &&
-                    !f.path.contains(".git") &&
+                    !isIgnoredWorkspaceDir(f.name) &&
                     f.length() < 2_000_000L &&
                     (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
             }

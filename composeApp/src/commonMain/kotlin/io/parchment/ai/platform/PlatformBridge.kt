@@ -151,10 +151,14 @@ expect object PlatformBridge {
 
     fun currentTimeMillis(): Long
 
-    // Local persistent storage (zero-trace on uninstall)
+    // Local persistent storage (split into parchment-settings.json + per-chat files in chats/)
     fun getAppStorageDirectoryPath(): String
+    fun getChatsStorageDirectoryPath(): String
     fun loadAppStateJson(): String?
     fun saveAppStateJson(json: String)
+    fun loadAllChatSessionJsons(): List<String>
+    fun saveChatSessionJson(sessionId: String, json: String)
+    fun deleteChatSessionFile(sessionId: String)
     fun registerStateFlushCallback(callback: () -> Unit)
     fun flushPendingStateNow()
     fun isIgnoringBatteryOptimizations(): Boolean
@@ -163,7 +167,9 @@ expect object PlatformBridge {
 
     // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?
+    suspend fun pickFilesForImport(allowedExtensions: List<String>): List<PickedBinaryFile>
     suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String?
+    suspend fun exportMultipleFilesToDirectory(files: List<Pair<String, ByteArray>>): String?
     suspend fun pickWorkspaceDirectory(currentPath: String): String?
     suspend fun pickFontFile(dialogTitle: String = "Select .TTF or .OTF Font"): String?
     fun loadCustomFontFamily(fontPath: String): FontFamily?

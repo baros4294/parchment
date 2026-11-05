@@ -100,6 +100,7 @@ import io.parchment.ai.model.QueuedPromptItem
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
+import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WebSourceCitation
@@ -199,13 +200,15 @@ fun ParchmentApp(
     fun openAttachmentInViewer(att: PromptAttachment) {
         val mime = att.mimeType.lowercase().trim()
         val lower = att.fileName.lowercase().trim()
+        val isSvg = mime == "image/svg+xml" || lower.endsWith(".svg") ||
+            (att.textContent.contains("<svg", ignoreCase = true) && att.textContent.contains("</svg>", ignoreCase = true))
         val isPdf = mime == "application/pdf" || lower.endsWith(".pdf")
         val isVideoOrAudio = mime.startsWith("video/") || mime.startsWith("audio/") ||
             lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") ||
             lower.endsWith(".mkv") || lower.endsWith(".avi") || lower.endsWith(".mp3") ||
             lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac")
-        val isImage = mime.startsWith("image/") || lower.endsWith(".png") || lower.endsWith(".jpg") ||
-            lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".bmp")
+        val isRasterImage = !isSvg && (mime.startsWith("image/") || lower.endsWith(".png") || lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".bmp"))
 
         when {
             isPdf || isVideoOrAudio -> {
@@ -215,14 +218,14 @@ fun ParchmentApp(
                     bannerNotification = "File path is unavailable for ${att.fileName}."
                 }
             }
-            isImage -> {
+            isRasterImage -> {
                 activeViewerItem = ActiveMediaViewerItem.ImageViewer(
                     title = att.fileName.ifBlank { "Image Attachment" },
                     mimeType = att.mimeType.ifBlank { "image/png" },
                     localFilePath = att.localFilePath
                 )
             }
-            att.textContent.isNotBlank() || mime.startsWith("text/") || mime == "application/json" -> {
+            isSvg || att.textContent.isNotBlank() || mime.startsWith("text/") || mime == "application/json" -> {
                 val content = att.textContent.ifBlank {
                     PlatformBridge.readBinaryFileBytes(att.localFilePath)?.let {
                         runCatching { it.decodeToString() }.getOrNull()
@@ -230,7 +233,7 @@ fun ParchmentApp(
                 }
                 activeViewerItem = ActiveMediaViewerItem.TextOrCodeViewer(
                     title = att.fileName.ifBlank { "Text Attachment" },
-                    mimeType = att.mimeType.ifBlank { "text/plain" },
+                    mimeType = if (isSvg) "image/svg+xml" else att.mimeType.ifBlank { "text/plain" },
                     textContent = content,
                     localFilePath = att.localFilePath
                 )
@@ -364,22 +367,23 @@ fun ParchmentApp(
     LaunchedEffect(Unit) {
         PlatformBridge.registerStateFlushCallback {
             runCatching {
-                val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
-                PlatformBridge.saveAppStateJson(encoded)
+                saveSplitAppStateToDisk(appState)
                 hasDirtyUnflushedChanges = false
             }
         }
     }
 
     fun persist(updated: AppStateSnapshot, immediateFlush: Boolean = false) {
+        val prevSessionsById = appState.sessions.associateBy { it.id }
+        val changedSessions = updated.sessions.filter { s -> prevSessionsById[s.id] != s }
         appState = updated
         hasDirtyUnflushedChanges = true
         diskPersistJob?.cancel()
         if (immediateFlush) {
             appProcessScope.launch(Dispatchers.IO) {
                 runCatching {
-                    val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), updated)
-                    PlatformBridge.saveAppStateJson(encoded)
+                    saveSettingsOnlyToDisk(updated)
+                    changedSessions.forEach { saveSingleChatSessionToDisk(it) }
                     hasDirtyUnflushedChanges = false
                 }
             }
@@ -387,8 +391,30 @@ fun ParchmentApp(
             diskPersistJob = appProcessScope.launch(Dispatchers.Default) {
                 delay(250L)
                 runCatching {
-                    val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), appState)
-                    PlatformBridge.saveAppStateJson(encoded)
+                    saveSettingsOnlyToDisk(appState)
+                    changedSessions.forEach { saveSingleChatSessionToDisk(it) }
+                    hasDirtyUnflushedChanges = false
+                }
+            }
+        }
+    }
+
+    fun persistSingleSession(updatedSession: ChatSession, immediateFlush: Boolean = false) {
+        hasDirtyUnflushedChanges = true
+        diskPersistJob?.cancel()
+        if (immediateFlush) {
+            appProcessScope.launch(Dispatchers.IO) {
+                runCatching {
+                    saveSingleChatSessionToDisk(updatedSession)
+                    hasDirtyUnflushedChanges = false
+                }
+            }
+        } else {
+            diskPersistJob = appProcessScope.launch(Dispatchers.Default) {
+                delay(250L)
+                runCatching {
+                    val latest = appState.sessions.find { it.id == updatedSession.id } ?: updatedSession
+                    saveSingleChatSessionToDisk(latest)
                     hasDirtyUnflushedChanges = false
                 }
             }
@@ -399,18 +425,30 @@ fun ParchmentApp(
         val currentSnap = appState
         val targetId = currentSnap.sessions.find { it.id == currentSnap.activeSessionId }?.id
             ?: currentSnap.sessions.firstOrNull()?.id ?: return
+        var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
-            if (it.id == targetId) transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis()) else it
+            if (it.id == targetId) {
+                val mod = transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                modifiedSession = mod
+                mod
+            } else it
         }
-        persist(currentSnap.copy(sessions = newSessions), immediateFlush = immediate)
+        appState = currentSnap.copy(sessions = newSessions)
+        modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
 
     fun updateSessionById(sessionId: String, immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
         val currentSnap = appState
+        var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
-            if (it.id == sessionId) transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis()) else it
+            if (it.id == sessionId) {
+                val mod = transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                modifiedSession = mod
+                mod
+            } else it
         }
-        persist(currentSnap.copy(sessions = newSessions), immediateFlush = immediate)
+        appState = currentSnap.copy(sessions = newSessions)
+        modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
 
     fun updateActiveSessionInMemoryOnly(sessionId: String, transform: (ChatSession) -> ChatSession) {
@@ -1886,6 +1924,7 @@ fun ParchmentApp(
         val tabsToKeep = openTabIds.filterNot { it in emptyTabIds }.ifEmpty { listOf(emptyTabIds.first()) }
         val keptSet = tabsToKeep.toSet()
         val emptyDropSet = emptyTabIds.filterNot { it in keptSet }.toSet()
+        emptyDropSet.forEach { PlatformBridge.deleteChatSessionFile(it) }
         val nextSessions = appState.sessions.filterNot { it.id in emptyDropSet }
         val nextActiveId = if (activeSession.id in tabsToKeep) activeSession.id else tabsToKeep.first()
         val nextSess = nextSessions.find { it.id == nextActiveId }
@@ -1911,6 +1950,7 @@ fun ParchmentApp(
         updateSessionStreamState(targetId) { null }
         queuedPromptsBySession = queuedPromptsBySession - targetId
         pendingAttachmentsBySession = pendingAttachmentsBySession - targetId
+        PlatformBridge.deleteChatSessionFile(targetId)
         val remaining = appState.sessions.filterNot { it.id == targetId }
         val remainingTabs = openTabIds.filterNot { it == targetId }
         val remainingForAssistant = remaining.filter {
@@ -1955,6 +1995,7 @@ fun ParchmentApp(
         val removedIds = removedSessions.map { it.id }.toSet()
         removedIds.forEach { id ->
             activeStreamsBySession[id]?.job?.cancel()
+            PlatformBridge.deleteChatSessionFile(id)
         }
         activeStreamsBySession = activeStreamsBySession - removedIds
         queuedPromptsBySession = queuedPromptsBySession - removedIds
@@ -2484,8 +2525,60 @@ fun ParchmentApp(
                                         activeStreamsBySession = emptyMap()
                                         queuedPromptsBySession = emptyMap()
                                         pendingAttachmentsBySession = emptyMap()
-                                        persist(sanitizeLoadedSnapshot(restored), immediateFlush = true)
-                                        bannerNotification = "Restored backup."
+                                        // Preserve existing chats on disk when importing a settings-only JSON file!
+                                        val mergedSessions = if (restored.sessions.isEmpty()) {
+                                            appState.sessions
+                                        } else {
+                                            val byId = LinkedHashMap<String, ChatSession>()
+                                            for (s in appState.sessions) byId[s.id] = s
+                                            for (s in restored.sessions) byId[s.id] = s
+                                            byId.values.toList()
+                                        }
+                                        val finalSnap = sanitizeLoadedSnapshot(restored.copy(sessions = mergedSessions))
+                                        saveSplitAppStateToDisk(finalSnap)
+                                        appState = finalSnap
+                                        bannerNotification = "Imported settings & assistants (preserved ${finalSnap.sessions.size} chat(s))."
+                                    },
+                                    onImportChatSessions = { importedList ->
+                                        val byId = LinkedHashMap<String, ChatSession>()
+                                        for (existing in appState.sessions) {
+                                            byId[existing.id] = existing
+                                        }
+                                        val defaultProfId = appState.activeProfileId.ifBlank { appState.profiles.first().id }
+                                        val defaultAsstId = appState.activeAssistantId.ifBlank { appState.assistants.first().id }
+                                        var addedOrUpdated = 0
+                                        var firstImportedId = ""
+                                        for (rawChat in importedList) {
+                                            val safeId = rawChat.id.ifBlank { "sess-imp-${PlatformBridge.currentTimeMillis()}-$addedOrUpdated" }
+                                            val validProfId = appState.profiles.find { it.id == rawChat.profileId }?.id ?: defaultProfId
+                                            val validAsstId = appState.assistants.find { it.id == rawChat.assistantId }?.id ?: defaultAsstId
+                                            val normalized = rawChat.copy(
+                                                id = safeId,
+                                                profileId = validProfId,
+                                                assistantId = validAsstId,
+                                                messages = rawChat.messages.map { n ->
+                                                    n.copy(variants = n.variants.map { v -> if (v.isStreaming) v.copy(isStreaming = false) else v })
+                                                }
+                                            )
+                                            byId[safeId] = normalized
+                                            saveSingleChatSessionToDisk(normalized)
+                                            if (firstImportedId.isEmpty()) firstImportedId = safeId
+                                            addedOrUpdated++
+                                        }
+                                        val sorted = byId.values.sortedWith(
+                                            compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt }
+                                        )
+                                        val nextActive = if (firstImportedId.isNotEmpty()) firstImportedId else appState.activeSessionId
+                                        val nextTabs = (openTabIds + firstImportedId).filter { it.isNotBlank() }.distinct()
+                                        persist(
+                                            appState.copy(
+                                                sessions = sorted,
+                                                activeSessionId = nextActive,
+                                                openTabSessionIds = nextTabs
+                                            ),
+                                            immediateFlush = true
+                                        )
+                                        bannerNotification = "Imported $addedOrUpdated chat(s) into ${PlatformBridge.getChatsStorageDirectoryPath()}."
                                     },
                                     onWipeAllData = {
                                         activeStreamsBySession.values.forEach { it.job?.cancel() }
@@ -2680,6 +2773,14 @@ fun ParchmentApp(
                                             val safeTitle = activeSession.title.replace(Regex("[^a-zA-Z0-9-_]"), "_").ifBlank { "chat" }
                                             val saved = PlatformBridge.saveFileForExport("$safeTitle.md", md.encodeToByteArray())
                                             if (saved != null) bannerNotification = "Exported Markdown to $saved"
+                                        }
+                                    },
+                                    onExportChatJson = {
+                                        uiScope.launch {
+                                            val fileName = buildExportFileNameForChat(activeSession)
+                                            val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
+                                            val saved = PlatformBridge.saveFileForExport(fileName, bytes)
+                                            if (saved != null) bannerNotification = "Exported Chat JSON to $saved"
                                         }
                                     },
                                     onOpenPricingSettings = {
@@ -3177,6 +3278,7 @@ private fun ManuscriptViewport(
     onInspectAttachment: (PromptAttachment) -> Unit,
     onInspectGeneratedImage: (GeneratedMediaItem) -> Unit,
     onExportChatMarkdown: () -> Unit,
+    onExportChatJson: () -> Unit = {},
     onOpenPricingSettings: () -> Unit,
     onSend: () -> Unit,
     onSendGuidedDirection: () -> Unit,
@@ -3254,20 +3356,20 @@ private fun ManuscriptViewport(
         }
     }
 
-    val activeContextNodes = remember(activeSession.id, activeSession.messages.size, isStreaming) {
+    val activeContextNodes = remember(activeSession.id, activeSession.messages, isStreaming) {
         activeSession.messages.filter { it.includedInContext }
     }
-    val sessionTotalInputTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
+    val sessionTotalInputTok = remember(activeSession.id, activeSession.messages, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.inputTokens }
     }
-    val sessionTotalReasoningTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
+    val sessionTotalReasoningTok = remember(activeSession.id, activeSession.messages, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.reasoningTokens }
     }
-    val sessionTotalOutputTok = remember(activeSession.id, activeSession.messages.size, isStreaming) {
+    val sessionTotalOutputTok = remember(activeSession.id, activeSession.messages, isStreaming) {
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
     }
     val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
-    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, lastMsgContentLen, isStreaming, activeProfile) {
+    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages, lastMsgContentLen, isStreaming, activeProfile) {
         activeSession.messages.sumOf { node ->
             val v = node.activeVariant
             if (node.role == MessageRole.USER) {
@@ -3283,6 +3385,7 @@ private fun ManuscriptViewport(
         activeSession,
         activeAssistant,
         activeProfile,
+        appState.globalWorldBook,
         activeContextNodes,
         userPromptInput,
         assistantPrefillInput,
@@ -3297,7 +3400,8 @@ private fun ManuscriptViewport(
             draftPrompt = userPromptInput,
             draftPrefill = assistantPrefillInput,
             pendingAttachments = pendingAttachments,
-            goalModeActive = isGoalModeEnabled
+            goalModeActive = isGoalModeEnabled,
+            globalWorldBook = appState.globalWorldBook
         )
     }
     val liveContextTokens = contextBreakdown.totalUsedTokens
@@ -3357,6 +3461,12 @@ private fun ManuscriptViewport(
                             modifier = Modifier.padding(top = 4.dp)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            SepiaButton(
+                                text = "Export .JSON",
+                                compact = true,
+                                style = SepiaButtonStyle.OUTLINE,
+                                onClick = onExportChatJson
+                            )
                             if (activeSession.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "Export .MD",
@@ -3630,30 +3740,60 @@ private fun ManuscriptViewport(
                 item { Spacer(Modifier.height(16.dp)) }
             }
 
-            // Floating `↓ Latest` Pill when scrolled up
+            // High-Contrast Frosted-Glass Opaque `↓ Latest` Pill when scrolled up (zero background text bleed-through!)
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 10.dp)
+                    .padding(bottom = 12.dp)
             ) {
                 AnimatedVisibility(
                     visible = isScrolledUpFromBottom,
                     enter = fadeIn(tween(150)),
                     exit = fadeOut(tween(150))
                 ) {
-                    SepiaChip(
-                        label = "↓ Latest",
-                        selected = true,
-                        onClick = {
-                            userDisengagedAutoFollow = false
-                            userScrollPausedUntilMs = 0L
-                            scope.launch {
-                                val totalItems = listState.layoutInfo.totalItemsCount
-                                val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
-                                listState.scrollToItem(bottomSpacerIdx)
-                            }
+                    val pillOuterShape = RoundedCornerShape(999.dp)
+                    val pillInnerShape = RoundedCornerShape(999.dp)
+                    // Outer frosted halo shield blocks underlying manuscript text completely
+                    Box(
+                        modifier = Modifier
+                            .clip(pillOuterShape)
+                            .background(p.canvasBg.copy(alpha = 0.96f))
+                            .border(1.2.dp, p.border, pillOuterShape)
+                            .padding(3.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .clip(pillInnerShape)
+                                .background(p.accent)
+                                .border(1.dp, p.cardBg.copy(alpha = 0.55f), pillInnerShape)
+                                .kissClickable {
+                                    userDisengagedAutoFollow = false
+                                    userScrollPausedUntilMs = 0L
+                                    scope.launch {
+                                        val totalItems = listState.layoutInfo.totalItemsCount
+                                        val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
+                                        listState.scrollToItem(bottomSpacerIdx)
+                                    }
+                                }
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            KissVectorIcon(
+                                icon = KissIcon.ARROW_DOWN,
+                                tint = Color(0xFFFAF6EB),
+                                size = 12.5.dp
+                            )
+                            BasicText(
+                                text = "Latest",
+                                style = p.uiLabelStyle.copy(
+                                    color = Color(0xFFFAF6EB),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            )
                         }
-                    )
+                    }
                 }
             }
             // Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`) with 5-Second Linger!
@@ -3987,7 +4127,35 @@ private fun ManuscriptViewport(
                     }
                 }
 
-                // 3. Collapsible Capabilities & Co-Writing Tray (`⚙ Tools`)
+                // 3. Collapsible Capabilities, Workspace Mount & 16-Tool Harness Tray (`⚙ Tools`)
+                var showAllHarnessToolsInComposer by remember { mutableStateOf(false) }
+                val effectiveComposerWsPath = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
+                val effectiveComposerWsMode = if (activeSession.workspaceMode != WorkspaceMode.OFF) {
+                    activeSession.workspaceMode
+                } else if (activeSession.workspacePath.isBlank()) {
+                    activeAssistant.workspaceMode
+                } else {
+                    WorkspaceMode.OFF
+                }
+                val allHarnessTools = remember { WorkspaceHarness.allTools() }
+                val activeHarnessToolNames = remember(
+                    effectiveComposerWsMode,
+                    effectiveComposerWsPath,
+                    activeProfile.allowShellExecution,
+                    isGoalModeEnabled,
+                    activeProfile.enableWebSearch,
+                    activeProfile.enableUrlContext
+                ) {
+                    WorkspaceHarness.activeToolsForMode(
+                        mode = effectiveComposerWsMode,
+                        workspacePath = effectiveComposerWsPath,
+                        allowShell = activeProfile.allowShellExecution,
+                        goalModeActive = isGoalModeEnabled,
+                        enableWebTools = activeProfile.enableWebSearch || activeProfile.enableUrlContext,
+                        includeLocalWebSearchTool = activeProfile.enableWebSearch
+                    ).map { it.name }.toSet()
+                }
+
                 AnimatedVisibility(visible = showComposerToolsDrawer) {
                     Column(
                         modifier = Modifier
@@ -4051,23 +4219,149 @@ private fun ManuscriptViewport(
                                     onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                                 )
                             }
+                            val folderShort = effectiveComposerWsPath.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
                             SepiaChip(
-                                label = activeSession.workspaceMode.label,
-                                selected = activeSession.workspaceMode != WorkspaceMode.OFF,
+                                label = if (folderShort.isNotEmpty()) "📂 $folderShort" else "📂 Mount Folder…",
+                                selected = effectiveComposerWsPath.isNotBlank(),
                                 onClick = {
-                                    val next = when (activeSession.workspaceMode) {
+                                    scope.launch {
+                                        val picked = PlatformBridge.pickWorkspaceDirectory(effectiveComposerWsPath)
+                                        if (!picked.isNullOrBlank()) {
+                                            onUpdateSession {
+                                                it.copy(
+                                                    workspacePath = picked,
+                                                    workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                            if (effectiveComposerWsPath.isNotBlank()) {
+                                SepiaChip(
+                                    label = "×",
+                                    selected = false,
+                                    onClick = {
+                                        onUpdateSession { it.copy(workspacePath = "", workspaceMode = WorkspaceMode.OFF) }
+                                    }
+                                )
+                            }
+                            SepiaChip(
+                                label = effectiveComposerWsMode.label,
+                                selected = effectiveComposerWsMode != WorkspaceMode.OFF,
+                                onClick = {
+                                    val next = when (effectiveComposerWsMode) {
                                         WorkspaceMode.OFF -> WorkspaceMode.READ_ONLY
                                         WorkspaceMode.READ_ONLY -> WorkspaceMode.READ_WRITE
                                         WorkspaceMode.READ_WRITE -> WorkspaceMode.OFF
                                     }
-                                    onUpdateSession { it.copy(workspaceMode = next) }
+                                    if (next != WorkspaceMode.OFF && effectiveComposerWsPath.isBlank()) {
+                                        scope.launch {
+                                            val picked = PlatformBridge.pickWorkspaceDirectory("")
+                                            if (!picked.isNullOrBlank()) {
+                                                onUpdateSession { it.copy(workspacePath = picked, workspaceMode = next) }
+                                            } else {
+                                                onUpdateSession { it.copy(workspaceMode = next) }
+                                            }
+                                        }
+                                    } else {
+                                        onUpdateSession { it.copy(workspaceMode = next) }
+                                    }
                                 }
+                            )
+                            if (effectiveComposerWsMode == WorkspaceMode.READ_WRITE) {
+                                SepiaChip(
+                                    label = if (activeProfile.allowShellExecution) "🐚 Shell: ON" else "🐚 Shell",
+                                    selected = activeProfile.allowShellExecution,
+                                    onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
+                                )
+                            }
+                            SepiaChip(
+                                label = if (showAllHarnessToolsInComposer) {
+                                    "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▴"
+                                } else {
+                                    "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▾"
+                                },
+                                selected = showAllHarnessToolsInComposer || activeHarnessToolNames.isNotEmpty(),
+                                onClick = { showAllHarnessToolsInComposer = !showAllHarnessToolsInComposer }
                             )
                             SepiaChip(
                                 label = if (showPrefillBox) "▾ Prefill Reply: ON" else "▸ Prefill Reply…",
                                 selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
                                 onClick = onTogglePrefillBox
                             )
+                        }
+                        AnimatedVisibility(visible = showAllHarnessToolsInComposer) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(p.cardBg.copy(alpha = 0.85f))
+                                    .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                    .padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                BasicText(
+                                    text = "All ${allHarnessTools.size} Agent Harness Tools (Tap any locked tool to activate):",
+                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                )
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    allHarnessTools.forEach { t ->
+                                        val isToolActive = t.name in activeHarnessToolNames
+                                        SepiaChip(
+                                            label = if (isToolActive) "✓ ${t.name}" else t.name,
+                                            selected = isToolActive,
+                                            onClick = {
+                                                scope.launch {
+                                                    var wsTarget = effectiveComposerWsPath
+                                                    if (t.requiresWorkspaceFolder && wsTarget.isBlank()) {
+                                                        wsTarget = PlatformBridge.pickWorkspaceDirectory("").orEmpty()
+                                                    }
+                                                    when {
+                                                        t.requiresShellPermission -> {
+                                                            onUpdateProfile { it.copy(allowShellExecution = true) }
+                                                            onUpdateSession {
+                                                                it.copy(
+                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
+                                                                    workspaceMode = WorkspaceMode.READ_WRITE
+                                                                )
+                                                            }
+                                                        }
+                                                        t.requiresWritePermission -> {
+                                                            onUpdateSession {
+                                                                it.copy(
+                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
+                                                                    workspaceMode = WorkspaceMode.READ_WRITE
+                                                                )
+                                                            }
+                                                        }
+                                                        t.requiresWorkspaceFolder -> {
+                                                            val nextM = if (effectiveComposerWsMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else effectiveComposerWsMode
+                                                            onUpdateSession {
+                                                                it.copy(
+                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
+                                                                    workspaceMode = nextM
+                                                                )
+                                                            }
+                                                        }
+                                                        t.name == "web_search" || t.name == "web_fetch" -> {
+                                                            onUpdateProfile { it.copy(enableWebSearch = true) }
+                                                        }
+                                                        else -> {
+                                                            if (!isGoalModeEnabled) onToggleGoalMode()
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
                         SepiaDivider()
                         @OptIn(ExperimentalLayoutApi::class)
@@ -4365,6 +4659,32 @@ private fun ManuscriptViewport(
                                 {
                                     replaceTrailingAt("")
                                     onAddAttachment()
+                                }
+                            )
+                        )
+                    }
+                    if (q.isEmpty() || "mount".contains(q) || "workspace".contains(q) || "folder".contains(q)) {
+                        list.add(
+                            Triple(
+                                "📂 @mount",
+                                if (effectiveWorkspacePath.isBlank()) {
+                                    "Mount a local workspace folder for Agent Harness tools…"
+                                } else {
+                                    "Change mounted workspace folder ($effectiveWorkspacePath)…"
+                                },
+                                {
+                                    replaceTrailingAt("")
+                                    scope.launch {
+                                        val picked = PlatformBridge.pickWorkspaceDirectory(effectiveWorkspacePath)
+                                        if (!picked.isNullOrBlank()) {
+                                            onUpdateSession {
+                                                it.copy(
+                                                    workspacePath = picked,
+                                                    workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             )
                         )
