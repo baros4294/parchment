@@ -121,14 +121,27 @@ fun LiteraryProseRenderer(
             blocks.forEachIndexed { index, block ->
                 when (block) {
                     is ProseBlock.SceneBreak -> {
-                        Box(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = if (compactReasoningMode) 4.dp else 10.dp),
-                            contentAlignment = Alignment.Center
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             BasicText(
-                                text = "—  ✦  —",
+                                text = "—   ",
+                                style = baseTextStyle.copy(
+                                    color = p.accentSecondary,
+                                    fontSize = (p.config.proseFontSizeSp * 0.88f).sp
+                                )
+                            )
+                            KissVectorIcon(
+                                icon = KissIcon.SPARKLES,
+                                tint = p.accentSecondary,
+                                size = if (compactReasoningMode) 11.dp else 13.dp
+                            )
+                            BasicText(
+                                text = "   —",
                                 style = baseTextStyle.copy(
                                     color = p.accentSecondary,
                                     fontSize = (p.config.proseFontSizeSp * 0.88f).sp
@@ -244,11 +257,21 @@ fun LiteraryProseRenderer(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                BasicText(
-                                    text = "${block.language.ifBlank { "code" }} (${block.code.lines().size} lines)",
-                                    style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily),
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     modifier = Modifier.padding(top = 4.dp)
-                                )
+                                ) {
+                                    KissVectorIcon(
+                                        icon = if (isSvgArtifact) KissIcon.IMAGE else KissIcon.CODE,
+                                        tint = p.accent,
+                                        size = 12.dp
+                                    )
+                                    BasicText(
+                                        text = "${block.language.ifBlank { "code" }} (${block.code.lines().size} lines)",
+                                        style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
+                                    )
+                                }
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     if (isSvgArtifact) {
                                         SepiaButton(
@@ -357,10 +380,20 @@ fun LiteraryProseRenderer(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                BasicText(
-                                    text = "Table ($colCount cols × ${block.rows.size} rows)",
-                                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    KissVectorIcon(
+                                        icon = KissIcon.LAYOUT_GRID,
+                                        tint = p.accent,
+                                        size = 11.5.dp
+                                    )
+                                    BasicText(
+                                        text = "Table ($colCount cols × ${block.rows.size} rows)",
+                                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
+                                    )
+                                }
                                 SepiaButton(
                                     text = if (copiedTable) "✓" else "📋",
                                     compact = true,

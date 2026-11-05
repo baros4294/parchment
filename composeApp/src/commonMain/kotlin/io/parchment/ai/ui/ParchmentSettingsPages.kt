@@ -1752,7 +1752,7 @@ private fun ProvidersSubpage(
                                 onUpdateProfileById(activeProfile.id) { it.copy(apiKey = newVal.trim()) }
                             }
                         },
-                        placeholder = "Paste API Key (click 👁 Show to edit masked key)…",
+                        placeholder = "🔑 Paste API Key (toggle visibility above to edit masked key)…",
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1990,11 +1990,17 @@ private fun ProvidersSubpage(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (visibleModels.isEmpty()) {
-                        BasicText(
-                            text = "No models added yet. Type a model ID above or click '🔄 Fetch'.",
-                            style = p.uiLabelStyle,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.padding(8.dp)
-                        )
+                        ) {
+                            KissVectorIcon(icon = KissIcon.REFRESH, tint = p.mutedInk, size = 13.dp)
+                            BasicText(
+                                text = "No models added yet. Type a model ID above or click Fetch.",
+                                style = p.uiLabelStyle
+                            )
+                        }
                     } else {
                         visibleModels.forEach { modelId ->
                             val isSelectedModel = activeProfile.defaultModel == modelId
@@ -2308,10 +2314,17 @@ private fun ProviderProtocolSubpage(
                 }
 
                 if (profile.protocol == ProviderProtocol.ANTHROPIC_MESSAGES && (profile.maxOutputTokens == null || profile.maxOutputTokens <= 0)) {
-                    BasicText(
-                        text = "⚠ Info: Anthropic's /v1/messages endpoint requires a positive `max_tokens` field in JSON; when left blank or 0, Parchment sends 64000 so output is uncapped.",
-                        style = p.uiLabelStyle.copy(color = p.accentSecondary)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        KissVectorIcon(icon = KissIcon.WARNING, tint = p.accentSecondary, size = 13.5.dp)
+                        BasicText(
+                            text = "Info: Anthropic's /v1/messages endpoint requires a positive `max_tokens` field in JSON; when left blank or 0, Parchment sends 64000 so output is uncapped.",
+                            style = p.uiLabelStyle.copy(color = p.accentSecondary),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
 
                 SepiaTextField(
@@ -2615,12 +2628,14 @@ private fun AssistantsSubpage(
 
             SepiaSectionCard(title = "Assistant Identity & System Prompt") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = editingAssistant.iconEmoji,
-                            onValueChange = { em -> updateCurrent { it.copy(iconEmoji = em.take(4)) } },
-                            label = "Icon",
-                            modifier = Modifier.width(72.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        SepiaAvatarCircle(
+                            symbol = editingAssistant.iconEmoji,
+                            selected = true,
+                            sizeDp = 42.dp
                         )
                         SepiaTextField(
                             value = editingAssistant.name,
@@ -2635,7 +2650,11 @@ private fun AssistantsSubpage(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf("💬", "🧪", "✏️", "🤖", "📚", "⚡", "🎭", "🧭").forEach { emoji ->
+                        listOf(
+                            "💬", "🤖", "🧪", "✏️", "📚", "⚡",
+                            "🎭", "🧭", "🧠", "🌐", "🎯", "💻",
+                            "🔧", "✦", "🛡", "🎨", "👑", "🔥"
+                        ).forEach { emoji ->
                             SepiaChip(
                                 label = emoji,
                                 selected = editingAssistant.iconEmoji == emoji,

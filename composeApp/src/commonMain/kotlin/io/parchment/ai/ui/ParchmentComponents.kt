@@ -461,6 +461,7 @@ fun <T> SepiaSegmentedBar(
                 targetValue = if (isSelected) p.accent else p.narrationInk,
                 animationSpec = tween(160)
             )
+            val parsed = remember(label) { parseKissLabelIcons(label) }
             val tabShape = RoundedCornerShape(6.dp)
             Box(
                 modifier = Modifier
@@ -473,17 +474,38 @@ fun <T> SepiaSegmentedBar(
                     .padding(horizontal = 10.dp, vertical = 5.dp),
                 contentAlignment = Alignment.Center
             ) {
-                BasicText(
-                    text = label,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    style = p.uiLabelStyle.copy(
-                        color = tabText,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
-                    )
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (parsed.leadingIcon != null) {
+                        KissVectorIcon(
+                            icon = parsed.leadingIcon,
+                            tint = tabText,
+                            size = 13.dp
+                        )
+                    }
+                    if (parsed.cleanText.isNotEmpty()) {
+                        BasicText(
+                            text = parsed.cleanText,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            style = p.uiLabelStyle.copy(
+                                color = tabText,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                            )
+                        )
+                    }
+                    if (parsed.trailingIcon != null) {
+                        KissVectorIcon(
+                            icon = parsed.trailingIcon,
+                            tint = tabText,
+                            size = 11.5.dp
+                        )
+                    }
+                }
             }
         }
     }
@@ -699,17 +721,35 @@ fun SepiaSectionCard(
             .padding(cardPadding)
     ) {
         if (title.isNotBlank() || headerAction != null) {
+            val parsedTitle = remember(title) { parseKissLabelIcons(title) }
+            @Composable
+            fun RenderSectionTitle() {
+                if (title.isNotBlank()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (parsedTitle.leadingIcon != null) {
+                            KissVectorIcon(
+                                icon = parsedTitle.leadingIcon,
+                                tint = p.accent,
+                                size = 15.dp
+                            )
+                        }
+                        BasicText(
+                            text = parsedTitle.cleanText.ifEmpty { title },
+                            style = p.uiHeaderStyle.copy(fontSize = 15.sp)
+                        )
+                    }
+                }
+            }
+
             if (win.isCompact && headerAction != null) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (title.isNotBlank()) {
-                        BasicText(
-                            text = title,
-                            style = p.uiHeaderStyle.copy(fontSize = 15.sp)
-                        )
-                    }
+                    RenderSectionTitle()
                     if (subtitle.isNotBlank()) {
                         BasicText(
                             text = subtitle,
@@ -725,12 +765,7 @@ fun SepiaSectionCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = if (headerAction != null) 8.dp else 0.dp)) {
-                        if (title.isNotBlank()) {
-                            BasicText(
-                                text = title,
-                                style = p.uiHeaderStyle.copy(fontSize = 15.sp)
-                            )
-                        }
+                        RenderSectionTitle()
                         if (subtitle.isNotBlank()) {
                             Spacer(Modifier.height(2.dp))
                             BasicText(
@@ -796,7 +831,7 @@ fun SepiaAvatarCircle(
                 size = (sizeDp.value * 0.50f).dp
             )
         } else {
-            val cleanChars = symbol.filter { it.isLetterOrDigit() }.take(2).uppercase()
+            val cleanChars = symbol.filter { it.code < 128 && it.isLetterOrDigit() }.take(2).uppercase()
             if (cleanChars.isNotEmpty()) {
                 BasicText(
                     text = cleanChars,

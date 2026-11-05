@@ -215,7 +215,7 @@ object LatexMathRenderer {
                 horizontalArrangement = Arrangement.End
             ) {
                 SepiaButton(
-                    text = if (copiedTex) "✓ Copied TeX" else "📋 Copy TeX",
+                    text = if (copiedTex) "✓" else "📋",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = {

@@ -34,10 +34,15 @@ import io.parchment.ai.ui.parseSvgPathNormalized
 import io.parchment.ai.ui.parseSvgSceneDocument
 import io.parchment.ai.ui.resolveLabSlugForModelOrProvider
 import io.parchment.ai.ui.AiGeneratedChatArtifact
+import io.parchment.ai.ui.BUILTIN_SLASH_COMMANDS
+import io.parchment.ai.ui.KissIcon
+import io.parchment.ai.ui.SettingsCategory
 import io.parchment.ai.ui.buildExportFileNameForChat
 import io.parchment.ai.ui.decodeChatSessionsFromRawJson
 import io.parchment.ai.ui.extractSessionVaultItems
 import io.parchment.ai.ui.loadOrCreateDefaultAppState
+import io.parchment.ai.ui.parseKissLabelIcons
+import io.parchment.ai.ui.resolveToolKissIcon
 import io.parchment.ai.ui.saveSingleChatSessionToDisk
 import io.parchment.ai.ui.saveSplitAppStateToDisk
 import kotlinx.serialization.json.JsonObject
@@ -48,6 +53,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ParchmentProtocolAndHarnessTest {
@@ -959,5 +965,71 @@ class ParchmentProtocolAndHarnessTest {
                 argumentsJson = """{"path":"marker.txt","content":""}"""
             )
         }
+    }
+
+    @Test
+    fun testCompleteKissIconCoverageAndEmojiElimination() {
+        // 1. All 18 Assistant Persona icon presets must map to a dedicated KissIcon with zero remaining text
+        val assistantPresets = listOf(
+            "💬", "🤖", "🧪", "✏️", "📚", "⚡",
+            "🎭", "🧭", "🧠", "🌐", "🎯", "💻",
+            "🔧", "✦", "🛡", "🎨", "👑", "🔥"
+        )
+        for (preset in assistantPresets) {
+            val parsed = parseKissLabelIcons(preset)
+            assertNotNull(parsed.leadingIcon, "Assistant icon preset '$preset' must resolve to a KissIcon")
+            assertEquals("", parsed.cleanText, "Assistant icon preset '$preset' must strip the emoji completely")
+        }
+
+        // 2. All Settings categories must resolve to a KissIcon
+        for (cat in SettingsCategory.entries) {
+            val parsed = parseKissLabelIcons(cat.icon)
+            assertNotNull(parsed.leadingIcon, "SettingsCategory.${cat.name} icon '${cat.icon}' must resolve to a KissIcon")
+        }
+
+        // 3. All built-in Slash Commands must resolve to a leading KissIcon
+        for (cmd in BUILTIN_SLASH_COMMANDS) {
+            val parsed = parseKissLabelIcons(cmd.label)
+            assertNotNull(parsed.leadingIcon, "Slash command '${cmd.label}' must resolve to a leading KissIcon")
+            assertEquals(cmd.command, parsed.cleanText)
+        }
+
+        // 4. All 17 built-in Workspace Harness tools must resolve to specific KissIcons
+        for (tool in WorkspaceHarness.allTools()) {
+            val icon = resolveToolKissIcon(tool.name)
+            assertNotNull(icon)
+        }
+        assertEquals(KissIcon.CALCULATOR, resolveToolKissIcon("calc_eval"))
+        assertEquals(KissIcon.DICE, resolveToolKissIcon("dice_roll"))
+
+        // 5. Key UI chips, buttons, and viewer controls must strip emojis and resolve to KissIcons
+        val shellChip = parseKissLabelIcons("🐚 Shell: ON")
+        assertEquals(KissIcon.TERMINAL, shellChip.leadingIcon)
+        assertEquals("Shell: ON", shellChip.cleanText)
+
+        val toolsChip = parseKissLabelIcons("🔧 17/17 Tools ▾")
+        assertEquals(KissIcon.WRENCH, toolsChip.leadingIcon)
+        assertEquals("17/17 Tools", toolsChip.cleanText)
+        assertEquals(KissIcon.CHEVRON_DOWN, toolsChip.trailingIcon)
+
+        val tabsBtn = parseKissLabelIcons("⊞ 4 Tabs")
+        assertEquals(KissIcon.LAYOUT_GRID, tabsBtn.leadingIcon)
+        assertEquals("4 Tabs", tabsBtn.cleanText)
+
+        val zoomInBtn = parseKissLabelIcons("🔍+")
+        assertEquals(KissIcon.ZOOM_IN, zoomInBtn.leadingIcon)
+        assertEquals("", zoomInBtn.cleanText)
+
+        val zoomOutBtn = parseKissLabelIcons("🔍−")
+        assertEquals(KissIcon.ZOOM_OUT, zoomOutBtn.leadingIcon)
+        assertEquals("", zoomOutBtn.cleanText)
+
+        val extLinkBtn = parseKissLabelIcons("↗")
+        assertEquals(KissIcon.EXTERNAL_LINK, extLinkBtn.leadingIcon)
+        assertEquals("", extLinkBtn.cleanText)
+
+        val atBtn = parseKissLabelIcons("@")
+        assertEquals(KissIcon.AT_SIGN, atBtn.leadingIcon)
+        assertEquals("", atBtn.cleanText)
     }
 }

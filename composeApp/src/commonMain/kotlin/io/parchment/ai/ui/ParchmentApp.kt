@@ -2149,11 +2149,17 @@ fun ParchmentApp(
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     val sizeMb = (currentOta.release.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
-                                    BasicText(
-                                        text = "✦ OTA Update Available: ${currentOta.release.tagName} ($sizeMb MB)",
-                                        style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold),
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         modifier = Modifier.padding(top = 4.dp, end = 8.dp)
-                                    )
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 14.dp)
+                                        BasicText(
+                                            text = "OTA Update Available: ${currentOta.release.tagName} ($sizeMb MB)",
+                                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                        )
+                                    }
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         SepiaButton(
                                             text = "⬇ Update Now",
@@ -4598,14 +4604,24 @@ private fun ManuscriptViewport(
                                         .background(p.elevatedBg.copy(alpha = 0.7f))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    BasicText(
-                                        text = if (spec.takesArgument) "⇥ arg" else "↵ Run",
-                                        style = p.monoStyle.copy(
-                                            fontSize = 10.sp,
-                                            color = p.narrationInk,
-                                            fontWeight = FontWeight.Medium
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                    ) {
+                                        KissVectorIcon(
+                                            icon = if (spec.takesArgument) KissIcon.ARROW_RIGHT else KissIcon.SEND_ENTER,
+                                            tint = p.narrationInk,
+                                            size = 10.dp
                                         )
-                                    )
+                                        BasicText(
+                                            text = if (spec.takesArgument) "arg" else "Run",
+                                            style = p.monoStyle.copy(
+                                                fontSize = 10.sp,
+                                                color = p.narrationInk,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -6327,12 +6343,6 @@ private fun MessageTurnItem(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         // Pill 1: Turn Context Tokens (+ Reasoning Tokens if present)
-                        val tokPillText = buildString {
-                            append("${formatCompactTokens(turnContextTok)} tok")
-                            if (thinkTok > 0) {
-                                append(" • 🧠 ${formatCompactTokens(thinkTok)}")
-                            }
-                        }
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(5.dp))
@@ -6340,18 +6350,37 @@ private fun MessageTurnItem(
                                 .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
                                 .padding(horizontal = 7.dp, vertical = 2.5.dp)
                         ) {
-                            BasicText(
-                                text = tokPillText,
-                                style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                BasicText(
+                                    text = "${formatCompactTokens(turnContextTok)} tok",
+                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                                )
+                                if (thinkTok > 0) {
+                                    BasicText(
+                                        text = "•",
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    KissVectorIcon(
+                                        icon = KissIcon.BRAIN,
+                                        tint = p.accent,
+                                        size = 10.5.dp
+                                    )
+                                    BasicText(
+                                        text = formatCompactTokens(thinkTok),
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                                    )
+                                }
+                            }
                         }
 
                         // Pill 2: Speed & Duration
                         if (m.tokensPerSec > 0.0 || m.durationMs > 0L) {
-                            val speedText = buildString {
-                                if (m.tokensPerSec > 0.0) append("⚡ ${m.tokensPerSec} tok/s")
+                            val durationSuffix = buildString {
                                 if (m.durationMs > 0L) {
-                                    if (isNotEmpty()) append(" • ")
+                                    if (m.tokensPerSec > 0.0) append(" • ")
                                     append(formatDurationFromMs(m.durationMs))
                                 }
                                 if ((showMoreActions || preferences.showTokensForEntireTurn) && m.ttftMs > 0L) {
@@ -6365,10 +6394,27 @@ private fun MessageTurnItem(
                                     .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
                                     .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
-                                BasicText(
-                                    text = speedText,
-                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                ) {
+                                    if (m.tokensPerSec > 0.0) {
+                                        KissVectorIcon(
+                                            icon = KissIcon.ZAP,
+                                            tint = p.accentSecondary,
+                                            size = 10.dp
+                                        )
+                                        BasicText(
+                                            text = "${m.tokensPerSec} tok/s$durationSuffix",
+                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        )
+                                    } else {
+                                        BasicText(
+                                            text = durationSuffix,
+                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -6390,12 +6436,6 @@ private fun MessageTurnItem(
 
                         // Optional Expanded Wire Input/Cache Pill when `⋯` More is open
                         if ((showMoreActions || preferences.showTokensForEntireTurn) && m.inputTokens > 0) {
-                            val wireText = buildString {
-                                append("Wire ↑ ${formatCompactTokens(m.inputTokens)}")
-                                if (m.cachedInputTokens > 0) {
-                                    append(" (⚡${formatCompactTokens(m.cachedInputTokens)} cached)")
-                                }
-                            }
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(5.dp))
@@ -6403,10 +6443,39 @@ private fun MessageTurnItem(
                                     .border(0.65.dp, p.border.copy(alpha = 0.5f), RoundedCornerShape(5.dp))
                                     .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
-                                BasicText(
-                                    text = wireText,
-                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                ) {
+                                    BasicText(
+                                        text = "Wire",
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    KissVectorIcon(
+                                        icon = KissIcon.ARROW_UP,
+                                        tint = p.mutedInk,
+                                        size = 9.5.dp
+                                    )
+                                    BasicText(
+                                        text = formatCompactTokens(m.inputTokens),
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    if (m.cachedInputTokens > 0) {
+                                        BasicText(
+                                            text = "(",
+                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        )
+                                        KissVectorIcon(
+                                            icon = KissIcon.ZAP,
+                                            tint = p.accentSecondary,
+                                            size = 9.5.dp
+                                        )
+                                        BasicText(
+                                            text = "${formatCompactTokens(m.cachedInputTokens)} cached)",
+                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -6513,12 +6582,12 @@ private fun MessageTurnItem(
                             highlightedSourceLineText == firstGroundedLine
                         val lineBadgeText = if (src.groundedLineNumbers.isNotEmpty()) {
                             if (src.groundedLineNumbers.size == 1) {
-                                "↳ Line ${src.groundedLineNumbers.first()}"
+                                "Line ${src.groundedLineNumbers.first()}"
                             } else {
-                                "↳ Lines ${src.groundedLineNumbers.joinToString(", ")}"
+                                "Lines ${src.groundedLineNumbers.joinToString(", ")}"
                             }
                         } else {
-                            "↳ Grounded"
+                            "Grounded"
                         }
 
                         Column(
@@ -6597,14 +6666,24 @@ private fun MessageTurnItem(
                                             .background(if (isSelectedLine) p.accent.copy(alpha = 0.24f) else p.elevatedBg)
                                             .padding(horizontal = 6.dp, vertical = 1.5.dp)
                                     ) {
-                                        BasicText(
-                                            text = lineBadgeText,
-                                            style = p.uiLabelStyle.copy(
-                                                color = p.accent,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 10.sp
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                        ) {
+                                            KissVectorIcon(
+                                                icon = KissIcon.CORNER_DOWN_RIGHT,
+                                                tint = p.accent,
+                                                size = 9.5.dp
                                             )
-                                        )
+                                            BasicText(
+                                                text = lineBadgeText,
+                                                style = p.uiLabelStyle.copy(
+                                                    color = p.accent,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 10.sp
+                                                )
+                                            )
+                                        }
                                     }
                                     BasicText(
                                         text = "\"$firstGroundedLine\"",

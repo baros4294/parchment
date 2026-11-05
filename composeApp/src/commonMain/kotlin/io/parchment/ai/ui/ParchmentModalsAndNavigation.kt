@@ -1176,7 +1176,7 @@ internal fun ParchmentAttachmentViewerModal(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             SepiaButton(
-                                text = "−",
+                                text = "🔍−",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1198,7 +1198,7 @@ internal fun ParchmentAttachmentViewerModal(
                                 }
                             )
                             SepiaButton(
-                                text = "+",
+                                text = "🔍+",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1781,10 +1781,21 @@ internal fun ParchmentRightFilesSidebar(
                                                 .background(p.accent.copy(alpha = 0.15f))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
-                                            BasicText(
-                                                text = item.actionBadge,
-                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
-                                            )
+                                            val parsedBadge = remember(item.actionBadge) { parseKissLabelIcons(item.actionBadge) }
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                            ) {
+                                                KissVectorIcon(
+                                                    icon = parsedBadge.leadingIcon ?: KissIcon.SPARKLES,
+                                                    tint = p.accent,
+                                                    size = 9.5.dp
+                                                )
+                                                BasicText(
+                                                    text = parsedBadge.cleanText.ifEmpty { item.actionBadge },
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                )
+                                            }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
@@ -1845,10 +1856,20 @@ internal fun ParchmentRightFilesSidebar(
                                                 .background(p.accent.copy(alpha = 0.15f))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
-                                            BasicText(
-                                                text = if (isVideo) "✦ AI VIDEO" else "✦ AI IMAGE",
-                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                            ) {
+                                                KissVectorIcon(
+                                                    icon = KissIcon.SPARKLES,
+                                                    tint = p.accent,
+                                                    size = 9.5.dp
+                                                )
+                                                BasicText(
+                                                    text = if (isVideo) "AI VIDEO" else "AI IMAGE",
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                )
+                                            }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
@@ -1909,10 +1930,20 @@ internal fun ParchmentRightFilesSidebar(
                                                 .background(p.accent.copy(alpha = 0.15f))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
-                                            BasicText(
-                                                text = "✦ AI ${item.language.uppercase()}",
-                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                            ) {
+                                                KissVectorIcon(
+                                                    icon = KissIcon.SPARKLES,
+                                                    tint = p.accent,
+                                                    size = 9.5.dp
+                                                )
+                                                BasicText(
+                                                    text = "AI ${item.language.uppercase()}",
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                )
+                                            }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
@@ -2005,10 +2036,20 @@ internal fun ParchmentRightFilesSidebar(
                                         .background(p.elevatedBg)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    BasicText(
-                                        text = "↑ USER UPLOAD",
-                                        style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                    ) {
+                                        KissVectorIcon(
+                                            icon = KissIcon.UPLOAD,
+                                            tint = p.primaryInk,
+                                            size = 9.5.dp
+                                        )
+                                        BasicText(
+                                            text = "USER UPLOAD",
+                                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                        )
+                                    }
                                 }
                                 BasicText(
                                     text = "$turnLabel • $kindLabel",
@@ -2109,10 +2150,20 @@ internal fun ParchmentRightFilesSidebar(
                                         style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
                                     )
                                 }
-                                BasicText(
-                                    text = "Turn #${item.turnNumber} • $lineLabel ↗",
-                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    BasicText(
+                                        text = "Turn #${item.turnNumber} • $lineLabel",
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
+                                    )
+                                    KissVectorIcon(
+                                        icon = KissIcon.EXTERNAL_LINK,
+                                        tint = p.accent,
+                                        size = 9.5.dp
+                                    )
+                                }
                             }
                             BasicText(
                                 text = src.title.ifBlank { src.url },
@@ -2121,12 +2172,22 @@ internal fun ParchmentRightFilesSidebar(
                                 style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                             )
                             if (quoteExcerpt.isNotBlank()) {
-                                BasicText(
-                                    text = "↳ $lineLabel: \"$quoteExcerpt\"",
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 10.5.sp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    KissVectorIcon(
+                                        icon = KissIcon.CORNER_DOWN_RIGHT,
+                                        tint = p.narrationInk,
+                                        size = 9.5.dp
+                                    )
+                                    BasicText(
+                                        text = "$lineLabel: \"$quoteExcerpt\"",
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 10.5.sp)
+                                    )
+                                }
                             }
                         }
                     }

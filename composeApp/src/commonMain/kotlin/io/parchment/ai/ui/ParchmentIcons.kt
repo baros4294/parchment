@@ -104,7 +104,21 @@ enum class KissIcon {
     USER,
     LAYOUT_GRID,
     TRANSLATE,
-    DIFF
+    DIFF,
+    WRENCH,
+    EXTERNAL_LINK,
+    AT_SIGN,
+    THEATER,
+    TAG,
+    PACKAGE_BOX,
+    ZOOM_IN,
+    ZOOM_OUT,
+    PALETTE,
+    CROWN,
+    FLAME,
+    DICE,
+    CALCULATOR,
+    CORNER_DOWN_RIGHT
 }
 
 fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()) {
@@ -114,13 +128,13 @@ fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()
     "fs_delete" -> KissIcon.TRASH
     "fs_search" -> KissIcon.SEARCH
     "web_fetch", "web_search" -> KissIcon.GLOBE
-    "calc_eval" -> KissIcon.SLIDERS
+    "calc_eval" -> KissIcon.CALCULATOR
     "shell_exec" -> KissIcon.TERMINAL
     "todo_write" -> KissIcon.TARGET
     "goal_complete" -> KissIcon.CHECK
     "agent_memory" -> KissIcon.BOOK_OPEN
-    "dice_roll" -> KissIcon.COMPASS
-    else -> KissIcon.SETTINGS
+    "dice_roll" -> KissIcon.DICE
+    else -> KissIcon.WRENCH
 }
 data class ParsedLabelWithIcons(
     val leadingIcon: KissIcon?,
@@ -135,57 +149,80 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return ParsedLabelWithIcons(null, "", null)
 
-    // Exact single-icon matches (for icon-only buttons)
+    // Exact single-icon matches (for icon-only buttons & avatar circles)
     when (trimmed) {
         "☰", "▤" -> return ParsedLabelWithIcons(KissIcon.MENU, "", null)
         "◂" -> return ParsedLabelWithIcons(KissIcon.SIDEBAR_CLOSE, "", null)
         "+" -> return ParsedLabelWithIcons(KissIcon.PLUS, "", null)
-        "—", "-" -> return ParsedLabelWithIcons(KissIcon.MINUS, "", null)
+        "—", "-", "−", "–" -> return ParsedLabelWithIcons(KissIcon.MINUS, "", null)
         "×", "✕" -> return ParsedLabelWithIcons(KissIcon.CLOSE, "", null)
-        "🗑" -> return ParsedLabelWithIcons(KissIcon.TRASH, "", null)
+        "🗑", "🗑️" -> return ParsedLabelWithIcons(KissIcon.TRASH, "", null)
         "📋" -> return ParsedLabelWithIcons(KissIcon.COPY, "", null)
-        "✎", "✏️" -> return ParsedLabelWithIcons(KissIcon.EDIT, "", null)
-        "✦" -> return ParsedLabelWithIcons(KissIcon.SPARKLES, "", null)
-        "⚙" -> return ParsedLabelWithIcons(KissIcon.SETTINGS, "", null)
+        "✎", "✏️", "✍", "✍️" -> return ParsedLabelWithIcons(KissIcon.EDIT, "", null)
+        "✦", "✨" -> return ParsedLabelWithIcons(KissIcon.SPARKLES, "", null)
+        "⚙", "⚙️" -> return ParsedLabelWithIcons(KissIcon.SETTINGS, "", null)
+        "🔧", "🛠", "🛠️" -> return ParsedLabelWithIcons(KissIcon.WRENCH, "", null)
+        "🐚", "⌨", "⌨️" -> return ParsedLabelWithIcons(KissIcon.TERMINAL, "", null)
         "📎" -> return ParsedLabelWithIcons(KissIcon.PAPERCLIP, "", null)
         "🧠" -> return ParsedLabelWithIcons(KissIcon.BRAIN, "", null)
         "📌" -> return ParsedLabelWithIcons(KissIcon.PIN, "", null)
-        "🗺" -> return ParsedLabelWithIcons(KissIcon.MAP_TREE, "", null)
+        "🗺", "🗺️" -> return ParsedLabelWithIcons(KissIcon.MAP_TREE, "", null)
         "⤒" -> return ParsedLabelWithIcons(KissIcon.CHEVRONS_UP, "", null)
         "⤓" -> return ParsedLabelWithIcons(KissIcon.CHEVRONS_DOWN, "", null)
         "↑" -> return ParsedLabelWithIcons(KissIcon.ARROW_UP, "", null)
         "↓" -> return ParsedLabelWithIcons(KissIcon.ARROW_DOWN, "", null)
         "←" -> return ParsedLabelWithIcons(KissIcon.ARROW_LEFT, "", null)
         "→" -> return ParsedLabelWithIcons(KissIcon.ARROW_RIGHT, "", null)
+        "↗" -> return ParsedLabelWithIcons(KissIcon.EXTERNAL_LINK, "", null)
+        "↳" -> return ParsedLabelWithIcons(KissIcon.CORNER_DOWN_RIGHT, "", null)
+        "@" -> return ParsedLabelWithIcons(KissIcon.AT_SIGN, "", null)
         "💬" -> return ParsedLabelWithIcons(KissIcon.MESSAGE_CIRCLE, "", null)
         "🧪" -> return ParsedLabelWithIcons(KissIcon.FLASK, "", null)
         "🤖" -> return ParsedLabelWithIcons(KissIcon.BOT, "", null)
-        "📚", "📖" -> return ParsedLabelWithIcons(KissIcon.BOOK_OPEN, "", null)
+        "📚", "📖", "📕", "📗", "📘", "📙" -> return ParsedLabelWithIcons(KissIcon.BOOK_OPEN, "", null)
         "⚡" -> return ParsedLabelWithIcons(KissIcon.ZAP, "", null)
-        "🎭", "🧭" -> return ParsedLabelWithIcons(KissIcon.COMPASS, "", null)
-        "🖥" -> return ParsedLabelWithIcons(KissIcon.MONITOR, "", null)
+        "🎭" -> return ParsedLabelWithIcons(KissIcon.THEATER, "", null)
+        "🧭" -> return ParsedLabelWithIcons(KissIcon.COMPASS, "", null)
+        "🏷", "🏷️" -> return ParsedLabelWithIcons(KissIcon.TAG, "", null)
+        "📦" -> return ParsedLabelWithIcons(KissIcon.PACKAGE_BOX, "", null)
+        "🎨" -> return ParsedLabelWithIcons(KissIcon.PALETTE, "", null)
+        "👑" -> return ParsedLabelWithIcons(KissIcon.CROWN, "", null)
+        "🔥" -> return ParsedLabelWithIcons(KissIcon.FLAME, "", null)
+        "🛡", "🛡️", "🔒", "🔑" -> return ParsedLabelWithIcons(KissIcon.SHIELD_CHECK, "", null)
+        "🎲" -> return ParsedLabelWithIcons(KissIcon.DICE, "", null)
+        "🧮" -> return ParsedLabelWithIcons(KissIcon.CALCULATOR, "", null)
+        "🔍+" -> return ParsedLabelWithIcons(KissIcon.ZOOM_IN, "", null)
+        "🔍−", "🔍-" -> return ParsedLabelWithIcons(KissIcon.ZOOM_OUT, "", null)
+        "🔍" -> return ParsedLabelWithIcons(KissIcon.SEARCH, "", null)
+        "🖥", "🖥️" -> return ParsedLabelWithIcons(KissIcon.MONITOR, "", null)
         "🖧" -> return ParsedLabelWithIcons(KissIcon.SERVER_NETWORK, "", null)
-        "♡" -> return ParsedLabelWithIcons(KissIcon.HEART_PULSE, "", null)
+        "♡", "♥", "❤️" -> return ParsedLabelWithIcons(KissIcon.HEART_PULSE, "", null)
         "📂", "📁" -> return ParsedLabelWithIcons(KissIcon.FOLDER, "", null)
-        "☁" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
+        "☁", "☁️" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
         "○" -> return ParsedLabelWithIcons(KissIcon.CIRCLE_EMPTY, "", null)
         "⋯" -> return ParsedLabelWithIcons(KissIcon.MORE_HORIZONTAL, "", null)
         "🎯" -> return ParsedLabelWithIcons(KissIcon.TARGET, "", null)
         "↺" -> return ParsedLabelWithIcons(KissIcon.REWIND, "", null)
-        "⟳" -> return ParsedLabelWithIcons(KissIcon.REFRESH, "", null)
+        "⟳", "↻", "🔄" -> return ParsedLabelWithIcons(KissIcon.REFRESH, "", null)
         "📄", "📝" -> return ParsedLabelWithIcons(KissIcon.FILE_TEXT, "", null)
         "🎵" -> return ParsedLabelWithIcons(KissIcon.AUDIO, "", null)
-        "🎙" -> return ParsedLabelWithIcons(KissIcon.MIC, "", null)
-        "🗂" -> return ParsedLabelWithIcons(KissIcon.TABS, "", null)
+        "🎙", "🎙️" -> return ParsedLabelWithIcons(KissIcon.MIC, "", null)
+        "🗂", "🗂️" -> return ParsedLabelWithIcons(KissIcon.TABS, "", null)
         "⊞" -> return ParsedLabelWithIcons(KissIcon.LAYOUT_GRID, "", null)
         "👤" -> return ParsedLabelWithIcons(KissIcon.USER, "", null)
         "🔊" -> return ParsedLabelWithIcons(KissIcon.VOLUME_ON, "", null)
         "🔇" -> return ParsedLabelWithIcons(KissIcon.VOLUME_OFF, "", null)
-        "✓" -> return ParsedLabelWithIcons(KissIcon.CHECK, "", null)
-        "💾", "📥", "⬇" -> return ParsedLabelWithIcons(KissIcon.DOWNLOAD, "", null)
+        "✓", "✔" -> return ParsedLabelWithIcons(KissIcon.CHECK, "", null)
+        "💾", "📥", "⬇", "⬇️" -> return ParsedLabelWithIcons(KissIcon.DOWNLOAD, "", null)
         "📤" -> return ParsedLabelWithIcons(KissIcon.UPLOAD, "", null)
-        "👁" -> return ParsedLabelWithIcons(KissIcon.EYE, "", null)
+        "👁", "👁️" -> return ParsedLabelWithIcons(KissIcon.EYE, "", null)
         "🙈" -> return ParsedLabelWithIcons(KissIcon.EYE_OFF, "", null)
+        "🖼", "🖼️" -> return ParsedLabelWithIcons(KissIcon.IMAGE, "", null)
+        "🎬" -> return ParsedLabelWithIcons(KissIcon.VIDEO, "", null)
+        "🔗", "⛓" -> return ParsedLabelWithIcons(KissIcon.LINK, "", null)
+        "⏳" -> return ParsedLabelWithIcons(KissIcon.CLOCK, "", null)
+        "■" -> return ParsedLabelWithIcons(KissIcon.STOP, "", null)
+        "⚠", "⚠️" -> return ParsedLabelWithIcons(KissIcon.WARNING, "", null)
         "‹/›", "</>", "💻" -> return ParsedLabelWithIcons(KissIcon.CODE, "", null)
         "🌐" -> return ParsedLabelWithIcons(KissIcon.TRANSLATE, "", null)
         "⑂" -> return ParsedLabelWithIcons(KissIcon.GIT_BRANCH, "", null)
@@ -201,29 +238,47 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "☰ " to KissIcon.MENU,
         "◂ " to KissIcon.SIDEBAR_CLOSE,
         "⚙ " to KissIcon.SETTINGS,
+        "⚙️ " to KissIcon.SETTINGS,
+        "🔧 " to KissIcon.WRENCH,
+        "🛠 " to KissIcon.WRENCH,
+        "🛠️ " to KissIcon.WRENCH,
+        "🐚 " to KissIcon.TERMINAL,
         "🔍 " to KissIcon.SEARCH,
         "+ " to KissIcon.PLUS,
+        "× " to KissIcon.CLOSE,
         "✕ " to KissIcon.CLOSE,
+        "— " to KissIcon.MINUS,
+        "− " to KissIcon.MINUS,
+        "- " to KissIcon.MINUS,
         "🗑 " to KissIcon.TRASH,
+        "🗑️ " to KissIcon.TRASH,
         "📋 MD" to KissIcon.MARKDOWN,
         "📋 " to KissIcon.COPY,
         "✎ " to KissIcon.EDIT,
         "✏️ " to KissIcon.EDIT,
         "✍ " to KissIcon.EDIT,
+        "✍️ " to KissIcon.EDIT,
         "✦ " to KissIcon.SPARKLES,
+        "✨ " to KissIcon.SPARKLES,
         "↻ " to KissIcon.REFRESH,
         "🔄 " to KissIcon.REFRESH,
         "→ " to KissIcon.ARROW_RIGHT,
         "← " to KissIcon.ARROW_LEFT,
+        "↗ " to KissIcon.EXTERNAL_LINK,
+        "↳ " to KissIcon.CORNER_DOWN_RIGHT,
         "▾ " to KissIcon.CHEVRON_DOWN,
+        "▼ " to KissIcon.CHEVRON_DOWN,
         "▸ " to KissIcon.CHEVRON_RIGHT,
+        "▴ " to KissIcon.CHEVRON_UP,
         "▲ " to KissIcon.CHEVRON_UP,
         "🗺 " to KissIcon.MAP_TREE,
+        "🗺️ " to KissIcon.MAP_TREE,
         "⑂ " to KissIcon.GIT_BRANCH,
         "🧠 " to KissIcon.BRAIN,
         "📎 " to KissIcon.PAPERCLIP,
         "🌐 " to KissIcon.GLOBE,
         "🖼 " to KissIcon.IMAGE,
+        "🖼️ " to KissIcon.IMAGE,
         "🎬 " to KissIcon.VIDEO,
         "💻 " to KissIcon.CODE,
         "🔗 " to KissIcon.LINK,
@@ -232,6 +287,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "⏳ " to KissIcon.CLOCK,
         "■ " to KissIcon.STOP,
         "👁 " to KissIcon.EYE,
+        "👁️ " to KissIcon.EYE,
         "🙈 " to KissIcon.EYE_OFF,
         "♡ " to KissIcon.HEART_PULSE,
         "📌 " to KissIcon.PIN,
@@ -239,23 +295,44 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "📁 " to KissIcon.FOLDER,
         "↑ " to KissIcon.UPLOAD,
         "📖 " to KissIcon.BOOK_OPEN,
+        "📚 " to KissIcon.BOOK_OPEN,
+        "📕 " to KissIcon.BOOK_OPEN,
         "▤ " to KissIcon.MENU,
         "☁ " to KissIcon.CLOUD,
+        "☁️ " to KissIcon.CLOUD,
         "📥 " to KissIcon.DOWNLOAD,
         "📤 " to KissIcon.UPLOAD,
         "⬇ " to KissIcon.DOWNLOAD,
+        "⬇️ " to KissIcon.DOWNLOAD,
         "🖥 " to KissIcon.MONITOR,
+        "🖥️ " to KissIcon.MONITOR,
         "🖧 " to KissIcon.SERVER_NETWORK,
         "🤖 " to KissIcon.BOT,
         "💬 " to KissIcon.MESSAGE_CIRCLE,
         "🧪 " to KissIcon.FLASK,
+        "🎭 " to KissIcon.THEATER,
         "🧭 " to KissIcon.COMPASS,
+        "🏷 " to KissIcon.TAG,
+        "🏷️ " to KissIcon.TAG,
+        "📦 " to KissIcon.PACKAGE_BOX,
+        "🎨 " to KissIcon.PALETTE,
+        "👑 " to KissIcon.CROWN,
+        "🔥 " to KissIcon.FLAME,
+        "🛡 " to KissIcon.SHIELD_CHECK,
+        "🛡️ " to KissIcon.SHIELD_CHECK,
+        "🔑 " to KissIcon.SHIELD_CHECK,
+        "🎲 " to KissIcon.DICE,
+        "🧮 " to KissIcon.CALCULATOR,
+        "⊞ " to KissIcon.LAYOUT_GRID,
+        "👤 " to KissIcon.USER,
         "✓ " to KissIcon.CHECK,
+        "✔ " to KissIcon.CHECK,
         "⋯ " to KissIcon.MORE_HORIZONTAL,
         "🔊 " to KissIcon.VOLUME_ON,
         "🔇 " to KissIcon.VOLUME_OFF,
         "▶ " to KissIcon.PLAY,
         "⚠ " to KissIcon.WARNING,
+        "⚠️ " to KissIcon.WARNING,
         "🎯 " to KissIcon.TARGET,
         "↺ " to KissIcon.REWIND,
         "⟳ " to KissIcon.REFRESH,
@@ -263,7 +340,9 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         "📝 " to KissIcon.FILE_TEXT,
         "🎵 " to KissIcon.AUDIO,
         "🎙 " to KissIcon.MIC,
+        "🎙️ " to KissIcon.MIC,
         "🗂 " to KissIcon.TABS,
+        "🗂️ " to KissIcon.TABS,
         "💾 " to KissIcon.DOWNLOAD,
         "‹/› " to KissIcon.CODE,
         "</> " to KissIcon.CODE
@@ -279,10 +358,15 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     val suffixMappings = listOf(
         " ↵" to KissIcon.SEND_ENTER,
         " →" to KissIcon.ARROW_RIGHT,
+        " ←" to KissIcon.ARROW_LEFT,
+        " ↗" to KissIcon.EXTERNAL_LINK,
         " ▲" to KissIcon.CHEVRON_UP,
         " ▴" to KissIcon.CHEVRON_UP,
         " ▼" to KissIcon.CHEVRON_DOWN,
         " ▾" to KissIcon.CHEVRON_DOWN,
+        " ▸" to KissIcon.CHEVRON_RIGHT,
+        " ▶" to KissIcon.CHEVRON_RIGHT,
+        " 👁" to KissIcon.EYE,
         " •" to KissIcon.CIRCLE_DOT
     )
 
@@ -991,6 +1075,172 @@ private fun DrawScope.drawKissIconPath(
             line(12f, 7f, 12f, 12f)
             line(9.5f, 9.5f, 14.5f, 9.5f)
             line(9.5f, 16f, 14.5f, 16f)
+        }
+        KissIcon.WRENCH -> {
+            // Crisp Lucide wrench vector icon
+            drawCircle(color, radius = 4.6f * s, center = pt(16.2f, 7.8f), style = stroke)
+            line(4.5f, 19.5f, 12.8f, 11.2f)
+            line(3.5f, 18.5f, 5.5f, 20.5f)
+            line(16.8f, 5.2f, 19.2f, 7.6f)
+        }
+        KissIcon.EXTERNAL_LINK -> {
+            // Crisp Lucide external-link / arrow-up-right icon
+            path {
+                moveTo(14f * s, 4f * s)
+                lineTo(20f * s, 4f * s)
+                lineTo(20f * s, 10f * s)
+            }
+            line(10f, 14f, 20f, 4f)
+            path {
+                moveTo(18f * s, 13.5f * s)
+                lineTo(18f * s, 19.5f * s)
+                lineTo(4.5f * s, 19.5f * s)
+                lineTo(4.5f * s, 6f * s)
+                lineTo(10.5f * s, 6f * s)
+            }
+        }
+        KissIcon.AT_SIGN -> {
+            // Crisp Lucide '@' vector icon
+            drawCircle(color, radius = 3.8f * s, center = pt(12f, 12f), style = stroke)
+            drawArc(
+                color = color,
+                startAngle = 35f,
+                sweepAngle = 290f,
+                useCenter = false,
+                topLeft = pt(3f, 3f),
+                size = Size(18f * s, 18f * s),
+                style = stroke
+            )
+            path {
+                moveTo(15.8f * s, 8.5f * s)
+                lineTo(15.8f * s, 13.8f * s)
+                cubicTo(15.8f * s, 16.2f * s, 19.5f * s, 16.2f * s, 20.2f * s, 13.2f * s)
+            }
+        }
+        KissIcon.THEATER -> {
+            // Crisp literary persona / theater mask emblem
+            path {
+                moveTo(5f * s, 4.5f * s)
+                lineTo(19f * s, 4.5f * s)
+                lineTo(19f * s, 12.5f * s)
+                cubicTo(19f * s, 17.5f * s, 15.5f * s, 20.5f * s, 12f * s, 20.5f * s)
+                cubicTo(8.5f * s, 20.5f * s, 5f * s, 17.5f * s, 5f * s, 12.5f * s)
+                close()
+            }
+            drawCircle(color, radius = 1.2f * s, center = pt(9.2f, 9.8f))
+            drawCircle(color, radius = 1.2f * s, center = pt(14.8f, 9.8f))
+            path {
+                moveTo(9f * s, 14.5f * s)
+                cubicTo(10.5f * s, 16.5f * s, 13.5f * s, 16.5f * s, 15f * s, 14.5f * s)
+            }
+        }
+        KissIcon.TAG -> {
+            // Crisp Lucide tag vector icon
+            path {
+                moveTo(3.5f * s, 12f * s)
+                lineTo(3.5f * s, 4.5f * s)
+                lineTo(11f * s, 4.5f * s)
+                lineTo(20.5f * s, 14f * s)
+                lineTo(13f * s, 21.5f * s)
+                close()
+            }
+            drawCircle(color, radius = 1.4f * s, center = pt(7.8f, 8.8f))
+        }
+        KissIcon.PACKAGE_BOX -> {
+            // Crisp 3D isometric archive box vector icon
+            path {
+                moveTo(12f * s, 2.5f * s)
+                lineTo(20.5f * s, 7f * s)
+                lineTo(20.5f * s, 17f * s)
+                lineTo(12f * s, 21.5f * s)
+                lineTo(3.5f * s, 17f * s)
+                lineTo(3.5f * s, 7f * s)
+                close()
+            }
+            path {
+                moveTo(3.5f * s, 7f * s)
+                lineTo(12f * s, 11.5f * s)
+                lineTo(20.5f * s, 7f * s)
+            }
+            line(12f, 11.5f, 12f, 21.5f)
+        }
+        KissIcon.ZOOM_IN -> {
+            drawCircle(color, radius = 7f * s, center = pt(10.5f, 10.5f), style = stroke)
+            line(15.6f, 15.6f, 20.8f, 20.8f)
+            line(10.5f, 7.5f, 10.5f, 13.5f)
+            line(7.5f, 10.5f, 13.5f, 10.5f)
+        }
+        KissIcon.ZOOM_OUT -> {
+            drawCircle(color, radius = 7f * s, center = pt(10.5f, 10.5f), style = stroke)
+            line(15.6f, 15.6f, 20.8f, 20.8f)
+            line(7.5f, 10.5f, 13.5f, 10.5f)
+        }
+        KissIcon.PALETTE -> {
+            drawCircle(color, radius = 9f * s, center = pt(12f, 12f), style = stroke)
+            drawCircle(color, radius = 1.3f * s, center = pt(8.5f, 10f))
+            drawCircle(color, radius = 1.3f * s, center = pt(12f, 7.5f))
+            drawCircle(color, radius = 1.3f * s, center = pt(15.5f, 10f))
+            drawCircle(color, radius = 1.6f * s, center = pt(14.5f, 15.5f), style = stroke)
+        }
+        KissIcon.CROWN -> {
+            path {
+                moveTo(3.5f * s, 18.5f * s)
+                lineTo(5f * s, 7f * s)
+                lineTo(9.5f * s, 11.5f * s)
+                lineTo(12f * s, 5.5f * s)
+                lineTo(14.5f * s, 11.5f * s)
+                lineTo(19f * s, 7f * s)
+                lineTo(20.5f * s, 18.5f * s)
+                close()
+            }
+        }
+        KissIcon.FLAME -> {
+            path {
+                moveTo(12f * s, 3f * s)
+                cubicTo(16.5f * s, 7.5f * s, 18.5f * s, 11f * s, 18.5f * s, 14.5f * s)
+                cubicTo(18.5f * s, 18.4f * s, 15.6f * s, 21f * s, 12f * s, 21f * s)
+                cubicTo(8.4f * s, 21f * s, 5.5f * s, 18.4f * s, 5.5f * s, 14.5f * s)
+                cubicTo(5.5f * s, 11f * s, 7.5f * s, 7.5f * s, 12f * s, 3f * s)
+                close()
+            }
+            path {
+                moveTo(12f * s, 11.5f * s)
+                cubicTo(13.8f * s, 13.5f * s, 14.5f * s, 15f * s, 14.5f * s, 16.8f * s)
+                cubicTo(14.5f * s, 18.5f * s, 13.4f * s, 19.5f * s, 12f * s, 19.5f * s)
+                cubicTo(10.6f * s, 19.5f * s, 9.5f * s, 18.5f * s, 9.5f * s, 16.8f * s)
+                cubicTo(9.5f * s, 15f * s, 10.2f * s, 13.5f * s, 12f * s, 11.5f * s)
+                close()
+            }
+        }
+        KissIcon.DICE -> {
+            drawRoundRect(color, pt(3.5f, 3.5f), Size(17f * s, 17f * s), CornerRadius(3f * s), stroke)
+            drawCircle(color, radius = 1.3f * s, center = pt(8f, 8f))
+            drawCircle(color, radius = 1.3f * s, center = pt(16f, 8f))
+            drawCircle(color, radius = 1.3f * s, center = pt(12f, 12f))
+            drawCircle(color, radius = 1.3f * s, center = pt(8f, 16f))
+            drawCircle(color, radius = 1.3f * s, center = pt(16f, 16f))
+        }
+        KissIcon.CALCULATOR -> {
+            drawRoundRect(color, pt(4.5f, 3f), Size(15f * s, 18f * s), CornerRadius(2.2f * s), stroke)
+            drawRoundRect(color, pt(7.5f, 6f), Size(9f * s, 3.8f * s), CornerRadius(1f * s), stroke)
+            drawCircle(color, radius = 1f * s, center = pt(8.5f, 13.5f))
+            drawCircle(color, radius = 1f * s, center = pt(12f, 13.5f))
+            drawCircle(color, radius = 1f * s, center = pt(15.5f, 13.5f))
+            drawCircle(color, radius = 1f * s, center = pt(8.5f, 17.2f))
+            drawCircle(color, radius = 1f * s, center = pt(12f, 17.2f))
+            drawCircle(color, radius = 1f * s, center = pt(15.5f, 17.2f))
+        }
+        KissIcon.CORNER_DOWN_RIGHT -> {
+            path {
+                moveTo(5f * s, 5f * s)
+                lineTo(5f * s, 14f * s)
+                lineTo(19f * s, 14f * s)
+            }
+            path {
+                moveTo(14.5f * s, 9.5f * s)
+                lineTo(19f * s, 14f * s)
+                lineTo(14.5f * s, 18.5f * s)
+            }
         }
     }
 }

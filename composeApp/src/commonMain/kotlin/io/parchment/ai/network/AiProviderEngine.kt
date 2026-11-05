@@ -3001,7 +3001,7 @@ object AiProviderEngine {
                 if (existingTextIdx >= 0 && firstIsPlainText) {
                     val targetExisting = existingParts[existingTextIdx]
                     val prevTxt = targetExisting["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    val nextTxt = firstNew!!["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    val nextTxt = firstNew["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     val joined = if (prevTxt.isBlank()) nextTxt else if (nextTxt.isBlank()) prevTxt else "$prevTxt\n\n$nextTxt"
                     val mergedMap = targetExisting.toMutableMap()
                     mergedMap["text"] = JsonPrimitive(joined)
