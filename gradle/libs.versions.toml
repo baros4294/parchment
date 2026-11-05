@@ -8,7 +8,7 @@ compose-multiplatform = "1.10.3"
 kotlin = "2.3.21"
 kotlinx-coroutines = "1.11.0"
 kotlinx-serialization = "1.11.0"
-ktor = "3.6.1"
+ktor = "3.5.2"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activityCompose" }
