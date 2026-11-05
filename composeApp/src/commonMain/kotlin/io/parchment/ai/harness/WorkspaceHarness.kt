@@ -461,13 +461,69 @@ object WorkspaceHarness {
         return "${tool.name}($params)"
     }
 
+    private data class CachedWorkspaceContext(
+        val timestampMs: Long,
+        val fileNames: List<String>,
+        val combinedContent: String
+    )
+
+    private val workspaceContextCache = mutableMapOf<String, CachedWorkspaceContext>()
+    private const val WORKSPACE_CONTEXT_TTL_MS = 10_000L
+
+    fun invalidateWorkspaceCache(workspaceRoot: String = "") {
+        synchronized(workspaceContextCache) {
+            if (workspaceRoot.isBlank()) {
+                workspaceContextCache.clear()
+            } else {
+                workspaceContextCache.remove(workspaceRoot.trim())
+            }
+        }
+    }
+
+    private fun getOrLoadWorkspaceContext(workspaceRoot: String): CachedWorkspaceContext {
+        val cleanRoot = workspaceRoot.trim()
+        if (cleanRoot.isEmpty()) return CachedWorkspaceContext(0L, emptyList(), "")
+        val now = PlatformBridge.currentTimeMillis()
+        synchronized(workspaceContextCache) {
+            val cached = workspaceContextCache[cleanRoot]
+            if (cached != null && now - cached.timestampMs <= WORKSPACE_CONTEXT_TTL_MS) {
+                return cached
+            }
+        }
+        val candidates = listOf("AGENTS.md", "CLAUDE.md", "PARCHMENT.md", "PARCHMENT_MEMORY.md")
+        val foundNames = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (fileName in candidates) {
+            PlatformBridge.workspaceRead(cleanRoot, fileName, startLine = 1, maxLines = 150).onSuccess { content ->
+                if (content.isNotBlank()) {
+                    foundNames.add(fileName)
+                    sb.appendLine("#### Auto-Loaded Workspace File: `$fileName`")
+                    sb.appendLine(content)
+                    sb.appendLine()
+                }
+            }
+        }
+        val fresh = CachedWorkspaceContext(
+            timestampMs = now,
+            fileNames = foundNames,
+            combinedContent = sb.toString().trim()
+        )
+        synchronized(workspaceContextCache) {
+            workspaceContextCache[cleanRoot] = fresh
+        }
+        return fresh
+    }
+
     fun listDiscoveredContextFileNames(workspaceRoot: String): List<String> {
         if (workspaceRoot.isBlank()) return emptyList()
-        val candidates = listOf("AGENTS.md", "CLAUDE.md", "PARCHMENT.md", "PARCHMENT_MEMORY.md")
-        return candidates.filter { fileName ->
-            PlatformBridge.workspaceRead(workspaceRoot, fileName, startLine = 1, maxLines = 5)
-                .getOrNull()
-                ?.isNotBlank() == true
+        return getOrLoadWorkspaceContext(workspaceRoot).fileNames
+    }
+
+    fun isParallelSafeReadOnlyTool(toolName: String): Boolean {
+        return when (toolName.lowercase()) {
+            "fs_read", "fs_list", "fs_glob", "fs_search",
+            "web_search", "web_fetch", "calc_eval", "dice_roll" -> true
+            else -> false
         }
     }
 
@@ -501,21 +557,12 @@ object WorkspaceHarness {
 
     /**
      * Auto-discovers AGENTS.md, CLAUDE.md, PARCHMENT.md, and PARCHMENT_MEMORY.md in the workspace root.
+     * Cached in memory with a 10s TTL (and invalidated immediately on workspace writes) so UI frame rendering
+     * and `o200k_base` context breakdown never block on synchronous disk I/O.
      */
     fun discoverWorkspaceContextFiles(workspaceRoot: String): String {
         if (workspaceRoot.isBlank()) return ""
-        val candidates = listOf("AGENTS.md", "CLAUDE.md", "PARCHMENT.md", "PARCHMENT_MEMORY.md")
-        val sb = StringBuilder()
-        for (fileName in candidates) {
-            PlatformBridge.workspaceRead(workspaceRoot, fileName, startLine = 1, maxLines = 150).onSuccess { content ->
-                if (content.isNotBlank()) {
-                    sb.appendLine("#### Auto-Loaded Workspace File: `$fileName`")
-                    sb.appendLine(content)
-                    sb.appendLine()
-                }
-            }
-        }
-        return sb.toString().trim()
+        return getOrLoadWorkspaceContext(workspaceRoot).combinedContent
     }
 
     /**
@@ -848,13 +895,18 @@ object WorkspaceHarness {
             else -> Result.failure(IllegalArgumentException("Unknown workspace tool '$toolName'."))
         }
 
+        if (toolName in listOf("fs_write", "fs_edit", "fs_multi_edit", "fs_move", "fs_delete", "agent_memory", "shell_exec", "todo_write")) {
+            invalidateWorkspaceCache(workspaceRoot)
+        }
+
         return result.fold(
             onSuccess = { output ->
+                val shapedOutput = compressToolOutputWithSizeValve(toolName, output)
                 ToolCallRecord(
                     id = callId,
                     name = toolName,
                     argumentsJson = argumentsJson,
-                    resultText = output,
+                    resultText = shapedOutput,
                     isError = false
                 )
             },
@@ -868,6 +920,206 @@ object WorkspaceHarness {
                 )
             }
         )
+    }
+
+    private val ANSI_ESCAPE_REGEX = Regex("""\u001B\[[0-?]*[ -/]*[@-~]""")
+    private val EXCESS_BLANK_LINES_REGEX = Regex("""\n{4,}""")
+    private val LINE_NUMBER_PREFIX_REGEX = Regex("""^\s*(\d+):\s?(.*)$""")
+
+    /**
+     * `omp`-inspired Pre-Context Output Compression & Head+Tail Bookend Size Valve.
+     * - Strips noisy ANSI escape codes and excessive blank lines.
+     * - Applies a Head + Tail Bookend Size Valve to `shell_exec`, `fs_search`, `fs_list`, and `fs_glob`
+     *   so a single noisy command or directory dump never floods the context window, while NEVER
+     *   truncating requested `fs_read` file line ranges.
+     */
+    fun compressToolOutputWithSizeValve(toolName: String, rawOutput: String): String {
+        if (rawOutput.isEmpty()) return rawOutput
+        val cleaned = rawOutput
+            .replace(ANSI_ESCAPE_REGEX, "")
+            .replace("\r\n", "\n")
+            .replace(EXCESS_BLANK_LINES_REGEX, "\n\n\n")
+        if (toolName.equals("fs_read", ignoreCase = true)) {
+            return cleaned
+        }
+        val lines = cleaned.lines()
+        val (headKeep, tailKeep) = when (toolName.lowercase()) {
+            "shell_exec" -> 90 to 90
+            "fs_search" -> 110 to 50
+            "fs_list", "fs_glob" -> 120 to 60
+            else -> 160 to 80
+        }
+        val maxTotalLines = headKeep + tailKeep + 15
+        if (lines.size <= maxTotalLines) {
+            return cleaned
+        }
+        val omittedCount = lines.size - headKeep - tailKeep
+        val headPart = lines.take(headKeep).joinToString("\n")
+        val tailPart = lines.takeLast(tailKeep).joinToString("\n")
+        return "$headPart\n… [$omittedCount middle lines omitted by size valve — refine query or use fs_read with start_line/max_lines] …\n$tailPart"
+    }
+
+    /**
+     * Strips accidental `123: ` line-number prefixes from `old_text` / `new_text` when a model copies
+     * lines directly from `fs_read` output (`File: ... \n 1: ... \n 2: ...`), unless the target file itself
+     * actually contains those literal `123: ` prefixes.
+     */
+    fun stripAccidentalReadLinePrefixes(
+        candidate: String,
+        existingFileLf: String,
+        requireStrippedInFile: Boolean = true
+    ): String {
+        val lines = candidate.lines()
+        if (lines.size < 2) return candidate
+        var matchedSeq = 0
+        var prevNum = -1
+        val strippedLines = mutableListOf<String>()
+        for (line in lines) {
+            if (line.isBlank()) {
+                strippedLines.add(line)
+                continue
+            }
+            val m = LINE_NUMBER_PREFIX_REGEX.matchEntire(line)
+            if (m != null) {
+                val num = m.groupValues[1].toIntOrNull() ?: -1
+                if (prevNum == -1 || num == prevNum + 1) {
+                    prevNum = num
+                    matchedSeq++
+                    strippedLines.add(m.groupValues[2])
+                } else {
+                    return candidate
+                }
+            } else {
+                return candidate
+            }
+        }
+        if (matchedSeq < 2) return candidate
+        val stripped = strippedLines.joinToString("\n")
+        if (existingFileLf.contains(candidate)) return candidate
+        return if (!requireStrippedInFile || existingFileLf.contains(stripped)) {
+            stripped
+        } else {
+            candidate
+        }
+    }
+
+    data class FuzzyEditResult(
+        val updatedLf: String,
+        val addedLines: Int,
+        val removedLines: Int,
+        val usedFuzzyWhitespace: Boolean
+    )
+
+    /**
+     * `omp`-inspired 2-Tier Exact + Whitespace/Indentation-Normalized Self-Healing Edit Engine:
+     * 1. Tier 1: Exact substring match (with automatic stripping of accidental `fs_read` line numbers).
+     * 2. Tier 2: Line-by-line trimmed/whitespace-normalized match when exact match fails due to minor
+     *    indentation or trailing-space drift, automatically preserving/re-aligning relative indentation!
+     */
+    fun applySingleEditWithFuzzySelfHealing(
+        existingLf: String,
+        rawOldText: String,
+        rawNewText: String,
+        replaceAll: Boolean,
+        relativePath: String
+    ): FuzzyEditResult {
+        require(rawOldText.isNotEmpty()) { "old_text must not be empty." }
+        val normOldRaw = rawOldText.replace("\r\n", "\n")
+        val normNewRaw = rawNewText.replace("\r\n", "\n")
+        val normOld = stripAccidentalReadLinePrefixes(normOldRaw, existingLf, requireStrippedInFile = false)
+        val normNew = stripAccidentalReadLinePrefixes(normNewRaw, existingLf, requireStrippedInFile = false)
+
+        // Tier 1: Exact Match
+        if (existingLf.contains(normOld)) {
+            val updated = if (replaceAll) {
+                existingLf.replace(normOld, normNew)
+            } else {
+                val firstIdx = existingLf.indexOf(normOld)
+                val secondIdx = existingLf.indexOf(normOld, startIndex = firstIdx + normOld.length)
+                if (secondIdx != -1) {
+                    val matchLines = mutableListOf<Int>()
+                    var searchIdx = 0
+                    while (true) {
+                        val hit = existingLf.indexOf(normOld, startIndex = searchIdx)
+                        if (hit == -1) break
+                        val lineNum = existingLf.substring(0, hit).count { it == '\n' } + 1
+                        matchLines.add(lineNum)
+                        searchIdx = hit + normOld.length.coerceAtLeast(1)
+                    }
+                    error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
+                }
+                existingLf.replaceFirst(normOld, normNew)
+            }
+            return FuzzyEditResult(
+                updatedLf = updated,
+                addedLines = normNew.lines().size,
+                removedLines = normOld.lines().size,
+                usedFuzzyWhitespace = false
+            )
+        }
+
+        // Tier 2: Line-by-line Whitespace / Indentation Fuzzy Match
+        val fileLines = existingLf.split('\n')
+        val oldLines = normOld.split('\n')
+        if (oldLines.isNotEmpty() && oldLines.size <= fileLines.size) {
+            val oldTrimmed = oldLines.map { it.trim() }
+            if (oldTrimmed.any { it.isNotEmpty() }) {
+                val matchStartIndices = mutableListOf<Int>()
+                val maxStart = fileLines.size - oldLines.size
+                for (startIdx in 0..maxStart) {
+                    var allMatch = true
+                    for (j in oldLines.indices) {
+                        if (fileLines[startIdx + j].trim() != oldTrimmed[j]) {
+                            allMatch = false
+                            break
+                        }
+                    }
+                    if (allMatch) {
+                        matchStartIndices.add(startIdx)
+                    }
+                }
+
+                if (matchStartIndices.size == 1 || (replaceAll && matchStartIndices.isNotEmpty())) {
+                    val newLinesRaw = normNew.split('\n')
+                    val firstNonBlankOldIdx = oldLines.indexOfFirst { it.isNotBlank() }
+                    val oldBaseIndent = if (firstNonBlankOldIdx >= 0) {
+                        oldLines[firstNonBlankOldIdx].takeWhile { it == ' ' || it == '\t' }.length
+                    } else 0
+
+                    val resultLines = mutableListOf<String>()
+                    var cursor = 0
+                    for (matchStart in matchStartIndices) {
+                        if (matchStart < cursor) continue
+                        resultLines.addAll(fileLines.subList(cursor, matchStart))
+                        val fileBaseIndentStr = if (firstNonBlankOldIdx >= 0) {
+                            fileLines[matchStart + firstNonBlankOldIdx].takeWhile { it == ' ' || it == '\t' }
+                        } else ""
+                        val adjustedNewLines = newLinesRaw.map { nl ->
+                            if (nl.isBlank()) ""
+                            else {
+                                val nlIndent = nl.takeWhile { it == ' ' || it == '\t' }.length
+                                val relIndent = (nlIndent - oldBaseIndent).coerceAtLeast(0)
+                                fileBaseIndentStr + " ".repeat(relIndent) + nl.trimStart()
+                            }
+                        }
+                        resultLines.addAll(adjustedNewLines)
+                        cursor = matchStart + oldLines.size
+                    }
+                    resultLines.addAll(fileLines.subList(cursor, fileLines.size))
+                    return FuzzyEditResult(
+                        updatedLf = resultLines.joinToString("\n"),
+                        addedLines = newLinesRaw.size,
+                        removedLines = oldLines.size,
+                        usedFuzzyWhitespace = true
+                    )
+                } else if (matchStartIndices.size > 1) {
+                    val lineNums = matchStartIndices.map { it + 1 }
+                    error("old_text fuzzy-matched ${lineNums.size} locations in '$relativePath' (at lines ${lineNums.joinToString(", ")}). Include more surrounding lines or set replace_all=true.")
+                }
+            }
+        }
+
+        error("old_text was not found in '$relativePath' (${fileLines.size} lines). Use fs_read to inspect the exact lines before editing.")
     }
 
     private fun evaluateDiceExpression(expression: String, reason: String): String {

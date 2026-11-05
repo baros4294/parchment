@@ -45,6 +45,8 @@ actual object PlatformBridge {
     private var stateFlushCallback: (() -> Unit)? = null
     @Volatile
     private var backHandlerCallback: (() -> Boolean)? = null
+    @Volatile
+    private var cachedStorageDir: File? = null
     private val activeShellProcesses: MutableSet<Process> = java.util.Collections.synchronizedSet(HashSet())
 
     init {
@@ -58,15 +60,18 @@ actual object PlatformBridge {
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
     private fun resolveStorageDir(): File {
+        cachedStorageDir?.let { if (it.exists()) return it }
         // 0. Isolate Gradle/JUnit test workers so unit tests NEVER touch the user's real %LOCALAPPDATA%\ParchmentAI folder!
         if (!System.getProperty("org.gradle.test.worker").isNullOrBlank()) {
             val testDir = File(System.getProperty("java.io.tmpdir"), "parchment-test-data")
             if (!testDir.exists()) testDir.mkdirs()
+            cachedStorageDir = testDir
             return testDir
         }
         // 1. Check if portable 'data' directory exists alongside app launcher
         val portableDir = File(System.getProperty("user.dir"), "parchment-portable-data")
         if (portableDir.exists() && portableDir.isDirectory && portableDir.canWrite()) {
+            cachedStorageDir = portableDir
             return portableDir
         }
         // 2. Standard isolated per-user app data directory
@@ -79,6 +84,7 @@ actual object PlatformBridge {
         if (!baseDir.exists()) {
             baseDir.mkdirs()
         }
+        cachedStorageDir = baseDir
         return baseDir
     }
 
@@ -466,21 +472,78 @@ actual object PlatformBridge {
             low == "node_modules" || low == ".idea" || low == ".kotlin"
     }
 
+    private data class CachedTreeEntry(
+        val relPath: String,
+        val name: String,
+        val file: File,
+        val isDirectory: Boolean,
+        val length: Long
+    )
+
+    private data class CachedWorkspaceTree(
+        val rootCanonicalPath: String,
+        val timestampMs: Long,
+        val entries: List<CachedTreeEntry>
+    )
+
+    @Volatile
+    private var cachedWorkspaceTree: CachedWorkspaceTree? = null
+    private const val WORKSPACE_TREE_CACHE_TTL_MS = 10_000L
+
+    private fun invalidateWorkspaceTreeCache() {
+        cachedWorkspaceTree = null
+    }
+
+    private fun getOrBuildWorkspaceTree(rootFile: File): List<CachedTreeEntry> {
+        val canonPath = rootFile.canonicalPath
+        val now = System.currentTimeMillis()
+        val existing = cachedWorkspaceTree
+        if (existing != null && existing.rootCanonicalPath == canonPath && now - existing.timestampMs <= WORKSPACE_TREE_CACHE_TTL_MS) {
+            return existing.entries
+        }
+        val rootPath = rootFile.toPath().normalize()
+        val built = rootFile.walkTopDown()
+            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .maxDepth(24)
+            .filter { it != rootFile && !isIgnoredWorkspaceDir(it.name) }
+            .map { f ->
+                val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
+                val isDir = f.isDirectory
+                CachedTreeEntry(
+                    relPath = rel,
+                    name = f.name,
+                    file = f,
+                    isDirectory = isDir,
+                    length = if (isDir) 0L else f.length()
+                )
+            }
+            .toList()
+        cachedWorkspaceTree = CachedWorkspaceTree(canonPath, now, built)
+        return built
+    }
+
     actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath)
-        val rootPath = File(workspaceRoot).canonicalFile.toPath().normalize()
+        val rootFile = File(workspaceRoot).canonicalFile
+        val rootPath = rootFile.toPath().normalize()
         val dirFile = target.toFile()
         require(dirFile.exists()) { "Directory does not exist: $relativePath" }
         require(dirFile.isDirectory) { "Path is not a directory: $relativePath" }
 
-        val entries = if (recursive) {
+        val entries = if (recursive && relativePath.trim().isEmpty()) {
+            getOrBuildWorkspaceTree(rootFile)
+                .take(400)
+                .map { e ->
+                    if (e.isDirectory) "${e.relPath}/" else "${e.relPath} (${e.length} bytes)"
+                }
+        } else if (recursive) {
             dirFile.walkTopDown()
                 .onEnter { d -> d == dirFile || !isIgnoredWorkspaceDir(d.name) }
                 .maxDepth(24)
                 .filter { it != dirFile && !isIgnoredWorkspaceDir(it.name) }
                 .take(400)
                 .map { f ->
-                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                    val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
                     if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
                 }
                 .toList()
@@ -489,7 +552,7 @@ actual object PlatformBridge {
                 .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
                 .take(300)
                 .map { f ->
-                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
+                    val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
                     if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
                 }
         }
@@ -499,7 +562,6 @@ actual object PlatformBridge {
 
     actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> = runCatching {
         val rootFile = File(workspaceRoot).canonicalFile
-        val rootPath = rootFile.toPath().normalize()
         require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val cleanPat = pattern.trim().replace('\\', '/').removePrefix("./")
         require(cleanPat.isNotEmpty()) { "Glob pattern must not be empty." }
@@ -532,15 +594,14 @@ actual object PlatformBridge {
             append("$")
         }
         val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
-        val matches = rootFile.walkTopDown()
-            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
-            .maxDepth(24)
-            .filter { f -> f != rootFile && !isIgnoredWorkspaceDir(f.name) }
-            .mapNotNull { f ->
-                val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
-                val matchTarget = if (!cleanPat.contains('/')) f.name else rel
-                if (globRegex.matches(matchTarget) || rel.contains(cleanPat.replace("*", ""), ignoreCase = true)) {
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
+        val hasSlash = cleanPat.contains('/')
+        val plainSub = cleanPat.replace("*", "")
+        val matches = getOrBuildWorkspaceTree(rootFile)
+            .asSequence()
+            .mapNotNull { e ->
+                val matchTarget = if (!hasSlash) e.name else e.relPath
+                if (globRegex.matches(matchTarget) || (plainSub.isNotEmpty() && e.relPath.contains(plainSub, ignoreCase = true))) {
+                    if (e.isDirectory) "${e.relPath}/" else "${e.relPath} (${e.length} bytes)"
                 } else null
             }
             .take(maxResults.coerceIn(1, 500))
@@ -567,6 +628,7 @@ actual object PlatformBridge {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         target.parentFile?.mkdirs()
         target.writeText(content, Charsets.UTF_8)
+        invalidateWorkspaceTreeCache()
         "Successfully wrote ${content.length} characters (${content.lines().size} lines) to '$relativePath'."
     }
 
@@ -580,43 +642,21 @@ actual object PlatformBridge {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
         val existingRaw = target.readText(Charsets.UTF_8)
-        require(oldText.isNotEmpty()) { "old_text must not be empty." }
-
-        // Normalize CRLF/LF for reliable matching
         val usesCrlf = existingRaw.contains("\r\n")
-        val existing = existingRaw.replace("\r\n", "\n")
-        val normOld = oldText.replace("\r\n", "\n")
-        val normNew = newText.replace("\r\n", "\n")
+        val existingLf = existingRaw.replace("\r\n", "\n")
 
-        if (!existing.contains(normOld)) {
-            error("old_text was not found in '$relativePath' (${existing.lines().size} lines). Use fs_read to inspect the exact lines before editing.")
-        }
+        val editRes = io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+            existingLf = existingLf,
+            rawOldText = oldText,
+            rawNewText = newText,
+            replaceAll = replaceAll,
+            relativePath = relativePath
+        )
 
-        val updatedLf = if (replaceAll) {
-            existing.replace(normOld, normNew)
-        } else {
-            val firstIdx = existing.indexOf(normOld)
-            val secondIdx = existing.indexOf(normOld, startIndex = firstIdx + normOld.length)
-            if (secondIdx != -1) {
-                val matchLines = mutableListOf<Int>()
-                var searchIdx = 0
-                while (true) {
-                    val hit = existing.indexOf(normOld, startIndex = searchIdx)
-                    if (hit == -1) break
-                    val lineNum = existing.substring(0, hit).count { it == '\n' } + 1
-                    matchLines.add(lineNum)
-                    searchIdx = hit + normOld.length.coerceAtLeast(1)
-                }
-                error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
-            }
-            existing.replaceFirst(normOld, normNew)
-        }
-
-        val finalContent = if (usesCrlf) updatedLf.replace("\n", "\r\n") else updatedLf
+        val finalContent = if (usesCrlf) editRes.updatedLf.replace("\n", "\r\n") else editRes.updatedLf
         target.writeText(finalContent, Charsets.UTF_8)
-        val removedLines = normOld.lines().size
-        val addedLines = normNew.lines().size
-        "Edited '$relativePath' (+$addedLines / -$removedLines lines)."
+        val fuzzyNote = if (editRes.usedFuzzyWhitespace) " (fuzzy whitespace self-healed)" else ""
+        "Edited '$relativePath' (+${editRes.addedLines} / -${editRes.removedLines} lines)$fuzzyNote."
     }
 
     actual fun workspaceMultiEdit(
@@ -635,23 +675,20 @@ actual object PlatformBridge {
 
         edits.forEachIndexed { idx, (oldText, newText, replaceAll) ->
             require(oldText.isNotEmpty()) { "Edit #${idx + 1}: old_text must not be empty." }
-            val normOld = oldText.replace("\r\n", "\n")
-            val normNew = newText.replace("\r\n", "\n")
-            if (!currentLf.contains(normOld)) {
-                error("Edit #${idx + 1} failed (rolled back all edits): old_text was not found in '$relativePath'.")
+            val stepRes = runCatching {
+                io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+                    existingLf = currentLf,
+                    rawOldText = oldText,
+                    rawNewText = newText,
+                    replaceAll = replaceAll,
+                    relativePath = relativePath
+                )
+            }.getOrElse { err ->
+                error("Edit #${idx + 1} failed (rolled back all edits): ${err.message}")
             }
-            currentLf = if (replaceAll) {
-                currentLf.replace(normOld, normNew)
-            } else {
-                val firstIdx = currentLf.indexOf(normOld)
-                val secondIdx = currentLf.indexOf(normOld, startIndex = firstIdx + normOld.length)
-                if (secondIdx != -1) {
-                    error("Edit #${idx + 1} failed (rolled back all edits): old_text matched multiple locations in '$relativePath'. Include more surrounding lines or set replace_all=true.")
-                }
-                currentLf.replaceFirst(normOld, normNew)
-            }
-            totalRemoved += normOld.lines().size
-            totalAdded += normNew.lines().size
+            currentLf = stepRes.updatedLf
+            totalRemoved += stepRes.removedLines
+            totalAdded += stepRes.addedLines
         }
 
         val finalContent = if (usesCrlf) currentLf.replace("\n", "\r\n") else currentLf
@@ -669,6 +706,7 @@ actual object PlatformBridge {
             dstFile.toPath(),
             java.nio.file.StandardCopyOption.REPLACE_EXISTING
         )
+        invalidateWorkspaceTreeCache()
         "Moved '$sourceRelativePath' -> '$destRelativePath'."
     }
 
@@ -679,6 +717,7 @@ actual object PlatformBridge {
         require(target.exists()) { "Path does not exist: $relativePath" }
         val deleted = if (target.isDirectory) target.deleteRecursively() else target.delete()
         require(deleted) { "Failed to delete '$relativePath'." }
+        invalidateWorkspaceTreeCache()
         "Deleted '$relativePath'."
     }
     actual fun workspaceShellExec(
@@ -771,6 +810,7 @@ actual object PlatformBridge {
             "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
         } finally {
             activeShellProcesses.remove(proc)
+            invalidateWorkspaceTreeCache()
         }
     }
 
@@ -789,39 +829,43 @@ actual object PlatformBridge {
 
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
         val rootFile = File(workspaceRoot).canonicalFile
-        val rootPath = rootFile.toPath().normalize()
         require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         require(query.isNotBlank()) { "Search query must not be blank." }
 
         val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
-        val matches = mutableListOf<String>()
+        val cleanFilter = fileGlob.removePrefix("*").trim()
+        val candidateEntries = getOrBuildWorkspaceTree(rootFile).filter { e ->
+            !e.isDirectory &&
+                e.length in 1L..2_000_000L &&
+                (cleanFilter.isEmpty() || e.name.contains(cleanFilter, ignoreCase = true) || e.relPath.contains(cleanFilter, ignoreCase = true))
+        }
 
-        rootFile.walkTopDown()
-            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
-            .maxDepth(24)
-            .filter { f ->
-                f.isFile &&
-                    !isIgnoredWorkspaceDir(f.name) &&
-                    f.length() < 2_000_000L &&
-                    (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
-            }
-            .forEach { file ->
-                if (matches.size >= 150) return@forEach
+        val hitCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val perFileMatches = candidateEntries.parallelStream()
+            .map { entry ->
+                if (hitCount.get() >= 150) return@map null
+                val fileHits = mutableListOf<String>()
                 runCatching {
-                    val rel = rootPath.relativize(file.canonicalFile.toPath()).toString().replace('\\', '/')
-                    file.useLines(Charsets.UTF_8) { seq ->
+                    entry.file.useLines(Charsets.UTF_8) { seq ->
                         seq.forEachIndexed { idx, line ->
-                            if (matches.size < 150) {
+                            if (hitCount.get() < 150) {
                                 val hit = regex?.containsMatchIn(line) ?: line.contains(query, ignoreCase = true)
                                 if (hit) {
-                                    matches.add("$rel:${idx + 1}: ${line.trim().take(200)}")
+                                    val countNow = hitCount.incrementAndGet()
+                                    if (countNow <= 150) {
+                                        fileHits.add("${entry.relPath}:${idx + 1}: ${line.trim().take(200)}")
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                if (fileHits.isEmpty()) null else fileHits
             }
+            .filter { it != null }
+            .collect(java.util.stream.Collectors.toList())
 
+        val matches = perFileMatches.filterNotNull().flatten()
         if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
     }
 

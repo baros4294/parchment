@@ -572,37 +572,20 @@ actual object PlatformBridge {
     ): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        require(oldText.isNotEmpty()) { "old_text must not be empty." }
         val existingRaw = target.readText(Charsets.UTF_8)
         val usesCrlf = existingRaw.contains("\r\n")
-        val existing = existingRaw.replace("\r\n", "\n")
-        val normOld = oldText.replace("\r\n", "\n")
-        val normNew = newText.replace("\r\n", "\n")
-        if (!existing.contains(normOld)) {
-            error("old_text was not found in '$relativePath' (${existing.lines().size} lines). Use fs_read to inspect the exact lines before editing.")
-        }
-        val updatedLf = if (replaceAll) {
-            existing.replace(normOld, normNew)
-        } else {
-            val firstIdx = existing.indexOf(normOld)
-            val secondIdx = existing.indexOf(normOld, startIndex = firstIdx + normOld.length)
-            if (secondIdx != -1) {
-                val matchLines = mutableListOf<Int>()
-                var searchIdx = 0
-                while (true) {
-                    val hit = existing.indexOf(normOld, startIndex = searchIdx)
-                    if (hit == -1) break
-                    val lineNum = existing.substring(0, hit).count { it == '\n' } + 1
-                    matchLines.add(lineNum)
-                    searchIdx = hit + normOld.length.coerceAtLeast(1)
-                }
-                error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
-            }
-            existing.replaceFirst(normOld, normNew)
-        }
-        val finalContent = if (usesCrlf) updatedLf.replace("\n", "\r\n") else updatedLf
+        val existingLf = existingRaw.replace("\r\n", "\n")
+        val editRes = io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+            existingLf = existingLf,
+            rawOldText = oldText,
+            rawNewText = newText,
+            replaceAll = replaceAll,
+            relativePath = relativePath
+        )
+        val finalContent = if (usesCrlf) editRes.updatedLf.replace("\n", "\r\n") else editRes.updatedLf
         target.writeText(finalContent, Charsets.UTF_8)
-        "Edited '$relativePath' (+${normNew.lines().size} / -${normOld.lines().size} lines)."
+        val fuzzyNote = if (editRes.usedFuzzyWhitespace) " (fuzzy whitespace self-healed)" else ""
+        "Edited '$relativePath' (+${editRes.addedLines} / -${editRes.removedLines} lines)$fuzzyNote."
     }
 
     actual fun workspaceMultiEdit(
@@ -621,23 +604,20 @@ actual object PlatformBridge {
 
         edits.forEachIndexed { idx, (oldText, newText, replaceAll) ->
             require(oldText.isNotEmpty()) { "Edit #${idx + 1}: old_text must not be empty." }
-            val normOld = oldText.replace("\r\n", "\n")
-            val normNew = newText.replace("\r\n", "\n")
-            if (!currentLf.contains(normOld)) {
-                error("Edit #${idx + 1} failed (rolled back all edits): old_text was not found in '$relativePath'.")
+            val stepRes = runCatching {
+                io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+                    existingLf = currentLf,
+                    rawOldText = oldText,
+                    rawNewText = newText,
+                    replaceAll = replaceAll,
+                    relativePath = relativePath
+                )
+            }.getOrElse { err ->
+                error("Edit #${idx + 1} failed (rolled back all edits): ${err.message}")
             }
-            currentLf = if (replaceAll) {
-                currentLf.replace(normOld, normNew)
-            } else {
-                val firstIdx = currentLf.indexOf(normOld)
-                val secondIdx = currentLf.indexOf(normOld, startIndex = firstIdx + normOld.length)
-                if (secondIdx != -1) {
-                    error("Edit #${idx + 1} failed (rolled back all edits): old_text matched multiple locations in '$relativePath'. Include more surrounding lines or set replace_all=true.")
-                }
-                currentLf.replaceFirst(normOld, normNew)
-            }
-            totalRemoved += normOld.lines().size
-            totalAdded += normNew.lines().size
+            currentLf = stepRes.updatedLf
+            totalRemoved += stepRes.removedLines
+            totalAdded += stepRes.addedLines
         }
 
         val finalContent = if (usesCrlf) currentLf.replace("\n", "\r\n") else currentLf

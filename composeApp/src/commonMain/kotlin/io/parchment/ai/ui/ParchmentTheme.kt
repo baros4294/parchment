@@ -1,5 +1,7 @@
 package io.parchment.ai.ui
 
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -186,7 +188,16 @@ fun ProvideParchmentTheme(
     content: @Composable () -> Unit
 ) {
     val palette = remember(config) { buildPaletteFromConfig(config) }
-    CompositionLocalProvider(LocalParchmentPalette provides palette) {
+    val selectionColors = remember(palette.accent) {
+        TextSelectionColors(
+            handleColor = palette.accent,
+            backgroundColor = palette.accent.copy(alpha = 0.24f)
+        )
+    }
+    CompositionLocalProvider(
+        LocalParchmentPalette provides palette,
+        LocalTextSelectionColors provides selectionColors
+    ) {
         content()
     }
 }

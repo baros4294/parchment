@@ -80,8 +80,8 @@ object O200kTokenizer {
         ).joinToString("|")
     )
 
-    private val tokenCache = object : LinkedHashMap<Int, Int>(512, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Int>?): Boolean = size > 2048
+    private val tokenCache = object : LinkedHashMap<Int, Int>(1024, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Int>?): Boolean = size > 8192
     }
 
     /**
@@ -93,6 +93,24 @@ object O200kTokenizer {
         val cacheKey = text.hashCode() * 31 + text.length
         synchronized(tokenCache) {
             tokenCache[cacheKey]?.let { return it }
+        }
+
+        // Fast sampling path for huge tool/file payloads (> 24,000 chars) to prevent UI/regex stalls
+        if (text.length > 24_000) {
+            val sampleHead = text.substring(0, 6_000)
+            val sampleTail = text.substring(text.length - 6_000)
+            var sampleTokens = 0
+            for (match in O200K_PAT_REGEX.findAll(sampleHead)) {
+                if (match.value.isNotEmpty()) sampleTokens += estimateBpeSubwordsForPiece(match.value)
+            }
+            for (match in O200K_PAT_REGEX.findAll(sampleTail)) {
+                if (match.value.isNotEmpty()) sampleTokens += estimateBpeSubwordsForPiece(match.value)
+            }
+            val scaled = ((sampleTokens.toDouble() * text.length.toDouble()) / 12_000.0).toInt().coerceAtLeast(1)
+            synchronized(tokenCache) {
+                tokenCache[cacheKey] = scaled
+            }
+            return scaled
         }
 
         var total = 0

@@ -35,11 +35,13 @@ import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -204,8 +206,26 @@ object AiProviderEngine {
 
         val liveChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.CONFLATED)
         val startMs = PlatformBridge.currentTimeMillis()
+        // IMPORTANT: Run the blocking tool execution in `async(Dispatchers.IO)` (which NEVER calls `flow.emit()`)
+        // and consume `liveChannel` directly on the caller's coroutine so Kotlin's `Flow` context invariant is NEVER violated!
         return kotlinx.coroutines.coroutineScope {
-            val forwarderJob = launch {
+            val workerDeferred = async(Dispatchers.IO) {
+                try {
+                    WorkspaceHarness.executeToolCall(
+                        workspaceRoot = workspaceRoot,
+                        mode = mode,
+                        callId = callId,
+                        toolName = toolName,
+                        argumentsJson = argumentsJson,
+                        onOutputDelta = { partial ->
+                            liveChannel.trySend(partial)
+                        }
+                    )
+                } finally {
+                    liveChannel.close()
+                }
+            }
+            try {
                 for (partialOut in liveChannel) {
                     val elapsedSec = ((PlatformBridge.currentTimeMillis() - startMs) / 100L) / 10.0
                     val lastNonEmptyLine = partialOut.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
@@ -223,22 +243,7 @@ object AiProviderEngine {
                         )
                     )
                 }
-            }
-            try {
-                val rawRecord = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    WorkspaceHarness.executeToolCall(
-                        workspaceRoot = workspaceRoot,
-                        mode = mode,
-                        callId = callId,
-                        toolName = toolName,
-                        argumentsJson = argumentsJson,
-                        onOutputDelta = { partial ->
-                            liveChannel.trySend(partial)
-                        }
-                    )
-                }
-                liveChannel.close()
-                forwarderJob.join()
+                val rawRecord = workerDeferred.await()
                 rawRecord.copy(
                     isRunning = false,
                     thoughtSignature = thoughtSignature.ifBlank { rawRecord.thoughtSignature },
@@ -246,9 +251,95 @@ object AiProviderEngine {
                 )
             } finally {
                 liveChannel.close()
-                forwarderJob.cancel()
+                workerDeferred.cancel()
             }
         }
+    }
+
+    private suspend fun executeWorkspaceToolBatchWithLiveProgress(
+        workspaceRoot: String,
+        mode: io.parchment.ai.model.WorkspaceMode,
+        calls: List<Triple<String, String, String>>, // (callId, toolName, argumentsJson)
+        firstThoughtSignature: String = "",
+        firstPrecedingThinking: String = "",
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onToolCall: suspend (ToolCallRecord) -> Unit,
+        onGoalProgress: suspend (GoalTrackerState) -> Unit
+    ): List<ToolCallRecord> {
+        if (calls.isEmpty()) return emptyList()
+        val canRunBatchInParallel = calls.size > 1 && calls.all { (_, fnName, _) ->
+            WorkspaceHarness.isParallelSafeReadOnlyTool(fnName)
+        }
+        if (!canRunBatchInParallel) {
+            val results = mutableListOf<ToolCallRecord>()
+            for ((idx, triple) in calls.withIndex()) {
+                val (callId, fnName, argsJson) = triple
+                val signedRec = executeWorkspaceToolWithLiveProgress(
+                    workspaceRoot = workspaceRoot,
+                    mode = mode,
+                    callId = callId,
+                    toolName = fnName,
+                    argumentsJson = argsJson,
+                    thoughtSignature = if (idx == 0) firstThoughtSignature else "",
+                    precedingThinking = if (idx == 0) firstPrecedingThinking else "",
+                    onStatus = onStatus,
+                    onToolCall = onToolCall
+                )
+                val rec = circuitBreaker.onToolExecuted(signedRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
+                onToolCall(rec)
+                results.add(rec)
+            }
+            return results
+        }
+
+        // Parallel fast path (`omp`-inspired): emit RUNNING cards for all read-only tools immediately,
+        // execute them concurrently on Dispatchers.IO, and emit completed records in deterministic order!
+        val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
+        onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
+        for ((idx, triple) in calls.withIndex()) {
+            val (callId, fnName, argsJson) = triple
+            onToolCall(
+                ToolCallRecord(
+                    id = callId,
+                    name = fnName,
+                    argumentsJson = argsJson,
+                    resultText = "Running $fnName in parallel…",
+                    isRunning = true,
+                    thoughtSignature = if (idx == 0) firstThoughtSignature else "",
+                    precedingThinking = if (idx == 0) firstPrecedingThinking else ""
+                )
+            )
+        }
+
+        val rawCompleted = kotlinx.coroutines.coroutineScope {
+            calls.mapIndexed { idx, (callId, fnName, argsJson) ->
+                async(Dispatchers.IO) {
+                    val raw = WorkspaceHarness.executeToolCall(
+                        workspaceRoot = workspaceRoot,
+                        mode = mode,
+                        callId = callId,
+                        toolName = fnName,
+                        argumentsJson = argsJson
+                    )
+                    raw.copy(
+                        isRunning = false,
+                        thoughtSignature = if (idx == 0) firstThoughtSignature.ifBlank { raw.thoughtSignature } else raw.thoughtSignature,
+                        precedingThinking = if (idx == 0) firstPrecedingThinking.ifBlank { raw.precedingThinking } else raw.precedingThinking
+                    )
+                }
+            }.map { it.await() }
+        }
+
+        val finalResults = mutableListOf<ToolCallRecord>()
+        for (rawRec in rawCompleted) {
+            val rec = circuitBreaker.onToolExecuted(rawRec)
+            circuitBreaker.goalState?.let { onGoalProgress(it) }
+            onToolCall(rec)
+            finalResults.add(rec)
+        }
+        return finalResults
     }
     private val json = Json {
         ignoreUnknownKeys = true
@@ -288,7 +379,8 @@ object AiProviderEngine {
         initialSignature: String = "",
         initialToolCalls: List<ToolCallRecord> = emptyList(),
         initialMediaItems: List<GeneratedMediaItem> = emptyList(),
-        initialWebSources: List<WebSourceCitation> = emptyList()
+        initialWebSources: List<WebSourceCitation> = emptyList(),
+        initialGoalTracker: GoalTrackerState? = null
     ): Flow<StreamUpdate> = flow {
         val model = session.modelOverride.ifBlank { profile.defaultModel }.trim()
         if (model.isBlank()) {
@@ -376,7 +468,7 @@ object AiProviderEngine {
         }
         val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
         val circuitBreaker = WorkspaceHarness.LoopCircuitBreaker(
-            initialGoal = if (initialGoalObjective.isNotBlank()) {
+            initialGoal = initialGoalTracker ?: if (initialGoalObjective.isNotBlank()) {
                 GoalTrackerState(goalObjective = initialGoalObjective)
             } else null
         )
@@ -1238,7 +1330,8 @@ object AiProviderEngine {
                 variants = listOf(MessageVariant(id = "util-var", content = prompt))
             )
             val fastProfile = profile.copy(
-                thinkingEffort = "none",
+                thinkingEffort = "low",
+                maxOutputTokens = 1024,
                 enableWebSearch = false,
                 enableCodeExecution = false,
                 enableUrlContext = false,
@@ -2321,9 +2414,7 @@ object AiProviderEngine {
                 })
             }
 
-            val results = mutableListOf<ToolCallRecord>()
-            for ((idx, callEntry) in turnToolCalls.withIndex()) {
-                val (callId, fnPair) = callEntry
+            for ((callId, fnPair) in turnToolCalls) {
                 val parsedArgs = runCatching { json.parseToJsonElement(fnPair.second).jsonObject }
                     .getOrElse { JsonObject(emptyMap()) }
                 extraLoopSteps.add(buildJsonObject {
@@ -2332,24 +2423,21 @@ object AiProviderEngine {
                     put("name", fnPair.first)
                     put("arguments", parsedArgs)
                 })
+            }
 
-                val stepThoughtTxt = roundThoughtText.toString().trim()
-                val signedRecord = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = session.workspacePath,
-                    mode = session.workspaceMode,
-                    callId = callId,
-                    toolName = fnPair.first,
-                    argumentsJson = fnPair.second,
-                    thoughtSignature = if (idx == 0) stepSigString else "",
-                    precedingThinking = if (idx == 0) stepThoughtTxt else "",
-                    onStatus = { st -> onStatus(st, currentPrevInteractionId) },
-                    onToolCall = onToolCall
-                )
-                val record = circuitBreaker.onToolExecuted(signedRecord)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(record)
-                results.add(record)
-
+            val stepThoughtTxt = roundThoughtText.toString().trim()
+            val results = executeWorkspaceToolBatchWithLiveProgress(
+                workspaceRoot = session.workspacePath,
+                mode = session.workspaceMode,
+                calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
+                firstThoughtSignature = stepSigString,
+                firstPrecedingThinking = stepThoughtTxt,
+                circuitBreaker = circuitBreaker,
+                onStatus = { st -> onStatus(st, currentPrevInteractionId) },
+                onToolCall = onToolCall,
+                onGoalProgress = onGoalProgress
+            )
+            for (record in results) {
                 extraLoopSteps.add(buildJsonObject {
                     put("type", "function_result")
                     put("name", record.name)
@@ -3065,33 +3153,28 @@ object AiProviderEngine {
                 put("parts", JsonArray(signedModelParts))
             })
 
-            val responseParts = mutableListOf<JsonObject>()
-            for ((idx, triple) in roundToolCalls.withIndex()) {
-                val (callId, fnName, argsJson) = triple
-                val signedRec = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = session.workspacePath,
-                    mode = session.workspaceMode,
-                    callId = callId,
-                    toolName = fnName,
-                    argumentsJson = argsJson,
-                    thoughtSignature = if (idx == 0) roundThoughtSig.toString() else "",
-                    onStatus = onStatus,
-                    onToolCall = onToolCall
-                )
-                val rec = circuitBreaker.onToolExecuted(signedRec)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(rec)
-                responseParts.add(buildJsonObject {
+            val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
+                workspaceRoot = session.workspacePath,
+                mode = session.workspaceMode,
+                calls = roundToolCalls,
+                firstThoughtSignature = roundThoughtSig.toString(),
+                circuitBreaker = circuitBreaker,
+                onStatus = onStatus,
+                onToolCall = onToolCall,
+                onGoalProgress = onGoalProgress
+            )
+            val responseParts = batchRecords.map { rec ->
+                buildJsonObject {
                     putJsonObject("functionResponse") {
-                        put("name", fnName)
-                        if (!callId.startsWith("synth_call_")) {
-                            put("id", callId)
+                        put("name", rec.name)
+                        if (!rec.id.startsWith("synth_call_")) {
+                            put("id", rec.id)
                         }
                         putJsonObject("response") {
                             put("result", rec.resultText)
                         }
                     }
-                })
+                }
             }
             rollingContents.add(buildJsonObject {
                 put("role", "user")
@@ -3795,9 +3878,7 @@ object AiProviderEngine {
                 })
             }
 
-            val results = mutableListOf<ToolCallRecord>()
-            for ((idx, entry) in turnToolCalls.withIndex()) {
-                val (callId, fnPair) = entry
+            for ((callId, fnPair) in turnToolCalls) {
                 extraResponsesLoopItems.add(buildJsonObject {
                     put("type", "function_call")
                     put("call_id", callId)
@@ -3805,21 +3886,19 @@ object AiProviderEngine {
                     put("arguments", fnPair.second)
                     put("status", "completed")
                 })
-                val signedRec = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = session.workspacePath,
-                    mode = session.workspaceMode,
-                    callId = callId,
-                    toolName = fnPair.first,
-                    argumentsJson = fnPair.second,
-                    thoughtSignature = if (idx == 0) roundEncryptedReasoning else "",
-                    precedingThinking = if (idx == 0) roundReasoningBuilder.toString().trim() else "",
-                    onStatus = onStatus,
-                    onToolCall = onToolCall
-                )
-                val rec = circuitBreaker.onToolExecuted(signedRec)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(rec)
-                results.add(rec)
+            }
+            val results = executeWorkspaceToolBatchWithLiveProgress(
+                workspaceRoot = session.workspacePath,
+                mode = session.workspaceMode,
+                calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
+                firstThoughtSignature = roundEncryptedReasoning,
+                firstPrecedingThinking = roundReasoningBuilder.toString().trim(),
+                circuitBreaker = circuitBreaker,
+                onStatus = onStatus,
+                onToolCall = onToolCall,
+                onGoalProgress = onGoalProgress
+            )
+            for (rec in results) {
                 extraResponsesLoopItems.add(buildJsonObject {
                     put("type", "function_call_output")
                     put("call_id", rec.id)
@@ -4309,24 +4388,20 @@ object AiProviderEngine {
                 }
             })
 
-            for ((callId, fnName, argsSb) in validCalls) {
-                val cleanArgs = argsSb.toString().ifBlank { "{}" }
-                val rawRec = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = session.workspacePath,
-                    mode = session.workspaceMode,
-                    callId = callId,
-                    toolName = fnName,
-                    argumentsJson = cleanArgs,
-                    onStatus = onStatus,
-                    onToolCall = onToolCall
-                )
-                val rec = circuitBreaker.onToolExecuted(rawRec)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(rec)
+            val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
+                workspaceRoot = session.workspacePath,
+                mode = session.workspaceMode,
+                calls = validCalls.map { (callId, fnName, argsSb) -> Triple(callId, fnName, argsSb.toString().ifBlank { "{}" }) },
+                circuitBreaker = circuitBreaker,
+                onStatus = onStatus,
+                onToolCall = onToolCall,
+                onGoalProgress = onGoalProgress
+            )
+            for (rec in batchRecords) {
                 extraToolMessages.add(buildJsonObject {
                     put("role", "tool")
                     put("tool_call_id", rec.id)
-                    put("name", fnName)
+                    put("name", rec.name)
                     put("content", rec.resultText)
                 })
             }
@@ -5002,30 +5077,25 @@ object AiProviderEngine {
                 put("content", JsonArray(assistantContentBlocksForToolLoop))
             })
 
-            val toolResultBlocks = mutableListOf<JsonObject>()
             val firstSignedThinking = orderedBlocks.filterIsInstance<AnthropicStreamBlock.Thinking>()
                 .firstOrNull { it.signature.isNotEmpty() }?.signature?.toString().orEmpty()
-            for ((idx, callEntry) in turnToolCalls.withIndex()) {
-                val (callId, fnPair) = callEntry
-                val signedRec = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = session.workspacePath,
-                    mode = session.workspaceMode,
-                    callId = callId,
-                    toolName = fnPair.first,
-                    argumentsJson = fnPair.second,
-                    thoughtSignature = if (idx == 0) firstSignedThinking else "",
-                    onStatus = onStatus,
-                    onToolCall = onToolCall
-                )
-                val rec = circuitBreaker.onToolExecuted(signedRec)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(rec)
-                toolResultBlocks.add(buildJsonObject {
+            val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
+                workspaceRoot = session.workspacePath,
+                mode = session.workspaceMode,
+                calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
+                firstThoughtSignature = firstSignedThinking,
+                circuitBreaker = circuitBreaker,
+                onStatus = onStatus,
+                onToolCall = onToolCall,
+                onGoalProgress = onGoalProgress
+            )
+            val toolResultBlocks = batchRecords.map { rec ->
+                buildJsonObject {
                     put("type", "tool_result")
-                    put("tool_use_id", callId)
+                    put("tool_use_id", rec.id)
                     put("content", rec.resultText)
                     if (rec.isError) put("is_error", true)
-                })
+                }
             }
 
             extraLoopMessages.add(buildJsonObject {
@@ -5792,11 +5862,19 @@ object AiProviderEngine {
         passTag: String,
         forceVisibleThoughtSummary: Boolean = false
     ): Pair<List<MessageNode>, String> {
-        val hasPriorTurnProgress = executedTools.isNotEmpty() ||
+        val sanitizedTools = executedTools.map { tc ->
+            if (tc.isRunning || tc.resultText == "Running shell command…" || tc.resultText == "Running ${tc.name}…") {
+                tc.copy(
+                    isRunning = false,
+                    resultText = "[Tool execution interrupted before completion — re-run ${tc.name} if needed]"
+                )
+            } else tc
+        }
+        val hasPriorTurnProgress = sanitizedTools.isNotEmpty() ||
             (continuePrefix.isBlank() && (thinkingText.isNotEmpty() || signatureText.isNotEmpty()))
         return if (hasPriorTurnProgress) {
             val effectiveAssistantContent = when {
-                executedTools.isNotEmpty() && continuePrefix.isNotBlank() -> continuePrefix
+                sanitizedTools.isNotEmpty() && continuePrefix.isNotBlank() -> continuePrefix
                 forceVisibleThoughtSummary && continuePrefix.isBlank() && thinkingText.isNotBlank() -> {
                     "[Completed internal reasoning:\n$thinkingText]"
                 }
@@ -5806,9 +5884,9 @@ object AiProviderEngine {
                 id = "var-in-progress-$passTag",
                 content = effectiveAssistantContent,
                 thinkingSummary = thinkingText,
-                trailingThinking = if (executedTools.isNotEmpty()) trailingThinkingText else "",
+                trailingThinking = if (sanitizedTools.isNotEmpty()) trailingThinkingText else "",
                 thinkingSignature = signatureText,
-                toolCalls = executedTools,
+                toolCalls = sanitizedTools,
                 mediaItems = generatedMedia,
                 providerProtocol = protocol,
                 modelUsed = model
@@ -6319,7 +6397,17 @@ object AiProviderEngine {
         var sawSseLine = false
 
         while (!channel.isClosedForRead) {
-            val line = channel.readLine() ?: break
+            // Adaptive per-line SSE idle watchdog:
+            // - 90 seconds once SSE lines have already started arriving (catches half-open proxy/CDN mid-sentence stalls!)
+            // - 300 seconds before the first SSE line arrives (allows deep pre-token reasoning on slow endpoints)
+            val perLineTimeoutMs = if (sawSseLine) 90_000L else 300_000L
+            val line = withTimeoutOrNull(perLineTimeoutMs) {
+                channel.readLine()
+            } ?: if (channel.isClosedForRead) {
+                break
+            } else {
+                error("SSE stream timed out waiting for next event after ${perLineTimeoutMs / 1000}s (connection stalled).")
+            }
             when {
                 line.startsWith("event:") -> {
                     sawSseLine = true

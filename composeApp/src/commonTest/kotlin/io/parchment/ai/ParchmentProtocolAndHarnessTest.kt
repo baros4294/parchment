@@ -1120,4 +1120,95 @@ class ParchmentProtocolAndHarnessTest {
         // Ensure killActiveShellProcesses is safe to call when idle
         io.parchment.ai.platform.PlatformBridge.killActiveShellProcesses()
     }
+
+    @Test
+    fun testLiveAgentPeekSwitchesBetweenToolPeekAndThoughtPeek() {
+        // 1. When a tool call is running (or latest step has no trailing thinking), Peek shows Tool Peek
+        val runningToolVariant = MessageVariant(
+            id = "v-tool-peek",
+            content = "",
+            thinkingSummary = "**Initial Analysis**\nChecking workspace files.",
+            trailingThinking = "",
+            toolCalls = listOf(
+                ToolCallRecord(
+                    id = "tc-1",
+                    name = "shell_exec",
+                    argumentsJson = """{"command":"./gradlew desktopTest"}""",
+                    resultText = "[Running 4.2s]\n> Task :composeApp:desktopTest",
+                    isRunning = true
+                )
+            )
+        )
+        val toolPeek = io.parchment.ai.ui.extractLatestAgentPeek(runningToolVariant)
+        assertTrue(toolPeek.isToolPeek)
+        assertTrue(toolPeek.isToolRunning)
+        assertEquals("shell_exec", toolPeek.toolName)
+        assertTrue(toolPeek.title.contains("Tool #1/1"))
+        assertTrue(toolPeek.body.contains("./gradlew desktopTest"))
+        assertTrue(toolPeek.body.contains("Task :composeApp:desktopTest"))
+
+        // 2. When the model starts reasoning again after tool execution (`trailingThinking` is non-blank and no tool is running), Peek switches to Thought Peek
+        val nextThoughtVariant = runningToolVariant.copy(
+            trailingThinking = "**Evaluating Test Results**\nAll unit tests passed cleanly.",
+            toolCalls = runningToolVariant.toolCalls.map { it.copy(isRunning = false) }
+        )
+        val thoughtPeek = io.parchment.ai.ui.extractLatestAgentPeek(nextThoughtVariant)
+        assertTrue(!thoughtPeek.isToolPeek)
+        assertEquals("Evaluating Test Results", thoughtPeek.title)
+        assertTrue(thoughtPeek.body.contains("All unit tests passed cleanly."))
+    }
+
+    @Test
+    fun testOmpFuzzyWhitespaceEditAndSizeValveCompression() {
+        val sampleFile = """
+            class Example {
+                fun greet(name: String): String {
+                    val trimmed = name.trim()
+                    return "Hello, " + trimmed
+                }
+            }
+        """.trimIndent()
+
+        // 1. Fuzzy indentation match (model provides 2-space indent instead of 8-space indent)
+        val driftedOld = """
+          val trimmed = name.trim()
+          return "Hello, " + trimmed
+        """.trimIndent()
+        val driftedNew = """
+          val clean = name.trim().ifEmpty { "World" }
+          return "Hi, " + clean
+        """.trimIndent()
+
+        val fuzzyRes = WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+            existingLf = sampleFile,
+            rawOldText = driftedOld,
+            rawNewText = driftedNew,
+            replaceAll = false,
+            relativePath = "Example.kt"
+        )
+        assertTrue(fuzzyRes.usedFuzzyWhitespace)
+        assertTrue(fuzzyRes.updatedLf.contains("        val clean = name.trim().ifEmpty { \"World\" }"))
+        assertTrue(fuzzyRes.updatedLf.contains("        return \"Hi, \" + clean"))
+
+        // 2. Accidental `123: ` line-number prefixes copied from `fs_read` output are stripped automatically
+        val numberedOld = "2:     fun greet(name: String): String {\n3:         val trimmed = name.trim()"
+        val numberedNew = "2:     fun greet(name: String): String {\n3:         val trimmed = name.trim().lowercase()"
+        val linePrefixRes = WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+            existingLf = sampleFile,
+            rawOldText = numberedOld,
+            rawNewText = numberedNew,
+            replaceAll = false,
+            relativePath = "Example.kt"
+        )
+        assertTrue(linePrefixRes.updatedLf.contains("val trimmed = name.trim().lowercase()"))
+        assertTrue(!linePrefixRes.updatedLf.contains("2: "))
+
+        // 3. Size valve compresses 300-line shell_exec output into Head + Tail bookends and strips ANSI codes
+        val noisyShellOut = (1..300).joinToString("\n") { "\u001B[32mLine #$it output\u001B[0m" }
+        val compressed = WorkspaceHarness.compressToolOutputWithSizeValve("shell_exec", noisyShellOut)
+        assertTrue(!compressed.contains("\u001B["))
+        assertTrue(compressed.contains("Line #1 output"))
+        assertTrue(compressed.contains("Line #300 output"))
+        assertTrue(compressed.contains("middle lines omitted by size valve"))
+    }
 }

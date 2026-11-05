@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -119,6 +120,7 @@ fun LiteraryProseRenderer(
     SelectionContainer {
         Column(modifier = modifier.fillMaxWidth()) {
             blocks.forEachIndexed { index, block ->
+                key(index, block) {
                 when (block) {
                     is ProseBlock.SceneBreak -> {
                         Row(
@@ -500,6 +502,7 @@ fun LiteraryProseRenderer(
 
                 if (index < blocks.lastIndex) {
                     Spacer(Modifier.height(if (compactReasoningMode) 10.dp else p.paragraphSpacing.coerceAtLeast(16.dp)))
+                }
                 }
             }
         }
@@ -887,12 +890,13 @@ private fun styleLiteraryParagraph(
                     pushStyle(
                         SpanStyle(
                             fontFamily = palette.codeFontFamily,
-                            fontSize = palette.config.codeFontSizeSp.sp,
-                            background = palette.elevatedBg,
-                            color = palette.accent
+                            fontSize = (palette.config.proseFontSizeSp * 0.90f).coerceAtLeast(11f).sp,
+                            background = palette.accent.copy(alpha = 0.12f),
+                            color = palette.accent,
+                            fontWeight = FontWeight.Medium
                         )
                     )
-                    append(" $inner ")
+                    append(inner)
                     pop()
                     i = endIdx + 2
                 } else {
@@ -909,12 +913,13 @@ private fun styleLiteraryParagraph(
                     pushStyle(
                         SpanStyle(
                             fontFamily = palette.codeFontFamily,
-                            fontSize = palette.config.codeFontSizeSp.sp,
-                            background = palette.elevatedBg,
-                            color = palette.accent
+                            fontSize = (palette.config.proseFontSizeSp * 0.90f).coerceAtLeast(11f).sp,
+                            background = palette.accent.copy(alpha = 0.12f),
+                            color = palette.accent,
+                            fontWeight = FontWeight.Medium
                         )
                     )
-                    append(" $inner ")
+                    append(inner)
                     pop()
                     i = endIdx + 1
                 } else {

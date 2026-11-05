@@ -775,7 +775,18 @@ fun ParchmentApp(
                 val curStepThink = if (accumulatedTools.isEmpty()) "" else if (isFinal) currentStepThinkingTarget.toString() else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
                 val curSig = signatureSb.toString()
                 val curTools = if (isFinal) {
-                    accumulatedTools.map { if (it.isRunning) it.copy(isRunning = false) else it }
+                    accumulatedTools.map { tc ->
+                        if (tc.isRunning || tc.resultText == "Running shell command…" || tc.resultText == "Running ${tc.name}…") {
+                            tc.copy(
+                                isRunning = false,
+                                resultText = if (tc.resultText.startsWith("[Running ")) {
+                                    tc.resultText + "\n[Tool execution interrupted before completion]"
+                                } else {
+                                    "[Tool execution interrupted before completion]"
+                                }
+                            )
+                        } else tc
+                    }
                 } else {
                     accumulatedTools.toList()
                 }
@@ -847,13 +858,17 @@ fun ParchmentApp(
                         lastStopwatchTickMs = now
                         thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                         changed = true
-                        val thinkWords = countWordsFast(networkThinkingTarget)
-                        updateSessionStreamState(sessionId) { cur ->
-                            if (cur != null && cur.isThinkingPhase) {
-                                cur.copy(
-                                    statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
-                                )
-                            } else cur
+                        val hasRunningToolNow = accumulatedTools.any { it.isRunning }
+                        if (!hasRunningToolNow) {
+                            val thinkWords = countWordsFast(networkThinkingTarget)
+                            val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
+                            updateSessionStreamState(sessionId) { cur ->
+                                if (cur != null && cur.isThinkingPhase && !cur.statusText.startsWith("Auto-retrying") && !cur.statusText.startsWith("Context ")) {
+                                    cur.copy(
+                                        statusText = "Reasoning ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                    )
+                                } else cur
+                            }
                         }
                     }
                     val targetThinkLen = networkThinkingTarget.length
@@ -1076,7 +1091,8 @@ fun ParchmentApp(
                             initialSignature = signatureSb.toString(),
                             initialToolCalls = accumulatedTools.toList(),
                             initialMediaItems = accumulatedMedia.toList(),
-                            initialWebSources = accumulatedWebSources
+                            initialWebSources = accumulatedWebSources,
+                            initialGoalTracker = latestGoalTracker
                         ).collect { update ->
                             when (update) {
                                 is StreamUpdate.Status -> {
@@ -1096,10 +1112,11 @@ fun ParchmentApp(
                                     currentStepThinkingTarget.append(update.delta)
                                     signatureSb.append(update.signatureDelta)
                                     val thinkWords = countWordsFast(networkThinkingTarget)
+                                    val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
                                     updateSessionStreamState(sessionId) { cur ->
                                         cur?.copy(
                                             isThinkingPhase = true,
-                                            statusText = "Reasoning ($modelName • $thinkWords words • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                            statusText = "Reasoning ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
                                         )
                                     }
                                     if (now - lastMidStreamCompactCheckMs >= 1500L) {
@@ -1124,7 +1141,10 @@ fun ParchmentApp(
                                     }
                                 }
                                 is StreamUpdate.ToolCallEvent -> {
-                                    pauseActiveThinkingStopwatch()
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    // Keep the Reasoning + Tool stopwatch ticking continuously across tool calls!
+                                    if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
+                                    thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     val stepThinkFallback = currentStepThinkingTarget.toString().trim()
                                     if (stepThinkFallback.isNotEmpty()) {
                                         currentStepThinkingTarget.clear()
@@ -1160,15 +1180,15 @@ fun ParchmentApp(
                                     if (!enrichedTool.isRunning) {
                                         updateSessionStreamState(sessionId) { cur ->
                                             cur?.copy(
-                                                isThinkingPhase = false,
-                                                statusText = "Executed tool: ${enrichedTool.name}"
+                                                isThinkingPhase = true,
+                                                statusText = "Executed tool: ${enrichedTool.name} (${formatDurationFromMs(thinkingDurationMs)})…"
                                             )
                                         }
                                         flushCheckpointToDisk(isFinal = false)
                                         checkMidStreamAutoCompactAndThrowIfNeeded()
                                     } else {
                                         updateSessionStreamState(sessionId) { cur ->
-                                            cur?.copy(isThinkingPhase = false)
+                                            cur?.copy(isThinkingPhase = true)
                                         }
                                     }
                                 }
@@ -3650,7 +3670,14 @@ private fun ManuscriptViewport(
         activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
     }
     val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
-    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages, lastMsgContentLen, isStreaming, activeProfile) {
+    // Bucket streaming content length into 128-char steps while streaming so 120fps VSync frames
+    // never recompute full-history O200kTokenizer breakdowns on every single character!
+    val throttledBreakdownTrigger = if (isStreaming) {
+        (lastMsgContentLen / 128) * 128 + (activeSession.messages.lastOrNull()?.activeVariant?.toolCalls?.size ?: 0)
+    } else {
+        lastMsgContentLen
+    }
+    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, throttledBreakdownTrigger, isStreaming, activeProfile) {
         activeSession.messages.sumOf { node ->
             val v = node.activeVariant
             if (node.role == MessageRole.USER) {
@@ -3663,16 +3690,22 @@ private fun ManuscriptViewport(
         }
     }
     val contextBreakdown = remember(
-        activeSession,
+        activeSession.id,
+        activeSession.storySummary,
+        activeSession.systemPrompt,
+        activeSession.authorsNote,
+        activeSession.workspaceMode,
+        activeSession.workspacePath,
         activeAssistant,
         activeProfile,
         appState.globalWorldBook,
-        activeContextNodes,
+        activeSession.messages.size,
+        throttledBreakdownTrigger,
         userPromptInput,
         assistantPrefillInput,
         pendingAttachments,
         isGoalModeEnabled,
-        lastMsgContentLen
+        isStreaming
     ) {
         O200kTokenizer.computeContextWindowBreakdown(
             session = activeSession,
@@ -5730,12 +5763,17 @@ private fun MessageTurnItem(
 
                 val hasThinking = preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()
                 val hasTools = preferences.showToolCards && activeVar.toolCalls.isNotEmpty()
+                val hasRunningToolInVar = activeVar.toolCalls.any { it.isRunning }
+                val isCurrentlyToolStep = hasRunningToolInVar ||
+                    (isActivelyThinkingThisNode && hasTools && activeVar.trailingThinking.isBlank())
                 if (hasThinking || hasTools) {
                     val sec = if (activeVar.thinkingDurationMs > 0) " (${formatDurationFromMs(activeVar.thinkingDurationMs)})" else ""
                     val toolBadge = if (hasTools) " • ${activeVar.toolCalls.size} tools" else ""
                     val chipText = when {
+                        isLivePeekOnly && isCurrentlyToolStep -> "🔧 Tool Peek$sec…"
                         isLivePeekOnly -> "🧠 Peek$sec…"
-                        isActivelyThinkingThisNode -> "🧠 Thinking$sec…"
+                        isActivelyThinkingThisNode && isCurrentlyToolStep -> "🔧 Working$sec$toolBadge…"
+                        isActivelyThinkingThisNode -> "🧠 Thinking$sec$toolBadge…"
                         isReasoningExpanded -> "▾ Thought$sec$toolBadge"
                         else -> "▸ Thought$sec$toolBadge"
                     }
@@ -5754,7 +5792,7 @@ private fun MessageTurnItem(
             }
         }
 
-        // Animated Collapsible Thinking (Full Timeline OR Compact Single-Thought Peek while Reasoning)
+        // Animated Collapsible Thinking & Tool Timeline (Full Timeline OR Compact Thought/Tool Peek while Working)
         val showDrawer = (isReasoningExpanded || isLivePeekOnly) &&
             ((preferences.showThinkingCards && activeVar.thinkingSummary.isNotBlank()) ||
                 (preferences.showToolCards && activeVar.toolCalls.isNotEmpty()))
@@ -5764,6 +5802,9 @@ private fun MessageTurnItem(
             enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
             exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
         ) {
+            val livePeekInfo = remember(activeVar.thinkingSummary, activeVar.trailingThinking, activeVar.toolCalls) {
+                extractLatestAgentPeek(activeVar)
+            }
             Column(
                 modifier = Modifier
                     .padding(top = 8.dp)
@@ -5795,9 +5836,9 @@ private fun MessageTurnItem(
                         val toolCount = activeVar.toolCalls.size
                         val headerSummary = buildString {
                             if (isLivePeekOnly) {
-                                append("Latest Thought")
+                                append(if (livePeekInfo.isToolPeek) "Latest Tool" else "Latest Thought")
                             } else if (isActivelyThinkingThisNode) {
-                                append("Thinking")
+                                append(if (livePeekInfo.isToolPeek) "Running Tools & Reasoning" else "Thinking")
                             } else if (win.isCompact) {
                                 append("Reasoning")
                             } else {
@@ -5826,38 +5867,73 @@ private fun MessageTurnItem(
                 }
 
                 if (isLivePeekOnly) {
-                    // Compact Single-Thought Peek Window (shows ONLY the current/latest thought block while reasoning)
-                    val (peekTitle, peekBody) = remember(activeVar.thinkingSummary, activeVar.trailingThinking) {
-                        extractLatestThoughtPeek(activeVar)
-                    }
+                    // Compact Single-Thought OR Active-Tool Peek Window while the agent is working
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 2.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        if (peekTitle.isNotEmpty()) {
-                            BasicText(
-                                text = peekTitle,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(
-                                    color = p.primaryInk,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                        if (livePeekInfo.title.isNotEmpty()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (livePeekInfo.isToolPeek) {
+                                    KissVectorIcon(
+                                        icon = resolveToolKissIcon(livePeekInfo.toolName),
+                                        tint = p.accent,
+                                        size = 13.dp
+                                    )
+                                }
+                                BasicText(
+                                    text = livePeekInfo.title,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                    style = p.uiBodyStyle.copy(
+                                        color = p.primaryInk,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.5.sp
+                                    )
                                 )
-                            )
+                                if (livePeekInfo.isToolRunning) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(p.accent.copy(alpha = 0.16f))
+                                            .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                    ) {
+                                        BasicText(
+                                            text = "RUNNING",
+                                            style = p.monoStyle.copy(
+                                                color = p.accent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 9.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        if (peekBody.isNotEmpty()) {
+                        if (livePeekInfo.body.isNotEmpty()) {
                             BasicText(
-                                text = peekBody,
-                                maxLines = 3,
+                                text = livePeekInfo.body,
+                                maxLines = if (livePeekInfo.isToolPeek) 4 else 3,
                                 overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(
-                                    color = p.narrationInk,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 18.sp
-                                )
+                                style = if (livePeekInfo.isToolPeek) {
+                                    p.monoStyle.copy(
+                                        color = p.narrationInk,
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                } else {
+                                    p.uiBodyStyle.copy(
+                                        color = p.narrationInk,
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 18.sp
+                                    )
+                                }
                             )
                         }
                     }
@@ -6725,22 +6801,21 @@ private fun MessageTurnItem(
                     }
                 }
 
-                // Clean, Scannable Pill Telemetry for Assistant Messages (Unified with `o200k_base` Context Ring!)
+                // Clean, Scannable Pill Telemetry for Assistant Messages (Separates Output Prose Tokens from Tool Input Payloads!)
                 val m = activeVar.tokenMetrics
                 if (isAssistant && preferences.showTokenAndContextStats &&
                     (activeVar.content.isNotBlank() || activeVar.toolCalls.isNotEmpty() || m.outputTokens > 0)
                 ) {
-                    val turnContextTok = remember(
-                        activeVar.content,
-                        activeVar.thinkingSummary,
-                        activeVar.toolCalls,
-                        activeVar.attachments
-                    ) {
-                        O200kTokenizer.countMessageVariantTokens(
+                    val outProseTok = remember(activeVar.content, activeVar.attachments, m.outputTokens) {
+                        val counted = O200kTokenizer.countMessageVariantTokens(
                             role = MessageRole.ASSISTANT,
                             variant = activeVar,
                             includeReasoningAndTools = false
-                        ) + activeVar.toolCalls.sumOf { tc ->
+                        )
+                        if (activeVar.content.isNotBlank()) counted else m.outputTokens
+                    }
+                    val toolPayloadTok = remember(activeVar.toolCalls) {
+                        activeVar.toolCalls.sumOf { tc ->
                             6 + O200kTokenizer.countTokens(tc.name) +
                                 O200kTokenizer.countTokens(tc.argumentsJson) +
                                 O200kTokenizer.countTokens(tc.resultText)
@@ -6755,9 +6830,11 @@ private fun MessageTurnItem(
                     }
                     val costVal = if (m.estimatedCostUsd > 0.0) {
                         m.estimatedCostUsd
-                    } else if (outputPricePerM > 0.0) {
-                        ((turnContextTok + thinkTok) / 1_000_000.0) * outputPricePerM
-                    } else 0.0
+                    } else {
+                        val outCost = ((outProseTok + thinkTok) / 1_000_000.0) * outputPricePerM
+                        val toolInCost = (toolPayloadTok / 1_000_000.0) * inputPricePerM
+                        outCost + toolInCost
+                    }
 
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
@@ -6765,7 +6842,7 @@ private fun MessageTurnItem(
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Pill 1: Turn Context Tokens (+ Reasoning Tokens if present)
+                        // Pill 1: Output Prose Tokens (+ Reasoning Tokens + Tool Payload Tokens clearly separated!)
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(5.dp))
@@ -6778,7 +6855,7 @@ private fun MessageTurnItem(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 BasicText(
-                                    text = "${formatCompactTokens(turnContextTok)} tok",
+                                    text = "${formatCompactTokens(outProseTok)} tok",
                                     style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                                 if (thinkTok > 0) {
@@ -6794,6 +6871,21 @@ private fun MessageTurnItem(
                                     BasicText(
                                         text = formatCompactTokens(thinkTok),
                                         style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                                    )
+                                }
+                                if (toolPayloadTok > 0) {
+                                    BasicText(
+                                        text = "•",
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    KissVectorIcon(
+                                        icon = KissIcon.WRENCH,
+                                        tint = p.accentSecondary,
+                                        size = 10.dp
+                                    )
+                                    BasicText(
+                                        text = formatCompactTokens(toolPayloadTok),
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk, fontWeight = FontWeight.Medium)
                                     )
                                 }
                             }

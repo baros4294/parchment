@@ -147,6 +147,55 @@ internal fun formatCompactTimestamp(epochMs: Long): String {
     }
 }
 
+internal data class LiveAgentPeekInfo(
+    val isToolPeek: Boolean,
+    val title: String,
+    val body: String,
+    val toolName: String = "",
+    val isToolRunning: Boolean = false
+)
+
+/**
+ * Extracts either the active/latest Tool Peek (`isToolPeek = true`) or the latest Thought Peek (`isToolPeek = false`)
+ * when the user collapses the full Reasoning & Tool Timeline into Compact Peek mode while the agent is working.
+ */
+internal fun extractLatestAgentPeek(variant: MessageVariant): LiveAgentPeekInfo {
+    val tools = variant.toolCalls
+    val runningToolIdx = tools.indexOfLast { it.isRunning }
+    val showToolPeek = runningToolIdx >= 0 || (tools.isNotEmpty() && variant.trailingThinking.isBlank())
+    if (showToolPeek && tools.isNotEmpty()) {
+        val targetIdx = if (runningToolIdx >= 0) runningToolIdx else tools.lastIndex
+        val tc = tools[targetIdx]
+        val intent = io.parchment.ai.harness.WorkspaceHarness.describeToolCallIntent(tc.name, tc.argumentsJson)
+        val intentLines = intent.lines()
+        val headline = "Tool #${targetIdx + 1}/${tools.size} • ${intentLines.firstOrNull().orEmpty()}"
+        val bodyText = buildString {
+            if (intentLines.size > 1) {
+                appendLine(intentLines.drop(1).joinToString("\n"))
+            }
+            val cleanRes = tc.resultText.trim()
+            if (cleanRes.isNotEmpty() && cleanRes != "Running ${tc.name}…" && cleanRes != "Running shell command…") {
+                val tailLines = cleanRes.lines().takeLast(4).joinToString("\n")
+                append(tailLines)
+            }
+        }.trim()
+        return LiveAgentPeekInfo(
+            isToolPeek = true,
+            title = headline,
+            body = bodyText,
+            toolName = tc.name,
+            isToolRunning = tc.isRunning
+        )
+    }
+
+    val (thoughtTitle, thoughtBody) = extractLatestThoughtPeek(variant)
+    return LiveAgentPeekInfo(
+        isToolPeek = false,
+        title = thoughtTitle,
+        body = thoughtBody
+    )
+}
+
 /**
  * Extracts the latest single thought block (title + body) for the Compact Single-Thought Peek Window
  * when the user presses `Hide ▲` while the model is still actively reasoning.
@@ -347,8 +396,10 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
             val combinedSessions = mergedById.values
                 .sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
             val sanitized = sanitizeLoadedSnapshot(baseLoaded.copy(sessions = combinedSessions))
-            if (migratedLegacySessions || baseLoaded.sessions.isNotEmpty() || diskSessions.isEmpty()) {
-                // Ensure parchment-settings.json is persisted without embedded chats and all chats exist in chats/
+            if (migratedLegacySessions || baseLoaded.sessions.isNotEmpty()) {
+                // Only rewrite settings (to strip legacy embedded sessions) when migrating from legacy state!
+                saveSettingsOnlyToDisk(sanitized)
+            } else if (diskSessions.isEmpty()) {
                 saveSplitAppStateToDisk(sanitized)
             }
             return sanitized
