@@ -1348,37 +1348,85 @@ internal val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
 private val OPENAI_REASONING_SLUG_REGEX = Regex("""(^|[/:_-])o[134]([/:_-]|$)""")
 private val NON_ALNUM_SLUG_REGEX = Regex("[^a-z0-9]")
 
-/**
- * Maps any model ID (e.g. `gemini-4-argon`, `claude-sonnet-4`, `gpt-5`, `deepseek-r1`, `qwen/qwen3-235b`)
- * or provider name/URL to its canonical `@lobehub/icons-static-svg` icon slug.
- */
-fun resolveLabSlugForModelOrProvider(modelOrProvider: String, fallbackProtocolName: String = ""): String {
-    val s = "$modelOrProvider $fallbackProtocolName".lowercase()
+private fun matchKnownLabSlug(raw: String): String? {
+    val s = raw.trim().lowercase()
+    if (s.isEmpty()) return null
     return when {
-        s.contains("gemini") || s.contains("gemma") || s.contains("learnlm") -> "gemini"
+        s.contains("gemini") || s.contains("gemma") || s.contains("learnlm") ||
+            s.contains("deep-research") || s.contains("nano-banana") || s.contains("palm") -> "gemini"
         s.contains("claude") -> "claude"
         s.contains("anthropic") -> "anthropic"
-        s.contains("gpt") || s.contains("openai") || s.contains("chatgpt") || s.contains("codex") || s.contains("dall-e") ||
-            OPENAI_REASONING_SLUG_REGEX.containsMatchIn(s) -> "openai"
+        s.contains("doubao") || s.contains("seedream") || s.contains("seedance") ||
+            s.contains("seed-1") || s.contains("seed-2") || s.contains("seed-audio") ||
+            s.contains("bytedance-seed") || s.contains("dreamina") || s.contains("dola-seed") ||
+            s.contains("ui-tars") -> "doubao"
+        s.contains("bytedance") || s.contains("volcengine") || s.contains("byteplus") ||
+            s == "ark" || s.contains("bytedance_ark") -> "bytedance"
         s.contains("deepseek") -> "deepseek"
-        s.contains("grok") || s.contains("xai") || s.contains("x.ai") -> "grok"
-        s.contains("qwen") || s.contains("qwq") || s.contains("tongyi") -> "qwen"
+        s.contains("grok") || s.contains("xai") || s.contains("x.ai") || s.contains("x-ai") || s.contains("aurora") -> "grok"
+        s.contains("qwen") || s.contains("qwq") || s.contains("tongyi") || s.contains("alibaba") ||
+            s.contains("dashscope") || s.contains("wan-") || s.contains("wan2") || s.contains("wan3") ||
+            s.contains("wanx") || s.contains("happyhorse") -> "qwen"
         s.contains("mistral") || s.contains("mixtral") || s.contains("codestral") || s.contains("pixtral") || s.contains("ministral") -> "mistral"
         s.contains("llama") || s.contains("meta") -> "meta"
-        s.contains("doubao") || s.contains("seedream") || s.contains("seedance") -> "doubao"
-        s.contains("bytedance") || s.contains("ark") || s.contains("volcengine") -> "bytedance"
-        s.contains("glm") || s.contains("zhipu") || s.contains("chatglm") || s.contains("cogview") || s.contains("zai") -> "zhipu"
+        s.contains("glm") || s.contains("zhipu") || s.contains("chatglm") || s.contains("cogview") || s.contains("cogvideo") || s.contains("zai") -> "zhipu"
         s.contains("kimi") || s.contains("moonshot") -> "kimi"
-        s.contains("minimax") || s.contains("abab") -> "minimax"
+        s.contains("minimax") || s.contains("abab") || s.contains("hailuo") -> "minimax"
         s.contains("perplexity") || s.contains("sonar") -> "perplexity"
         s.contains("cohere") || s.contains("command-r") || s.contains("aya") -> "cohere"
+        s.contains("google") || s.contains("imagen") || s.contains("veo-") || s.contains("/veo") ||
+            s.startsWith("veo") || s.contains("veo2") || s.contains("veo3") -> "google"
+        s.contains("flux") || s.contains("black-forest-labs") -> "flux"
+        s.contains("kling") || s.contains("kwaivgi") || s.contains("kuaishou") -> "kling"
+        s.contains("runway") || s.contains("gen-3") || s.contains("gen-4") || s.contains("aleph-") -> "runway"
+        s.contains("luma") || s.contains("ray-2") || s.contains("ray2") -> "luma"
+        s.contains("recraft") -> "recraft"
+        s.contains("ideogram") -> "ideogram"
+        s.contains("midjourney") -> "midjourney"
+        s.contains("stable-diffusion") || s.contains("sdxl") || s.contains("sd3") || s.contains("stability") -> "stability"
+        s.contains("elevenlabs") -> "elevenlabs"
+        s.contains("gpt") || s.contains("openai") || s.contains("chatgpt") || s.contains("codex") ||
+            s.contains("dall-e") || s.contains("sora") || s.contains("whisper") ||
+            s.startsWith("tts-") || s.contains("/tts-") ||
+            OPENAI_REASONING_SLUG_REGEX.containsMatchIn(s) -> "openai"
         s.contains("openrouter") -> "openrouter"
-        s.contains("google") || s.contains("imagen") || s.contains("veo") -> "google"
-        else -> {
-            val prefix = modelOrProvider.lowercase().substringBefore('/').replace(NON_ALNUM_SLUG_REGEX, "")
-            prefix.ifEmpty { "gemini" }
+        else -> null
+    }
+}
+
+/**
+ * Maps any model ID (e.g. `gemini-4-argon`, `claude-sonnet-4`, `gpt-5`, `deepseek-r1`, `qwen/qwen3-235b`,
+ * `seedream-5-0-pro`, `seedance-2.5`, `deep-research-preview`) or provider name/URL to its canonical
+ * `@lobehub/icons-static-svg` icon slug.
+ *
+ * Strictly evaluates [modelOrProvider] first before consulting [fallbackProtocolName] so that non-OpenAI
+ * models (`seedream`, `seedance`, `deep-research`, `deepseek`, `qwen`, etc.) on an OpenAI-compatible
+ * proxy always display their authentic lab icon rather than the proxy protocol's icon.
+ */
+fun resolveLabSlugForModelOrProvider(modelOrProvider: String, fallbackProtocolName: String = ""): String {
+    // 1. Match the model ID or provider string directly first (without polluting with fallbackProtocolName)
+    matchKnownLabSlug(modelOrProvider)?.let { return it }
+
+    // 2. Consult live /models vendor discovery and the Multi-Source Model Registry
+    val discoveredVendor = io.parchment.ai.network.AiProviderEngine.getDiscoveredVendorForModel(modelOrProvider)
+    if (!discoveredVendor.isNullOrBlank()) {
+        matchKnownLabSlug(discoveredVendor)?.let { return it }
+    }
+
+    // 3. If modelOrProvider has an explicit `vendor/model` prefix, try the vendor prefix
+    if (modelOrProvider.contains('/')) {
+        val vendorPrefix = modelOrProvider.substringBefore('/').lowercase().replace(NON_ALNUM_SLUG_REGEX, "")
+        if (vendorPrefix.isNotEmpty()) {
+            matchKnownLabSlug(vendorPrefix)?.let { return it }
+            return vendorPrefix
         }
     }
+
+    // 4. Only fall back to fallbackProtocolName when modelOrProvider itself did not match any known lab
+    matchKnownLabSlug(fallbackProtocolName)?.let { return it }
+
+    val fallbackPrefix = modelOrProvider.lowercase().substringBefore('/').replace(NON_ALNUM_SLUG_REGEX, "")
+    return fallbackPrefix.ifEmpty { "gemini" }
 }
 
 private val SVG_PATH_D_REGEX = Regex("""<path[^>]*\bd=["']([^"']+)["']""")

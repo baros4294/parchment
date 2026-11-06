@@ -579,7 +579,7 @@ fun ParchmentApp(
     LaunchedEffect(activeProfile.id, currentEffectiveModel) {
         if (currentEffectiveModel.isNotEmpty()) {
             val savedCustom = activeProfile.customModelSpecs[currentEffectiveModel]
-            if (savedCustom != null) {
+            if (savedCustom != null && savedCustom.outputModalities.isNotEmpty()) {
                 updateProfileById(activeProfile.id) {
                     it.copy(
                         contextWindowTokens = savedCustom.contextWindowTokens,
@@ -592,16 +592,34 @@ fun ParchmentApp(
                     )
                 }
             } else {
-                ModelsDevClient.fetchModelSpec(currentEffectiveModel).onSuccess { spec ->
+                if (savedCustom != null) {
                     updateProfileById(activeProfile.id) {
                         it.copy(
-                            contextWindowTokens = spec.contextWindowTokens,
-                            inputPricePerM = spec.inputPricePerM,
-                            outputPricePerM = spec.outputPricePerM,
-                            cacheReadPricePerM = spec.cacheReadPricePerM,
-                            cacheWritePricePerM = spec.cacheWritePricePerM,
-                            reasoningPricePerM = spec.reasoningPricePerM,
-                            customModelSpecs = it.customModelSpecs + (currentEffectiveModel to spec)
+                            contextWindowTokens = savedCustom.contextWindowTokens,
+                            maxOutputTokens = savedCustom.maxOutputTokens,
+                            inputPricePerM = savedCustom.inputPricePerM,
+                            outputPricePerM = savedCustom.outputPricePerM,
+                            cacheReadPricePerM = savedCustom.cacheReadPricePerM,
+                            cacheWritePricePerM = savedCustom.cacheWritePricePerM,
+                            reasoningPricePerM = savedCustom.reasoningPricePerM
+                        )
+                    }
+                }
+                ModelsDevClient.fetchModelSpec(currentEffectiveModel).onSuccess { spec ->
+                    updateProfileById(activeProfile.id) {
+                        val mergedSpec = if (savedCustom != null) {
+                            ModelsDevClient.mergeModelSpecs(savedCustom, spec)
+                        } else {
+                            spec
+                        }
+                        it.copy(
+                            contextWindowTokens = mergedSpec.contextWindowTokens,
+                            inputPricePerM = mergedSpec.inputPricePerM,
+                            outputPricePerM = mergedSpec.outputPricePerM,
+                            cacheReadPricePerM = mergedSpec.cacheReadPricePerM,
+                            cacheWritePricePerM = mergedSpec.cacheWritePricePerM,
+                            reasoningPricePerM = mergedSpec.reasoningPricePerM,
+                            customModelSpecs = it.customModelSpecs + (currentEffectiveModel to mergedSpec)
                         )
                     }
                 }
@@ -4292,12 +4310,177 @@ private fun ManuscriptViewport(
                 item { Spacer(Modifier.height(16.dp)) }
             }
 
-            // High-Contrast Frosted-Glass Opaque `↓ Latest` Pill when scrolled up (zero background text bleed-through!)
-            Row(
+            val activeEffectiveModelId = activeSession.modelOverride
+                .ifBlank { activeProfile.defaultModel }
+            val activeModalityProfile = remember(
+                activeEffectiveModelId,
+                activeProfile.endpointPathOverride,
+                activeProfile.customModelSpecs
+            ) {
+                AiProviderEngine.resolveModelModalityProfile(activeProfile, activeEffectiveModelId)
+            }
+            val showFloatingAudioPill = isLiveVoiceMode ||
+                isVoiceListening ||
+                activeModalityProfile.isLiveRealtimeAudio
+
+            // Unified Bottom-Center Floating Stack:
+            // Stacked vertically with `spacedBy(8.dp)` so the Floating Live Audio Pill NEVER overlaps the `↓ Latest` Pill!
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 12.dp)
+                    .padding(bottom = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                AnimatedVisibility(
+                    visible = showFloatingAudioPill,
+                    enter = slideInVertically(
+                        initialOffsetY = { it / 2 },
+                        animationSpec = spring(stiffness = 580f, dampingRatio = Spring.DampingRatioNoBouncy)
+                    ) + scaleIn(
+                        initialScale = 0.90f,
+                        animationSpec = spring(stiffness = 580f, dampingRatio = 0.80f)
+                    ) + fadeIn(tween(110)),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it / 2 },
+                        animationSpec = tween(110)
+                    ) + scaleOut(targetScale = 0.92f, animationSpec = tween(110)) + fadeOut(tween(100))
+                ) {
+                    val audioPillShape = RoundedCornerShape(999.dp)
+                    Box(
+                        modifier = Modifier
+                            .clip(audioPillShape)
+                            .background(p.canvasBg.copy(alpha = 0.96f))
+                            .border(1.2.dp, p.accent, audioPillShape)
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isVoiceListening || isStreaming || isLiveVoiceMode) {
+                                KissStreamingPulseDot(color = p.accent)
+                            } else {
+                                KissVectorIcon(icon = KissIcon.VOLUME_ON, tint = p.accent, size = 13.dp)
+                            }
+                            val liveStatusLabel = when {
+                                isVoiceListening -> "Listening…"
+                                isStreaming -> "Live Audio Active…"
+                                isLiveVoiceMode -> "Live Audio: ON"
+                                else -> "Live Audio Ready"
+                            }
+                            BasicText(
+                                text = liveStatusLabel,
+                                style = p.uiLabelStyle.copy(
+                                    color = p.primaryInk,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.5.sp
+                                )
+                            )
+                            // Mic listen / pause toggle
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (isVoiceListening) p.accent else p.sheetBg)
+                                    .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                    .kissClickable { onTriggerVoiceInput() }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    KissVectorIcon(
+                                        icon = KissIcon.MIC,
+                                        tint = if (isVoiceListening) Color(0xFFFAF6EB) else p.primaryInk,
+                                        size = 11.5.dp
+                                    )
+                                    BasicText(
+                                        text = if (isVoiceListening) "Pause Mic" else "Speak",
+                                        style = p.uiLabelStyle.copy(
+                                            color = if (isVoiceListening) Color(0xFFFAF6EB) else p.primaryInk,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+                            }
+                            // Replay / Continue latest assistant audio
+                            val latestAssistantText = activeSession.messages
+                                .lastOrNull { it.role == MessageRole.ASSISTANT }
+                                ?.activeVariant?.content.orEmpty()
+                            if (latestAssistantText.isNotBlank()) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(p.sheetBg)
+                                        .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                        .kissClickable {
+                                            PlatformBridge.speakTextAloud(latestAssistantText)
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        KissVectorIcon(icon = KissIcon.PLAY, tint = p.accent, size = 11.dp)
+                                        BasicText(
+                                            text = "Continue",
+                                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Medium, fontSize = 11.sp)
+                                        )
+                                    }
+                                }
+                            }
+                            // Stop audio output / stream
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(p.sheetBg)
+                                    .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                    .kissClickable {
+                                        PlatformBridge.stopSpeakingAloud()
+                                        if (isStreaming) onStopStream()
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.STOP, tint = p.danger, size = 11.dp)
+                                    BasicText(
+                                        text = "Stop",
+                                        style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                                    )
+                                }
+                            }
+                            // Toggle Live Voice session on/off
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (isLiveVoiceMode) p.accent.copy(alpha = 0.16f) else p.sheetBg)
+                                    .border(0.8.dp, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(999.dp))
+                                    .kissClickable {
+                                        if (isLiveVoiceMode) PlatformBridge.stopSpeakingAloud()
+                                        onToggleLiveVoiceMode()
+                                    }
+                                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                            ) {
+                                BasicText(
+                                    text = if (isLiveVoiceMode) "End Live" else "Start Live",
+                                    style = p.uiLabelStyle.copy(
+                                        color = if (isLiveVoiceMode) p.accent else p.mutedInk,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // High-Contrast Frosted-Glass Opaque `↓ Latest` Pill when scrolled up (zero background text bleed-through!)
                 AnimatedVisibility(
                     visible = isScrolledUpFromBottom,
                     enter = slideInVertically(
@@ -5568,11 +5751,29 @@ private fun ManuscriptViewport(
                     if (hasActiveTools) "⚙ Tools •" else "⚙ Tools"
                 }
 
+                val activeComposerModelId = activeSession.modelOverride
+                    .ifBlank { activeProfile.defaultModel }
+                val activeModalityProfile = remember(
+                    activeComposerModelId,
+                    activeProfile.endpointPathOverride,
+                    activeProfile.customModelSpecs
+                ) {
+                    AiProviderEngine.resolveModelModalityProfile(activeProfile, activeComposerModelId)
+                }
+                val imageAspectPresets = listOf("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9")
+                val videoAspectPresets = listOf("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
+                val imageResolutionPresets = listOf("1K", "2K", "4K")
+                val videoResolutionPresets = listOf("720p", "1080p", "4K")
+                val videoDurationPresets = listOf(5, 8, 10, 15)
+                val audioVoicePresets = listOf("alloy", "nova", "echo", "onyx", "shimmer", "coral", "sage", "Puck", "Kore", "Fenrir", "Aoede")
+                val audioSpeedPresets = listOf(1.0, 1.25, 1.5, 0.85)
+
                 val leftChipsComposable: @Composable (Modifier) -> Unit = { rowMod ->
-                    Row(
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         modifier = rowMod,
                         horizontalArrangement = Arrangement.spacedBy(if (win.isCompact) 3.dp else 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SepiaChip(
                             label = "📎",
@@ -5584,20 +5785,114 @@ private fun ManuscriptViewport(
                             selected = isVoiceListening || isLiveVoiceMode,
                             onClick = onTriggerVoiceInput
                         )
-                        SepiaChip(
-                            label = thinkingLabel,
-                            selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
-                            onClick = {
-                                val cur = activeProfile.thinkingEffort.lowercase()
-                                val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
-                                val next = if (idx >= 0) {
-                                    THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
-                                } else {
-                                    "medium"
+                        if (activeModalityProfile.isAnyImageModel) {
+                            val currentRatio = activeProfile.mediaAspectRatio.ifBlank { "1:1" }
+                            val currentRes = activeProfile.mediaResolution.ifBlank { "1K" }
+                            SepiaChip(
+                                label = "🖼 $currentRatio",
+                                selected = true,
+                                onClick = {
+                                    val idx = imageAspectPresets.indexOf(currentRatio)
+                                    val next = imageAspectPresets[(idx + 1) % imageAspectPresets.size]
+                                    onUpdateProfile { it.copy(mediaAspectRatio = next) }
                                 }
-                                onUpdateProfile { it.copy(thinkingEffort = next) }
+                            )
+                            SepiaChip(
+                                label = currentRes,
+                                selected = currentRes in listOf("2K", "4K"),
+                                onClick = {
+                                    val idx = imageResolutionPresets.indexOf(currentRes)
+                                    val next = imageResolutionPresets[(idx + 1) % imageResolutionPresets.size]
+                                    onUpdateProfile { it.copy(mediaResolution = next) }
+                                }
+                            )
+                        }
+                        if (activeModalityProfile.isAnyVideoModel) {
+                            val currentRatio = activeProfile.mediaAspectRatio.ifBlank { "16:9" }
+                            val currentRes = when (activeProfile.mediaResolution) {
+                                "720p", "1080p", "4K" -> activeProfile.mediaResolution
+                                "2K" -> "1080p"
+                                else -> "720p"
                             }
-                        )
+                            val currentDur = activeProfile.videoDurationSeconds.coerceIn(4, 15)
+                            SepiaChip(
+                                label = "🎬 $currentRatio",
+                                selected = true,
+                                onClick = {
+                                    val idx = videoAspectPresets.indexOf(currentRatio)
+                                    val next = videoAspectPresets[(idx + 1) % videoAspectPresets.size]
+                                    onUpdateProfile { it.copy(mediaAspectRatio = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = currentRes,
+                                selected = currentRes in listOf("1080p", "4K"),
+                                onClick = {
+                                    val idx = videoResolutionPresets.indexOf(currentRes)
+                                    val next = videoResolutionPresets[(idx + 1) % videoResolutionPresets.size]
+                                    onUpdateProfile { it.copy(mediaResolution = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = "${currentDur}s",
+                                selected = currentDur > 5,
+                                onClick = {
+                                    val idx = videoDurationPresets.indexOf(currentDur)
+                                    val next = videoDurationPresets[(idx + 1) % videoDurationPresets.size]
+                                    onUpdateProfile { it.copy(videoDurationSeconds = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = if (activeProfile.videoGenerateAudio) "🔊 Audio" else "🔇 Mute",
+                                selected = activeProfile.videoGenerateAudio,
+                                onClick = {
+                                    onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) }
+                                }
+                            )
+                        }
+                        if (activeModalityProfile.isAnyAudioModel) {
+                            val currentVoice = activeProfile.audioVoice.ifBlank { "alloy" }
+                            SepiaChip(
+                                label = "🗣 $currentVoice",
+                                selected = true,
+                                onClick = {
+                                    val idx = audioVoicePresets.indexOfFirst { it.equals(currentVoice, ignoreCase = true) }
+                                    val next = audioVoicePresets[(idx + 1) % audioVoicePresets.size]
+                                    onUpdateProfile { it.copy(audioVoice = next) }
+                                }
+                            )
+                            if (activeModalityProfile.isDedicatedAudioTts) {
+                                val currentSpeed = activeProfile.audioSpeed
+                                SepiaChip(
+                                    label = "${currentSpeed}x",
+                                    selected = currentSpeed != 1.0,
+                                    onClick = {
+                                        val idx = audioSpeedPresets.indexOf(currentSpeed)
+                                        val next = audioSpeedPresets[(idx + 1) % audioSpeedPresets.size]
+                                        onUpdateProfile { it.copy(audioSpeed = next) }
+                                    }
+                                )
+                            }
+                        }
+                        if (!activeModalityProfile.isDedicatedImage &&
+                            !activeModalityProfile.isDedicatedVideo &&
+                            !activeModalityProfile.isDedicatedAudioTts
+                        ) {
+                            SepiaChip(
+                                label = thinkingLabel,
+                                selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
+                                onClick = {
+                                    val cur = activeProfile.thinkingEffort.lowercase()
+                                    val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
+                                    val next = if (idx >= 0) {
+                                        THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
+                                    } else {
+                                        "medium"
+                                    }
+                                    onUpdateProfile { it.copy(thinkingEffort = next) }
+                                }
+                            )
+                        }
                         SepiaChip(
                             label = toolsChipLabel,
                             selected = showComposerToolsDrawer || hasActiveTools,
@@ -6879,6 +7174,40 @@ private fun MessageTurnItem(
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
                                             text = "▶ Play Video (.MP4)",
+                                            compact = true,
+                                            style = SepiaButtonStyle.PRIMARY,
+                                            onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        MediaKind.AUDIO -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(p.cardBg)
+                                    .border(0.85.dp, p.accentSecondary, RoundedCornerShape(10.dp))
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    KissVectorIcon(icon = KissIcon.AUDIO, tint = p.accent, size = 15.dp)
+                                    BasicText(
+                                        text = "Generated Audio (${media.mimeType})",
+                                        style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
+                                    if (playTarget.isNotBlank()) {
+                                        SepiaButton(
+                                            text = "▶ Play Audio (.MP3)",
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { PlatformBridge.openOrPlayMedia(playTarget) }

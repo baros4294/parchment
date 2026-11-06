@@ -692,7 +692,7 @@ internal fun decodeChatSessionsFromPickedFile(
  * Remaining historical chats are hydrated as lightweight stubs in the background on `Dispatchers.Default`.
  */
 internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
-    val rawSettings = PlatformBridge.loadAppStateJson()
+    val rawSettings = PlatformBridge.loadAppStateJson()?.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
     if (!rawSettings.isNullOrBlank()) {
         val baseLoaded: AppStateSnapshot? = runCatching {
             compactStateJson.decodeFromString<AppStateSnapshot>(rawSettings)
@@ -756,7 +756,7 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
 }
 
 internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
-    val rawSettings = PlatformBridge.loadAppStateJson()
+    val rawSettings = PlatformBridge.loadAppStateJson()?.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
     val rawChatFiles = PlatformBridge.loadAllChatSessionJsons()
     val diskSessions = rawChatFiles.mapNotNull { rawChat ->
         runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull()
@@ -882,7 +882,8 @@ internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot 
 
 internal fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
     val fallback = createDefaultAppState()
-    val root = compactStateJson.parseToJsonElement(raw) as? JsonObject ?: return fallback
+    val migratedRaw = raw.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
+    val root = compactStateJson.parseToJsonElement(migratedRaw) as? JsonObject ?: return fallback
 
     fun <T> decodeListItems(key: String, itemDeserializer: kotlinx.serialization.DeserializationStrategy<T>): List<T> {
         val arr = root[key] as? JsonArray ?: return emptyList()
@@ -956,12 +957,6 @@ internal fun createDefaultAppState(): AppStateSnapshot {
         name = "Anthropic",
         protocol = ProviderProtocol.ANTHROPIC_MESSAGES
     )
-    val byteDanceProfile = ProviderProfile(
-        id = "prof-bytedance-ark",
-        name = "ByteDance Ark",
-        protocol = ProviderProtocol.BYTEDANCE_ARK,
-        enableImageGeneration = true
-    )
 
     val defaultAssistant = AssistantAgent(
         id = "asst-default",
@@ -980,7 +975,7 @@ internal fun createDefaultAppState(): AppStateSnapshot {
     )
 
     return AppStateSnapshot(
-        profiles = listOf(geminiProfile, openAiProfile, anthropicProfile, byteDanceProfile),
+        profiles = listOf(geminiProfile, openAiProfile, anthropicProfile),
         activeProfileId = geminiProfile.id,
         assistants = listOf(defaultAssistant),
         activeAssistantId = defaultAssistant.id,

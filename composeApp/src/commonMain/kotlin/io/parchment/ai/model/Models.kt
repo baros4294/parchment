@@ -6,12 +6,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String, val defaultEndpointPath: String) {
     GEMINI_INTERACTIONS(
-        displayName = "Google Gemini Interactions API",
+        displayName = "Google Gemini API",
         defaultBaseUrl = "https://generativelanguage.googleapis.com",
         defaultEndpointPath = "/v1beta/interactions"
     ),
     OPENAI_RESPONSES(
-        displayName = "OpenAI Responses & GPT Image API",
+        displayName = "OpenAI / Universal Compatible API",
         defaultBaseUrl = "https://api.openai.com",
         defaultEndpointPath = "/v1/responses"
     ),
@@ -19,18 +19,14 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
         displayName = "Anthropic Messages API",
         defaultBaseUrl = "https://api.anthropic.com",
         defaultEndpointPath = "/v1/messages"
-    ),
-    BYTEDANCE_ARK(
-        displayName = "ByteDance Seedream / Seedance / Doubao Ark",
-        defaultBaseUrl = "https://ark.ap-southeast.bytepluses.com",
-        defaultEndpointPath = "/api/v3/images/generations"
     )
 }
 
 @Serializable
 enum class MediaKind {
     IMAGE,
-    VIDEO
+    VIDEO,
+    AUDIO
 }
 
 @Immutable
@@ -65,7 +61,8 @@ data class ModelPricingSpec(
     val reasoningPricePerM: Double = 0.0,
     val contextWindowTokens: Int = 128000,
     val maxOutputTokens: Int? = null,
-    val outputModalities: List<String> = emptyList()
+    val outputModalities: List<String> = emptyList(),
+    val inputModalities: List<String> = emptyList()
 )
 
 @Immutable
@@ -77,6 +74,7 @@ data class ProviderProfile(
     val enabled: Boolean = true,
     val baseUrl: String = protocol.defaultBaseUrl,
     val endpointPathOverride: String = "",
+    val useExactEndpointUrl: Boolean = false,
     val apiKey: String = "",
     val authHeaderMode: AuthHeaderMode = AuthHeaderMode.NATIVE,
     val customHeadersRaw: String = "",
@@ -97,6 +95,8 @@ data class ProviderProfile(
     val mediaResolution: String = "1K",
     val videoDurationSeconds: Int = 5,
     val videoGenerateAudio: Boolean = true,
+    val audioVoice: String = "alloy",
+    val audioSpeed: Double = 1.0,
     val thinkingEffort: String = "high",
     // Nullable numeric parameters: null = omitted/stripped from outgoing JSON; 0 = unlimited where applicable
     val thinkingBudgetTokens: Int? = null,

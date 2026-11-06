@@ -1,24 +1,7 @@
-# Prioritized Engineering, Protocol Hardening & QA Plan (`PARCHMENT_TODO.md`)
-
-## Priority 1 — Multi-Protocol Spec Compliance & Self-Healing Cascades (`AiProviderEngine.kt`)
-- [x] **1.1 OpenAI `/v1/chat/completions` `max_completion_tokens` vs. `max_tokens` Bidirectional Self-Healing**:
-  - Send `max_completion_tokens` when reasoning is active (or after HTTP 400 rejection of `max_tokens`), and self-heal bidirectionally between `max_completion_tokens`, `max_tokens`, and omitting the cap when rejected by reasoning models or legacy proxies.
-- [x] **1.2 Anthropic `/v1/messages` 3-Stage Bidirectional Thinking Cascade (`adaptive` ↔ `enabled` + `budget_tokens` → `omit`) & Empty-Display Signature Replay**:
-  - When `thinkingBudgetTokens >= 1024` is rejected by newer Claude models (`HTTP 400: budget_tokens / enabled not supported`), step over to `thinking: {"type": "adaptive", "display": "summarized"}` before falling back to `"omit"`.
-  - When `adaptive` is rejected by older models, step over to `enabled` + `budget_tokens` before `"omit"`.
-  - Preserve `thinking` blocks on single-batch replay even when `thinking` text is `""` (omitted display mode) as long as `signature` is valid.
-- [x] **1.3 Google Gemini `/v1beta/interactions` Per-Step-Index Signature Isolation & `requires_action` Status Support**:
-  - Track `stepSigByIndex: MutableMap<Int, StringBuilder>` per SSE `index` so concurrent or sequential server-side `google_search` steps and `thought` steps never share a signature buffer.
-  - Handle `"interaction.requires_action"` SSE events and `"requires_action"` polling status so function calls returned under `requires_action` execute seamlessly.
-- [x] **1.4 ByteDance Seedance `/api/v3/contents/generations/tasks` Frame Roles, Terminal States & Usage Telemetry**:
-  - Assign official `role` fields (`"first_frame"`, `"last_frame"`, `"reference_image"`) on `image_url` items in `content`.
-  - Handle `"expired"` terminal task status and report `usage.completion_tokens` / `usage.total_tokens` on task completion.
-
-## Priority 2 — Automatic On-Load Session Signature Self-Repair & Compaction Hardening (`ParchmentStatePersistence.kt`, `O200kTokenizer.kt`)
-- [x] **2.1 Automatic On-Load / On-Save Session Signature Repair (`stripRedundantAttachmentBase64`)**:
-  - Automatically detect and repair any historically glued multi-segment Base64 `thinkingSignature` or `ToolCallRecord.thoughtSignature` (`...=...==`) whenever a session is loaded, hydrated, or saved to disk, permanently healing existing corrupted chats and reclaiming megabytes of RAM/disk.
-
-## Priority 3 — Comprehensive Regression Verification & Git Lock (`ParchmentProtocolAndHarnessTest.kt`)
-- [x] **3.1 Lock Regression Tests & Verify Desktop + Android Builds**:
-  - Add unit tests verifying on-load session signature self-repair, `max_completion_tokens` / `adaptive` cascades, and Seedance/Interactions protocol edge cases.
-  - Run `:composeApp:desktopTest` and `:composeApp:compileDebugKotlinAndroid` with `--no-daemon`, update `PARCHMENT_TODO.md` checkboxes, commit, and push to `origin/main`.
+# Goal: Execute & Lock: Multi-Source Model Registry, KISS Big Three Protocols + Tail-Free Custom URLs, Universal Background Auto-Routing (Text/Image/Video/Audio), Accurate Model Lab Icons, Context-Aware Composer Media Controls, and Non-Overlapping Floating Live Audio Pill
+- [x] (1) Upgrade ModelsDevClient.kt into a Multi-Source Unified Model Registry (OpenRouter multimodal+video, Vercel AI Gateway, AIMLAPI, LiteLLM + models.dev fallback) with modality-preserving merge, vendor slug resolution, and canonical fuzzy ID indexing
+- [x] (2) Consolidate ProviderProtocol to the Big Three (remove BYTEDANCE_ARK with seamless persistence migration) and add audioVoice / useExactEndpointUrl fields in Models.kt & ParchmentStatePersistence.kt
+- [x] (3) Implement KISS tail-free URL resolution (resolveSmartEndpointUrl), 3-tier universal modality classifier (ModelModalityProfile), and universal background auto-routing for Image, Video, Audio/TTS, and Multimodal models in AiProviderEngine.kt
+- [x] (4) Fix resolveLabSlugForModelOrProvider in ParchmentIcons.kt so modelOrProvider is matched first before fallbackProtocolName, with expanded model family slugs and registry vendor lookup + add vector icons for aspect ratio / resolution / duration / audio if needed
+- [x] (5) Implement context-aware Composer Bar media controls (Image: Aspect Ratio + Resolution; Video: Aspect Ratio + Resolution + Duration + Audio; Audio/Live: Voice Preset + Live Audio) and non-overlapping Floating Live Audio/TTS Pill above the 'Latest' pill in ParchmentApp.kt & update ParchmentSettingsPages.kt
+- [/] (6) Bump version to 2.0.52, add comprehensive unit tests in ParchmentProtocolAndHarnessTest.kt, run Gradle test & compile verification (--no-daemon), update PARCHMENT_MEMORY.md, and commit & push to origin/main (lock)

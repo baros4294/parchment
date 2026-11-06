@@ -31,7 +31,12 @@
    - Keep inactive chats dehydrated as lightweight stubs (`dehydrateChatSessionToCompactStub` / `hydrateSessionFromDiskIfNeeded`) and strip duplicate in-memory `PromptAttachment.base64Data` when `localFilePath` exists on disk.
    - Reuse `sharedScratchIconPath` in `KissVectorIcon`, cache parsed `Path`s in `ModelLabSvgIcon`, and share `AiProviderEngine.httpClient`.
 
-## 3. Core Architecture Matrix (`v2.0.39+`)
+## 3. Core Architecture Matrix (`v2.0.52+`)
+- **Multi-Source Unified Model Registry & Universal Background Auto-Router (`ModelsDevClient.kt`, `AiProviderEngine.kt`, `ParchmentIcons.kt`)**:
+  - Concurrently fetches and merges **OpenRouter** (`/v1/models?output_modalities=all` + `/v1/videos/models`), **Vercel AI Gateway** (`/v1/models`), **AIMLAPI** (`/models`), and **LiteLLM** (`model_prices_and_context_window.json`) with canonical fuzzy slug normalization (`5-0` ↔ `5.0`, stripping wrapper prefixes and date snapshots) and modality-preserving `mergeModelSpecs`.
+  - Consolidates `ProviderProtocol` to the **Big Three** (`GEMINI_INTERACTIONS`, `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES`) with automatic persistence migration for legacy `BYTEDANCE_ARK` profiles and tail-free URL resolution (`resolveSmartEndpointUrl` supporting `useExactEndpointUrl`, trailing `#`, concrete endpoint URLs, and `/v1`/`/v2`/`/v3`/`/v4`/`/v1beta` roots).
+  - 3-tier `resolveModelModalityProfile` automatically routes text/reasoning, dedicated/interleaved image (`seedream`, `flux`, `imagen`, `gpt-image`), video (`seedance`, `veo`, `sora`, `kling`, `wan`, `hailuo` across `/contents/generations/tasks`, `/videos/generations`, `/video/generations`, `/videos`), and audio/TTS (`/audio/speech`) models in the background on any OpenAI-compatible proxy, and surfaces context-aware Aspect Ratio, Resolution, Duration, Audio, and Voice chips in the composer bar plus a non-overlapping Floating Live Audio Pill above the `Latest` scroll pill.
+  - `resolveLabSlugForModelOrProvider` strictly evaluates `modelOrProvider` and registry/discovered vendor slugs before `fallbackProtocolName` so models on OpenAI proxies always display their true creator lab icon.
 - **Foolproof Multi-Protocol Signature & Tool-Batch Engine (`AiProviderEngine.kt`, `O200kTokenizer.kt`)**:
   - `sanitizeGeminiThoughtSignature` splits legacy glued Base64 signatures (`...=...==`) into valid protobuf segments and strips server-side `08 02` (`google_search`) signatures from `function_call` steps.
   - `appendSignatureChunkSafe` prevents concatenating distinct complete Base64 signatures across rounds or server-side tool invocations.

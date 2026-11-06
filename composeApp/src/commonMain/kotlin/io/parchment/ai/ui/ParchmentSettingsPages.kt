@@ -1820,6 +1820,12 @@ private fun ProvidersSubpage(
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    SepiaToggleRow(
+                        title = "Use Exact Base URL (No Auto-Appended Path Tail)",
+                        subtitle = "Send requests directly to Base URL without appending protocol path tails.",
+                        checked = activeProfile.useExactEndpointUrl,
+                        onCheckedChange = { exact -> onUpdateProfileById(activeProfile.id) { it.copy(useExactEndpointUrl = exact) } }
+                    )
                 }
 
                 Spacer(Modifier.height(4.dp))
@@ -2188,6 +2194,12 @@ private fun ProviderProtocolSubpage(
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                SepiaToggleRow(
+                    title = "Use Exact Base URL (No Auto-Appended Path Tail)",
+                    subtitle = "Send requests directly to Base URL without appending protocol path tails.",
+                    checked = profile.useExactEndpointUrl,
+                    onCheckedChange = { exact -> onUpdateProfile { it.copy(useExactEndpointUrl = exact) } }
+                )
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     AuthHeaderMode.entries.forEach { mode ->
@@ -2404,7 +2416,7 @@ private fun ModelConfigSubpage(
         mutableStateOf((existingSpec?.reasoningPricePerM ?: profile.reasoningPricePerM).toString())
     }
 
-    fun saveSpec() {
+    fun saveSpec(syncedSpec: ModelPricingSpec? = null) {
         val ctx = ctxText.trim().toIntOrNull() ?: 0 // 0 = Unlimited!
         val maxOut = maxOutText.trim().toIntOrNull() // null = Stripped!
         val inP = inPriceText.trim().toDoubleOrNull() ?: 0.0
@@ -2414,12 +2426,20 @@ private fun ModelConfigSubpage(
 
         val spec = ModelPricingSpec(
             modelId = modelId,
+            displayName = syncedSpec?.displayName ?: existingSpec?.displayName.orEmpty(),
+            providerName = syncedSpec?.providerName ?: existingSpec?.providerName.orEmpty(),
             inputPricePerM = inP,
             outputPricePerM = outP,
             cacheReadPricePerM = cacheP,
             reasoningPricePerM = thinkP,
             contextWindowTokens = ctx,
-            maxOutputTokens = maxOut
+            maxOutputTokens = maxOut,
+            outputModalities = syncedSpec?.outputModalities
+                ?: existingSpec?.outputModalities
+                ?: ModelsDevClient.getCachedOutputModalities(modelId),
+            inputModalities = syncedSpec?.inputModalities
+                ?: existingSpec?.inputModalities
+                ?: ModelsDevClient.getCachedInputModalities(modelId)
         )
         onUpdateProfile { prof ->
             prof.copy(
@@ -2461,7 +2481,7 @@ private fun ModelConfigSubpage(
             title = "Context Window & Output Token Limits",
             headerAction = {
                 SepiaButton(
-                    text = "🌐 Sync from models.dev",
+                    text = "Sync from Model Registry",
                     compact = true,
                     style = SepiaButtonStyle.SECONDARY,
                     onClick = {
@@ -2474,10 +2494,10 @@ private fun ModelConfigSubpage(
                                     outPriceText = spec.outputPricePerM.toString()
                                     cachePriceText = spec.cacheReadPricePerM.toString()
                                     thinkPriceText = spec.reasoningPricePerM.toString()
-                                    saveSpec()
-                                    onNotify("Synced $modelId specs from models.dev.")
+                                    saveSpec(spec)
+                                    onNotify("Synced $modelId specs from unified model registry.")
                                 },
-                                onFailure = { err -> onNotify("models.dev lookup: ${err.message}") }
+                                onFailure = { err -> onNotify("Model registry lookup: ${err.message}") }
                             )
                         }
                     }

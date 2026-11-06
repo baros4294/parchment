@@ -1646,4 +1646,120 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(cleanFnSigB64, healedAsstVar.thinkingSignature, "On-load/on-save sanitizer must repair glued variant thinkingSignature")
         assertEquals(cleanFnSigB64, healedAsstVar.toolCalls[0].thoughtSignature, "On-load/on-save sanitizer must repair glued toolCall thoughtSignature")
     }
+
+    @Test
+    fun testMultiSourceRegistryUniversalAutoRoutingAndLabIcons() {
+        // 1. Verify Big Three Protocol Consolidation & Legacy BYTEDANCE_ARK Migration
+        assertEquals(
+            listOf(
+                ProviderProtocol.GEMINI_INTERACTIONS,
+                ProviderProtocol.OPENAI_RESPONSES,
+                ProviderProtocol.ANTHROPIC_MESSAGES
+            ),
+            ProviderProtocol.entries.toList()
+        )
+        val legacyJson = """{"profiles":[{"id":"p-bd","name":"Ark","protocol":"BYTEDANCE_ARK","baseUrl":"https://ark.ap-southeast.bytepluses.com/api/v3"}]}"""
+        val migratedState = io.parchment.ai.ui.recoverAppStateFromPartialJson(legacyJson)
+        val migratedProfile = migratedState.profiles.first { it.id == "p-bd" }
+        assertEquals(ProviderProtocol.OPENAI_RESPONSES, migratedProfile.protocol)
+        assertEquals("https://ark.ap-southeast.bytepluses.com/api/v3", migratedProfile.baseUrl)
+
+        // 2. Verify KISS Tail-Free & Version-Agnostic Smart Endpoint URL Resolution
+        val defaultOpenAi = ProviderProfile(id = "p1", name = "OpenAI", protocol = ProviderProtocol.OPENAI_RESPONSES, baseUrl = "https://api.openai.com")
+        assertEquals("https://api.openai.com/v1/responses", AiProviderEngine.resolveSmartEndpointUrl(defaultOpenAi, "/v1/responses", "/responses"))
+
+        val arkBaseProfile = defaultOpenAi.copy(baseUrl = "https://ark.ap-southeast.bytepluses.com/api/v3")
+        assertEquals("https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions", AiProviderEngine.resolveSmartEndpointUrl(arkBaseProfile, "/v1/chat/completions", "/chat/completions"))
+
+        val zhipuV4Profile = defaultOpenAi.copy(baseUrl = "https://open.bigmodel.cn/api/paas/v4")
+        assertEquals("https://open.bigmodel.cn/api/paas/v4/chat/completions", AiProviderEngine.resolveSmartEndpointUrl(zhipuV4Profile, "/v1/chat/completions", "/chat/completions"))
+
+        val exactToggleProfile = defaultOpenAi.copy(baseUrl = "https://future-api.example.com/custom/v5/run", useExactEndpointUrl = true)
+        assertEquals("https://future-api.example.com/custom/v5/run", AiProviderEngine.resolveSmartEndpointUrl(exactToggleProfile, "/v1/responses", "/responses"))
+
+        val hashTailFreeProfile = defaultOpenAi.copy(baseUrl = "https://my-proxy.example.com/custom-endpoint#")
+        assertEquals("https://my-proxy.example.com/custom-endpoint", AiProviderEngine.resolveSmartEndpointUrl(hashTailFreeProfile, "/v1/responses", "/responses"))
+
+        val concreteEndpointInBase = defaultOpenAi.copy(baseUrl = "https://my-gateway.example.com/v1/chat/completions")
+        assertEquals("https://my-gateway.example.com/v1/chat/completions", AiProviderEngine.resolveSmartEndpointUrl(concreteEndpointInBase, "/v1/responses", "/responses"))
+
+        // 3. Verify Multi-Source Unified Model Registry Parsers, Canonical Slug Normalization & Modality-Preserving Merge
+        assertEquals("seedream-5-0-flash", io.parchment.ai.network.ModelsDevClient.normalizeCanonicalModelSlug("bytedance-seed/seedream-5-0-flash"))
+        assertEquals("seedream-5-0-flash", io.parchment.ai.network.ModelsDevClient.normalizeCanonicalModelSlug("bytedance/seedream-5.0-flash"))
+        assertEquals("seedream-5-0", io.parchment.ai.network.ModelsDevClient.normalizeCanonicalModelSlug("volcengine/doubao-seedream-5-0-260128"))
+        assertEquals("kling-3-0-pro", io.parchment.ai.network.ModelsDevClient.normalizeCanonicalModelSlug("kwaivgi/kling-v3.0-pro"))
+
+        val testCatalog = mutableMapOf<String, io.parchment.ai.model.ModelPricingSpec>()
+        io.parchment.ai.network.ModelsDevClient.parseOpenRouterModelsIntoCatalog(
+            rawJson = """{"data":[{"id":"bytedance-seed/seedream-5-0-flash","name":"Seedream 5.0 Flash","context_length":0,"architecture":{"modality":"text->image","input_modalities":["text","image"],"output_modalities":["image"]},"pricing":{"prompt":"0.000001","completion":"0.000002"}}]}""",
+            catalog = testCatalog
+        )
+        io.parchment.ai.network.ModelsDevClient.parseOpenRouterModelsIntoCatalog(
+            rawJson = """{"data":[{"id":"bytedance/seedance-2.5","name":"Seedance 2.5","input_modalities":["text","image"],"output_modalities":["video"]}]}""",
+            catalog = testCatalog,
+            forceVideoOutput = true
+        )
+        io.parchment.ai.network.ModelsDevClient.parseVercelModelsIntoCatalog(
+            rawJson = """{"data":[{"id":"bytedance/seedream-5.0-flash","name":"Seedream 5.0 Flash","owned_by":"bytedance","type":"image","context_window":0,"modalities":{"input":["text"],"output":["image"]}}]}""",
+            catalog = testCatalog
+        )
+        io.parchment.ai.network.ModelsDevClient.parseAimlApiModelsIntoCatalog(
+            rawJson = """{"data":[{"id":"bytedance/dreamina-seedance-2-5","type":"internal/video-generations/submit","info":{"name":"Dreamina Seedance 2.5","developer":"ByteDance"},"tags":["playground:video"],"aliases":["seedance-2-5-pro"]}]}""",
+            catalog = testCatalog
+        )
+        io.parchment.ai.network.ModelsDevClient.parseLiteLlmModelsIntoCatalog(
+            rawJson = """{"volcengine/doubao-seedream-5-0-260128":{"litellm_provider":"volcengine","mode":"image_generation"},"google/veo-3.1-generate-preview":{"litellm_provider":"vertex_ai","mode":"video_generation"},"openai/tts-1-hd":{"litellm_provider":"openai","mode":"audio_speech"}}""",
+            catalog = testCatalog
+        )
+
+        val lookedUpSeedream = io.parchment.ai.network.ModelsDevClient.lookupSpecInCatalog(testCatalog, "seedream-5.0-flash")
+        assertNotNull(lookedUpSeedream)
+        assertEquals(listOf("image"), lookedUpSeedream.outputModalities)
+
+        val lookedUpSeedance = io.parchment.ai.network.ModelsDevClient.lookupSpecInCatalog(testCatalog, "seedance-2.5")
+        assertNotNull(lookedUpSeedance)
+        assertEquals(listOf("video"), lookedUpSeedance.outputModalities)
+
+        val lookedUpAlias = io.parchment.ai.network.ModelsDevClient.lookupSpecInCatalog(testCatalog, "seedance-2-5-pro")
+        assertNotNull(lookedUpAlias)
+        assertEquals(listOf("video"), lookedUpAlias.outputModalities)
+
+        val lookedUpVeo = io.parchment.ai.network.ModelsDevClient.lookupSpecInCatalog(testCatalog, "veo-3.1")
+        assertNotNull(lookedUpVeo)
+        assertEquals(listOf("video"), lookedUpVeo.outputModalities)
+
+        // Ensure generic ["text"] fallback never overwrites ["image"] or ["video"] in mergeModelSpecs
+        val mergedPreservesMedia = io.parchment.ai.network.ModelsDevClient.mergeModelSpecs(
+            existing = lookedUpSeedream,
+            incoming = io.parchment.ai.model.ModelPricingSpec(modelId = "seedream-5.0-flash", contextWindowTokens = 128000, outputModalities = listOf("text"))
+        )
+        assertEquals(listOf("image"), mergedPreservesMedia.outputModalities)
+
+        // 4. Verify 3-Tier Universal Modality Classifier (Image, Interleaved, Video, Audio/TTS, Live Realtime Audio)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "seedream-5-0-pro").isDedicatedImage)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "black-forest-labs/flux-2-pro").isDedicatedImage)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gemini-3.1-flash-image").isInterleavedImage)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "bytedance/seedance-2.5").isDedicatedVideo)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "veo-3.1-fast").isDedicatedVideo)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "kwaivgi/kling-v3.0-pro").isDedicatedVideo)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "alibaba/wan-3.0-prime").isDedicatedVideo)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "minimax/hailuo-3-max").isDedicatedVideo)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "bytedance-seed/seed-audio-1-0").isDedicatedAudioTts)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "tts-1-hd").isDedicatedAudioTts)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gemini-3.8-flash-live-preview").isLiveRealtimeAudio)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gpt-4o-realtime-preview").isLiveRealtimeAudio)
+
+        // 5. Verify Model Lab Icons Are Never Hijacked by fallbackProtocolName ("OPENAI_RESPONSES")
+        assertEquals("doubao", resolveLabSlugForModelOrProvider("seedream-5-0-pro", "OPENAI_RESPONSES"))
+        assertEquals("doubao", resolveLabSlugForModelOrProvider("bytedance/seedance-2.5", "OPENAI_RESPONSES"))
+        assertEquals("doubao", resolveLabSlugForModelOrProvider("bytedance-seed/seed-2-1-turbo", "OPENAI_RESPONSES"))
+        assertEquals("gemini", resolveLabSlugForModelOrProvider("deep-research-preview-04-2026", "OPENAI_RESPONSES"))
+        assertEquals("google", resolveLabSlugForModelOrProvider("veo-3.1-fast", "OPENAI_RESPONSES"))
+        assertEquals("google", resolveLabSlugForModelOrProvider("imagen-4.0-ultra", "OPENAI_RESPONSES"))
+        assertEquals("deepseek", resolveLabSlugForModelOrProvider("deepseek-r1", "OPENAI_RESPONSES"))
+        assertEquals("qwen", resolveLabSlugForModelOrProvider("wan-3.0-prime", "OPENAI_RESPONSES"))
+        assertEquals("minimax", resolveLabSlugForModelOrProvider("hailuo-3-max", "OPENAI_RESPONSES"))
+        assertEquals("openai", resolveLabSlugForModelOrProvider("sora-2-pro", "GEMINI_INTERACTIONS"))
+        assertEquals("openai", resolveLabSlugForModelOrProvider("Custom Proxy Name", "OPENAI_RESPONSES"))
+    }
 }

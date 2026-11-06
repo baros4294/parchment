@@ -58,8 +58,24 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import androidx.compose.runtime.Immutable
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+
+@Immutable
+data class ModelModalityProfile(
+    val outputModalities: List<String>,
+    val inputModalities: List<String> = listOf("text"),
+    val isDedicatedImage: Boolean = false,
+    val isInterleavedImage: Boolean = false,
+    val isDedicatedVideo: Boolean = false,
+    val isDedicatedAudioTts: Boolean = false,
+    val isLiveRealtimeAudio: Boolean = false
+) {
+    val isAnyImageModel: Boolean get() = isDedicatedImage || isInterleavedImage
+    val isAnyVideoModel: Boolean get() = isDedicatedVideo
+    val isAnyAudioModel: Boolean get() = isDedicatedAudioTts || isLiveRealtimeAudio
+}
 
 sealed class StreamUpdate {
     data class Status(val message: String, val interactionId: String = "") : StreamUpdate()
@@ -103,6 +119,7 @@ object AiProviderEngine {
     private const val MAX_GOAL_NETWORK_RETRIES = 120
     private const val MAX_MID_STREAM_CONTINUATION_PASSES = 64
     private val discoveredModelModalities = mutableMapOf<String, List<String>>()
+    private val discoveredModelVendors = mutableMapOf<String, String>()
 
     internal class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
@@ -734,13 +751,15 @@ object AiProviderEngine {
                         }
 
                         ProviderProtocol.OPENAI_RESPONSES -> {
-                            val knownModalities = resolveKnownOutputModalities(effectiveProfileForPass, model)
-                            val isKnownVideoModel = knownModalities.contains("video") && !knownModalities.contains("text")
-                            val isKnownImageOnlyModel = knownModalities.contains("image") && !knownModalities.contains("text")
+                            val modalityProfile = resolveModelModalityProfileAsync(effectiveProfileForPass, model)
                             val isExplicitVideoPath = profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
-                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
+                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true) ||
+                                profile.endpointPathOverride.contains("video/generations", ignoreCase = true)
                             val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
-                                isKnownImageOnlyModel
+                                profile.endpointPathOverride.contains("images/edits", ignoreCase = true) ||
+                                modalityProfile.isDedicatedImage
+                            val isDirectAudioEndpoint = profile.endpointPathOverride.contains("audio/speech", ignoreCase = true) ||
+                                modalityProfile.isDedicatedAudioTts
                             suspend fun runLegacyOpenAiChatCompletions(
                                 targetHistoryNodes: List<MessageNode>,
                                 targetContinuePrefix: String
@@ -787,29 +806,31 @@ object AiProviderEngine {
                                 )
                             }
 
-                            if (isKnownVideoModel || isExplicitVideoPath) {
+                            suspend fun runUniversalMediaGeneration(forceVideo: Boolean) {
                                 executeByteDanceArkGeneration(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     circuitBreaker = circuitBreaker,
-                                    forceVideoMode = true,
+                                    forceVideoMode = forceVideo,
                                     onStatus = { st, id ->
                                         if (id.isNotBlank()) lastInteractionId = id
                                         emit(StreamUpdate.Status(st, lastInteractionId))
                                     },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
@@ -817,25 +838,24 @@ object AiProviderEngine {
                                         recordRawWireBounded(req, resp)
                                     }
                                 )
-                            } else if (isDirectImagesEndpoint) {
-                                executeOpenAiDirectImagesEndpoint(
+                            }
+
+                            suspend fun runUniversalAudioSpeechGeneration() {
+                                executeOpenAiAudioSpeechEndpoint(
                                     profile = profile,
                                     model = model,
                                     session = session,
                                     historyNodes = historyNodes,
                                     circuitBreaker = circuitBreaker,
-                                    onStatus = { st -> emit(StreamUpdate.Status(st)) },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                    onThinking = { delta ->
-                                        thinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
+                                    onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                    onFirstToken = { recordTokenActivity() },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
@@ -843,6 +863,41 @@ object AiProviderEngine {
                                         recordRawWireBounded(req, resp)
                                     }
                                 )
+                            }
+
+                            if (modalityProfile.isDedicatedVideo || isExplicitVideoPath) {
+                                try {
+                                    runUniversalMediaGeneration(forceVideo = true)
+                                } catch (videoErr: Throwable) {
+                                    if (videoErr is kotlinx.coroutines.CancellationException) throw videoErr
+                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                    } else {
+                                        throw videoErr
+                                    }
+                                }
+                            } else if (isDirectImagesEndpoint) {
+                                try {
+                                    runUniversalMediaGeneration(forceVideo = false)
+                                } catch (imgErr: Throwable) {
+                                    if (imgErr is kotlinx.coroutines.CancellationException) throw imgErr
+                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                    } else {
+                                        throw imgErr
+                                    }
+                                }
+                            } else if (isDirectAudioEndpoint) {
+                                try {
+                                    runUniversalAudioSpeechGeneration()
+                                } catch (audErr: Throwable) {
+                                    if (audErr is kotlinx.coroutines.CancellationException) throw audErr
+                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                    } else {
+                                        throw audErr
+                                    }
+                                }
                             } else {
                                 // Always attempt the newer /v1/responses protocol first; if it errors out
                                 // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
@@ -899,63 +954,15 @@ object AiProviderEngine {
                                     if (routeHint == "image") {
                                         recordDiscoveredModality(model, listOf("image"))
                                         emit(StreamUpdate.Status("Model requires Image Generation endpoint — routing automatically…", lastInteractionId))
-                                        executeOpenAiDirectImagesEndpoint(
-                                            profile = profile,
-                                            model = model,
-                                            session = session,
-                                            historyNodes = historyNodes,
-                                            circuitBreaker = circuitBreaker,
-                                            onStatus = { st -> emit(StreamUpdate.Status(st)) },
-                                            onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                            onThinking = { delta ->
-                                                thinkingBuilder.append(delta)
-                                                emit(StreamUpdate.ThinkingDelta(delta))
-                                            },
-                                            onMedia = { item ->
-                                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                                generatedMedia.add(item)
-                                                emit(StreamUpdate.MediaGenerated(item))
-                                            },
-                                            onContent = { delta ->
-                                                contentBuilder.append(delta)
-                                                emit(StreamUpdate.ContentDelta(delta))
-                                            },
-                                            onRawWire = { req, resp ->
-                                                recordRawWireBounded(req, resp)
-                                            }
-                                        )
+                                        runUniversalMediaGeneration(forceVideo = false)
                                     } else if (routeHint == "video") {
                                         recordDiscoveredModality(model, listOf("video"))
                                         emit(StreamUpdate.Status("Model requires Video Generation endpoint — routing automatically…", lastInteractionId))
-                                        executeByteDanceArkGeneration(
-                                            profile = profile,
-                                            model = model,
-                                            session = session,
-                                            historyNodes = historyNodes,
-                                            circuitBreaker = circuitBreaker,
-                                            forceVideoMode = true,
-                                            onStatus = { st, id ->
-                                                if (id.isNotBlank()) lastInteractionId = id
-                                                emit(StreamUpdate.Status(st, lastInteractionId))
-                                            },
-                                            onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                            onThinking = { delta ->
-                                                thinkingBuilder.append(delta)
-                                                emit(StreamUpdate.ThinkingDelta(delta))
-                                            },
-                                            onMedia = { item ->
-                                                onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                                generatedMedia.add(item)
-                                                emit(StreamUpdate.MediaGenerated(item))
-                                            },
-                                            onContent = { delta ->
-                                                contentBuilder.append(delta)
-                                                emit(StreamUpdate.ContentDelta(delta))
-                                            },
-                                            onRawWire = { req, resp ->
-                                                recordRawWireBounded(req, resp)
-                                            }
-                                        )
+                                        runUniversalMediaGeneration(forceVideo = true)
+                                    } else if (routeHint == "audio") {
+                                        recordDiscoveredModality(model, listOf("audio"))
+                                        emit(StreamUpdate.Status("Model requires Audio Speech endpoint — routing automatically…", lastInteractionId))
+                                        runUniversalAudioSpeechGeneration()
                                     } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
                                         val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
                                         val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
@@ -980,65 +987,17 @@ object AiProviderEngine {
                                         try {
                                             runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
                                         } catch (chatErr: Throwable) {
+                                            if (chatErr is kotlinx.coroutines.CancellationException) throw chatErr
                                             val chatHint = detectMediaEndpointRedirectFromError(chatErr)
-                                            if (chatHint == "image") {
+                                            if (chatHint == "image" || modalityProfile.isInterleavedImage) {
                                                 recordDiscoveredModality(model, listOf("image"))
-                                                executeOpenAiDirectImagesEndpoint(
-                                                    profile = profile,
-                                                    model = model,
-                                                    session = session,
-                                                    historyNodes = historyNodes,
-                                                    circuitBreaker = circuitBreaker,
-                                                    onStatus = { st -> emit(StreamUpdate.Status(st)) },
-                                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                                    onThinking = { delta ->
-                                                        thinkingBuilder.append(delta)
-                                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                                    },
-                                                    onMedia = { item ->
-                                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                                        generatedMedia.add(item)
-                                                        emit(StreamUpdate.MediaGenerated(item))
-                                                    },
-                                                    onContent = { delta ->
-                                                        contentBuilder.append(delta)
-                                                        emit(StreamUpdate.ContentDelta(delta))
-                                                    },
-                                                    onRawWire = { req, resp ->
-                                                        recordRawWireBounded(req, resp)
-                                                    }
-                                                )
+                                                runUniversalMediaGeneration(forceVideo = false)
                                             } else if (chatHint == "video") {
                                                 recordDiscoveredModality(model, listOf("video"))
-                                                executeByteDanceArkGeneration(
-                                                    profile = profile,
-                                                    model = model,
-                                                    session = session,
-                                                    historyNodes = historyNodes,
-                                                    circuitBreaker = circuitBreaker,
-                                                    forceVideoMode = true,
-                                                    onStatus = { st, id ->
-                                                        if (id.isNotBlank()) lastInteractionId = id
-                                                        emit(StreamUpdate.Status(st, lastInteractionId))
-                                                    },
-                                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
-                                                    onThinking = { delta ->
-                                                        thinkingBuilder.append(delta)
-                                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                                    },
-                                                    onMedia = { item ->
-                                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
-                                                        generatedMedia.add(item)
-                                                        emit(StreamUpdate.MediaGenerated(item))
-                                                    },
-                                                    onContent = { delta ->
-                                                        contentBuilder.append(delta)
-                                                        emit(StreamUpdate.ContentDelta(delta))
-                                                    },
-                                                    onRawWire = { req, resp ->
-                                                        recordRawWireBounded(req, resp)
-                                                    }
-                                                )
+                                                runUniversalMediaGeneration(forceVideo = true)
+                                            } else if (chatHint == "audio") {
+                                                recordDiscoveredModality(model, listOf("audio"))
+                                                runUniversalAudioSpeechGeneration()
                                             } else {
                                                 throw chatErr
                                             }
@@ -1091,90 +1050,6 @@ object AiProviderEngine {
                                 },
                                 onCitation = { cit -> recordRawCitationAndEmit(cit) }
                             )
-                        }
-
-                        ProviderProtocol.BYTEDANCE_ARK -> {
-                            val knownModalities = resolveKnownOutputModalities(effectiveProfileForPass, model)
-                            val isKnownTextOnly = knownModalities.contains("text") &&
-                                !knownModalities.contains("image") &&
-                                !knownModalities.contains("video")
-                            val isKnownVideo = knownModalities.contains("video") ||
-                                profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
-                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
-                            if (!isKnownTextOnly) {
-                                executeByteDanceArkGeneration(
-                                    profile = profile,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = historyNodes,
-                                    circuitBreaker = circuitBreaker,
-                                    forceVideoMode = isKnownVideo,
-                                    onStatus = { st, id ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        emit(StreamUpdate.Status(st, lastInteractionId))
-                                    },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    }
-                                )
-                            } else {
-                                executeOpenAiChatCompletionsLoop(
-                                    profile = effectiveProfileForPass,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = effectiveHistoryNodes,
-                                    continuePrefix = effectiveContinuePrefix,
-                                    circuitBreaker = circuitBreaker,
-                                    onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
-                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        currentStepThinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
-                                    },
-                                    onToolCall = { tc ->
-                                        upsertToolCallAndEmit(tc)
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
-                                    },
-                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
-                                )
-                            }
                         }
                     }
                     // Foolproof 3-Stage Zero-Answer Auto-Continuation Engine:
@@ -1465,28 +1340,33 @@ object AiProviderEngine {
 
     /**
      * Dynamically fetches the available model IDs from the active provider or custom proxy endpoint.
-     * Supports Google `/v1beta/models`, OpenAI `/v1/models`, and Anthropic `/v1/models` formats.
+     * Supports Google `/v1beta/models`, OpenAI `/v1/models`, `/api/v3/models`, and Anthropic `/v1/models` formats.
      */
     suspend fun fetchAvailableModels(profile: ProviderProfile): Result<List<String>> = runCatching {
-        val base = profile.baseUrl.trimEnd('/')
-        val candidateUrls = when (profile.protocol) {
-            ProviderProtocol.GEMINI_INTERACTIONS -> listOf(
+        val base = profile.baseUrl.trim().trimEnd('#').trimEnd('/')
+        val hasVersionSuffix = Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE)
+            .containsMatchIn(base)
+        val candidateUrls = when {
+            base.endsWith("/models", ignoreCase = true) -> listOf(base)
+            hasVersionSuffix -> listOf(
+                "$base/models",
+                "${base.replace(Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE), "")}/v1/models"
+            ).distinct()
+            profile.protocol == ProviderProtocol.GEMINI_INTERACTIONS -> listOf(
                 "$base/v1beta/models?pageSize=200",
-                "$base/v1/models"
+                "$base/v1/models",
+                "$base/models"
             )
-            ProviderProtocol.OPENAI_RESPONSES -> listOf(
-                "$base/v1/models"
+            profile.protocol == ProviderProtocol.ANTHROPIC_MESSAGES -> listOf(
+                "$base/v1/models?limit=100",
+                "$base/v1/models",
+                "$base/models"
             )
-            ProviderProtocol.ANTHROPIC_MESSAGES -> listOf(
-                "$base/v1/models?limit=100"
+            else -> listOf(
+                "$base/v1/models",
+                "$base/api/v3/models",
+                "$base/models"
             )
-            ProviderProtocol.BYTEDANCE_ARK -> {
-                if (base.endsWith("/api/v3")) {
-                    listOf("$base/models", "${base.removeSuffix("/api/v3")}/v1/models")
-                } else {
-                    listOf("$base/api/v3/models", "$base/v1/models")
-                }
-            }
         }
 
         var lastError = ""
@@ -1532,41 +1412,191 @@ object AiProviderEngine {
         val normalized = modalities.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
         if (normalized.isNotEmpty()) {
             discoveredModelModalities[clean] = normalized
-            val shortKey = clean.substringAfter("/")
+            val shortKey = clean.substringAfterLast("/")
             if (shortKey.isNotEmpty()) {
                 discoveredModelModalities[shortKey] = normalized
+            }
+            val canonical = ModelsDevClient.normalizeCanonicalModelSlug(clean)
+            if (canonical.isNotEmpty()) {
+                discoveredModelModalities[canonical] = normalized
             }
         }
     }
 
-    internal fun resolveKnownOutputModalities(profile: ProviderProfile, modelId: String): List<String> {
+    internal fun recordDiscoveredVendor(modelId: String, vendor: String) {
+        val clean = modelId.trim().removePrefix("models/").lowercase()
+        val cleanVendor = vendor.trim()
+        if (clean.isEmpty() || cleanVendor.isEmpty()) return
+        discoveredModelVendors[clean] = cleanVendor
+        val shortKey = clean.substringAfterLast("/")
+        if (shortKey.isNotEmpty()) {
+            discoveredModelVendors[shortKey] = cleanVendor
+        }
+    }
+
+    fun getDiscoveredVendorForModel(modelId: String): String? {
+        val clean = modelId.trim().removePrefix("models/").lowercase()
+        if (clean.isEmpty()) return null
+        return discoveredModelVendors[clean]
+            ?: discoveredModelVendors[clean.substringAfterLast("/")]
+            ?: ModelsDevClient.getCachedVendorSlug(modelId)
+    }
+
+    internal fun inferStructuralModalitiesFromModelSlug(
+        modelId: String,
+        endpointOverride: String = ""
+    ): List<String> {
+        val s = modelId.trim().lowercase()
+        val ov = endpointOverride.trim().lowercase()
+        if (s.isEmpty() && ov.isEmpty()) return emptyList()
+
+        return when {
+            ov.contains("contents/generations/tasks") ||
+                ov.contains("videos/generations") ||
+                ov.contains("video/generations") ||
+                s.contains("seedance") ||
+                s.contains("veo-") || s.contains("/veo") || s.startsWith("veo") ||
+                s.contains("sora") ||
+                s.contains("kling") ||
+                (s.contains("wan") && !s.contains("image")) && (s.contains("wan-") || s.contains("wan2") || s.contains("wan3") || s.contains("wanx")) ||
+                s.contains("hailuo") ||
+                s.contains("runway") || s.contains("gen-3") || s.contains("gen-4") || s.contains("aleph-") ||
+                s.contains("luma") || s.contains("ray-2") || s.contains("ray2") ||
+                s.contains("pixverse") || s.contains("vidu") || s.contains("pika-") ||
+                s.contains("hunyuan-video") || s.contains("cogvideo") || s.contains("mochi-") ||
+                s.contains("ltx-video") || s.contains("grok-imagine-video") ||
+                (s.contains("flux") && s.contains("video")) || s.contains("happyhorse") -> listOf("video")
+
+            (s.contains("gemini") && s.contains("image")) ||
+                s.contains("nano-banana") ||
+                (s.contains("gpt-5") && s.contains("image")) ||
+                (s.contains("omni") && s.contains("image")) -> listOf("text", "image")
+
+            ov.contains("images/generations") ||
+                ov.contains("images/edits") ||
+                s.contains("seedream") ||
+                s.contains("dreamina") ||
+                s.contains("imagen") ||
+                s.contains("dall-e") ||
+                s.contains("gpt-image") ||
+                s.contains("chatgpt-image") ||
+                (s.contains("flux") && !s.contains("video")) ||
+                s.contains("recraft") ||
+                s.contains("ideogram") ||
+                s.contains("midjourney") ||
+                s.contains("stable-diffusion") || s.contains("sdxl") || s.contains("sd3") ||
+                s.contains("qwen-image") ||
+                (s.contains("wan") && s.contains("image")) ||
+                s.contains("grok-imagine-image") || s.contains("grok-2-image") || s.contains("aurora") ||
+                s.contains("mai-image") || s.contains("muse-image") || s.contains("riverflow") ||
+                s.contains("krea") || s.contains("kolors") || s.contains("playground-v") ||
+                s.contains("hidream") -> listOf("image")
+
+            ov.contains("audio/speech") ||
+                s.contains("seed-audio") ||
+                s.startsWith("tts-") || s.contains("/tts-") || s.endsWith("-tts") || s.contains("-tts-") ||
+                s.contains("elevenlabs") || s.contains("cosyvoice") || s.contains("fish-speech") ||
+                s.contains("kokoro") || s.contains("sonic-") -> listOf("audio")
+
+            s.contains("-live") || s.contains("live-") ||
+                s.contains("-realtime") || s.contains("realtime-") ||
+                s.contains("native-audio") -> listOf("text", "audio")
+
+            else -> emptyList()
+        }
+    }
+
+    internal fun resolveKnownOutputModalities(profile: ProviderProfile?, modelId: String): List<String> {
         val clean = modelId.trim().removePrefix("models/").lowercase()
         if (clean.isEmpty()) return emptyList()
-        val shortKey = clean.substringAfter("/")
-        profile.customModelSpecs[modelId.trim()]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
-        profile.customModelSpecs[clean]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
+        val shortKey = clean.substringAfterLast("/")
+        val canonical = ModelsDevClient.normalizeCanonicalModelSlug(clean)
+        if (profile != null) {
+            profile.customModelSpecs[modelId.trim()]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
+            profile.customModelSpecs[clean]?.outputModalities?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
         discoveredModelModalities[clean]?.takeIf { it.isNotEmpty() }?.let { return it }
         discoveredModelModalities[shortKey]?.takeIf { it.isNotEmpty() }?.let { return it }
-        ModelsDevClient.getCachedOutputModalities(modelId).takeIf { it.isNotEmpty() }?.let { return it }
-        return emptyList()
+        discoveredModelModalities[canonical]?.takeIf { it.isNotEmpty() }?.let { return it }
+
+        val registryMods = ModelsDevClient.getCachedOutputModalities(modelId)
+        val structuralMods = inferStructuralModalitiesFromModelSlug(modelId, profile?.endpointPathOverride.orEmpty())
+        return when {
+            structuralMods.any { it != "text" } -> structuralMods
+            registryMods.isNotEmpty() -> registryMods
+            else -> structuralMods
+        }
+    }
+
+    fun resolveModelModalityProfile(profile: ProviderProfile?, modelId: String): ModelModalityProfile {
+        val outMods = resolveKnownOutputModalities(profile, modelId)
+        val inMods = ModelsDevClient.getCachedInputModalities(modelId).ifEmpty { listOf("text") }
+        val s = modelId.trim().lowercase()
+        val isLive = s.contains("-live") || s.contains("live-") ||
+            s.contains("-realtime") || s.contains("realtime-") ||
+            s.contains("native-audio") ||
+            (outMods.contains("audio") && outMods.contains("text"))
+        val isDedicatedVid = outMods.contains("video") && !outMods.contains("text")
+        val isDedicatedImg = outMods.contains("image") && !outMods.contains("text")
+        val isInterleavedImg = outMods.contains("image") && outMods.contains("text")
+        val isDedicatedAud = (outMods.contains("audio") || outMods.contains("speech")) && !outMods.contains("text")
+        return ModelModalityProfile(
+            outputModalities = outMods.ifEmpty { listOf("text") },
+            inputModalities = inMods,
+            isDedicatedImage = isDedicatedImg,
+            isInterleavedImage = isInterleavedImg,
+            isDedicatedVideo = isDedicatedVid,
+            isDedicatedAudioTts = isDedicatedAud,
+            isLiveRealtimeAudio = isLive
+        )
+    }
+
+    internal suspend fun resolveModelModalityProfileAsync(
+        profile: ProviderProfile?,
+        modelId: String
+    ): ModelModalityProfile {
+        val fastProfile = resolveModelModalityProfile(profile, modelId)
+        if (fastProfile.isDedicatedImage ||
+            fastProfile.isDedicatedVideo ||
+            fastProfile.isDedicatedAudioTts ||
+            fastProfile.isInterleavedImage ||
+            ModelsDevClient.getCachedOutputModalities(modelId).isNotEmpty()
+        ) {
+            return fastProfile
+        }
+        val networkMods = ModelsDevClient.resolveOutputModalities(modelId)
+        if (networkMods.isNotEmpty()) {
+            recordDiscoveredModality(modelId, networkMods)
+        }
+        return resolveModelModalityProfile(profile, modelId)
     }
 
     internal fun detectMediaEndpointRedirectFromError(err: Throwable): String? {
         val msg = (err.message ?: err.toString()).lowercase()
         if (msg.contains("contents/generations/tasks") ||
             msg.contains("videos/generations") ||
+            msg.contains("video/generations") ||
+            msg.contains("v1/videos") ||
             msg.contains("video generation") ||
             msg.contains("video model")
         ) {
             return "video"
         }
         if (msg.contains("images/generations") ||
+            msg.contains("images/edits") ||
             msg.contains("v1/images") ||
             msg.contains("only supports image") ||
-            msg.contains("image generation model") ||
+            msg.contains("image generation") ||
             (msg.contains("not a chat model") && msg.contains("image"))
         ) {
             return "image"
+        }
+        if (msg.contains("audio/speech") ||
+            msg.contains("v1/audio") ||
+            msg.contains("speech generation") ||
+            msg.contains("tts model")
+        ) {
+            return "audio"
         }
         return null
     }
@@ -1594,15 +1624,26 @@ object AiProviderEngine {
                 rhs.split("+", ",", "/").map { it.trim() }.filter { it.isNotEmpty() }.forEach(outList::add)
             }
             val modelType = (item["type"]?.jsonPrimitive?.contentOrNull
-                ?: item["task_type"]?.jsonPrimitive?.contentOrNull)?.trim()?.lowercase().orEmpty()
+                ?: item["mode"]?.jsonPrimitive?.contentOrNull
+                ?: item["task_type"]?.jsonPrimitive?.contentOrNull
+                ?: item["task"]?.jsonPrimitive?.contentOrNull)?.trim()?.lowercase().orEmpty()
+            val tags = (item["tags"] as? JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.lowercase() }.orEmpty()
             when {
-                modelType == "image" || modelType == "text-to-image" || modelType == "image-generation" -> outList.add("image")
-                modelType == "video" || modelType == "text-to-video" || modelType == "video-generation" -> outList.add("video")
-                modelType == "chat" || modelType == "text" || modelType == "language" -> outList.add("text")
+                modelType.contains("video") || tags.any { it.contains("video") } -> outList.add("video")
+                modelType.contains("image") || tags.any { it.contains("image") } -> outList.add("image")
+                modelType.contains("audio_speech") || modelType == "tts" || modelType == "speech" ||
+                    modelType == "audio" || tags.any { it.contains("audio") || it.contains("tts") } -> outList.add("audio")
+                modelType == "chat" || modelType == "text" || modelType == "language" ||
+                    modelType == "responses" || modelType == "completion" -> outList.add("text")
             }
-            val genMethods = (item["supportedGenerationMethods"] as? JsonArray)
+            val genMethods = ((item["supportedGenerationMethods"] as? JsonArray)
+                ?: (item["supported_generation_methods"] as? JsonArray))
                 ?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() }.orEmpty()
-            if (genMethods.any { it.contains("predict") || it.contains("generateimages") } &&
+            if (genMethods.any { it.contains("bidi") }) {
+                outList.add("text")
+                outList.add("audio")
+            } else if (genMethods.any { it.contains("predict") || it.contains("generateimages") } &&
                 genMethods.none { it.contains("generatecontent") }
             ) {
                 outList.add("image")
@@ -1629,6 +1670,14 @@ object AiProviderEngine {
                             val discovered = extractModalitiesFromModelObject(item)
                             if (discovered.isNotEmpty()) {
                                 recordDiscoveredModality(cleanId, discovered)
+                            }
+                            val infoObj = item["info"] as? JsonObject
+                            val vendor = item["owned_by"]?.jsonPrimitive?.contentOrNull
+                                ?: item["provider"]?.jsonPrimitive?.contentOrNull
+                                ?: item["developer"]?.jsonPrimitive?.contentOrNull
+                                ?: infoObj?.get("developer")?.jsonPrimitive?.contentOrNull
+                            if (!vendor.isNullOrBlank()) {
+                                recordDiscoveredVendor(cleanId, vendor)
                             }
                         }
                     }
@@ -1916,10 +1965,14 @@ object AiProviderEngine {
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val requestJsonStr = json.encodeToString(JsonObject.serializer(), finalPayload)
 
-                val base = profile.baseUrl.trimEnd('/')
+                val base = profile.baseUrl.trim().trimEnd('#').trimEnd('/')
                 val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
                 val path = profile.endpointPathOverride.ifBlank { defaultPath }
-                val rawUrl = "$base$path"
+                val rawUrl = resolveSmartEndpointUrl(
+                    profile = profile,
+                    defaultPathWithV1 = "/v1beta/interactions",
+                    defaultPathWithoutVersion = "/interactions"
+                )
                 val finalUrl = buildUrlWithAuthQuery(profile, rawUrl)
 
                 onRawWire(requestJsonStr, "Dispatching to $finalUrl ...")
@@ -3095,17 +3148,17 @@ object AiProviderEngine {
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                val base = profile.baseUrl.trimEnd('/')
-                val rawUrl = when {
-                    profile.endpointPathOverride.isNotBlank() && !profile.endpointPathOverride.contains("interactions") -> {
-                        "$base${profile.endpointPathOverride}"
-                    }
-                    base.endsWith("/v1beta") || base.endsWith("/v1") -> {
-                        "$base/models/$cleanModel:streamGenerateContent?alt=sse"
-                    }
-                    else -> {
-                        "$base/v1beta/models/$cleanModel:streamGenerateContent?alt=sse"
-                    }
+                val rawUrl = if (profile.endpointPathOverride.contains("interactions", ignoreCase = true) && !profile.useExactEndpointUrl) {
+                    val base = profile.baseUrl.trim().trimEnd('#').trimEnd('/')
+                    val hasVer = Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE).containsMatchIn(base)
+                    if (hasVer) "$base/models/$cleanModel:streamGenerateContent?alt=sse"
+                    else "$base/v1beta/models/$cleanModel:streamGenerateContent?alt=sse"
+                } else {
+                    resolveSmartEndpointUrl(
+                        profile = profile,
+                        defaultPathWithV1 = "/v1beta/models/$cleanModel:streamGenerateContent?alt=sse",
+                        defaultPathWithoutVersion = "/models/$cleanModel:streamGenerateContent?alt=sse"
+                    )
                 }
                 val url = buildUrlWithAuthQuery(profile, rawUrl)
 
@@ -3798,13 +3851,12 @@ object AiProviderEngine {
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                val base = profile.baseUrl.trimEnd('/')
-                val defaultPath = when {
-                    base.endsWith("/v1") || base.endsWith("/api/v3") -> "/responses"
-                    else -> "/v1/responses"
-                }
-                val path = profile.endpointPathOverride.ifBlank { defaultPath }
-                val url = buildUrlWithAuthQuery(profile, "$base$path")
+                val rawUrl = resolveSmartEndpointUrl(
+                    profile = profile,
+                    defaultPathWithV1 = "/v1/responses",
+                    defaultPathWithoutVersion = "/responses"
+                )
+                val url = buildUrlWithAuthQuery(profile, rawUrl)
 
                 onRawWire(reqStr, "Dispatching to $url ...")
 
@@ -4490,14 +4542,12 @@ object AiProviderEngine {
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                val base = profile.baseUrl.trimEnd('/')
-                val defaultPath = when {
-                    base.endsWith("/v1") || base.endsWith("/api/v3") -> "/chat/completions"
-                    profile.protocol == ProviderProtocol.BYTEDANCE_ARK -> "/api/v3/chat/completions"
-                    else -> "/v1/chat/completions"
-                }
-                val path = profile.endpointPathOverride.ifBlank { defaultPath }
-                val url = buildUrlWithAuthQuery(profile, "$base$path")
+                val rawUrl = resolveSmartEndpointUrl(
+                    profile = profile,
+                    defaultPathWithV1 = "/v1/chat/completions",
+                    defaultPathWithoutVersion = "/chat/completions"
+                )
+                val url = buildUrlWithAuthQuery(profile, rawUrl)
 
                 onRawWire(reqStr, "Dispatching to $url ...")
 
@@ -5117,10 +5167,12 @@ object AiProviderEngine {
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                val base = profile.baseUrl.trimEnd('/')
-                val defaultPath = if (base.endsWith("/v1")) "/messages" else "/v1/messages"
-                val path = profile.endpointPathOverride.ifBlank { defaultPath }
-                val url = buildUrlWithAuthQuery(profile, "$base$path")
+                val rawUrl = resolveSmartEndpointUrl(
+                    profile = profile,
+                    defaultPathWithV1 = "/v1/messages",
+                    defaultPathWithoutVersion = "/messages"
+                )
+                val url = buildUrlWithAuthQuery(profile, rawUrl)
 
                 onRawWire(reqStr, "Dispatching to $url ...")
 
@@ -5818,12 +5870,194 @@ object AiProviderEngine {
     }
 
     // ============================================================================================
-    // 5. BYTEDANCE ARK & OPENAI-PROXY DRIVER: SEEDREAM (IMAGE) & SEEDANCE (VIDEO)
+    // 5. UNIVERSAL MEDIA & AUDIO DRIVER (IMAGE, VIDEO, AND TTS AUTO-ROUTING)
     //    Supports:
-    //    - Seedream Image Generation (`POST /api/v3/images/generations` & `/v1/images/generations`)
-    //    - Seedance Video Generation (`POST /api/v3/contents/generations/tasks` & `/v1/contents/generations/tasks` + async polling)
-    //    - Automatic fallback to `/v1/chat/completions` when an OpenAI proxy wraps Seedream/Seedance in chat completions!
+    //    - Universal Image Generation (`POST /v1/images/generations` & `/api/v3/images/generations` with 3-stage payload self-healing)
+    //    - Universal Video Generation (`POST /contents/generations/tasks`, `/videos/generations`, `/video/generations`, `/videos` + sync/async polling)
+    //    - Universal Audio Speech / TTS (`POST /v1/audio/speech` & `/audio/speech` with fallback to `/chat/completions`)
+    //    - Automatic fallback to `/v1/chat/completions` when a proxy wraps media generation inside chat completions!
     // ============================================================================================
+    internal fun resolveSmartEndpointUrl(
+        profile: ProviderProfile,
+        defaultPathWithV1: String,
+        defaultPathWithoutVersion: String = defaultPathWithV1
+            .removePrefix("/v1beta")
+            .removePrefix("/v1")
+    ): String {
+        val rawBase = profile.baseUrl.trim()
+        val rawOverride = profile.endpointPathOverride.trim()
+
+        // 1. Explicit tail-free / exact endpoint URL mode (`useExactEndpointUrl`, trailing `#`, or override == "/")
+        if (profile.useExactEndpointUrl || rawBase.endsWith("#") || rawOverride == "/" || rawOverride == "#") {
+            return rawBase.trimEnd('#').trimEnd('/')
+        }
+
+        val base = rawBase.trimEnd('/')
+
+        // 2. Explicit endpointPathOverride
+        if (rawOverride.isNotEmpty()) {
+            if (rawOverride.startsWith("http://", ignoreCase = true) ||
+                rawOverride.startsWith("https://", ignoreCase = true)
+            ) {
+                return rawOverride.trimEnd('#')
+            }
+            val cleanOverride = "/" + rawOverride.trimEnd('#').trimStart('/')
+            return if (base.endsWith(cleanOverride, ignoreCase = true)) base else "$base$cleanOverride"
+        }
+
+        // 3. Auto-detect when baseUrl already ends with a concrete endpoint path (no hardcoded tail appended!)
+        val lowerBase = base.lowercase()
+        val concreteEndpointTails = listOf(
+            "/responses",
+            "/chat/completions",
+            "/completions",
+            "/messages",
+            "/interactions",
+            ":generatecontent",
+            ":streamgeneratecontent",
+            ":predict",
+            ":predictlongrunning",
+            "/images/generations",
+            "/images/edits",
+            "/videos/generations",
+            "/video/generations",
+            "/contents/generations/tasks",
+            "/audio/speech",
+            "/audio/transcriptions",
+            "/generate",
+            "/invoke",
+            "/chat"
+        )
+        if (concreteEndpointTails.any { lowerBase.endsWith(it) || lowerBase.contains("$it?") }) {
+            return base
+        }
+
+        // 4. Version-agnostic root path resolution (/v1, /v2, /v3, /v4, /v1beta, /api/v3, /api/paas/v4)
+        val hasVersionSuffix = Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE)
+            .containsMatchIn(base)
+        val normalizedNoVer = "/" + defaultPathWithoutVersion.trimStart('/')
+        val normalizedWithVer = "/" + defaultPathWithV1.trimStart('/')
+        return if (hasVersionSuffix) "$base$normalizedNoVer" else "$base$normalizedWithVer"
+    }
+
+    private suspend fun executeOpenAiAudioSpeechEndpoint(
+        profile: ProviderProfile,
+        model: String,
+        session: ChatSession,
+        historyNodes: List<MessageNode>,
+        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
+        onStatus: suspend (String) -> Unit,
+        onFirstToken: () -> Unit,
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        onContent: suspend (String) -> Unit,
+        onRawWire: suspend (String, String) -> Unit
+    ) {
+        val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
+            .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
+        require(latestUserPrompt.isNotBlank()) { "Prompt cannot be empty." }
+
+        val targetUrl = buildUrlWithAuthQuery(
+            profile,
+            resolveSmartEndpointUrl(profile, "/v1/audio/speech", "/audio/speech")
+        )
+        val voice = profile.audioVoice.ifBlank { "alloy" }
+        val speed = profile.audioSpeed.coerceIn(0.25, 4.0)
+
+        val payloadCandidates = listOf(
+            buildJsonObject {
+                put("model", model.trim())
+                put("input", latestUserPrompt)
+                put("voice", voice)
+                if (speed != 1.0) put("speed", speed)
+                put("response_format", "mp3")
+            },
+            buildJsonObject {
+                put("model", model.trim())
+                put("input", latestUserPrompt)
+                put("voice", "alloy")
+            },
+            buildJsonObject {
+                put("model", model.trim())
+                put("input", latestUserPrompt)
+            }
+        )
+
+        var lastStatus = 0
+        var lastErrorBody = ""
+        for ((idx, candidateObj) in payloadCandidates.withIndex()) {
+            val finalPayload = mergeRawJsonExtraBody(candidateObj, profile.rawJsonExtraBody)
+            val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
+            onStatus("Synthesizing speech ($model • $voice)…")
+            onRawWire(reqStr, "Dispatching to $targetUrl ...")
+
+            val resp = httpClient.post(targetUrl) {
+                applyAuthAndCustomHeaders(profile)
+                contentType(ContentType.Application.Json)
+                setBody(reqStr)
+            }
+            lastStatus = resp.status.value
+            val contentTypeHeader = resp.headers["Content-Type"].orEmpty().lowercase()
+            if (resp.status.isSuccess() && (contentTypeHeader.contains("audio") || contentTypeHeader.contains("octet-stream"))) {
+                onFirstToken()
+                val audioBytes = resp.readRawBytes()
+                val ts = PlatformBridge.currentTimeMillis()
+                val localPath = if (audioBytes.isNotEmpty()) {
+                    PlatformBridge.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
+                } else ""
+                onRawWire(reqStr, "Received ${audioBytes.size} bytes ($contentTypeHeader)")
+                onMedia(
+                    GeneratedMediaItem(
+                        id = "aud-$ts",
+                        kind = MediaKind.AUDIO,
+                        mimeType = "audio/mpeg",
+                        localFilePath = localPath,
+                        revisedPrompt = latestUserPrompt
+                    )
+                )
+                onContent("Generated speech audio (`$model` • voice: `$voice`).")
+                return
+            }
+
+            val bodyText = resp.bodyAsText()
+            lastErrorBody = bodyText
+            onRawWire(reqStr, bodyText)
+            if (resp.status.isSuccess()) {
+                onFirstToken()
+                val root = runCatching { json.parseToJsonElement(bodyText).jsonObject }.getOrNull()
+                val audioUrl = root?.get("url")?.jsonPrimitive?.contentOrNull
+                    ?: root?.get("audio_url")?.jsonPrimitive?.contentOrNull
+                    ?: (root?.get("data") as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
+                val b64Audio = root?.get("b64_json")?.jsonPrimitive?.contentOrNull
+                    ?: root?.get("audio")?.jsonPrimitive?.contentOrNull
+                val audioBytes = when {
+                    !b64Audio.isNullOrBlank() -> runCatching { Base64.decode(b64Audio) }.getOrElse { ByteArray(0) }
+                    !audioUrl.isNullOrBlank() -> runCatching { httpClient.get(audioUrl).readRawBytes() }.getOrElse { ByteArray(0) }
+                    else -> ByteArray(0)
+                }
+                val ts = PlatformBridge.currentTimeMillis()
+                val localPath = if (audioBytes.isNotEmpty()) {
+                    PlatformBridge.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
+                } else ""
+                onMedia(
+                    GeneratedMediaItem(
+                        id = "aud-$ts",
+                        kind = MediaKind.AUDIO,
+                        mimeType = "audio/mpeg",
+                        localFilePath = localPath,
+                        remoteUrl = audioUrl.orEmpty(),
+                        revisedPrompt = latestUserPrompt
+                    )
+                )
+                onContent("Generated speech audio (`$model` • voice: `$voice`).")
+                return
+            }
+            if (lastStatus != 400 && lastStatus != 422 || idx == payloadCandidates.lastIndex) {
+                break
+            }
+        }
+        error("Audio Speech HTTP $lastStatus: $lastErrorBody")
+    }
+
     private suspend fun executeByteDanceArkGeneration(
         profile: ProviderProfile,
         model: String,
@@ -5842,24 +6076,32 @@ object AiProviderEngine {
             .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
         require(latestUserPrompt.isNotBlank()) { "Prompt cannot be empty." }
 
-        val baseClean = profile.baseUrl.trimEnd('/')
-        val rootBase = baseClean.removeSuffix("/v1").removeSuffix("/api/v3").trimEnd('/')
+        val baseClean = profile.baseUrl.trim().trimEnd('#').trimEnd('/')
+        val rootBase = baseClean
+            .replace(Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE), "")
+            .trimEnd('/')
+        val hasVersionSuffix = Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE)
+            .containsMatchIn(baseClean)
 
         val knownModalities = resolveKnownOutputModalities(profile, model)
         val isVideoTaskMode = forceVideoMode ||
             knownModalities.contains("video") ||
             profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
-            profile.endpointPathOverride.contains("videos/generations", ignoreCase = true)
+            profile.endpointPathOverride.contains("videos/generations", ignoreCase = true) ||
+            profile.endpointPathOverride.contains("video/generations", ignoreCase = true)
 
         if (isVideoTaskMode) {
-            val videoRes = if (profile.mediaResolution in listOf("480p", "720p", "1080p")) {
-                profile.mediaResolution
-            } else "720p"
+            val videoRes = when (profile.mediaResolution) {
+                "480p", "720p", "1080p", "4K" -> profile.mediaResolution
+                "2K" -> "1080p"
+                else -> "720p"
+            }
 
             val latestUserNode = historyNodes.lastOrNull { it.role == MessageRole.USER } ?: historyNodes.lastOrNull()
             val refImages = resolveBinaryAttachments(latestUserNode?.activeVariant)
                 .filter { it.mimeType.lowercase().startsWith("image/") }
-            val payloadObj = buildJsonObject {
+
+            val arkPayloadObj = buildJsonObject {
                 put("model", model)
                 putJsonArray("content") {
                     add(buildJsonObject {
@@ -5891,47 +6133,104 @@ object AiProviderEngine {
                 put("watermark", false)
             }
 
-            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-            val candidateTaskUrls = if (profile.endpointPathOverride.isNotBlank() && profile.endpointPathOverride.contains("tasks")) {
-                listOf("$baseClean${profile.endpointPathOverride}")
-            } else if (baseClean.endsWith("/v1")) {
-                listOf(
-                    "$baseClean/contents/generations/tasks",
-                    "$rootBase/api/v3/contents/generations/tasks",
-                    "$baseClean/videos/generations"
-                )
-            } else {
-                listOf(
-                    "$rootBase/api/v3/contents/generations/tasks",
-                    "$rootBase/v1/contents/generations/tasks"
-                )
+            val openAiVideoPayloadObj = buildJsonObject {
+                put("model", model)
+                put("prompt", latestUserPrompt)
+                if (profile.mediaAspectRatio.isNotBlank()) {
+                    put("aspect_ratio", profile.mediaAspectRatio)
+                }
+                put("duration", profile.videoDurationSeconds.coerceIn(4, 15))
+                put("resolution", videoRes)
+                if (refImages.isNotEmpty()) {
+                    val firstImg = refImages.first()
+                    put("image", "data:${firstImg.mimeType};base64,${firstImg.base64Data}")
+                }
+            }
+
+            val minimalVideoPayloadObj = buildJsonObject {
+                put("model", model)
+                put("prompt", latestUserPrompt)
+            }
+
+            val isByteDanceFamily = model.contains("seedance", ignoreCase = true) ||
+                model.contains("doubao", ignoreCase = true) ||
+                baseClean.contains("volces.com", ignoreCase = true) ||
+                baseClean.contains("bytepluses.com", ignoreCase = true) ||
+                baseClean.endsWith("/api/v3", ignoreCase = true)
+
+            val candidateTaskUrls = when {
+                profile.useExactEndpointUrl || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
+                    listOf(resolveSmartEndpointUrl(profile, "/v1/videos/generations", "/videos/generations"))
+                isByteDanceFamily -> buildList {
+                    if (hasVersionSuffix) {
+                        add("$baseClean/contents/generations/tasks")
+                        add("$baseClean/videos/generations")
+                        add("$baseClean/video/generations")
+                        add("$baseClean/videos")
+                    }
+                    add("$rootBase/api/v3/contents/generations/tasks")
+                    add("$rootBase/v1/contents/generations/tasks")
+                    add("$rootBase/v1/videos/generations")
+                    add("$rootBase/v1/video/generations")
+                    add("$rootBase/v1/videos")
+                }.distinct()
+                else -> buildList {
+                    if (hasVersionSuffix) {
+                        add("$baseClean/videos/generations")
+                        add("$baseClean/video/generations")
+                        add("$baseClean/videos")
+                        add("$baseClean/contents/generations/tasks")
+                    }
+                    add("$rootBase/v1/videos/generations")
+                    add("$rootBase/v1/video/generations")
+                    add("$rootBase/v1/videos")
+                    add("$rootBase/v1/contents/generations/tasks")
+                    add("$rootBase/api/v3/contents/generations/tasks")
+                }.distinct()
             }
 
             var activeTaskUrl = candidateTaskUrls.first()
             var createBody = ""
             var createStatus = 0
-            for (candUrl in candidateTaskUrls) {
+            var reqStr = ""
+
+            outerUrlLoop@ for (candUrl in candidateTaskUrls) {
                 activeTaskUrl = candUrl
                 val finalCreateUrl = buildUrlWithAuthQuery(profile, candUrl)
-                onStatus("Submitting Seedance video task ($model)…", "")
-                onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
-
-                val createResp = httpClient.post(finalCreateUrl) {
-                    applyAuthAndCustomHeaders(profile)
-                    contentType(ContentType.Application.Json)
-                    setBody(reqStr)
+                val isTasksEndpoint = candUrl.contains("contents/generations/tasks", ignoreCase = true)
+                val payloadSequence = if (isTasksEndpoint) {
+                    listOf(arkPayloadObj, openAiVideoPayloadObj, minimalVideoPayloadObj)
+                } else {
+                    listOf(openAiVideoPayloadObj, minimalVideoPayloadObj, arkPayloadObj)
                 }
-                createBody = createResp.bodyAsText()
-                createStatus = createResp.status.value
-                onRawWire(reqStr, createBody)
-                if (createResp.status.isSuccess()) break
-                if (createStatus != 404 && createStatus != 405 && createStatus != 501) break
+
+                for ((pIdx, candPayload) in payloadSequence.withIndex()) {
+                    val merged = mergeRawJsonExtraBody(candPayload, profile.rawJsonExtraBody)
+                    reqStr = json.encodeToString(JsonObject.serializer(), merged)
+                    onStatus("Submitting video generation task ($model)…", "")
+                    onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
+
+                    val createResp = httpClient.post(finalCreateUrl) {
+                        applyAuthAndCustomHeaders(profile)
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }
+                    createBody = createResp.bodyAsText()
+                    createStatus = createResp.status.value
+                    onRawWire(reqStr, createBody)
+                    if (createResp.status.isSuccess()) break@outerUrlLoop
+                    if (createStatus == 404 || createStatus == 405 || createStatus == 501) {
+                        break // Try next URL in candidateTaskUrls
+                    }
+                    if ((createStatus == 400 || createStatus == 422) && pIdx < payloadSequence.lastIndex) {
+                        continue // Self-heal payload schema on the same URL
+                    }
+                    break
+                }
             }
 
             if (createStatus == 404 || createStatus == 405 || createStatus == 501) {
-                // Proxy wraps Seedance inside /v1/chat/completions — fall back seamlessly!
-                onStatus("Proxy wraps Seedance in /v1/chat/completions — routing via Chat Completions…", "")
+                onStatus("Routing video model via /v1/chat/completions…", "")
                 val chatAccumulator = StringBuilder()
                 executeOpenAiChatCompletionsLoop(
                     profile = profile,
@@ -5958,65 +6257,98 @@ object AiProviderEngine {
             }
 
             if (createStatus !in 200..299) {
-                error("ByteDance Seedance HTTP $createStatus: $createBody")
+                error("Video Generation HTTP $createStatus: $createBody")
             }
 
             val createObj = json.parseToJsonElement(createBody).jsonObject
+
+            fun extractDirectVideoUrl(obj: JsonObject): String? {
+                val contentSub = (obj["content"] as? JsonObject)
+                    ?: ((obj["data"] as? JsonObject)?.get("content") as? JsonObject)
+                val dataObj = obj["data"] as? JsonObject
+                val dataArr = obj["data"] as? JsonArray
+                val firstDataItem = dataArr?.firstOrNull() as? JsonObject
+                val videoObj = obj["video"] as? JsonObject
+                val generationsArr = obj["generations"] as? JsonArray
+                val firstGenItem = generationsArr?.firstOrNull() as? JsonObject
+                return contentSub?.get("video_url")?.jsonPrimitive?.contentOrNull
+                    ?: obj["video_url"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["result_url"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["url"]?.jsonPrimitive?.contentOrNull
+                    ?: (obj["output"] as? JsonPrimitive)?.contentOrNull
+                    ?: videoObj?.get("url")?.jsonPrimitive?.contentOrNull
+                    ?: dataObj?.get("video_url")?.jsonPrimitive?.contentOrNull
+                    ?: dataObj?.get("url")?.jsonPrimitive?.contentOrNull
+                    ?: firstDataItem?.get("url")?.jsonPrimitive?.contentOrNull
+                    ?: firstDataItem?.get("video_url")?.jsonPrimitive?.contentOrNull
+                    ?: firstGenItem?.get("url")?.jsonPrimitive?.contentOrNull
+            }
+
+            val immediateVideoUrl = extractDirectVideoUrl(createObj)
             val taskId = createObj["id"]?.jsonPrimitive?.contentOrNull
+                ?: createObj["task_id"]?.jsonPrimitive?.contentOrNull
+                ?: createObj["generation_id"]?.jsonPrimitive?.contentOrNull
                 ?: (createObj["data"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
-                ?: error("Seedance response did not contain a task 'id': $createBody")
+                ?: (createObj["data"] as? JsonObject)?.get("task_id")?.jsonPrimitive?.contentOrNull
+                ?: if (immediateVideoUrl != null) "sync-${PlatformBridge.currentTimeMillis()}" else null
+                ?: error("Video generation response did not contain a task 'id' or 'url': $createBody")
 
-            var status = createObj["status"]?.jsonPrimitive?.contentOrNull ?: "queued"
             var latestTaskObj = createObj
-            var pollCount = 0
+            if (immediateVideoUrl == null) {
+                var status = createObj["status"]?.jsonPrimitive?.contentOrNull
+                    ?: (createObj["data"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull
+                    ?: "queued"
+                var pollCount = 0
 
-            while (status.equals("queued", ignoreCase = true) ||
-                status.equals("running", ignoreCase = true) ||
-                status.equals("in_progress", ignoreCase = true) ||
-                status.equals("processing", ignoreCase = true)
-            ) {
-                pollCount++
-                onStatus("Seedance Video Generating ($status • poll #$pollCount)…", taskId)
-                delay(3000L)
-                val pollUrl = buildUrlWithAuthQuery(profile, "${activeTaskUrl.trimEnd('/')}/$taskId")
-                val pollResp = httpClient.get(pollUrl) {
-                    applyAuthAndCustomHeaders(profile)
+                while (status.equals("queued", ignoreCase = true) ||
+                    status.equals("pending", ignoreCase = true) ||
+                    status.equals("submitted", ignoreCase = true) ||
+                    status.equals("running", ignoreCase = true) ||
+                    status.equals("in_progress", ignoreCase = true) ||
+                    status.equals("processing", ignoreCase = true) ||
+                    status.equals("starting", ignoreCase = true)
+                ) {
+                    pollCount++
+                    onStatus("Video Generating ($status • poll #$pollCount)…", taskId)
+                    delay(3000L)
+                    val pollUrl = buildUrlWithAuthQuery(profile, "${activeTaskUrl.trimEnd('/')}/$taskId")
+                    val pollResp = httpClient.get(pollUrl) {
+                        applyAuthAndCustomHeaders(profile)
+                    }
+                    val pollBody = pollResp.bodyAsText()
+                    onRawWire(reqStr, pollBody)
+                    if (!pollResp.status.isSuccess()) {
+                        error("Video Task Poll HTTP ${pollResp.status.value}: $pollBody")
+                    }
+                    latestTaskObj = json.parseToJsonElement(pollBody).jsonObject
+                    status = latestTaskObj["status"]?.jsonPrimitive?.contentOrNull
+                        ?: (latestTaskObj["data"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull
+                        ?: "succeeded"
                 }
-                val pollBody = pollResp.bodyAsText()
-                onRawWire(reqStr, pollBody)
-                if (!pollResp.status.isSuccess()) {
-                    error("Seedance Task Poll HTTP ${pollResp.status.value}: $pollBody")
+
+                if (status.equals("failed", ignoreCase = true) ||
+                    status.equals("error", ignoreCase = true) ||
+                    status.equals("expired", ignoreCase = true) ||
+                    status.equals("cancelled", ignoreCase = true) ||
+                    status.equals("canceled", ignoreCase = true)
+                ) {
+                    val errMsg = (latestTaskObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull
+                        ?: latestTaskObj.toString()
+                    error("Video Task $status: $errMsg")
                 }
-                latestTaskObj = json.parseToJsonElement(pollBody).jsonObject
-                status = latestTaskObj["status"]?.jsonPrimitive?.contentOrNull
-                    ?: (latestTaskObj["data"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull
-                    ?: "succeeded"
             }
 
-            if (status.equals("failed", ignoreCase = true) ||
-                status.equals("expired", ignoreCase = true) ||
-                status.equals("cancelled", ignoreCase = true) ||
-                status.equals("canceled", ignoreCase = true)
-            ) {
-                val errMsg = (latestTaskObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull
-                    ?: latestTaskObj.toString()
-                error("Seedance Video Task $status: $errMsg")
-            }
+            val videoUrl = immediateVideoUrl ?: extractDirectVideoUrl(latestTaskObj)
+                ?: error("Video task completed but no video URL was found in response: $latestTaskObj")
 
-            val contentSub = (latestTaskObj["content"] as? JsonObject)
-                ?: ((latestTaskObj["data"] as? JsonObject)?.get("content") as? JsonObject)
-            val videoUrl = contentSub?.get("video_url")?.jsonPrimitive?.contentOrNull
-                ?: latestTaskObj["video_url"]?.jsonPrimitive?.contentOrNull
-                ?: latestTaskObj["result_url"]?.jsonPrimitive?.contentOrNull
-                ?: error("Seedance task completed but no 'video_url' was found in response.")
-
-            onStatus("Downloading generated Seedance MP4 video…", taskId)
+            onFirstToken()
+            onStatus("Downloading generated MP4 video…", taskId)
             val videoBytes = runCatching {
                 httpClient.get(videoUrl).readRawBytes()
             }.getOrElse { ByteArray(0) }
 
             val localPath = if (videoBytes.isNotEmpty()) {
-                PlatformBridge.saveGeneratedMediaFile("seedance-$taskId.mp4", videoBytes, sessionId = session.id)
+                PlatformBridge.saveGeneratedMediaFile("video-$taskId.mp4", videoBytes, sessionId = session.id)
             } else ""
 
             val mediaItem = GeneratedMediaItem(
@@ -6028,50 +6360,109 @@ object AiProviderEngine {
                 aspectRatio = profile.mediaAspectRatio
             )
             onMedia(mediaItem)
-            onContent("Generated Seedance video (`$model` • ${profile.mediaAspectRatio} • ${profile.videoDurationSeconds}s).")
+            onContent("Generated video (`$model` • ${profile.mediaAspectRatio} • ${profile.videoDurationSeconds}s).")
         } else {
-            // Seedream Image Generation API (`POST /api/v3/images/generations` & `/v1/images/generations`)
-            val size = resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
-            val payloadObj = buildJsonObject {
-                put("model", model)
-                put("prompt", latestUserPrompt)
-                put("size", size)
-                put("response_format", "b64_json")
-                put("watermark", false)
+            // Universal Image Generation Engine (`POST /v1/images/generations` & `/api/v3/images/generations`)
+            val latestUserNode = historyNodes.lastOrNull { it.role == MessageRole.USER } ?: historyNodes.lastOrNull()
+            val refImages = resolveBinaryAttachments(latestUserNode?.activeVariant)
+                .filter { it.mimeType.lowercase().startsWith("image/") }
+
+            val isHighResSeedreamFamily = model.contains("seedream", ignoreCase = true) ||
+                model.contains("doubao", ignoreCase = true) ||
+                model.contains("dreamina", ignoreCase = true) ||
+                profile.mediaResolution in listOf("2K", "4K")
+            val primarySize = if (isHighResSeedreamFamily) {
+                resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+            } else {
+                resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+            }
+            val secondarySize = if (isHighResSeedreamFamily) {
+                resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
+            } else {
+                resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
             }
 
-            val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-            val candidateImgUrls = if (profile.endpointPathOverride.isNotBlank()) {
-                listOf("$baseClean${profile.endpointPathOverride}")
-            } else if (baseClean.endsWith("/v1")) {
-                listOf("$baseClean/images/generations", "$rootBase/api/v3/images/generations")
-            } else {
-                listOf("$rootBase/api/v3/images/generations", "$rootBase/v1/images/generations")
+            val candidatePayloads = listOf(
+                // Candidate 1: Primary size + b64_json + optional reference image
+                buildJsonObject {
+                    put("model", model)
+                    put("prompt", latestUserPrompt)
+                    put("size", primarySize)
+                    put("response_format", "b64_json")
+                    if (isHighResSeedreamFamily) put("watermark", false)
+                    if (refImages.isNotEmpty()) {
+                        val firstImg = refImages.first()
+                        put("image", "data:${firstImg.mimeType};base64,${firstImg.base64Data}")
+                    }
+                },
+                // Candidate 2: Alternate resolution tier without watermark/response_format restrictions
+                buildJsonObject {
+                    put("model", model)
+                    put("prompt", latestUserPrompt)
+                    put("size", secondarySize)
+                    if (refImages.isNotEmpty()) {
+                        val firstImg = refImages.first()
+                        put("image", "data:${firstImg.mimeType};base64,${firstImg.base64Data}")
+                    }
+                },
+                // Candidate 3: Minimal universal payload (model + prompt only)
+                buildJsonObject {
+                    put("model", model)
+                    put("prompt", latestUserPrompt)
+                }
+            )
+
+            val candidateImgUrls = when {
+                profile.useExactEndpointUrl || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
+                    listOf(resolveSmartEndpointUrl(profile, "/v1/images/generations", "/images/generations"))
+                hasVersionSuffix -> listOf(
+                    "$baseClean/images/generations",
+                    "$rootBase/v1/images/generations",
+                    "$rootBase/api/v3/images/generations"
+                ).distinct()
+                else -> listOf(
+                    "$rootBase/v1/images/generations",
+                    "$rootBase/api/v3/images/generations",
+                    "$baseClean/images/generations"
+                ).distinct()
             }
 
             var bodyText = ""
             var lastStatus = 0
-            for (candidate in candidateImgUrls) {
-                val finalUrl = buildUrlWithAuthQuery(profile, candidate)
-                onStatus("Generating Seedream image ($model • $size)…", "")
-                onRawWire(reqStr, "Dispatching to $finalUrl ...")
+            var reqStr = ""
+            outerImgLoop@ for (candidateUrl in candidateImgUrls) {
+                val finalUrl = buildUrlWithAuthQuery(profile, candidateUrl)
+                for ((pIdx, candPayload) in candidatePayloads.withIndex()) {
+                    val finalPayload = mergeRawJsonExtraBody(candPayload, profile.rawJsonExtraBody)
+                    reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
+                    onStatus("Generating image ($model • ${ profile.mediaAspectRatio })…", "")
+                    onRawWire(reqStr, "Dispatching to $finalUrl ...")
 
-                val resp = httpClient.post(finalUrl) {
-                    applyAuthAndCustomHeaders(profile)
-                    contentType(ContentType.Application.Json)
-                    setBody(reqStr)
+                    val resp = httpClient.post(finalUrl) {
+                        applyAuthAndCustomHeaders(profile)
+                        contentType(ContentType.Application.Json)
+                        setBody(reqStr)
+                    }
+                    bodyText = resp.bodyAsText()
+                    lastStatus = resp.status.value
+                    onRawWire(reqStr, bodyText)
+                    if (resp.status.isSuccess()) break@outerImgLoop
+                    if (lastStatus == 404 || lastStatus == 405 || lastStatus == 501) {
+                        break // Try next URL
+                    }
+                    if ((lastStatus == 400 || lastStatus == 422) && pIdx < candidatePayloads.lastIndex) {
+                        val lowerErr = bodyText.lowercase()
+                        if (lowerErr.contains("video") || lowerErr.contains("contents/generations/tasks")) {
+                            break@outerImgLoop
+                        }
+                        continue // Self-heal payload parameters
+                    }
+                    break
                 }
-                bodyText = resp.bodyAsText()
-                lastStatus = resp.status.value
-                onRawWire(reqStr, bodyText)
-                if (resp.status.isSuccess()) break
-                if (lastStatus != 404 && lastStatus != 405 && lastStatus != 501) break
             }
 
             if (lastStatus == 404 || lastStatus == 405 || lastStatus == 501) {
-                // Proxy wraps Seedream in /v1/chat/completions — fall back seamlessly!
-                onStatus("Proxy wraps Seedream in /v1/chat/completions — routing via Chat Completions…", "")
+                onStatus("Routing image model via /v1/chat/completions…", "")
                 executeOpenAiChatCompletionsLoop(
                     profile = profile,
                     model = model,
@@ -6115,14 +6506,26 @@ object AiProviderEngine {
                 error("Image Generation HTTP $lastStatus: $bodyText")
             }
 
+            onFirstToken()
             val root = json.parseToJsonElement(bodyText).jsonObject
-            val dataArr = root["data"] as? JsonArray ?: JsonArray(emptyList())
-            for (itemEl in dataArr) {
-                val itemObj = itemEl as? JsonObject ?: continue
-                val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
-                val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
-                val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-                saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
+            val dataArr = root["data"] as? JsonArray
+                ?: root["images"] as? JsonArray
+                ?: JsonArray(emptyList())
+            if (dataArr.isNotEmpty()) {
+                for (itemEl in dataArr) {
+                    val itemObj = itemEl as? JsonObject ?: continue
+                    val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull
+                        ?: itemObj["base64"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
+                    saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
+                }
+            } else {
+                val directUrl = root["url"]?.jsonPrimitive?.contentOrNull ?: ""
+                val directB64 = root["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                if (directUrl.isNotBlank() || directB64.isNotBlank()) {
+                    saveAndEmitImage(directB64, directUrl, "image/png", profile.mediaAspectRatio, "", onMedia, sessionId = session.id)
+                }
             }
         }
     }
@@ -7005,7 +7408,6 @@ object AiProviderEngine {
                                 header("Authorization", "Bearer $key")
                             }
                         }
-                        ProviderProtocol.BYTEDANCE_ARK -> header("Authorization", "Bearer $key")
                     }
                 }
             }
