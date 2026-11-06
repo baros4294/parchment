@@ -12,6 +12,9 @@
    - Never pair redundant text labels with self-explanatory icons or repeat toggle titles in subtitles.
    - Use bounded vertical palettes for `/` and `@` autocomplete and wrapped `FlowRow`s (never horizontal scroll bars).
 
+5. **Codebase Purity & Official Spec Verification**:
+   - Keep `composeApp/src/` and `PARCHMENT_MEMORY.md` 100% focused on Parchment only; all acknowledgements to external projects belong exclusively in `README.md`.
+   - Always verify API protocol schemas, reasoning/signature rules, and tool-calling formats via official documentation web searches.
 ## 2. Foolproof Memory, Daemon & Performance Invariants (Anti-OOM Shield)
 1. **Zero Orphan Gradle/Kotlin Daemons (`gradle.properties`)**:
    - Always keep `org.gradle.daemon=false` and `-Xmx1280m` in `gradle.properties`, and pass `--no-daemon` when running `./gradlew` so `OpenJDK Platform binary` daemons never linger in Windows Task Manager.

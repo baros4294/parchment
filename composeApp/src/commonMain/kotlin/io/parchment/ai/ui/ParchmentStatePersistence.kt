@@ -353,12 +353,36 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
                 }
             } else v.mediaItems
 
+            val rawVarSig = v.thinkingSignature
+            val cleanVarSig = if (rawVarSig.length > 32 && rawVarSig.indexOf('=') in 0 until rawVarSig.trimEnd('=').length) {
+                io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(rawVarSig, forFunctionCall = false)
+            } else rawVarSig
+            var varToolsSigChanged = false
+            val updatedTools = if (v.toolCalls.isNotEmpty()) {
+                v.toolCalls.map { tc ->
+                    val rawTcSig = tc.thoughtSignature
+                    val hasGluedTcSig = rawTcSig.length > 32 &&
+                        (rawTcSig.indexOf('=') in 0 until rawTcSig.trimEnd('=').length ||
+                            io.parchment.ai.network.AiProviderEngine.isGeminiServerSideToolSignature(rawTcSig))
+                    if (hasGluedTcSig) {
+                        val sanitizedTcSig = io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(rawTcSig, forFunctionCall = true)
+                        if (sanitizedTcSig != rawTcSig) {
+                            varToolsSigChanged = true
+                            tc.copy(thoughtSignature = sanitizedTcSig)
+                        } else tc
+                    } else tc
+                }
+            } else v.toolCalls
+
             val hasOversizedWire = v.rawRequestPreview.length > 4096 || v.rawResponsePreview.length > 4096
-            if (varAttChanged || varMediaChanged || hasOversizedWire) {
+            val varSigChanged = cleanVarSig != rawVarSig
+            if (varAttChanged || varMediaChanged || hasOversizedWire || varSigChanged || varToolsSigChanged) {
                 nodeChanged = true
                 v.copy(
                     attachments = updatedAtts,
                     mediaItems = updatedMedia,
+                    thinkingSignature = cleanVarSig,
+                    toolCalls = updatedTools,
                     rawRequestPreview = if (v.rawRequestPreview.length > 4096) v.rawRequestPreview.take(4096) else v.rawRequestPreview,
                     rawResponsePreview = if (v.rawResponsePreview.length > 4096) v.rawResponsePreview.take(4096) else v.rawResponsePreview
                 )

@@ -1636,5 +1636,14 @@ class ParchmentProtocolAndHarnessTest {
             totalToolExecutionMs = 0L
         )
         assertTrue(calmMetrics.tokensPerSec in 5.0..20.0, "88 tokens over 10.5s wall-clock generation must be ~8.3 tok/s, got ${calmMetrics.tokensPerSec}")
+
+        // 5. Verify automatic on-load / on-save session signature self-repair (stripRedundantAttachmentBase64)
+        val corruptedSession = sessionWithMedia.copy(
+            messages = multiBatchHistory
+        )
+        val selfHealedSession = io.parchment.ai.ui.stripRedundantAttachmentBase64(corruptedSession)
+        val healedAsstVar = selfHealedSession.messages[1].activeVariant
+        assertEquals(cleanFnSigB64, healedAsstVar.thinkingSignature, "On-load/on-save sanitizer must repair glued variant thinkingSignature")
+        assertEquals(cleanFnSigB64, healedAsstVar.toolCalls[0].thoughtSignature, "On-load/on-save sanitizer must repair glued toolCall thoughtSignature")
     }
 }

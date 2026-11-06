@@ -1722,6 +1722,7 @@ object AiProviderEngine {
             loopStep++
             val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>() // callId -> (name, argsJson)
             val roundThoughtSig = StringBuilder()
+            val stepSigByIndex = mutableMapOf<Int, StringBuilder>()
             val roundThoughtText = StringBuilder()
             val roundModelText = StringBuilder()
             var roundStatus = ""
@@ -1743,13 +1744,25 @@ object AiProviderEngine {
                 }
             }
 
-            fun emitUniqueRoundSig(sig: String): String {
+            fun emitUniqueRoundSig(sig: String, stepIdx: Int = -1): String {
+                if (sig.isEmpty()) return ""
+                if (stepIdx >= 0) {
+                    val stepBuilder = stepSigByIndex.getOrPut(stepIdx) { StringBuilder() }
+                    val emitted = appendSignatureChunkSafe(stepBuilder, sig)
+                    val fullStepSig = stepBuilder.toString()
+                    if (!isGeminiServerSideToolSignature(fullStepSig) || roundThoughtSig.isEmpty()) {
+                        roundThoughtSig.setLength(0)
+                        roundThoughtSig.append(fullStepSig)
+                    }
+                    return emitted
+                }
                 return appendSignatureChunkSafe(roundThoughtSig, sig)
             }
 
             while (true) {
                 turnToolCalls.clear()
                 roundThoughtSig.clear()
+                stepSigByIndex.clear()
                 roundThoughtText.clear()
                 roundModelText.clear()
                 roundStatus = ""
@@ -2030,7 +2043,7 @@ object AiProviderEngine {
                                             pendingFnArgsByIndex[idx] = callId to (fnName to StringBuilder(initialArgs))
                                         } else if (cType == "thought") {
                                             val sig = contentObj?.get("signature")?.jsonPrimitive?.contentOrNull ?: ""
-                                            val uniqueSig = emitUniqueRoundSig(sig)
+                                            val uniqueSig = emitUniqueRoundSig(sig, idx)
                                             if (uniqueSig.isNotEmpty()) {
                                                 onThinking("", uniqueSig)
                                             }
@@ -2071,7 +2084,7 @@ object AiProviderEngine {
                                         val deltaObj = evObj["delta"] as? JsonObject ?: evObj
                                         val deltaType = deltaObj["type"]?.jsonPrimitive?.contentOrNull ?: ""
                                         val sigDelta = deltaObj["signature"]?.jsonPrimitive?.contentOrNull ?: ""
-                                        val uniqueSig = emitUniqueRoundSig(sigDelta)
+                                        val uniqueSig = emitUniqueRoundSig(sigDelta, idx)
                                         if (uniqueSig.isNotEmpty()) {
                                             onThinking("", uniqueSig)
                                         }
@@ -2225,7 +2238,7 @@ object AiProviderEngine {
                                         }
                                         extractCitationsFromGeminiObject(contentObj, onCitation)
                                     }
-                                    "interaction.complete", "interaction.completed" -> {
+                                    "interaction.complete", "interaction.completed", "interaction.requires_action" -> {
                                         val completedObj = interactionSub ?: evObj
                                         roundStatus = completedObj["status"]?.jsonPrimitive?.contentOrNull
                                             ?: evObj["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -4382,6 +4395,7 @@ object AiProviderEngine {
         val fullTextAccumulator = StringBuilder()
         var stripSamplingOnRetry = false
         var omitReasoningEffortOnRetry = false
+        var maxTokensDialectOverride = "auto" // "auto" | "max_completion_tokens" | "max_tokens" | "omit"
         var omitStreamOptionsOnRetry = false
         var omitModalitiesOnRetry = false
         var foldHistoricalToolsOnRetry = false
@@ -4417,13 +4431,27 @@ object AiProviderEngine {
                         profile.temperature?.let { put("temperature", it) }
                         profile.topP?.let { put("top_p", it) }
                     }
-                    val maxOut = profile.maxOutputTokens
-                    if (maxOut != null && maxOut > 0) {
-                        put("max_tokens", maxOut)
-                    }
                     val effort = profile.thinkingEffort.trim()
                     val lowerEffort = effort.lowercase()
-                    if (!omitReasoningEffortOnRetry && effort.isNotEmpty() && lowerEffort != "none" && lowerEffort != "off" && lowerEffort != "default") {
+                    val isReasoningRequested = !omitReasoningEffortOnRetry &&
+                        effort.isNotEmpty() &&
+                        lowerEffort != "none" &&
+                        lowerEffort != "off" &&
+                        lowerEffort != "default"
+                    val maxOut = profile.maxOutputTokens
+                    if (maxOut != null && maxOut > 0 && maxTokensDialectOverride != "omit") {
+                        val useCompletionTokensKey = when (maxTokensDialectOverride) {
+                            "max_completion_tokens" -> true
+                            "max_tokens" -> false
+                            else -> isReasoningRequested
+                        }
+                        if (useCompletionTokensKey) {
+                            put("max_completion_tokens", maxOut)
+                        } else {
+                            put("max_tokens", maxOut)
+                        }
+                    }
+                    if (isReasoningRequested) {
                         val normalizedEffort = when (lowerEffort) {
                             "max" -> "high"
                             else -> lowerEffort
@@ -4607,6 +4635,22 @@ object AiProviderEngine {
                 } catch (e: Throwable) {
                     val errMsg = (e.message ?: e.toString()).lowercase()
                     if (!stepEmittedOutput && roundToolCalls.isEmpty() && errMsg.contains("http 400")) {
+                        if (maxTokensDialectOverride != "omit" && (errMsg.contains("max_tokens") || errMsg.contains("max_completion_tokens"))) {
+                            val wasUsingCompletionKey = when (maxTokensDialectOverride) {
+                                "max_completion_tokens" -> true
+                                "max_tokens" -> false
+                                else -> !omitReasoningEffortOnRetry &&
+                                    profile.thinkingEffort.trim().lowercase() !in setOf("", "none", "off", "default")
+                            }
+                            if (maxTokensDialectOverride == "auto") {
+                                maxTokensDialectOverride = if (wasUsingCompletionKey) "max_tokens" else "max_completion_tokens"
+                                onStatus("Switching token limit parameter to $maxTokensDialectOverride…")
+                            } else {
+                                maxTokensDialectOverride = "omit"
+                                onStatus("Endpoint rejected token cap parameter — retrying with model default limit…")
+                            }
+                            continue
+                        }
                         if (!omitReasoningEffortOnRetry && (errMsg.contains("reasoning_effort") || errMsg.contains("reasoning"))) {
                             omitReasoningEffortOnRetry = true
                             onStatus("Endpoint rejected reasoning_effort — retrying without reasoning_effort…")
@@ -4928,7 +4972,7 @@ object AiProviderEngine {
         // Mutable conversation list for multi-step tool loop
         val extraLoopMessages = mutableListOf<JsonObject>()
         var stripSamplingOnRetry = false
-        // "auto" -> adaptive (or budget if thinkingBudgetTokens >= 1024); "budget" -> fallback enabled+budget; "omit" -> omit thinking object
+        // "auto" -> adaptive (or budget if thinkingBudgetTokens >= 1024); "adaptive" -> force adaptive; "budget" -> force enabled+budget; "omit" -> omit thinking object
         var thinkingModeOverride = "auto"
         var omitNativeWebSearchOnRetry = false
         var loopStep = 0
@@ -4947,9 +4991,11 @@ object AiProviderEngine {
                 val lowerEffort = effort.lowercase()
                 val thinkBudget = profile.thinkingBudgetTokens ?: 0
                 val isThinkingRequested = lowerEffort != "none" && lowerEffort != "off" && thinkingModeOverride != "omit"
-                val useBudgetMode = isThinkingRequested && (thinkingModeOverride == "budget" || thinkBudget >= 1024)
+                val useBudgetMode = isThinkingRequested && (
+                    thinkingModeOverride == "budget" ||
+                        (thinkingModeOverride == "auto" && thinkBudget >= 1024)
+                    )
                 val useAdaptiveMode = isThinkingRequested && !useBudgetMode
-
                 val payloadObj = buildJsonObject {
                     put("model", model)
                     put("stream", true)
@@ -5312,9 +5358,18 @@ object AiProviderEngine {
                             onStatus("Endpoint does not support native web_search_20250305 — falling back to local web_fetch tool…")
                             continue
                         }
-                        if (thinkingModeOverride == "auto" && (errMsg.contains("adaptive") || errMsg.contains("output_config") || errMsg.contains("effort") || errMsg.contains("display"))) {
+                        if (useAdaptiveMode && thinkingModeOverride != "budget" &&
+                            (errMsg.contains("adaptive") || errMsg.contains("output_config") || errMsg.contains("effort") || errMsg.contains("display"))
+                        ) {
                             thinkingModeOverride = "budget"
                             onStatus("Endpoint does not support adaptive thinking — retrying with budget_tokens thinking…")
+                            continue
+                        }
+                        if (useBudgetMode && thinkingModeOverride != "adaptive" &&
+                            (errMsg.contains("budget_tokens") || errMsg.contains("enabled") || errMsg.contains("thinking"))
+                        ) {
+                            thinkingModeOverride = "adaptive"
+                            onStatus("Model uses adaptive thinking — switching from budget_tokens to adaptive thinking…")
                             continue
                         }
                         if (thinkingModeOverride != "omit" && (errMsg.contains("thinking") || errMsg.contains("budget_tokens") || errMsg.contains("output_config") || errMsg.contains("effort"))) {
@@ -5550,7 +5605,8 @@ object AiProviderEngine {
                         val assistantToolBlocks = mutableListOf<JsonObject>()
                         val batchSig = batch.thoughtSignature.trim()
                         val batchThinking = batch.precedingThinking
-                        if (batchSig.isNotBlank() && batchThinking.isNotBlank() &&
+                        if (batchSig.isNotBlank() &&
+                            (batchThinking.isNotBlank() || batches.size == 1) &&
                             isValidAnthropicSignature(batchSig, nodeVar?.providerProtocol)
                         ) {
                             assistantToolBlocks.add(buildJsonObject {
@@ -5602,7 +5658,7 @@ object AiProviderEngine {
                     }
                 } else {
                     val assistantBlocks = mutableListOf<JsonObject>()
-                    if (thinkSig.isNotBlank() && thinkSummary.isNotBlank() &&
+                    if (thinkSig.isNotBlank() &&
                         isValidAnthropicSignature(thinkSig, nodeVar?.providerProtocol)
                     ) {
                         assistantBlocks.add(buildJsonObject {
@@ -5810,19 +5866,26 @@ object AiProviderEngine {
                         put("type", "text")
                         put("text", latestUserPrompt)
                     })
-                    for (img in refImages) {
+                    for ((imgIdx, img) in refImages.withIndex()) {
+                        val imgRole = when {
+                            refImages.size == 1 -> "first_frame"
+                            refImages.size == 2 && imgIdx == 0 -> "first_frame"
+                            refImages.size == 2 && imgIdx == 1 -> "last_frame"
+                            else -> "reference_image"
+                        }
                         add(buildJsonObject {
                             put("type", "image_url")
                             putJsonObject("image_url") {
                                 put("url", "data:${img.mimeType};base64,${img.base64Data}")
                             }
+                            put("role", imgRole)
                         })
                     }
                 }
                 if (profile.mediaAspectRatio.isNotBlank()) {
                     put("ratio", profile.mediaAspectRatio)
                 }
-                put("duration", profile.videoDurationSeconds.coerceIn(2, 15))
+                put("duration", profile.videoDurationSeconds.coerceIn(4, 15))
                 put("resolution", videoRes)
                 put("generate_audio", profile.videoGenerateAudio)
                 put("watermark", false)
@@ -5930,7 +5993,11 @@ object AiProviderEngine {
                     ?: "succeeded"
             }
 
-            if (status.equals("failed", ignoreCase = true) || status.equals("cancelled", ignoreCase = true) || status.equals("canceled", ignoreCase = true)) {
+            if (status.equals("failed", ignoreCase = true) ||
+                status.equals("expired", ignoreCase = true) ||
+                status.equals("cancelled", ignoreCase = true) ||
+                status.equals("canceled", ignoreCase = true)
+            ) {
                 val errMsg = (latestTaskObj["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull
                     ?: latestTaskObj.toString()
                 error("Seedance Video Task $status: $errMsg")
