@@ -337,18 +337,29 @@ private fun SvgGradientDef.toComposeBrush(
     }
 }
 
+private val SVG_COMMENT_REGEX = Regex("(?s)<!--.*?-->")
+private val SVG_STYLE_TAG_REGEX = Regex("(?is)<style\\b[^>]*>(.*?)</style>")
+private val SVG_CSS_RULE_REGEX = Regex("""([^{]+)\{([^}]*)\}""")
+private val SVG_XML_TAG_REGEX = Regex("""<(/?)([a-zA-Z0-9:_-]+)([^>]*?)(/?)>""", RegexOption.DOT_MATCHES_ALL)
+private val SVG_ATTR_PAIR_REGEX = Regex("""([a-zA-Z0-9:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+private val SVG_WHITESPACE_REGEX = Regex("\\s+")
+private val SVG_WS_COMMA_REGEX = Regex("[\\s,]+")
+private val SVG_WS_COMMA_SLASH_REGEX = Regex("[\\s,/]+")
+private val SVG_TRANSFORM_FN_REGEX = Regex("""([a-zA-Z]+)\s*\(([^)]*)\)""")
+private val SVG_NUMBER_TOKEN_REGEX = Regex("""[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?""")
+
 internal fun parseSvgSceneDocument(rawSvg: String, defaultCurrentColor: Color = Color.Black): SvgSceneDocument? {
     val cleanXml = rawSvg
-        .replace(Regex("(?s)<!--.*?-->"), "")
+        .replace(SVG_COMMENT_REGEX, "")
         .trim()
     val svgStart = cleanXml.indexOf("<svg", ignoreCase = true)
     if (svgStart == -1) return null
 
     // 1. Parse CSS <style> rules (.class or tag -> style map)
     val cssRules = mutableMapOf<String, Map<String, String>>()
-    Regex("(?is)<style\\b[^>]*>(.*?)</style>").findAll(cleanXml).forEach { m ->
+    SVG_STYLE_TAG_REGEX.findAll(cleanXml).forEach { m ->
         val cssBody = m.groupValues[1]
-        Regex("""([^{]+)\{([^}]*)\}""").findAll(cssBody).forEach { ruleMatch ->
+        SVG_CSS_RULE_REGEX.findAll(cssBody).forEach { ruleMatch ->
             val selectors = ruleMatch.groupValues[1].split(',').map { it.trim() }.filter { it.isNotEmpty() }
             val decls = parseInlineCssDeclarations(ruleMatch.groupValues[2])
             for (sel in selectors) {
@@ -358,7 +369,7 @@ internal fun parseSvgSceneDocument(rawSvg: String, defaultCurrentColor: Color = 
     }
 
     // 2. Tokenize XML tags in document order
-    val tagRegex = Regex("""<(/?)([a-zA-Z0-9:_-]+)([^>]*?)(/?)>""", RegexOption.DOT_MATCHES_ALL)
+    val tagRegex = SVG_XML_TAG_REGEX
     var minX = 0f
     var minY = 0f
     var vbW = 0f
@@ -581,14 +592,14 @@ private fun parseXmlAttributes(
     val map = mutableMapOf<String, String>()
     cssRules[tagName]?.let { map.putAll(it) }
 
-    val attrRegex = Regex("""([a-zA-Z0-9:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+    val attrRegex = SVG_ATTR_PAIR_REGEX
     for (m in attrRegex.findAll(attrBody)) {
         val key = m.groupValues[1].lowercase()
         val value = m.groupValues[2].ifEmpty { m.groupValues[3] }.trim()
         map[key] = value
     }
 
-    map["class"]?.split(Regex("\\s+"))?.forEach { cls ->
+    map["class"]?.split(SVG_WHITESPACE_REGEX)?.forEach { cls ->
         if (cls.isNotEmpty()) {
             cssRules[".$cls"]?.let { map.putAll(it) }
             cssRules["$tagName.$cls"]?.let { map.putAll(it) }
@@ -641,7 +652,7 @@ private fun resolveChildSvgStyle(
     val dashArray = if (attrs.containsKey("stroke-dasharray")) {
         val raw = attrs["stroke-dasharray"].orEmpty().trim()
         if (raw.equals("none", ignoreCase = true) || raw.isEmpty()) null
-        else raw.split(Regex("[\\s,]+")).mapNotNull { parseSvgLength(it, 0f).takeIf { v -> v > 0f } }.toFloatArray().takeIf { it.isNotEmpty() }
+        else raw.split(SVG_WS_COMMA_REGEX).mapNotNull { parseSvgLength(it, 0f).takeIf { v -> v > 0f } }.toFloatArray().takeIf { it.isNotEmpty() }
     } else {
         parent.strokeDashArray
     }
@@ -721,7 +732,7 @@ internal fun parseSvgColorString(raw: String, currentColor: Color = Color.Black)
 
     if (s.startsWith("rgb")) {
         val inner = s.substringAfter('(').substringBefore(')')
-        val parts = inner.split(Regex("[\\s,/]+")).filter { it.isNotEmpty() }
+        val parts = inner.split(SVG_WS_COMMA_SLASH_REGEX).filter { it.isNotEmpty() }
         if (parts.size >= 3) {
             fun parseChan(p: String): Int {
                 return if (p.endsWith("%")) {
@@ -744,7 +755,7 @@ internal fun parseSvgColorString(raw: String, currentColor: Color = Color.Black)
 
     if (s.startsWith("hsl")) {
         val inner = s.substringAfter('(').substringBefore(')')
-        val parts = inner.split(Regex("[\\s,/]+")).filter { it.isNotEmpty() }
+        val parts = inner.split(SVG_WS_COMMA_SLASH_REGEX).filter { it.isNotEmpty() }
         if (parts.size >= 3) {
             val h = ((parts[0].removeSuffix("deg").toFloatOrNull() ?: 0f) % 360f + 360f) % 360f
             val sat = ((parts[1].removeSuffix("%").toFloatOrNull() ?: 0f) / 100f).coerceIn(0f, 1f)
@@ -775,10 +786,10 @@ private fun parseSvgLength(raw: String?, defaultVal: Float, containerSpan: Float
 
 internal fun parseSvgTransform(raw: String): Affine2D {
     var result = Affine2D()
-    val fnRegex = Regex("""([a-zA-Z]+)\s*\(([^)]*)\)""")
+    val fnRegex = SVG_TRANSFORM_FN_REGEX
     for (m in fnRegex.findAll(raw)) {
         val fn = m.groupValues[1].lowercase()
-        val args = m.groupValues[2].trim().split(Regex("[\\s,]+")).mapNotNull { it.toFloatOrNull() }
+        val args = m.groupValues[2].trim().split(SVG_WS_COMMA_REGEX).mapNotNull { it.toFloatOrNull() }
         if (args.isEmpty()) continue
         val step = when (fn) {
             "translate" -> {
@@ -868,7 +879,7 @@ private fun buildEllipsePath(cx: Float, cy: Float, rx: Float, ry: Float): Path {
 }
 
 private fun buildPolyPath(pointsStr: String, close: Boolean): Path? {
-    val nums = Regex("""[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?""")
+    val nums = SVG_NUMBER_TOKEN_REGEX
         .findAll(pointsStr)
         .mapNotNull { it.value.toFloatOrNull() }
         .toList()

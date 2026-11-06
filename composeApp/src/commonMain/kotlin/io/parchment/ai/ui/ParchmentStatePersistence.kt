@@ -315,23 +315,50 @@ internal fun markSessionHydrated(sessionId: String) {
 
 /**
  * Strips duplicate in-memory base64 strings from attachments when `localFilePath` is already persisted on disk,
- * and caps raw wire previews so active chats stay lightweight in RAM.
+ * automatically relocates any legacy root `media/` files into `chats/<sessionId>/media/`, and caps raw wire previews.
  */
 internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
     var changed = false
+    val sessId = session.id
     val cleanedMessages = session.messages.map { node ->
         var nodeChanged = false
         val cleanedVariants = node.variants.map { v ->
-            val hasRedundantB64 = v.attachments.any { it.localFilePath.isNotBlank() && it.base64Data.isNotBlank() }
+            var varAttChanged = false
+            val updatedAtts = if (v.attachments.isNotEmpty()) {
+                v.attachments.map { att ->
+                    val relocatedPath = if (att.localFilePath.isNotBlank() && sessId.isNotBlank()) {
+                        PlatformBridge.relocateLegacyMediaToChatFolder(att.localFilePath, sessId)
+                    } else att.localFilePath
+                    val shouldStripB64 = relocatedPath.isNotBlank() && att.base64Data.isNotBlank()
+                    if (relocatedPath != att.localFilePath || shouldStripB64) {
+                        varAttChanged = true
+                        att.copy(
+                            localFilePath = relocatedPath,
+                            base64Data = if (shouldStripB64) "" else att.base64Data
+                        )
+                    } else att
+                }
+            } else v.attachments
+
+            var varMediaChanged = false
+            val updatedMedia = if (v.mediaItems.isNotEmpty() && sessId.isNotBlank()) {
+                v.mediaItems.map { m ->
+                    val relocatedPath = if (m.localFilePath.isNotBlank()) {
+                        PlatformBridge.relocateLegacyMediaToChatFolder(m.localFilePath, sessId)
+                    } else m.localFilePath
+                    if (relocatedPath != m.localFilePath) {
+                        varMediaChanged = true
+                        m.copy(localFilePath = relocatedPath)
+                    } else m
+                }
+            } else v.mediaItems
+
             val hasOversizedWire = v.rawRequestPreview.length > 4096 || v.rawResponsePreview.length > 4096
-            if (hasRedundantB64 || hasOversizedWire) {
+            if (varAttChanged || varMediaChanged || hasOversizedWire) {
                 nodeChanged = true
                 v.copy(
-                    attachments = if (hasRedundantB64) {
-                        v.attachments.map { att ->
-                            if (att.localFilePath.isNotBlank() && att.base64Data.isNotBlank()) att.copy(base64Data = "") else att
-                        }
-                    } else v.attachments,
+                    attachments = updatedAtts,
+                    mediaItems = updatedMedia,
                     rawRequestPreview = if (v.rawRequestPreview.length > 4096) v.rawRequestPreview.take(4096) else v.rawRequestPreview,
                     rawResponsePreview = if (v.rawResponsePreview.length > 4096) v.rawResponsePreview.take(4096) else v.rawResponsePreview
                 )
@@ -556,6 +583,83 @@ internal fun buildExportFileNameForChat(session: ChatSession): String {
         .ifBlank { "chat" }
     val shortId = session.id.takeLast(8).replace(EXPORT_SHORT_ID_REGEX, "")
     return if (shortId.isNotEmpty()) "$safeTitle-$shortId.chat.json" else "$safeTitle.chat.json"
+}
+
+internal fun buildExportZipFileNameForChat(session: ChatSession): String =
+    buildExportFileNameForChat(session).removeSuffix(".json") + ".zip"
+
+/**
+ * Bundles one or more `ChatSession`s into a self-contained `.zip` archive where each chat has its own
+ * subfolder (`<sessionId>/chat.json` + `<sessionId>/media/<fileName>`) and portable relative media paths.
+ */
+internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): ByteArray {
+    val jsonEntries = mutableListOf<Pair<String, ByteArray>>()
+    val mediaFileEntries = mutableListOf<Pair<String, String>>()
+    val prettyJson = io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
+
+    for (rawSession in sessions) {
+        val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
+        val safeSessId = fullSession.id.trim().replace(EXPORT_UNSAFE_CHAR_REGEX, "_").ifBlank { "session" }
+        val portableMessages = fullSession.messages.map { node ->
+            node.copy(
+                variants = node.variants.map { v ->
+                    val portableAtts = v.attachments.map { att ->
+                        if (att.localFilePath.isNotBlank()) {
+                            val mediaName = att.localFilePath.replace('\\', '/').substringAfterLast('/')
+                                .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
+                            if (mediaName.isNotEmpty()) {
+                                val zipEntryPath = "$safeSessId/media/$mediaName"
+                                mediaFileEntries.add(zipEntryPath to att.localFilePath)
+                                att.copy(localFilePath = "chats/$zipEntryPath", base64Data = "")
+                            } else att
+                        } else att
+                    }
+                    val portableMedia = v.mediaItems.map { m ->
+                        if (m.localFilePath.isNotBlank()) {
+                            val mediaName = m.localFilePath.replace('\\', '/').substringAfterLast('/')
+                                .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
+                            if (mediaName.isNotEmpty()) {
+                                val zipEntryPath = "$safeSessId/media/$mediaName"
+                                mediaFileEntries.add(zipEntryPath to m.localFilePath)
+                                m.copy(localFilePath = "chats/$zipEntryPath")
+                            } else m
+                        } else m
+                    }
+                    v.copy(
+                        isStreaming = false,
+                        attachments = portableAtts,
+                        mediaItems = portableMedia
+                    )
+                }
+            )
+        }
+        val portableSession = fullSession.copy(messages = portableMessages)
+        val chatJsonBytes = prettyJson.encodeToString(ChatSession.serializer(), portableSession).encodeToByteArray()
+        jsonEntries.add("$safeSessId/chat.json" to chatJsonBytes)
+    }
+
+    return PlatformBridge.createZipArchive(entries = jsonEntries, fileEntries = mediaFileEntries)
+}
+
+/**
+ * Decodes one or more `ChatSession`s from either a `.zip` chat bundle (streaming its `media/` files directly
+ * into `chats/<sessionId>/media/` on disk) or a `.json` chat file.
+ */
+internal fun decodeChatSessionsFromPickedFile(
+    fileName: String,
+    bytes: ByteArray
+): List<ChatSession> {
+    if (bytes.isEmpty()) return emptyList()
+    val isZip = fileName.endsWith(".zip", ignoreCase = true) ||
+        (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())
+    val rawJsons = if (isZip) {
+        PlatformBridge.extractZipArchiveToChatStorage(bytes)
+    } else {
+        listOfNotNull(runCatching { bytes.decodeToString() }.getOrNull())
+    }
+    return rawJsons.flatMap { raw ->
+        decodeChatSessionsFromRawJson(raw).map { stripRedundantAttachmentBase64(it) }
+    }
 }
 
 /**

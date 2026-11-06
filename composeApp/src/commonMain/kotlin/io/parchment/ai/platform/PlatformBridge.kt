@@ -207,8 +207,14 @@ expect object PlatformBridge {
     // In-App Zero-Browser OTA Update Installer
     fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String>
 
-    // Generated Image & Video Media Storage and Native Playback
-    fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray): String
+    // Generated Image & Video Media Storage, Per-Chat Media Bundling, and Native Playback
+    fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String = ""): String
+    fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String
+    fun createZipArchive(
+        entries: List<Pair<String, ByteArray>>,
+        fileEntries: List<Pair<String, String>> = emptyList()
+    ): ByteArray
+    fun extractZipArchiveToChatStorage(zipBytes: ByteArray): List<String>
     fun readBinaryFileBytes(filePath: String): ByteArray?
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)

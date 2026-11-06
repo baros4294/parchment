@@ -142,6 +142,11 @@ enum class SepiaButtonStyle {
     DANGER
 }
 
+private val KISS_SCALE_SPRING = spring<Float>(dampingRatio = 0.78f, stiffness = 680f)
+private val KISS_LIFT_SPRING = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 560f)
+private val COMPACT_BTN_SHAPE = RoundedCornerShape(7.dp)
+private val REGULAR_BTN_SHAPE = RoundedCornerShape(8.dp)
+
 /**
  * 2026 Tactile KISS Interactive Modifier:
  * - Desktop Hover: Hand cursor, subtle micro-lift (`1.018f` scale, `-0.75.dp` Y-shift).
@@ -167,17 +172,11 @@ fun Modifier.kissClickable(
     }
     val scale by animateFloatAsState(
         targetValue = targetScale,
-        animationSpec = spring(
-            dampingRatio = 0.78f,
-            stiffness = 680f
-        )
+        animationSpec = KISS_SCALE_SPRING
     )
     val liftY by animateFloatAsState(
         targetValue = if (isHovered && !isPressed && enabled) -1.2f else 0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = 560f
-        )
+        animationSpec = KISS_LIFT_SPRING
     )
     return this
         .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
@@ -214,7 +213,7 @@ fun SepiaButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
-    val shape = RoundedCornerShape(if (compact) 7.dp else 8.dp)
+    val shape = if (compact) COMPACT_BTN_SHAPE else REGULAR_BTN_SHAPE
 
     val baseBg = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else p.border.copy(alpha = 0.55f)
@@ -224,7 +223,7 @@ fun SepiaButton(
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else p.border.copy(alpha = 0.55f)
     }
 
-    val targetBg = when {
+    val bgColor = when {
         !enabled -> baseBg
         isPressed -> when (style) {
             SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER -> baseBg.copy(alpha = 0.82f)
@@ -239,7 +238,7 @@ fun SepiaButton(
         else -> baseBg
     }
 
-    val targetText = when (style) {
+    val textColor = when (style) {
         SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER ->
             if (enabled) Color(0xFFFAF6EB) else p.mutedInk
         SepiaButtonStyle.OUTLINE -> when {
@@ -254,7 +253,7 @@ fun SepiaButton(
         }
     }
 
-    val targetBorder = when (style) {
+    val borderColor = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else Color.Transparent
         SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else Color.Transparent
         SepiaButtonStyle.OUTLINE -> when {
@@ -266,11 +265,6 @@ fun SepiaButton(
         SepiaButtonStyle.GHOST -> if (enabled && (isPressed || isHovered)) p.accent.copy(alpha = 0.28f) else Color.Transparent
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else Color.Transparent
     }
-
-    val colorSpec = spring<Color>(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
-    val bgColor by animateColorAsState(targetBg, colorSpec)
-    val textColor by animateColorAsState(targetText, colorSpec)
-    val borderColor by animateColorAsState(targetBorder, colorSpec)
 
     val win = LocalParchmentWindowSize.current
     val parsed = remember(text) { parseKissLabelIcons(text) }
@@ -358,29 +352,19 @@ fun SepiaChip(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
-    val shape = RoundedCornerShape(7.dp)
-    val chipColorSpec = spring<Color>(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
-    val bg by animateColorAsState(
-        targetValue = when {
-            isPressed -> p.accent.copy(alpha = 0.24f)
-            selected -> p.accent.copy(alpha = 0.15f)
-            isHovered -> p.accent.copy(alpha = 0.09f)
-            else -> p.cardBg.copy(alpha = 0.78f)
-        },
-        animationSpec = chipColorSpec
-    )
-    val borderCol by animateColorAsState(
-        targetValue = when {
-            selected || isPressed -> p.accent
-            isHovered -> p.accent.copy(alpha = 0.6f)
-            else -> p.border.copy(alpha = 0.48f)
-        },
-        animationSpec = chipColorSpec
-    )
-    val txtCol by animateColorAsState(
-        targetValue = if (selected || isPressed || isHovered) p.accent else p.narrationInk,
-        animationSpec = chipColorSpec
-    )
+    val shape = COMPACT_BTN_SHAPE
+    val bg = when {
+        isPressed -> p.accent.copy(alpha = 0.24f)
+        selected -> p.accent.copy(alpha = 0.15f)
+        isHovered -> p.accent.copy(alpha = 0.09f)
+        else -> p.cardBg.copy(alpha = 0.78f)
+    }
+    val borderCol = when {
+        selected || isPressed -> p.accent
+        isHovered -> p.accent.copy(alpha = 0.6f)
+        else -> p.border.copy(alpha = 0.48f)
+    }
+    val txtCol = if (selected || isPressed || isHovered) p.accent else p.narrationInk
 
     val parsed = remember(label) { parseKissLabelIcons(label) }
     val win = LocalParchmentWindowSize.current

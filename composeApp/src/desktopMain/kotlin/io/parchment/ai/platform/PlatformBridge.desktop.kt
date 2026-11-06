@@ -16,13 +16,19 @@ import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.FilenameFilter
 import java.io.InputStream
 import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import javax.imageio.ImageIO
 import javax.swing.ImageIcon
 import javax.swing.JFileChooser
@@ -96,17 +102,30 @@ actual object PlatformBridge {
 
     actual fun getChatsStorageDirectoryPath(): String = chatsDir().absolutePath
 
+    private fun backupsDir(): File = File(resolveStorageDir(), "backups").also {
+        if (!it.exists()) it.mkdirs()
+    }
+
     private fun settingsFile(): File = File(resolveStorageDir(), "parchment-settings.json")
     private fun legacyStateFile(): File = File(resolveStorageDir(), "parchment-state.json")
 
+    private val SAFE_SESSION_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
+    private val API_KEY_NONEMPTY_REGEX = Regex("\"apiKey\":\"[^\"]+\"")
+    private val NON_DEFAULT_ASST_ID_REGEX = Regex("\"id\":\"asst-(?!default\")")
+    private val NON_EMPTY_SYS_PROMPT_REGEX = Regex("\"systemPrompt\":\"[^\"]+\"")
+    private val UNSAFE_EXPORT_FILENAME_REGEX = Regex("[\\\\/:*?\"<>|]")
+
     private fun sanitizeSessionFileName(sessionId: String): String =
-        sessionId.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "session" }
+        sessionId.trim().replace(SAFE_SESSION_NAME_REGEX, "_").ifBlank { "session" }
+
+    private fun chatSessionFolder(sessionId: String): File =
+        File(chatsDir(), sanitizeSessionFileName(sessionId))
 
     private fun isBlankDefaultStateJson(json: String): Boolean {
-        val hasNoApiKeys = Regex("\"apiKey\":\"[^\"]+\"").find(json) == null
+        val hasNoApiKeys = API_KEY_NONEMPTY_REGEX.find(json) == null
         val hasNoAssistants = json.contains("\"assistants\":[]") || (
-            !Regex("\"id\":\"asst-(?!default\")").containsMatchIn(json) &&
-                !Regex("\"systemPrompt\":\"[^\"]+\"").containsMatchIn(json)
+            !NON_DEFAULT_ASST_ID_REGEX.containsMatchIn(json) &&
+                !NON_EMPTY_SYS_PROMPT_REGEX.containsMatchIn(json)
             )
         val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
         val hasNoSavedCards = !json.contains("\"savedCards\":[{")
@@ -120,10 +139,19 @@ actual object PlatformBridge {
 
     actual fun loadAppStateJson(): String? {
         val dir = resolveStorageDir()
+        val bakDir = backupsDir()
         val f = settingsFile()
         val tmp = File(dir, "parchment-settings.json.tmp")
-        val prev = File(dir, "parchment-settings.prev.json")
-        val userBak = File(dir, "parchment-settings.user-backup.json")
+        val prev = File(bakDir, "parchment-settings.prev.json")
+        val userBak = File(bakDir, "parchment-settings.user-backup.json")
+        val legacyRootPrev = File(dir, "parchment-settings.prev.json")
+        val legacyRootUserBak = File(dir, "parchment-settings.user-backup.json")
+        if (legacyRootPrev.exists() && !prev.exists()) {
+            runCatching { legacyRootPrev.copyTo(prev, overwrite = true); legacyRootPrev.delete() }
+        }
+        if (legacyRootUserBak.exists() && !userBak.exists()) {
+            runCatching { legacyRootUserBak.copyTo(userBak, overwrite = true); legacyRootUserBak.delete() }
+        }
         val legacy = legacyStateFile()
         val legacyTmp = File(dir, "parchment-state.json.tmp")
         val legacyPrev = File(dir, "parchment-state.prev.json")
@@ -131,7 +159,7 @@ actual object PlatformBridge {
 
         // Retry up to 6 times (50ms apart) in case the previous process during an OTA restart is still releasing its file handle
         repeat(6) { attempt ->
-            val candidates = listOf(f, tmp, prev, userBak, legacy, legacyTmp, legacyPrev, legacyBak)
+            val candidates = listOf(f, tmp, prev, userBak, legacyRootPrev, legacyRootUserBak, legacy, legacyTmp, legacyPrev, legacyBak)
             for (cand in candidates) {
                 val content = runCatching {
                     if (cand.exists() && cand.isFile && cand.length() > 10L) {
@@ -139,7 +167,11 @@ actual object PlatformBridge {
                     } else null
                 }.getOrNull()
                 if (!content.isNullOrBlank()) {
-                    val activeBak = if (userBak.exists() && userBak.length() > 50L) userBak else legacyBak
+                    val activeBak = when {
+                        userBak.exists() && userBak.length() > 50L -> userBak
+                        legacyRootUserBak.exists() && legacyRootUserBak.length() > 50L -> legacyRootUserBak
+                        else -> legacyBak
+                    }
                     if (cand != activeBak && isBlankDefaultStateJson(content) && activeBak.exists() && activeBak.length() > 50L) {
                         val bakContent = runCatching { activeBak.readText(Charsets.UTF_8) }.getOrNull()
                         if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
@@ -161,9 +193,10 @@ actual object PlatformBridge {
         runCatching {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
+            val bakDir = backupsDir()
             val tmp = File(dir, "parchment-settings.json.tmp")
-            val prev = File(dir, "parchment-settings.prev.json")
-            val userBak = File(dir, "parchment-settings.user-backup.json")
+            val prev = File(bakDir, "parchment-settings.prev.json")
+            val userBak = File(bakDir, "parchment-settings.user-backup.json")
             val target = settingsFile()
 
             val incomingIsBlankDefault = isBlankDefaultStateJson(json)
@@ -181,22 +214,52 @@ actual object PlatformBridge {
                 target.writeText(json, Charsets.UTF_8)
                 tmp.delete()
             }
-            // Whenever the state contains actual user customizations, persist a protected user backup!
+            // Whenever the state contains actual user customizations, persist a protected user backup in backups/!
             if (!incomingIsBlankDefault && json.length > 50) {
                 runCatching { target.copyTo(userBak, overwrite = true) }
             }
+            // Clean up any legacy root-level backup files once backups/ is populated
+            File(dir, "parchment-settings.prev.json").takeIf { it.exists() }?.delete()
+            File(dir, "parchment-settings.user-backup.json").takeIf { it.exists() }?.delete()
         }
+    }
+
+    private fun migrateLegacyFlatChatFileIfPresent(safeId: String): File? {
+        val dir = chatsDir()
+        val folder = File(dir, safeId)
+        val folderChatJson = File(folder, "chat.json")
+        val legacyFlat = File(dir, "$safeId.json")
+        val legacyTmp = File(dir, "$safeId.json.tmp")
+        if (legacyFlat.exists() && legacyFlat.isFile && legacyFlat.length() > 5L) {
+            if (!folder.exists()) folder.mkdirs()
+            if (!folderChatJson.exists() || legacyFlat.lastModified() > folderChatJson.lastModified()) {
+                runCatching { legacyFlat.copyTo(folderChatJson, overwrite = true) }
+            }
+            runCatching { legacyFlat.delete() }
+            runCatching { legacyTmp.delete() }
+            return folderChatJson
+        }
+        if (legacyTmp.exists() && legacyTmp.isFile && legacyTmp.length() > 10L) {
+            if (!folder.exists()) folder.mkdirs()
+            if (!folderChatJson.exists()) {
+                runCatching { legacyTmp.copyTo(folderChatJson, overwrite = true) }
+            }
+            runCatching { legacyTmp.delete() }
+            return folderChatJson
+        }
+        return if (folderChatJson.exists()) folderChatJson else null
     }
 
     actual fun loadChatSessionJsonById(sessionId: String): String? = runCatching {
         if (sessionId.isBlank()) return null
-        val dir = chatsDir()
         val safeId = sanitizeSessionFileName(sessionId)
-        val primary = File(dir, "$safeId.json")
+        migrateLegacyFlatChatFileIfPresent(safeId)
+        val folder = chatSessionFolder(safeId)
+        val primary = File(folder, "chat.json")
         if (primary.exists() && primary.isFile && primary.length() > 5L) {
             return primary.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
         }
-        val tmp = File(dir, "$safeId.json.tmp")
+        val tmp = File(folder, "chat.json.tmp")
         if (tmp.exists() && tmp.isFile && tmp.length() > 10L) {
             runCatching { tmp.copyTo(primary, overwrite = true) }
             return tmp.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
@@ -206,38 +269,61 @@ actual object PlatformBridge {
 
     actual fun loadAllChatSessionJsons(): List<String> = runCatching {
         val dir = chatsDir()
-        val files = dir.listFiles()?.toList().orEmpty()
-        // Recover any interrupted .tmp files if their primary .json is missing
-        files.filter { it.name.endsWith(".json.tmp") }.forEach { tmpFile ->
-            val targetName = tmpFile.name.removeSuffix(".tmp")
-            val targetFile = File(dir, targetName)
-            if ((!targetFile.exists() || targetFile.length() <= 5L) && tmpFile.length() > 10L) {
-                runCatching { tmpFile.copyTo(targetFile, overwrite = true) }
+        val entries = dir.listFiles()?.toList().orEmpty()
+        // 1. Migrate any legacy flat chats/<sessionId>.json or .json.tmp files into chats/<sessionId>/chat.json
+        for (f in entries) {
+            if (f.isFile) {
+                when {
+                    f.name.endsWith(".json.tmp", ignoreCase = true) -> {
+                        val safeId = f.name.removeSuffix(".tmp").removeSuffix(".json")
+                        migrateLegacyFlatChatFileIfPresent(safeId)
+                    }
+                    f.name.endsWith(".json", ignoreCase = true) -> {
+                        val safeId = f.name.removeSuffix(".json")
+                        migrateLegacyFlatChatFileIfPresent(safeId)
+                    }
+                }
             }
         }
-        dir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".json", ignoreCase = true) && it.length() > 5L }
-            ?.sortedByDescending { it.lastModified() }
-            ?.parallelStream()
-            ?.map { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
-            ?.toList()
-            ?.filterNotNull()
+        // 2. Scan all per-chat subdirectories chats/<sessionId>/chat.json
+        val chatJsonFiles = dir.listFiles()
+            ?.filter { it.isDirectory }
+            ?.mapNotNull { folder ->
+                val primary = File(folder, "chat.json")
+                val tmp = File(folder, "chat.json.tmp")
+                if ((!primary.exists() || primary.length() <= 5L) && tmp.exists() && tmp.length() > 10L) {
+                    runCatching { tmp.copyTo(primary, overwrite = true) }
+                }
+                primary.takeIf { it.exists() && it.isFile && it.length() > 5L }
+            }
             .orEmpty()
+
+        chatJsonFiles
+            .sortedByDescending { it.lastModified() }
+            .parallelStream()
+            .map { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            .toList()
+            .filterNotNull()
     }.getOrDefault(emptyList())
 
     @Synchronized
     actual fun saveChatSessionJson(sessionId: String, json: String) {
         if (sessionId.isBlank() || json.isBlank()) return
         runCatching {
-            val dir = chatsDir()
             val safeId = sanitizeSessionFileName(sessionId)
-            val target = File(dir, "$safeId.json")
-            val tmp = File(dir, "$safeId.json.tmp")
+            val folder = chatSessionFolder(safeId)
+            if (!folder.exists()) folder.mkdirs()
+            val target = File(folder, "chat.json")
+            val tmp = File(folder, "chat.json.tmp")
             tmp.writeText(json, Charsets.UTF_8)
             if (!tmp.renameTo(target)) {
                 target.writeText(json, Charsets.UTF_8)
                 tmp.delete()
             }
+            // Remove any legacy flat file if still present
+            val dir = chatsDir()
+            File(dir, "$safeId.json").takeIf { it.exists() }?.delete()
+            File(dir, "$safeId.json.tmp").takeIf { it.exists() }?.delete()
         }
     }
 
@@ -247,6 +333,10 @@ actual object PlatformBridge {
         runCatching {
             val dir = chatsDir()
             val safeId = sanitizeSessionFileName(sessionId)
+            val folder = File(dir, safeId)
+            if (folder.exists()) {
+                folder.deleteRecursively()
+            }
             File(dir, "$safeId.json").delete()
             File(dir, "$safeId.json.tmp").delete()
         }
@@ -298,8 +388,10 @@ actual object PlatformBridge {
                     val cat = when {
                         lowerName.endsWith(".tmp") -> io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP
                         lowerRel.startsWith("chats/") && lowerName.endsWith(".json") -> io.parchment.ai.model.StorageFileCategory.CHAT_SESSION
-                        lowerRel.startsWith("media/") && lowerName.startsWith("att-") -> io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
-                        lowerRel.startsWith("media/") -> io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
+                        (lowerRel.startsWith("media/") || lowerRel.contains("/media/")) && lowerName.startsWith("att-") ->
+                            io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
+                        lowerRel.startsWith("media/") || lowerRel.contains("/media/") ->
+                            io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
                         else -> io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS
                     }
                     items.add(
@@ -411,7 +503,7 @@ actual object PlatformBridge {
                     if (!outDir.exists()) outDir.mkdirs()
                     var written = 0
                     for ((fileName, bytes) in files) {
-                        val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "chat-${written + 1}.json" }
+                        val safeName = fileName.replace(UNSAFE_EXPORT_FILENAME_REGEX, "_").ifBlank { "chat-${written + 1}.json" }
                         File(outDir, safeName).writeBytes(bytes)
                         written++
                     }
@@ -1124,19 +1216,168 @@ actual object PlatformBridge {
         "Downloaded ${bytes.size / 1024} KB. Applying silent Windows update & restarting Parchment…"
     }
 
-    actual fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray): String {
-        val mediaDir = File(resolveStorageDir(), "media")
+    private fun resolveLocalMediaFile(filePath: String): File? {
+        val trimmed = filePath.trim()
+        if (trimmed.isEmpty()) return null
+        val direct = File(trimmed)
+        if (direct.isAbsolute && direct.exists() && direct.isFile) return direct
+        val root = resolveStorageDir()
+        val relCandidate = File(root, trimmed.replace('\\', '/'))
+        if (relCandidate.exists() && relCandidate.isFile) return relCandidate
+        // Cross-OS / portable path fallback: extract `chats/<id>/media/<name>` or `media/<name>` suffix
+        val norm = trimmed.replace('\\', '/')
+        val chatsIdx = norm.indexOf("chats/")
+        if (chatsIdx >= 0) {
+            val fromChats = File(root, norm.substring(chatsIdx))
+            if (fromChats.exists() && fromChats.isFile) return fromChats
+        }
+        val mediaIdx = norm.lastIndexOf("/media/")
+        if (mediaIdx >= 0) {
+            val fileNameOnly = norm.substring(mediaIdx + 7)
+            val legacyMedia = File(File(root, "media"), fileNameOnly)
+            if (legacyMedia.exists() && legacyMedia.isFile) return legacyMedia
+        }
+        return null
+    }
+
+    actual fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String): String {
+        val mediaDir = if (sessionId.isNotBlank()) {
+            File(chatSessionFolder(sessionId), "media")
+        } else {
+            File(resolveStorageDir(), "media")
+        }
         if (!mediaDir.exists()) mediaDir.mkdirs()
-        val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val safeName = fileName.replace(SAFE_SESSION_NAME_REGEX, "_")
         val outFile = File(mediaDir, safeName)
         outFile.writeBytes(bytes)
-        synchronized(imageCache) { imageCache.remove(outFile.absolutePath) }
+        synchronized(imageCache) {
+            imageCache.remove(outFile.absolutePath)
+            imageCache.remove(fileName)
+        }
         return outFile.absolutePath
     }
 
+    actual fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String {
+        if (filePath.isBlank() || sessionId.isBlank()) return filePath
+        val resolved = resolveLocalMediaFile(filePath) ?: return filePath
+        val safeSessionId = sanitizeSessionFileName(sessionId)
+        val targetMediaDir = File(chatSessionFolder(safeSessionId), "media")
+        val resolvedNorm = resolved.absolutePath.replace('\\', '/')
+        val targetDirNorm = targetMediaDir.absolutePath.replace('\\', '/')
+        if (resolvedNorm.startsWith("$targetDirNorm/")) {
+            return resolved.absolutePath
+        }
+        return runCatching {
+            if (!targetMediaDir.exists()) targetMediaDir.mkdirs()
+            val targetFile = File(targetMediaDir, resolved.name)
+            if (!targetFile.exists() || targetFile.length() != resolved.length()) {
+                resolved.copyTo(targetFile, overwrite = true)
+            }
+            val legacyRootMediaDir = File(resolveStorageDir(), "media").canonicalFile
+            if (resolved.canonicalFile.parentFile == legacyRootMediaDir) {
+                runCatching { resolved.delete() }
+            }
+            targetFile.absolutePath
+        }.getOrDefault(resolved.absolutePath)
+    }
+
+    actual fun createZipArchive(
+        entries: List<Pair<String, ByteArray>>,
+        fileEntries: List<Pair<String, String>>
+    ): ByteArray {
+        val baos = ByteArrayOutputStream(maxOf(4096, entries.sumOf { it.second.size }))
+        val seenNames = HashSet<String>()
+        val copyBuf = ByteArray(8192)
+        ZipOutputStream(baos).use { zos ->
+            for ((rawEntryPath, data) in entries) {
+                val cleanEntry = rawEntryPath.replace('\\', '/').trimStart('/')
+                if (cleanEntry.isEmpty() || cleanEntry.contains("..") || !seenNames.add(cleanEntry)) continue
+                zos.putNextEntry(ZipEntry(cleanEntry))
+                zos.write(data)
+                zos.closeEntry()
+            }
+            for ((rawEntryPath, localPath) in fileEntries) {
+                val cleanEntry = rawEntryPath.replace('\\', '/').trimStart('/')
+                if (cleanEntry.isEmpty() || cleanEntry.contains("..") || !seenNames.add(cleanEntry)) continue
+                val f = resolveLocalMediaFile(localPath) ?: continue
+                zos.putNextEntry(ZipEntry(cleanEntry))
+                FileInputStream(f).use { fis ->
+                    while (true) {
+                        val n = fis.read(copyBuf)
+                        if (n <= 0) break
+                        zos.write(copyBuf, 0, n)
+                    }
+                }
+                zos.closeEntry()
+            }
+        }
+        return baos.toByteArray()
+    }
+
+    actual fun extractZipArchiveToChatStorage(zipBytes: ByteArray): List<String> = runCatching {
+        val extractedChatJsons = mutableListOf<String>()
+        val copyBuf = ByteArray(8192)
+        val chatsRoot = chatsDir().canonicalFile
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
+            while (true) {
+                val entry = zis.nextEntry ?: break
+                if (entry.isDirectory) {
+                    zis.closeEntry()
+                    continue
+                }
+                val normName = entry.name.replace('\\', '/').trimStart('/')
+                if (normName.isEmpty() || normName.split('/').any { it == ".." }) {
+                    zis.closeEntry()
+                    continue
+                }
+                val lowerName = normName.lowercase()
+                if (lowerName.endsWith(".json")) {
+                    val out = ByteArrayOutputStream()
+                    var total = 0
+                    while (total < 20_000_000) {
+                        val n = zis.read(copyBuf)
+                        if (n <= 0) break
+                        out.write(copyBuf, 0, n)
+                        total += n
+                    }
+                    val jsonStr = out.toByteArray().decodeToString()
+                    if (jsonStr.isNotBlank()) extractedChatJsons.add(jsonStr)
+                } else if (lowerName.contains("/media/") || lowerName.startsWith("media/")) {
+                    val relUnderChats = when {
+                        normName.startsWith("chats/", ignoreCase = true) -> normName.substring(6)
+                        else -> normName
+                    }
+                    val parts = relUnderChats.split('/').filter { it.isNotEmpty() }
+                    val targetFile = if (parts.size >= 3 && parts[1].equals("media", ignoreCase = true)) {
+                        val safeSess = sanitizeSessionFileName(parts[0])
+                        val safeMediaName = parts.last().replace(SAFE_SESSION_NAME_REGEX, "_")
+                        File(File(chatsRoot, "$safeSess/media"), safeMediaName)
+                    } else {
+                        val safeMediaName = parts.last().replace(SAFE_SESSION_NAME_REGEX, "_")
+                        File(File(resolveStorageDir(), "media"), safeMediaName)
+                    }
+                    val canonicalTarget = targetFile.canonicalFile
+                    if (canonicalTarget.toPath().normalize().startsWith(resolveStorageDir().canonicalFile.toPath().normalize())) {
+                        canonicalTarget.parentFile?.mkdirs()
+                        FileOutputStream(canonicalTarget).use { fos ->
+                            var total = 0L
+                            while (total < 150_000_000L) {
+                                val n = zis.read(copyBuf)
+                                if (n <= 0) break
+                                fos.write(copyBuf, 0, n)
+                                total += n
+                            }
+                        }
+                    }
+                }
+                zis.closeEntry()
+            }
+        }
+        extractedChatJsons
+    }.getOrDefault(emptyList())
+
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = runCatching {
-        if (filePath.isBlank()) return null
-        val f = File(filePath)
+        val f = resolveLocalMediaFile(filePath) ?: return null
         if (f.exists() && f.isFile) f.readBytes() else null
     }.getOrNull()
 
@@ -1144,8 +1385,8 @@ actual object PlatformBridge {
         if (filePath.isBlank()) return null
         synchronized(imageCache) { imageCache[filePath]?.let { return it } }
         return runCatching {
-            val f = File(filePath)
-            if (!f.exists() || !f.isFile) return null
+            val f = resolveLocalMediaFile(filePath) ?: return null
+            synchronized(imageCache) { imageCache[f.absolutePath]?.let { return it } }
             val bmp = Image.makeFromEncoded(f.readBytes()).use { it.toComposeImageBitmap() }
             synchronized(imageCache) {
                 while (imageCache.size >= 6) {
@@ -1159,7 +1400,7 @@ actual object PlatformBridge {
 
     actual fun openOrPlayMedia(localFilePathOrUrl: String) {
         runCatching {
-            val f = File(localFilePathOrUrl)
+            val f = resolveLocalMediaFile(localFilePathOrUrl) ?: File(localFilePathOrUrl)
             if (f.exists()) {
                 Desktop.getDesktop().open(f)
             } else if (localFilePathOrUrl.startsWith("http://") || localFilePathOrUrl.startsWith("https://")) {

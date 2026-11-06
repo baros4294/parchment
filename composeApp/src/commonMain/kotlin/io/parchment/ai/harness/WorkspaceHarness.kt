@@ -1132,9 +1132,24 @@ object WorkspaceHarness {
         error("old_text was not found in '$relativePath' (${fileLines.size} lines). Use fs_read to inspect the exact lines before editing.")
     }
 
+    private val DICE_EXPR_REGEX = Regex("""^(\d*)d(\d+)([+-]\d+)?$""")
+    private val HTML_STRIP_BLOCK_TAGS_REGEX = Regex("(?is)<(script|style|noscript|svg|head)\\b[^>]*>.*?</\\1>")
+    private val HTML_COMMENT_REGEX = Regex("(?is)<!--.*?-->")
+    private val HTML_H1_REGEX = Regex("(?is)<h1\\b[^>]*>(.*?)</h1>")
+    private val HTML_H2_REGEX = Regex("(?is)<h2\\b[^>]*>(.*?)</h2>")
+    private val HTML_H3_REGEX = Regex("(?is)<h3\\b[^>]*>(.*?)</h3>")
+    private val HTML_H4_6_REGEX = Regex("(?is)<h[4-6]\\b[^>]*>(.*?)</h[4-6]>")
+    private val HTML_LI_REGEX = Regex("(?is)<li\\b[^>]*>(.*?)</li>")
+    private val HTML_A_HREF_REGEX = Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")
+    private val HTML_BR_HR_REGEX = Regex("(?is)<(br|hr)\\s*/?>")
+    private val HTML_BLOCK_CLOSE_REGEX = Regex("(?is)</(p|div|section|article|tr|blockquote|pre|ul|ol|table)>")
+    private val HTML_ANY_TAG_REGEX = Regex("(?is)<[^>]+>")
+    private val TRIPLE_NEWLINE_REGEX = Regex("\n{3,}")
+    private val DDG_MD_LINK_REGEX = Regex("""\[([^\]]+)\]\((https?://[^\s)]+)\)""")
+
     private fun evaluateDiceExpression(expression: String, reason: String): String {
         val cleaned = expression.trim().lowercase().replace(" ", "")
-        val match = Regex("""^(\d*)d(\d+)([+-]\d+)?$""").matchEntire(cleaned)
+        val match = DICE_EXPR_REGEX.matchEntire(cleaned)
             ?: error("Invalid dice notation '$expression'. Expected format like '1d20' or '2d6+3'.")
         val count = (match.groupValues[1].toIntOrNull() ?: 1).coerceIn(1, 100)
         val sides = (match.groupValues[2].toIntOrNull() ?: 20).coerceIn(2, 10000)
@@ -1162,22 +1177,22 @@ object WorkspaceHarness {
         if (!looksLikeHtml) return trimmed
 
         return trimmed
-            .replace(Regex("(?is)<(script|style|noscript|svg|head)\\b[^>]*>.*?</\\1>"), "")
-            .replace(Regex("(?is)<!--.*?-->"), "")
-            .replace(Regex("(?is)<h1\\b[^>]*>(.*?)</h1>"), "\n# $1\n")
-            .replace(Regex("(?is)<h2\\b[^>]*>(.*?)</h2>"), "\n## $1\n")
-            .replace(Regex("(?is)<h3\\b[^>]*>(.*?)</h3>"), "\n### $1\n")
-            .replace(Regex("(?is)<h[4-6]\\b[^>]*>(.*?)</h[4-6]>"), "\n#### $1\n")
-            .replace(Regex("(?is)<li\\b[^>]*>(.*?)</li>"), "\n- $1")
-            .replace(Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")) { m ->
+            .replace(HTML_STRIP_BLOCK_TAGS_REGEX, "")
+            .replace(HTML_COMMENT_REGEX, "")
+            .replace(HTML_H1_REGEX, "\n# $1\n")
+            .replace(HTML_H2_REGEX, "\n## $1\n")
+            .replace(HTML_H3_REGEX, "\n### $1\n")
+            .replace(HTML_H4_6_REGEX, "\n#### $1\n")
+            .replace(HTML_LI_REGEX, "\n- $1")
+            .replace(HTML_A_HREF_REGEX) { m ->
                 val rawHref = m.groupValues[1].trim()
                 val cleanHref = unwrapDuckDuckGoRedirectUrl(rawHref)
-                val label = m.groupValues[2].replace(Regex("(?is)<[^>]+>"), "").trim()
+                val label = m.groupValues[2].replace(HTML_ANY_TAG_REGEX, "").trim()
                 if (label.isNotEmpty() && cleanHref.startsWith("http")) "[$label]($cleanHref)" else label
             }
-            .replace(Regex("(?is)<(br|hr)\\s*/?>"), "\n")
-            .replace(Regex("(?is)</(p|div|section|article|tr|blockquote|pre|ul|ol|table)>"), "\n")
-            .replace(Regex("(?is)<[^>]+>"), "")
+            .replace(HTML_BR_HR_REGEX, "\n")
+            .replace(HTML_BLOCK_CLOSE_REGEX, "\n")
+            .replace(HTML_ANY_TAG_REGEX, "")
             .replace("&nbsp;", " ")
             .replace("&amp;", "&")
             .replace("&lt;", "<")
@@ -1188,7 +1203,7 @@ object WorkspaceHarness {
             .lines()
             .map { it.trim() }
             .joinToString("\n")
-            .replace(Regex("\n{3,}"), "\n\n")
+            .replace(TRIPLE_NEWLINE_REGEX, "\n\n")
             .trim()
     }
 
@@ -1258,7 +1273,7 @@ object WorkspaceHarness {
         val results = mutableListOf<FreeSearchResultItem>()
         val seenUrls = HashSet<String>()
         val lines = markdownText.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        val linkRegex = Regex("""\[([^\]]+)\]\((https?://[^\s)]+)\)""")
+        val linkRegex = DDG_MD_LINK_REGEX
 
         for ((idx, line) in lines.withIndex()) {
             for (match in linkRegex.findAll(line)) {
@@ -1300,7 +1315,7 @@ object WorkspaceHarness {
             val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
             if (title.isEmpty()) continue
             val rawSnippet = obj["snippet"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                .replace(Regex("<[^>]+>"), "")
+                .replace(HTML_ANY_TAG_REGEX, "")
                 .replace("&quot;", "\"")
                 .replace("&amp;", "&")
                 .trim()

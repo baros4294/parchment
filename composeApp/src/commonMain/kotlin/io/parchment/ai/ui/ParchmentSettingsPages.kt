@@ -3888,14 +3888,27 @@ private fun BackupAndOtaSubpage(
     }
     val referencedMediaPaths = remember(appState.sessions) {
         val set = HashSet<String>()
+        val rootNorm = PlatformBridge.getAppStorageDirectoryPath().replace('\\', '/').trimEnd('/').lowercase()
         for (sess in appState.sessions) {
             for (node in sess.messages) {
                 for (v in node.variants) {
                     for (att in v.attachments) {
-                        if (att.localFilePath.isNotBlank()) set.add(att.localFilePath.replace('\\', '/').lowercase())
+                        if (att.localFilePath.isNotBlank()) {
+                            val norm = att.localFilePath.replace('\\', '/').lowercase()
+                            set.add(norm)
+                            if (!norm.startsWith("/") && !norm.contains(":/")) {
+                                set.add("$rootNorm/$norm")
+                            }
+                        }
                     }
                     for (m in v.mediaItems) {
-                        if (m.localFilePath.isNotBlank()) set.add(m.localFilePath.replace('\\', '/').lowercase())
+                        if (m.localFilePath.isNotBlank()) {
+                            val norm = m.localFilePath.replace('\\', '/').lowercase()
+                            set.add(norm)
+                            if (!norm.startsWith("/") && !norm.contains(":/")) {
+                                set.add("$rootNorm/$norm")
+                            }
+                        }
                     }
                 }
             }
@@ -3903,13 +3916,31 @@ private fun BackupAndOtaSubpage(
         set
     }
 
+    fun resolveSessionForStoredFile(item: io.parchment.ai.model.StoredAppFileItem): ChatSession? {
+        val normRel = item.relativePath.replace('\\', '/')
+        if (normRel.startsWith("chats/")) {
+            val afterChats = normRel.removePrefix("chats/")
+            val folderOrFileStem = if (afterChats.contains('/')) {
+                afterChats.substringBefore('/')
+            } else {
+                afterChats.removeSuffix(".json")
+            }
+            sessionsByFileStem[folderOrFileStem]?.let { return it }
+        }
+        if (item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION) {
+            return sessionsByFileStem[item.fileName.removeSuffix(".json")]
+        }
+        return null
+    }
+
     fun isOrphanOrTempFile(item: io.parchment.ai.model.StoredAppFileItem): Boolean {
         if (item.category == io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP) return true
         if (item.category == io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA ||
             item.category == io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
         ) {
-            val norm = item.fullPath.replace('\\', '/').lowercase()
-            return norm !in referencedMediaPaths
+            val normFull = item.fullPath.replace('\\', '/').lowercase()
+            val normRel = item.relativePath.replace('\\', '/').lowercase()
+            return normFull !in referencedMediaPaths && normRel !in referencedMediaPaths
         }
         return false
     }
@@ -3934,9 +3965,7 @@ private fun BackupAndOtaSubpage(
             val catOk = storageCategoryFilter == null || item.category == storageCategoryFilter
             if (!catOk) return@filter false
             if (q.isEmpty()) return@filter true
-            val chatTitle = if (item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION) {
-                sessionsByFileStem[item.fileName.removeSuffix(".json")]?.title.orEmpty()
-            } else ""
+            val chatTitle = resolveSessionForStoredFile(item)?.title.orEmpty()
             item.fileName.lowercase().contains(q) ||
                 item.relativePath.lowercase().contains(q) ||
                 chatTitle.lowercase().contains(q)
@@ -4110,9 +4139,7 @@ private fun BackupAndOtaSubpage(
                         )
                     }
                     filteredStorageFiles.forEach { item ->
-                        val matchedSession = if (item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION) {
-                            sessionsByFileStem[item.fileName.removeSuffix(".json")]
-                        } else null
+                        val matchedSession = resolveSessionForStoredFile(item)
                         val isOrphan = remember(item.fullPath, referencedMediaPaths) { isOrphanOrTempFile(item) }
                         val itemIcon = when (item.category) {
                             io.parchment.ai.model.StorageFileCategory.CHAT_SESSION -> KissIcon.FILE_TEXT
@@ -4121,10 +4148,12 @@ private fun BackupAndOtaSubpage(
                             io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS -> KissIcon.SETTINGS
                             io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP -> KissIcon.PACKAGE_BOX
                         }
-                        val displayTitle = if (matchedSession != null) {
-                            "${matchedSession.title} (${matchedSession.messages.size} msgs)"
-                        } else {
-                            item.fileName
+                        val displayTitle = when {
+                            item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION && matchedSession != null ->
+                                "${matchedSession.title} (${matchedSession.messages.size} msgs)"
+                            matchedSession != null ->
+                                "${item.fileName} • ${matchedSession.title}"
+                            else -> item.fileName
                         }
                         val isPrimarySettingsFile = item.fileName.equals("parchment-settings.json", ignoreCase = true)
 
@@ -4308,60 +4337,71 @@ private fun BackupAndOtaSubpage(
             }
         }
 
-        // Card 3: Separate Per-Chat JSON Export & Import (Never mixed with Settings!)
+        // Card 3: Self-Contained Per-Chat Folder Export & Import (chats/<sessionId>/chat.json + media/)
         SepiaSectionCard(
-            title = "Portable Chats Export & Import (Separate .json Per Chat)",
+            title = "Portable Chats & Media Export / Import (Per-Chat Folder & .zip Bundles)",
             subtitle = PlatformBridge.getChatsStorageDirectoryPath()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     SepiaButton(
-                        text = "📤 Export All Chats (${appState.sessions.size} Separate .json)",
+                        text = "📦 Export All Chats + Media (${appState.sessions.size} Chats .zip)",
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
                             scope.launch {
-                                val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    appState.sessions.map { sess ->
-                                        val fullSess = hydrateSessionFromDiskIfNeeded(sess)
-                                        val fileName = buildExportFileNameForChat(fullSess)
-                                        val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), fullSess).encodeToByteArray()
-                                        fileName to bytes
-                                    }
+                                val zipBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    encodeChatSessionsToZipBundleBytes(appState.sessions)
                                 }
-                                val exported = PlatformBridge.exportMultipleFilesToDirectory(files)
-                                if (exported != null) {
-                                    onNotify("Exported $exported")
+                                val saved = PlatformBridge.saveFileForExport("parchment-chats-backup.zip", zipBytes)
+                                if (saved != null) {
+                                    onNotify("Exported ${appState.sessions.size} chat(s) + media to $saved")
                                 }
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📤 Export Current Chat (.json)",
+                        text = "📦 Export Current Chat (.chat.zip + Media)",
                         style = SepiaButtonStyle.OUTLINE,
+                        onClick = {
+                            scope.launch {
+                                val zipName = buildExportZipFileNameForChat(activeSession)
+                                val zipBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    encodeChatSessionsToZipBundleBytes(listOf(activeSession))
+                                }
+                                val saved = PlatformBridge.saveFileForExport(zipName, zipBytes)
+                                if (saved != null) onNotify("Exported chat bundle (chat.json + media/) to $saved")
+                            }
+                        }
+                    )
+                    SepiaButton(
+                        text = "📤 Export Current Chat (.json Only)",
+                        style = SepiaButtonStyle.GHOST,
                         onClick = {
                             scope.launch {
                                 val fileName = buildExportFileNameForChat(activeSession)
                                 val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
                                 val saved = PlatformBridge.saveFileForExport(fileName, bytes)
-                                if (saved != null) onNotify("Exported chat to $saved")
+                                if (saved != null) onNotify("Exported chat JSON to $saved")
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📥 Import Chat(s) (.json)",
+                        text = "📥 Import Chat(s) (.zip / .json)",
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
                             scope.launch {
-                                val pickedFiles = PlatformBridge.pickFilesForImport(listOf("json"))
+                                val pickedFiles = PlatformBridge.pickFilesForImport(listOf("zip", "json"))
                                 if (pickedFiles.isEmpty()) return@launch
-                                val importedChats = pickedFiles.flatMap { picked ->
-                                    runCatching { decodeChatSessionsFromRawJson(picked.bytes.decodeToString()) }.getOrDefault(emptyList())
+                                val importedChats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    pickedFiles.flatMap { picked ->
+                                        runCatching { decodeChatSessionsFromPickedFile(picked.fileName, picked.bytes) }.getOrDefault(emptyList())
+                                    }
                                 }
                                 if (importedChats.isNotEmpty()) {
                                     onImportChatSessions(importedChats)
                                 } else {
-                                    onNotify("No valid chat sessions found in selected .json file(s).")
+                                    onNotify("No valid chat sessions found in selected .zip / .json file(s).")
                                 }
                             }
                         }

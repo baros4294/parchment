@@ -324,7 +324,7 @@ fun ParchmentApp(
                         lower.endsWith(".bmp") -> "image/bmp"
                         else -> "image/png"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -341,7 +341,7 @@ fun ParchmentApp(
                         lower.endsWith(".mkv") -> "video/x-matroska"
                         else -> "video/mp4"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -359,7 +359,7 @@ fun ParchmentApp(
                         lower.endsWith(".flac") -> "audio/flac"
                         else -> "audio/mp3"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -370,7 +370,7 @@ fun ParchmentApp(
                 }
                 else -> {
                     val decoded = runCatching { picked.bytes.decodeToString() }.getOrNull()
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes)
+                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     if (decoded != null && !decoded.contains('\u0000')) {
                         PromptAttachment(
                             id = "att-$now",
@@ -922,6 +922,9 @@ fun ParchmentApp(
                 var cachedVisibleStepThinkLen = -1
                 var cachedSig = signatureSb.toString()
                 var cachedSigLen = signatureSb.length
+                var cachedThinkWords = 0
+                var lastThinkWordScanIdx = 0
+                var lastThinkCharWasSpace = true
 
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
                     val frameNanos = if (uiFrameClock != null) {
@@ -960,7 +963,20 @@ fun ParchmentApp(
                         changed = true
                         val hasRunningToolNow = accumulatedTools.any { it.isRunning }
                         if (!hasRunningToolNow) {
-                            val thinkWords = countWordsFast(networkThinkingTarget)
+                            val curThinkTargetLen = networkThinkingTarget.length
+                            if (curThinkTargetLen < lastThinkWordScanIdx) {
+                                cachedThinkWords = 0
+                                lastThinkWordScanIdx = 0
+                                lastThinkCharWasSpace = true
+                            }
+                            while (lastThinkWordScanIdx < curThinkTargetLen) {
+                                val c = networkThinkingTarget[lastThinkWordScanIdx]
+                                val isSp = c == ' ' || c == '\n' || c == '\r' || c == '\t'
+                                if (!isSp && lastThinkCharWasSpace) cachedThinkWords++
+                                lastThinkCharWasSpace = isSp
+                                lastThinkWordScanIdx++
+                            }
+                            val thinkWords = cachedThinkWords
                             val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
                             updateSessionStreamState(sessionId) { cur ->
                                 if (cur != null && cur.isThinkingPhase && !cur.statusText.startsWith("Auto-retrying") && !cur.statusText.startsWith("Context ")) {
@@ -1355,11 +1371,14 @@ fun ParchmentApp(
                                     flushCheckpointToDisk(isFinal = false)
                                 }
                                 is StreamUpdate.MediaGenerated -> {
-                                    accumulatedMedia.add(update.item)
+                                    val relocatedItem = if (update.item.localFilePath.isNotBlank()) {
+                                        update.item.copy(localFilePath = PlatformBridge.relocateLegacyMediaToChatFolder(update.item.localFilePath, sessionId))
+                                    } else update.item
+                                    accumulatedMedia.add(relocatedItem)
                                     val mediaSnap = accumulatedMedia.toList()
                                     patchVariantMemory { v -> v.copy(mediaItems = mediaSnap) }
                                     updateSessionStreamState(sessionId) { cur ->
-                                        cur?.copy(statusText = "Generated ${update.item.kind.name.lowercase()} (${accumulatedMedia.size})")
+                                        cur?.copy(statusText = "Generated ${relocatedItem.kind.name.lowercase()} (${accumulatedMedia.size})")
                                     }
                                 }
                                 is StreamUpdate.WebSourcesUpdated -> {
@@ -2518,18 +2537,17 @@ fun ParchmentApp(
                             activeSession.messages.size,
                             pendingAttachments.size,
                             activeSession.messages.lastOrNull()?.activeVariant?.let { v ->
-                                "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.count { it == '`' } / 6}"
+                                "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.length / 256}"
                             }
                         ) {
                             "${activeSession.id}:${activeSession.messages.size}:${pendingAttachments.size}:" +
                                 activeSession.messages.sumOf {
                                     val v = it.activeVariant
-                                    v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.count { c -> c == '`' } / 6)
+                                    v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.length / 256)
                                 }
                         }
                         val chatVaultCount = remember(vaultCountKey, pendingAttachments) {
-                            val (aiItems, uploads, sources) = extractSessionVaultItems(activeSession, pendingAttachments)
-                            aiItems.size + uploads.size + sources.size
+                            countSessionVaultItemsFast(activeSession, pendingAttachments)
                         }
                         TopEditorialBar(
                             appState = appState,
@@ -3242,10 +3260,25 @@ fun ParchmentApp(
                                     },
                                     onExportChatJson = {
                                         uiScope.launch {
-                                            val fileName = buildExportFileNameForChat(activeSession)
-                                            val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
-                                            val saved = PlatformBridge.saveFileForExport(fileName, bytes)
-                                            if (saved != null) bannerNotification = "Exported Chat JSON to $saved"
+                                            val hasLocalMedia = activeSession.messages.any { n ->
+                                                n.variants.any { v ->
+                                                    v.mediaItems.any { it.localFilePath.isNotBlank() } ||
+                                                        v.attachments.any { it.localFilePath.isNotBlank() }
+                                                }
+                                            }
+                                            if (hasLocalMedia) {
+                                                val zipName = buildExportZipFileNameForChat(activeSession)
+                                                val zipBytes = withContext(Dispatchers.Default) {
+                                                    encodeChatSessionsToZipBundleBytes(listOf(activeSession))
+                                                }
+                                                val saved = PlatformBridge.saveFileForExport(zipName, zipBytes)
+                                                if (saved != null) bannerNotification = "Exported Chat Bundle (chat.json + media/) to $saved"
+                                            } else {
+                                                val fileName = buildExportFileNameForChat(activeSession)
+                                                val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
+                                                val saved = PlatformBridge.saveFileForExport(fileName, bytes)
+                                                if (saved != null) bannerNotification = "Exported Chat JSON to $saved"
+                                            }
                                         }
                                     },
                                     onOpenPricingSettings = {
@@ -3824,7 +3857,8 @@ private fun ManuscriptViewport(
             activeSession.messages.isNotEmpty() &&
             !listState.isScrollInProgress &&
             !userDisengagedAutoFollow &&
-            now >= userScrollPausedUntilMs
+            now >= userScrollPausedUntilMs &&
+            (listState.canScrollForward || lastMsgContentLen % 24 == 0)
         ) {
             jumpToBottomEdge()
         }
@@ -7016,17 +7050,22 @@ private fun MessageTurnItem(
                         )
                         if (activeVar.content.isNotBlank()) counted else m.outputTokens
                     }
-                    val toolPayloadTok = remember(activeVar.toolCalls) {
+                    val toolPayloadTok = remember(activeVar.toolCalls, activeVar.isStreaming) {
                         activeVar.toolCalls.sumOf { tc ->
+                            val tcLive = activeVar.isStreaming || tc.isRunning
                             6 + O200kTokenizer.countTokens(tc.name) +
-                                O200kTokenizer.countTokens(tc.argumentsJson) +
-                                O200kTokenizer.countTokens(tc.resultText)
+                                (if (tcLive) O200kTokenizer.estimateTokensFast(tc.argumentsJson) else O200kTokenizer.countTokens(tc.argumentsJson)) +
+                                (if (tcLive) O200kTokenizer.estimateTokensFast(tc.resultText) else O200kTokenizer.countTokens(tc.resultText))
                         }
                     }
                     val thinkTokenKey = if (activeVar.isStreaming) activeVar.thinkingSummary.length / 64 else activeVar.thinkingSummary.hashCode()
                     val thinkTok = remember(thinkTokenKey, activeVar.isStreaming, m.reasoningTokens) {
                         if (activeVar.thinkingSummary.isNotBlank()) {
-                            O200kTokenizer.countTokens(activeVar.thinkingSummary)
+                            if (activeVar.isStreaming) {
+                                O200kTokenizer.estimateTokensFast(activeVar.thinkingSummary)
+                            } else {
+                                O200kTokenizer.countTokens(activeVar.thinkingSummary)
+                            }
                         } else {
                             m.reasoningTokens
                         }

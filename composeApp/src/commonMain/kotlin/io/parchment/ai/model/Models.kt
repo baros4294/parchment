@@ -1,5 +1,6 @@
 package io.parchment.ai.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -32,6 +33,7 @@ enum class MediaKind {
     VIDEO
 }
 
+@Immutable
 @Serializable
 data class GeneratedMediaItem(
     val id: String,
@@ -50,6 +52,7 @@ enum class AuthHeaderMode(val label: String) {
     QUERY_PARAM("Query Parameter (?key=<key>)")
 }
 
+@Immutable
 @Serializable
 data class ModelPricingSpec(
     val modelId: String,
@@ -65,6 +68,7 @@ data class ModelPricingSpec(
     val outputModalities: List<String> = emptyList()
 )
 
+@Immutable
 @Serializable
 data class ProviderProfile(
     val id: String,
@@ -127,6 +131,7 @@ enum class MessageRole {
     SYSTEM
 }
 
+@Immutable
 @Serializable
 data class ToolCallRecord(
     val id: String,
@@ -140,6 +145,7 @@ data class ToolCallRecord(
     val precedingThinking: String = ""
 )
 
+@Immutable
 @Serializable
 data class TodoItem(
     val id: String,
@@ -147,6 +153,7 @@ data class TodoItem(
     val status: String = "pending" // "pending", "in_progress", "completed", "cancelled"
 )
 
+@Immutable
 @Serializable
 data class GoalTrackerState(
     val goalObjective: String = "",
@@ -165,6 +172,7 @@ data class GoalTrackerState(
             })
 }
 
+@Immutable
 @Serializable
 data class TokenMetrics(
     val inputTokens: Int = 0,
@@ -180,6 +188,7 @@ data class TokenMetrics(
         get() = inputTokens + reasoningTokens + outputTokens
 }
 
+@Immutable
 @Serializable
 data class PromptAttachment(
     val id: String,
@@ -190,6 +199,7 @@ data class PromptAttachment(
     val localFilePath: String = ""
 )
 
+@Immutable
 @Serializable
 data class WebSourceCitation(
     val index: Int = 1,
@@ -201,6 +211,7 @@ data class WebSourceCitation(
     val snippet: String = ""
 )
 
+@Immutable
 @Serializable
 data class MessageVariant(
     val id: String,
@@ -225,6 +236,7 @@ data class MessageVariant(
     val rawResponsePreview: String = ""
 )
 
+@Immutable
 @Serializable
 data class MessageNode(
     val id: String,
@@ -259,6 +271,7 @@ enum class FragmentActivationMode(val label: String) {
     MUTED("Off")
 }
 
+@Immutable
 @Serializable
 data class ContextFragment(
     val id: String,
@@ -268,6 +281,7 @@ data class ContextFragment(
     val mode: FragmentActivationMode = FragmentActivationMode.PINNED
 )
 
+@Immutable
 @Serializable
 data class CharacterOrScenarioCard(
     val name: String = "",
@@ -320,6 +334,7 @@ data class CharacterOrScenarioCard(
     }
 }
 
+@Immutable
 @Serializable
 data class SystemPromptPreset(
     val id: String,
@@ -336,6 +351,7 @@ data class SystemPromptPreset(
  * Parchment Persistent Assistant / Agent Profile.
  * Lives independently of Topics (ChatSessions), so deleting a Topic never deletes your System Prompt or Agent setup.
  */
+@Immutable
 @Serializable
 data class AssistantAgent(
     val id: String,
@@ -361,6 +377,7 @@ data class AssistantAgent(
 /**
  * Parchment Global & Task-Specific Default Models Configuration.
  */
+@Immutable
 @Serializable
 data class DefaultModelConfig(
     val globalProfileId: String = "",
@@ -395,6 +412,7 @@ enum class SendShortcutMode(val label: String) {
 /**
  * Parchment Granular Display, Rendering, and Behavior Preferences.
  */
+@Immutable
 @Serializable
 data class PreferencesConfig(
     // Chat item display
@@ -448,6 +466,7 @@ data class PreferencesConfig(
     val inputBoxBackgroundOpacityPercent: Int = 95
 )
 
+@Immutable
 @Serializable
 data class DesktopWindowConfig(
     val isMaximized: Boolean = true,
@@ -457,6 +476,7 @@ data class DesktopWindowConfig(
     val yDp: Int = -1
 )
 
+@Immutable
 @Serializable
 data class QueuedPromptItem(
     val id: String,
@@ -466,6 +486,7 @@ data class QueuedPromptItem(
     val attachments: List<PromptAttachment> = emptyList()
 )
 
+@Immutable
 @Serializable
 data class ChatSession(
     val id: String,
@@ -492,6 +513,7 @@ data class ChatSession(
     val messages: List<MessageNode> = emptyList()
 )
 
+@Immutable
 @Serializable
 data class ThemeConfig(
     val name: String = "Parchment & Espresso Ink (Sepia)",
@@ -617,6 +639,7 @@ data class ThemeConfig(
     }
 }
 
+@Immutable
 @Serializable
 data class AppStateSnapshot(
     val profiles: List<ProviderProfile> = emptyList(),
@@ -645,6 +668,7 @@ enum class StorageFileCategory(val label: String) {
     OTA_AND_TEMP("Temp/Cache")
 }
 
+@Immutable
 data class StoredAppFileItem(
     val fullPath: String,
     val relativePath: String,

@@ -589,12 +589,28 @@ fun LiteraryProseRenderer(
                 }
 
                 if (index < blocks.lastIndex) {
-                    Spacer(Modifier.height(if (compactReasoningMode) 10.dp else p.paragraphSpacing.coerceAtLeast(16.dp)))
+                    val nextBlock = blocks[index + 1]
+                    val bothAreListItems = block is ProseBlock.Paragraph && nextBlock is ProseBlock.Paragraph &&
+                        isListItemParagraph(block.text) && isListItemParagraph(nextBlock.text)
+                    val gap = when {
+                        bothAreListItems -> if (compactReasoningMode) 4.dp else 6.dp
+                        compactReasoningMode -> 10.dp
+                        else -> p.paragraphSpacing.coerceAtLeast(16.dp)
+                    }
+                    Spacer(Modifier.height(gap))
                 }
                 }
             }
         }
     }
+}
+
+private val NUMBERED_LIST_ITEM_REGEX = Regex("""^\s*\d+[.)]\s+.*""")
+private val STANDALONE_LATEX_ENV_OPEN_REGEX = Regex("""^\\begin\{(equation\*?|align\*?|aligned|gather\*?|gathered|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|matrix|cases|split)\}""")
+
+private fun isListItemParagraph(text: String): Boolean {
+    val t = text.trimStart()
+    return t.startsWith("• ") || t.startsWith("☐ ") || t.startsWith("☑ ") || NUMBERED_LIST_ITEM_REGEX.matches(t)
 }
 
 internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<ProseBlock> {
@@ -684,6 +700,18 @@ internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<Pro
                 }
             }
 
+            enableMath && STANDALONE_LATEX_ENV_OPEN_REGEX.containsMatchIn(trimmed) -> {
+                val envName = STANDALONE_LATEX_ENV_OPEN_REGEX.find(trimmed)?.groupValues?.get(1).orEmpty()
+                val closeTag = "\\end{$envName}"
+                flushPara()
+                val mathBuf = StringBuilder(trimmed)
+                while (i + 1 < lines.size && !lines[i].contains(closeTag)) {
+                    i++
+                    mathBuf.append('\n').append(lines[i])
+                }
+                blocks.add(ProseBlock.MathBlock(mathBuf.toString()))
+            }
+
             trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.count { it == '|' } >= 2 -> {
                 flushPara()
                 val tableLines = mutableListOf<String>()
@@ -734,17 +762,27 @@ internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<Pro
 
             else -> {
                 // Treat each non-empty newline in AI output as its own distinct paragraph block
-                // (or group consecutive bullet items nicely with 8.dp spacing) so single-\n and double-\n
+                // (or group consecutive bullet items nicely with 6.dp spacing) so single-\n and double-\n
                 // paragraphs never look like a single wrapped wall of text on mobile or desktop!
                 flushPara()
-                val leadingSpaces = line.takeWhile { it == ' ' || it == '\t' }
-                val afterSpaces = line.drop(leadingSpaces.length)
+                val rawIndentCols = line.takeWhile { it == ' ' || it == '\t' }
+                    .fold(0) { acc, c -> acc + if (c == '\t') 2 else 1 }
+                val indentLevel = (rawIndentCols / 2).coerceIn(0, 6)
+                val visualIndent = if (indentLevel > 0) "   ".repeat(indentLevel) else ""
+                val afterSpaces = line.trimStart()
                 val normalizedLine = when {
-                    afterSpaces.startsWith("* ") -> "$leadingSpaces• ${afterSpaces.removePrefix("* ")}"
-                    afterSpaces.startsWith("- ") -> "$leadingSpaces• ${afterSpaces.removePrefix("- ")}"
-                    else -> line
+                    afterSpaces.startsWith("- [ ] ") || afterSpaces.startsWith("* [ ] ") ->
+                        "${visualIndent}☐ ${afterSpaces.drop(6)}"
+                    afterSpaces.startsWith("- [x] ", ignoreCase = true) || afterSpaces.startsWith("* [x] ", ignoreCase = true) ->
+                        "${visualIndent}☑ ${afterSpaces.drop(6)}"
+                    afterSpaces.startsWith("* ") -> "${visualIndent}• ${afterSpaces.removePrefix("* ")}"
+                    afterSpaces.startsWith("- ") -> "${visualIndent}• ${afterSpaces.removePrefix("- ")}"
+                    afterSpaces.startsWith("+ ") -> "${visualIndent}• ${afterSpaces.removePrefix("+ ")}"
+                    indentLevel > 0 && NUMBERED_LIST_ITEM_REGEX.matches(afterSpaces) ->
+                        "$visualIndent$afterSpaces"
+                    else -> afterSpaces
                 }
-                blocks.add(ProseBlock.Paragraph(normalizedLine.trim()))
+                blocks.add(ProseBlock.Paragraph(normalizedLine.trimEnd()))
             }
         }
         i++
@@ -753,7 +791,7 @@ internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<Pro
     return blocks
 }
 
-private fun styleLiteraryParagraph(
+internal fun styleLiteraryParagraph(
     raw: String,
     palette: ParchmentPalette,
     indentChars: Int,
@@ -768,6 +806,12 @@ private fun styleLiteraryParagraph(
     while (i < n) {
         val ch = text[i]
         when {
+            // Escaped Markdown / LaTeX punctuation (\*, \_, \$, \`, \[)
+            ch == '\\' && i + 1 < n && text[i + 1] in "*_~`[]$\\" && text[i + 1] != '(' && text[i + 1] != '[' -> {
+                append(text[i + 1])
+                i += 2
+            }
+
             // Inline Display Math: $$...$$
             enableMath && i + 1 < n && ch == '$' && text[i + 1] == '$' -> {
                 val endIdx = text.indexOf("$$", startIndex = i + 2)
@@ -794,19 +838,13 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Inline LaTeX Math: $...$ (avoid matching currency like "$10 and $20")
+            // Inline LaTeX Math: $...$ (context-aware: avoids currency "$50 to $100", shell vars "$env:FOO", and `$code$`)
             enableMath && enableInlineDollarMath && ch == '$' && (i + 1 < n && !text[i + 1].isWhitespace()) -> {
-                val endIdx = text.indexOf('$', startIndex = i + 1)
-                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace() && !text.substring(i + 1, endIdx).contains('\n')) {
+                val endIdx = findClosingInlineDollar(text, i + 1)
+                if (endIdx != -1) {
                     val innerLatex = text.substring(i + 1, endIdx)
-                    val looksLikeCurrencyOnly = innerLatex.all { it.isDigit() || it == '.' || it == ',' }
-                    if (!looksLikeCurrencyOnly) {
-                        append(LatexMathRenderer.formatInlineLatexToAnnotatedString(innerLatex, palette))
-                        i = endIdx + 1
-                    } else {
-                        append(ch)
-                        i++
-                    }
+                    append(LatexMathRenderer.formatInlineLatexToAnnotatedString(innerLatex, palette))
+                    i = endIdx + 1
                 } else {
                     append(ch)
                     i++
@@ -815,7 +853,7 @@ private fun styleLiteraryParagraph(
 
             // Bold + Italic: ***...***
             i + 2 < n && ch == '*' && text[i + 1] == '*' && text[i + 2] == '*' -> {
-                val endIdx = text.indexOf("***", startIndex = i + 3)
+                val endIdx = findClosingTripleAsterisk(text, i + 3)
                 if (endIdx != -1) {
                     val inner = text.substring(i + 3, endIdx)
                     pushStyle(
@@ -834,9 +872,9 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Bold: **...**
+            // Bold: **...** (skips inner `code` spans and handles overlapping *** closers)
             i + 1 < n && ch == '*' && text[i + 1] == '*' -> {
-                val endIdx = text.indexOf("**", startIndex = i + 2)
+                val endIdx = findClosingDoubleAsterisk(text, i + 2)
                 if (endIdx != -1) {
                     val inner = text.substring(i + 2, endIdx)
                     pushStyle(
@@ -856,7 +894,7 @@ private fun styleLiteraryParagraph(
 
             // Bold with underscores: __...__
             i + 1 < n && ch == '_' && text[i + 1] == '_' -> {
-                val endIdx = text.indexOf("__", startIndex = i + 2)
+                val endIdx = findClosingDoubleDelimiter(text, i + 2, '_')
                 if (endIdx != -1) {
                     val inner = text.substring(i + 2, endIdx)
                     pushStyle(SpanStyle(color = palette.primaryInk, fontWeight = FontWeight.SemiBold))
@@ -871,7 +909,7 @@ private fun styleLiteraryParagraph(
 
             // Strikethrough: ~~...~~
             i + 1 < n && ch == '~' && text[i + 1] == '~' -> {
-                val endIdx = text.indexOf("~~", startIndex = i + 2)
+                val endIdx = findClosingDoubleDelimiter(text, i + 2, '~')
                 if (endIdx != -1) {
                     val inner = text.substring(i + 2, endIdx)
                     pushStyle(SpanStyle(color = palette.mutedInk, textDecoration = TextDecoration.LineThrough))
@@ -884,12 +922,12 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Markdown Link: [label](url) with balanced-parenthesis URL support & 1-tap browser launch
+            // Markdown Link: [label](url) with balanced-parenthesis URL support, nested label styling & 1-tap browser launch
             ch == '[' -> {
-                val closeBracket = text.indexOf(']', startIndex = i + 1)
+                val closeBracket = findClosingLinkBracket(text, i + 1)
                 val openParen = if (closeBracket != -1 && closeBracket + 1 < n && text[closeBracket + 1] == '(') closeBracket + 1 else -1
                 val closeParen = if (openParen != -1) findClosingMarkdownLinkParen(text, openParen) else -1
-                if (closeBracket != -1 && openParen != -1 && closeParen != -1 && !text.substring(i + 1, closeBracket).contains('\n')) {
+                if (closeBracket != -1 && openParen != -1 && closeParen != -1) {
                     val linkLabel = text.substring(i + 1, closeBracket)
                     val linkUrl = text.substring(openParen + 1, closeParen).trim()
                     val linkStyle = SpanStyle(
@@ -909,7 +947,7 @@ private fun styleLiteraryParagraph(
                         )
                     )
                     pushStyle(linkStyle)
-                    append(linkLabel)
+                    append(styleLiteraryParagraph(linkLabel, palette, 0, enableMath, enableInlineDollarMath))
                     pop()
                     pop()
                     i = closeParen + 1
@@ -919,10 +957,30 @@ private fun styleLiteraryParagraph(
                 }
             }
 
-            // Italic Narration / Action: *...* (only when not followed by whitespace)
+            // Italic Narration / Action: *...* (skips nested **bold**, `code`, and $math$ spans!)
             ch == '*' && i + 1 < n && !text[i + 1].isWhitespace() -> {
-                val endIdx = text.indexOf('*', startIndex = i + 1)
-                if (endIdx != -1 && endIdx > i + 1 && !text[endIdx - 1].isWhitespace() && !text.substring(i + 1, endIdx).contains('\n')) {
+                val endIdx = findClosingSingleAsterisk(text, i + 1)
+                if (endIdx != -1) {
+                    val inner = text.substring(i + 1, endIdx)
+                    pushStyle(
+                        SpanStyle(
+                            color = palette.narrationInk,
+                            fontStyle = FontStyle.Italic
+                        )
+                    )
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    pop()
+                    i = endIdx + 1
+                } else {
+                    append(ch)
+                    i++
+                }
+            }
+
+            // Underscore Italic: _..._ (word-boundary guarded so snake_case_identifiers are never mangled)
+            ch == '_' && i + 1 < n && !text[i + 1].isWhitespace() && (i == 0 || !text[i - 1].isLetterOrDigit()) -> {
+                val endIdx = findClosingSingleUnderscore(text, i + 1)
+                if (endIdx != -1) {
                     val inner = text.substring(i + 1, endIdx)
                     pushStyle(
                         SpanStyle(
@@ -940,9 +998,10 @@ private fun styleLiteraryParagraph(
             }
 
             // Spoken Dialogue: "..." or “...” (recursively parses inner *italic*, **bold**, and `code` spans!)
-            (ch == '"' || ch == '“') && palette.config.highlightDialogueAndNarration -> {
+            (ch == '"' || ch == '“') && palette.config.highlightDialogueAndNarration &&
+                (i == 0 || text[i - 1].isWhitespace() || text[i - 1] in "([*_—-") -> {
                 val closeChar = if (ch == '“') '”' else '"'
-                val endIdx = text.indexOf(closeChar, startIndex = i + 1)
+                val endIdx = findClosingQuoteSkippingCode(text, i + 1, closeChar)
                 if (endIdx != -1) {
                     val innerDialogue = text.substring(i + 1, endIdx)
                     pushStyle(
@@ -1022,6 +1081,258 @@ private fun styleLiteraryParagraph(
             }
         }
     }
+}
+
+/**
+ * Skips over an inline code span (`` `...` `` or ```` ``...`` ````) starting at `idx` so delimiters
+ * inside code spans are never misinterpreted as Markdown emphasis or LaTeX math closers.
+ */
+private fun skipInlineCodeSpan(text: String, idx: Int): Int {
+    val n = text.length
+    if (idx + 1 < n && text[idx] == '`' && text[idx + 1] == '`') {
+        val close = text.indexOf("``", startIndex = idx + 2)
+        return if (close != -1) close + 2 else idx + 2
+    }
+    if (idx < n && text[idx] == '`') {
+        val close = text.indexOf('`', startIndex = idx + 1)
+        return if (close != -1) close + 1 else idx + 1
+    }
+    return idx + 1
+}
+
+private fun findClosingTripleAsterisk(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    while (cursor + 2 < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == '*' && text[cursor + 1] == '*' && text[cursor + 2] == '*') {
+            return cursor
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingDoubleAsterisk(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    var singleItalicOpen = false
+    while (cursor + 1 < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (cursor + 2 < n && c == '*' && text[cursor + 1] == '*' && text[cursor + 2] == '*') {
+            return if (singleItalicOpen) cursor + 1 else cursor
+        }
+        if (c == '*' && text[cursor + 1] == '*') {
+            return cursor
+        }
+        if (c == '*') {
+            singleItalicOpen = !singleItalicOpen
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingSingleAsterisk(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    var doubleBoldOpen = false
+    while (cursor < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (cursor + 2 < n && c == '*' && text[cursor + 1] == '*' && text[cursor + 2] == '*') {
+            if (doubleBoldOpen) {
+                if (cursor > startIdx && !text[cursor - 1].isWhitespace()) {
+                    return cursor + 2
+                }
+            } else {
+                val endTriple = findClosingTripleAsterisk(text, cursor + 3)
+                cursor = if (endTriple != -1) endTriple + 3 else cursor + 3
+                continue
+            }
+        }
+        if (cursor + 1 < n && c == '*' && text[cursor + 1] == '*') {
+            doubleBoldOpen = !doubleBoldOpen
+            cursor += 2
+            continue
+        }
+        if (c == '*' && !doubleBoldOpen) {
+            if (cursor > startIdx && !text[cursor - 1].isWhitespace()) {
+                return cursor
+            }
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingSingleUnderscore(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    var doubleUnderOpen = false
+    while (cursor < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == '$') {
+            val endMath = text.indexOf('$', startIndex = cursor + 1)
+            if (endMath != -1 && endMath > cursor) {
+                cursor = endMath + 1
+                continue
+            }
+        }
+        if (cursor + 1 < n && c == '_' && text[cursor + 1] == '_') {
+            doubleUnderOpen = !doubleUnderOpen
+            cursor += 2
+            continue
+        }
+        if (c == '_' && !doubleUnderOpen) {
+            val notFollowedByAlnum = cursor + 1 >= n || !text[cursor + 1].isLetterOrDigit()
+            if (cursor > startIdx && !text[cursor - 1].isWhitespace() && notFollowedByAlnum) {
+                return cursor
+            }
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingDoubleDelimiter(text: String, startIdx: Int, delim: Char): Int {
+    val n = text.length
+    var cursor = startIdx
+    while (cursor + 1 < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == delim && text[cursor + 1] == delim) {
+            return cursor
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingLinkBracket(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    var depth = 0
+    while (cursor < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == '[') {
+            depth++
+        } else if (c == ']') {
+            if (depth == 0) return cursor
+            depth--
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingInlineDollar(text: String, startIdx: Int): Int {
+    val n = text.length
+    var cursor = startIdx
+    while (cursor < n) {
+        val c = text[cursor]
+        if (c == '\n') return -1
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == '$') {
+            if (cursor > startIdx && !text[cursor - 1].isWhitespace()) {
+                // Reject if immediately followed by a digit or identifier letter (e.g. "$50 to $100" or "$env:FOO ... $bar")
+                val followedByAlnum = cursor + 1 < n && (text[cursor + 1].isDigit() || text[cursor + 1].isLetter())
+                if (!followedByAlnum) {
+                    val inner = text.substring(startIdx, cursor)
+                    val looksLikeCurrencyOnly = inner.all { it.isDigit() || it == '.' || it == ',' }
+                    val startsWithCurrencyDigitWithoutMathOp = inner.first().isDigit() &&
+                        inner.contains(' ') &&
+                        !inner.any { it in "\\^_=+-*/<>()" }
+                    if (!looksLikeCurrencyOnly && !startsWithCurrencyDigitWithoutMathOp) {
+                        return cursor
+                    }
+                }
+            }
+            return -1
+        }
+        cursor++
+    }
+    return -1
+}
+
+private fun findClosingQuoteSkippingCode(text: String, startIdx: Int, closeChar: Char): Int {
+    val n = text.length
+    var cursor = startIdx
+    while (cursor < n) {
+        val c = text[cursor]
+        if (c == '\\' && cursor + 1 < n) {
+            cursor += 2
+            continue
+        }
+        if (c == '`') {
+            cursor = skipInlineCodeSpan(text, cursor)
+            continue
+        }
+        if (c == closeChar) {
+            return cursor
+        }
+        cursor++
+    }
+    return -1
 }
 
 /**

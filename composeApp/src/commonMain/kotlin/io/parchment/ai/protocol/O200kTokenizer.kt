@@ -29,7 +29,8 @@ data class ContextCompactionPlan(
  * combined with UTF-8 subword BPE chunking so the Composer Context Ring, the Context Window Breakdown Popover,
  * User message token badges, and Assistant message token readouts are 100% unified and consistent.
  */
-data class ContextWindowBreakdown(
+    @androidx.compose.runtime.Immutable
+    data class ContextWindowBreakdown(
     val systemAndPersonaTokens: Int,
     val lorebookAndMemoryTokens: Int,
     val workspaceAndToolsTokens: Int,
@@ -92,10 +93,19 @@ object O200kTokenizer {
     }
 
     /**
+     * Ultra-fast $O(1)$ token estimator for actively streaming partial buffers so 120Hz VSync frames
+     * never run regexes on transient substrings or evict completed turns from `tokenCache`.
+     */
+    fun estimateTokensFast(text: String): Int {
+        if (text.isEmpty()) return 0
+        return ((text.length + 3) / 4).coerceAtLeast(1)
+    }
+
+    /**
      * Counts `o200k_base` tokens for a text string using the official `o200k_base` pre-tokenization
      * regex and UTF-8 subword BPE splitting rules.
      */
-    fun countTokens(text: String): Int {
+    fun countTokens(text: String, cacheResult: Boolean = true): Int {
         if (text.isEmpty()) return 0
         val cacheKey = text.hashCode() * 31 + text.length
         synchronized(tokenCache) {
@@ -114,8 +124,10 @@ object O200kTokenizer {
                 if (match.value.isNotEmpty()) sampleTokens += estimateBpeSubwordsForPiece(match.value)
             }
             val scaled = ((sampleTokens.toDouble() * text.length.toDouble()) / 12_000.0).toInt().coerceAtLeast(1)
-            synchronized(tokenCache) {
-                tokenCache[cacheKey] = scaled
+            if (cacheResult) {
+                synchronized(tokenCache) {
+                    tokenCache[cacheKey] = scaled
+                }
             }
             return scaled
         }
@@ -127,8 +139,10 @@ object O200kTokenizer {
             total += estimateBpeSubwordsForPiece(piece)
         }
         val finalCount = total.coerceAtLeast(1)
-        synchronized(tokenCache) {
-            tokenCache[cacheKey] = finalCount
+        if (cacheResult) {
+            synchronized(tokenCache) {
+                tokenCache[cacheKey] = finalCount
+            }
         }
         return finalCount
     }
@@ -201,18 +215,22 @@ object O200kTokenizer {
         includeReasoningAndTools: Boolean = true
     ): Int {
         var total = 4 // ChatML / turn framing overhead (`<|start|>role\n...<|end|>`)
+        val isLive = variant.isStreaming
         if (variant.content.isNotBlank()) {
-            total += countTokens(variant.content)
+            total += if (isLive) estimateTokensFast(variant.content) else countTokens(variant.content)
         }
         for (att in variant.attachments) {
             total += countAttachmentTokens(att)
         }
         if (role == MessageRole.ASSISTANT && includeReasoningAndTools) {
             if (variant.thinkingSummary.isNotBlank()) {
-                total += countTokens(variant.thinkingSummary)
+                total += if (isLive) estimateTokensFast(variant.thinkingSummary) else countTokens(variant.thinkingSummary)
             }
             for (tc in variant.toolCalls) {
-                total += 6 + countTokens(tc.name) + countTokens(tc.argumentsJson) + countTokens(tc.resultText)
+                val tcLive = isLive || tc.isRunning
+                total += 6 + countTokens(tc.name) +
+                    (if (tcLive) estimateTokensFast(tc.argumentsJson) else countTokens(tc.argumentsJson)) +
+                    (if (tcLive) estimateTokensFast(tc.resultText) else countTokens(tc.resultText))
             }
         }
         return total
@@ -312,16 +330,20 @@ object O200kTokenizer {
             }
             activeTurnsCount++
             val v = node.activeVariant
+            val isLive = v.isStreaming
             var turnProseAndTools = 4
             if (v.content.isNotBlank()) {
-                turnProseAndTools += countTokens(v.content)
+                turnProseAndTools += if (isLive) estimateTokensFast(v.content) else countTokens(v.content)
             }
             if (node.role == MessageRole.ASSISTANT) {
                 for (tc in v.toolCalls) {
-                    turnProseAndTools += 6 + countTokens(tc.name) + countTokens(tc.argumentsJson) + countTokens(tc.resultText)
+                    val tcLive = isLive || tc.isRunning
+                    turnProseAndTools += 6 + countTokens(tc.name) +
+                        (if (tcLive) estimateTokensFast(tc.argumentsJson) else countTokens(tc.argumentsJson)) +
+                        (if (tcLive) estimateTokensFast(tc.resultText) else countTokens(tc.resultText))
                 }
-                if ((v.content.isBlank() || v.isStreaming || node == effectiveMessages.lastOrNull()) && v.thinkingSummary.isNotBlank()) {
-                    turnProseAndTools += countTokens(v.thinkingSummary)
+                if ((v.content.isBlank() || isLive || node == effectiveMessages.lastOrNull()) && v.thinkingSummary.isNotBlank()) {
+                    turnProseAndTools += if (isLive) estimateTokensFast(v.thinkingSummary) else countTokens(v.thinkingSummary)
                 }
             }
             chatHistoryTokens += turnProseAndTools

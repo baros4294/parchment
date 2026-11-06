@@ -1427,4 +1427,98 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(iconA, iconB)
         assertEquals("Compact Context", iconA.cleanText)
     }
+
+    @Test
+    fun testNestedMarkdownProseLatexPerChatMediaFolderAndZipBundleRoundTrip() {
+        val palette = io.parchment.ai.ui.buildPaletteFromConfig(io.parchment.ai.model.ThemeConfig())
+
+        // 1. Verify exact user screenshot case: outer *...* italic containing nested **`#48`** bold-code and `.APK` inline code
+        val screenshotLine = "*(Quick status note: GitHub Actions Run **`#48`** on commit `af62c48` finished with **`SUCCESS`** across both the Android Universal `.APK` and Windows `.EXE` builds!)*"
+        val styledScreenshot = io.parchment.ai.ui.styleLiteraryParagraph(
+            raw = screenshotLine,
+            palette = palette,
+            indentChars = 0,
+            enableMath = true,
+            enableInlineDollarMath = true
+        )
+        assertEquals(
+            "(Quick status note: GitHub Actions Run #48 on commit af62c48 finished with SUCCESS across both the Android Universal .APK and Windows .EXE builds!)",
+            styledScreenshot.text,
+            "Outer *...* italic and inner **`...`** bold-code must strip all Markdown asterisks cleanly without leaking literal '*'"
+        )
+        assertTrue(
+            styledScreenshot.spanStyles.any { it.item.fontStyle == androidx.compose.ui.text.font.FontStyle.Italic },
+            "Outer span must be styled as Italic"
+        )
+        assertTrue(
+            styledScreenshot.spanStyles.any { it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.SemiBold },
+            "Inner **...** spans must be styled as SemiBold"
+        )
+
+        // 2. Verify currency "$50 to $100" is NOT mangled as math while "$x_1 + \mathcal{O}(N)$" IS rendered as LaTeX math
+        val currencyAndMath = "Cost is $50 to $100 for $\\mathcal{O}(N \\log N)$ complexity."
+        val styledMath = io.parchment.ai.ui.styleLiteraryParagraph(currencyAndMath, palette, 0, enableMath = true, enableInlineDollarMath = true)
+        assertTrue(styledMath.text.contains("$50 to $100"), "Currency range must remain literal")
+        assertTrue(styledMath.text.contains("𝒪(N log N)"), "\\mathcal{O} must render as Unicode script 𝒪")
+
+        // 3. Verify Per-Chat Folder Hierarchy (chats/<sessionId>/chat.json + chats/<sessionId>/media/) & .chat.zip Bundle Export/Import
+        val chatId = "sess-zip-bundle-${PlatformBridge.currentTimeMillis()}"
+        val samplePngBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03, 0x04)
+        val savedMediaPath = PlatformBridge.saveGeneratedMediaFile("att-diagram.png", samplePngBytes, sessionId = chatId)
+        assertTrue(
+            savedMediaPath.replace('\\', '/').contains("chats/$chatId/media/att-diagram.png"),
+            "Media file must be saved inside chats/<sessionId>/media/"
+        )
+
+        val sessionWithMedia = ChatSession(
+            id = chatId,
+            title = "Per-Chat Folder Test",
+            createdAt = 1000L,
+            updatedAt = 2000L,
+            profileId = "prof-gemini-interactions",
+            messages = listOf(
+                MessageNode(
+                    id = "m1",
+                    role = MessageRole.USER,
+                    variants = listOf(
+                        MessageVariant(
+                            id = "v1",
+                            content = "Attached diagram",
+                            attachments = listOf(
+                                PromptAttachment(
+                                    id = "a1",
+                                    fileName = "att-diagram.png",
+                                    mimeType = "image/png",
+                                    localFilePath = savedMediaPath
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        io.parchment.ai.ui.saveSingleChatSessionToDisk(sessionWithMedia)
+        assertEquals(1, io.parchment.ai.ui.countSessionVaultItemsFast(sessionWithMedia))
+
+        val zipBytes = io.parchment.ai.ui.encodeChatSessionsToZipBundleBytes(listOf(sessionWithMedia))
+        assertTrue(zipBytes.size > 64, "Exported .chat.zip bundle must be non-empty")
+
+        // Delete original chat folder (including its media/) and re-import from the .chat.zip bundle!
+        PlatformBridge.deleteChatSessionFile(chatId)
+        assertEquals(null, PlatformBridge.loadChatSessionJsonById(chatId))
+
+        val reimported = io.parchment.ai.ui.decodeChatSessionsFromPickedFile(
+            fileName = io.parchment.ai.ui.buildExportZipFileNameForChat(sessionWithMedia),
+            bytes = zipBytes
+        )
+        assertEquals(1, reimported.size)
+        val restoredChat = reimported.first()
+        assertEquals("Per-Chat Folder Test", restoredChat.title)
+        val restoredMediaPath = restoredChat.messages.first().activeVariant.attachments.first().localFilePath
+        val restoredBytes = PlatformBridge.readBinaryFileBytes(restoredMediaPath)
+        assertNotNull(restoredBytes, "Media file extracted from .chat.zip into chats/<sessionId>/media/ must be readable")
+        assertEquals(samplePngBytes.toList(), restoredBytes.toList())
+
+        PlatformBridge.deleteChatSessionFile(chatId)
+    }
 }

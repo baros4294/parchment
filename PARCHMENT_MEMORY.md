@@ -28,9 +28,13 @@
    - Keep inactive chats dehydrated as lightweight stubs (`dehydrateChatSessionToCompactStub` / `hydrateSessionFromDiskIfNeeded`) and strip duplicate in-memory `PromptAttachment.base64Data` when `localFilePath` exists on disk.
    - Reuse `sharedScratchIconPath` in `KissVectorIcon`, cache parsed `Path`s in `ModelLabSvgIcon`, and share `AiProviderEngine.httpClient`.
 
-## 3. Core Architecture Matrix (`v2.0.36+`)
-- **Split Persistence**: `parchment-settings.json` (settings/providers/assistants, 0 embedded chats) + `chats/<sessionId>.json` (fast Frame-0 active chat boot + background stub hydration).
+## 3. Core Architecture Matrix (`v2.0.38+`)
+- **Self-Contained Per-Chat Folder Hierarchy & Split Persistence**:
+  - `parchment-settings.json` + `backups/` (`parchment-settings.prev.json`, `parchment-settings.user-backup.json`) + `chats/<sessionId>/chat.json` + `chats/<sessionId>/media/*` (auto-migrates legacy flat `chats/*.json` and root `media/*`).
+  - Streaming `.chat.zip` / `.zip` bundle export & import (`encodeChatSessionsToZipBundleBytes` / `decodeChatSessionsFromPickedFile`) bundles `chat.json` + `media/` using `8 KB` file streams and portable relative media paths.
+- **Context-Aware Markdown, Nested Prose & LaTeX Engine (`ProseRenderer.kt`, `LatexMathRenderer.kt`)**:
+  - Nested delimiter scanners (`*...*` skipping inner `**bold**`, `` `code` ``, `$math$`; word-boundary `_..._`; currency-safe `$...$`), indented/checkbox lists, multi-line display equations, and `\mathcal`/`\mathfrak`/`\textbf`/`\cancel` support.
 - **Uncapped Prompts & Compaction**: Assistant `systemPrompt`, Chat `Extra Instructions`, `Style & Tone Reminder`, `Chat Summary & Memory`, and `generateUtilityText` (`maxOutputTokens = null`) are 100% uncapped (`Int.MAX_VALUE` lines). `prepareCompactionPlan` preserves 100% of `existingStorySummary`.
 - **17-Tool Agent Harness (`WorkspaceHarness.kt`)**: Parallel read/search batching, fuzzy whitespace self-healing edits, head+tail bookend size valves, live `shell_exec` streaming, and process-tree kill on Stop.
-- **Unified `o200k_base` Tokenizer (`O200kTokenizer.kt`)**: Base session breakdown memoized separately from $O(1)$ live Composer draft tokens; accurate `tok/s` excludes TTFT wait and local tool execution time.
+- **Unified `o200k_base` Tokenizer & `@Immutable` Models (`O200kTokenizer.kt`, `Models.kt`)**: `@Immutable` stability across all model classes, $O(1)$ `estimateTokensFast` during active streaming (preventing `tokenCache` eviction), and `countSessionVaultItemsFast`.
 - **Android Compatibility Ceiling (`gradle/libs.versions.toml`)**: `agp = "8.13.2"`, `compileSdk = 36`, `kotlin = "2.3.21"`, `compose-multiplatform = "1.10.3"`, `ktor = "3.5.2"`. Keep Android AAR `minCompileSdk <= 36`.

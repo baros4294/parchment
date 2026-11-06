@@ -1330,7 +1330,7 @@ internal fun ParchmentAttachmentViewerModal(
 
             is ActiveMediaViewerItem.TextOrCodeViewer -> {
                 var copied by remember(item) { mutableStateOf(false) }
-                val linesCount = remember(item.textContent) { item.textContent.lines().size }
+                val linesCount = remember(item.textContent) { countLinesFast(item.textContent) }
                 val lowerTitle = remember(item.title) { item.title.lowercase() }
                 val isSvgContent = remember(item.title, item.mimeType, item.textContent) {
                     lowerTitle.endsWith(".svg") || item.mimeType.equals("image/svg+xml", ignoreCase = true) ||
@@ -1525,6 +1525,48 @@ private val rightVaultJson = Json {
 private val VAULT_CODE_FENCE_REGEX = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
 private val VAULT_LINE_NUMBER_STRIP_REGEX = Regex("^\\d+:\\s?")
 
+/**
+ * Fast, zero-JSON-parsing, zero-list-allocation counter for the TopEditorialBar `📂` Vault badge.
+ * Full `extractSessionVaultItems` only runs when the user actually opens the Right Files Sidebar!
+ */
+internal fun countSessionVaultItemsFast(
+    session: ChatSession,
+    pendingAttachments: List<PromptAttachment> = emptyList()
+): Int {
+    var total = pendingAttachments.size
+    for (node in session.messages) {
+        val v = node.activeVariant
+        total += v.attachments.size
+        if (node.role == MessageRole.ASSISTANT) {
+            total += v.mediaItems.size
+            total += v.webSources.size
+            var wroteWorkspaceFileInTurn = false
+            for (tc in v.toolCalls) {
+                if (!tc.isError) {
+                    val n = tc.name
+                    if (n.equals("fs_write", ignoreCase = true) ||
+                        n.equals("fs_edit", ignoreCase = true) ||
+                        n.equals("fs_multi_edit", ignoreCase = true)
+                    ) {
+                        wroteWorkspaceFileInTurn = true
+                        total++
+                    }
+                }
+            }
+            if (!wroteWorkspaceFileInTurn && v.content.length >= 32 && v.content.contains("```")) {
+                for (match in VAULT_CODE_FENCE_REGEX.findAll(v.content)) {
+                    val lang = match.groupValues.getOrNull(1)?.trim().orEmpty()
+                    val code = match.groupValues.getOrNull(2)?.trim().orEmpty()
+                    if (code.isNotEmpty() && (countLinesFast(code) >= 6 || lang.equals("svg", ignoreCase = true))) {
+                        total++
+                    }
+                }
+            }
+        }
+    }
+    return total
+}
+
 internal fun extractSessionVaultItems(
     session: ChatSession,
     pendingAttachments: List<PromptAttachment> = emptyList()
@@ -1574,7 +1616,7 @@ internal fun extractSessionVaultItems(
                                 filePath = path,
                                 actionBadge = badge,
                                 content = content.ifBlank { tc.resultText },
-                                lineCount = content.lines().size.coerceAtLeast(1)
+                                lineCount = countLinesFast(content).coerceAtLeast(1)
                             )
                         )
                     }
@@ -1588,7 +1630,7 @@ internal fun extractSessionVaultItems(
                 for (match in codeFenceRegex.findAll(v.content)) {
                     val lang = match.groupValues.getOrNull(1)?.trim().orEmpty().ifBlank { "txt" }
                     val code = match.groupValues.getOrNull(2)?.trim().orEmpty()
-                    val lines = code.lines().size
+                    val lines = countLinesFast(code)
                     if (code.isNotEmpty() && (lines >= 6 || lang.equals("svg", ignoreCase = true))) {
                         blockCounter++
                         aiArtifacts.add(
@@ -1629,13 +1671,13 @@ internal fun ParchmentRightFilesSidebar(
         activeSession.messages.size,
         pendingAttachments.size,
         activeSession.messages.lastOrNull()?.activeVariant?.let { v ->
-            "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.count { it == '`' } / 6}"
+            "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.length / 256}"
         }
     ) {
         "${activeSession.id}:${activeSession.messages.size}:${pendingAttachments.size}:" +
             activeSession.messages.sumOf {
                 val v = it.activeVariant
-                v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.count { c -> c == '`' } / 6)
+                v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.length / 256)
             }
     }
     val (aiArtifacts, userUploads, webSources) = remember(vaultStructuralKey, pendingAttachments) {

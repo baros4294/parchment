@@ -255,18 +255,25 @@ private val PREFIX_ICON_MAPPINGS = listOf(
 )
 
 private val SUFFIX_ICON_MAPPINGS = listOf(
-    " ▾" to KissIcon.CHEVRON_DOWN,
-    " ▼" to KissIcon.CHEVRON_DOWN,
-    " ▴" to KissIcon.CHEVRON_UP,
-    " ▲" to KissIcon.CHEVRON_UP,
-    " ▸" to KissIcon.CHEVRON_RIGHT,
-    " →" to KissIcon.ARROW_RIGHT,
     " ↵" to KissIcon.SEND_ENTER,
+    " →" to KissIcon.ARROW_RIGHT,
+    " ←" to KissIcon.ARROW_LEFT,
+    " ↗" to KissIcon.EXTERNAL_LINK,
+    " ▲" to KissIcon.CHEVRON_UP,
+    " ▴" to KissIcon.CHEVRON_UP,
+    " ▼" to KissIcon.CHEVRON_DOWN,
+    " ▾" to KissIcon.CHEVRON_DOWN,
+    " ▸" to KissIcon.CHEVRON_RIGHT,
+    " ▶" to KissIcon.CHEVRON_RIGHT,
+    " 👁" to KissIcon.EYE,
+    " •" to KissIcon.CIRCLE_DOT,
     " ●" to KissIcon.CIRCLE_DOT
 )
 
-private val parsedKissLabelCache = object : LinkedHashMap<String, ParsedLabelWithIcons>(128, 0.75f, true) {
-    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ParsedLabelWithIcons>?): Boolean = size > 256
+private val EMPTY_PARSED_LABEL = ParsedLabelWithIcons(null, "", null)
+
+private val parsedKissLabelCache = object : LinkedHashMap<String, ParsedLabelWithIcons>(256, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ParsedLabelWithIcons>?): Boolean = size > 512
 }
 
 /**
@@ -274,210 +281,103 @@ private val parsedKissLabelCache = object : LinkedHashMap<String, ParsedLabelWit
  */
 fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     val trimmed = raw.trim()
-    if (trimmed.isEmpty()) return ParsedLabelWithIcons(null, "", null)
+    if (trimmed.isEmpty()) return EMPTY_PARSED_LABEL
     synchronized(parsedKissLabelCache) {
         parsedKissLabelCache[trimmed]?.let { return it }
     }
 
     // Exact single-icon matches (for icon-only buttons & avatar circles)
-    when (trimmed) {
-        "☰", "▤" -> return ParsedLabelWithIcons(KissIcon.MENU, "", null)
-        "◂" -> return ParsedLabelWithIcons(KissIcon.SIDEBAR_CLOSE, "", null)
-        "+" -> return ParsedLabelWithIcons(KissIcon.PLUS, "", null)
-        "—", "-", "−", "–" -> return ParsedLabelWithIcons(KissIcon.MINUS, "", null)
-        "×", "✕" -> return ParsedLabelWithIcons(KissIcon.CLOSE, "", null)
-        "🗑", "🗑️" -> return ParsedLabelWithIcons(KissIcon.TRASH, "", null)
-        "📋" -> return ParsedLabelWithIcons(KissIcon.COPY, "", null)
-        "✎", "✏️", "✍", "✍️" -> return ParsedLabelWithIcons(KissIcon.EDIT, "", null)
-        "✦", "✨" -> return ParsedLabelWithIcons(KissIcon.SPARKLES, "", null)
-        "⚙", "⚙️" -> return ParsedLabelWithIcons(KissIcon.SETTINGS, "", null)
-        "🔧", "🛠", "🛠️" -> return ParsedLabelWithIcons(KissIcon.WRENCH, "", null)
-        "🐚", "⌨", "⌨️" -> return ParsedLabelWithIcons(KissIcon.TERMINAL, "", null)
-        "📎" -> return ParsedLabelWithIcons(KissIcon.PAPERCLIP, "", null)
-        "🧠" -> return ParsedLabelWithIcons(KissIcon.BRAIN, "", null)
-        "📌" -> return ParsedLabelWithIcons(KissIcon.PIN, "", null)
-        "🗺", "🗺️" -> return ParsedLabelWithIcons(KissIcon.MAP_TREE, "", null)
-        "⤒" -> return ParsedLabelWithIcons(KissIcon.CHEVRONS_UP, "", null)
-        "⤓" -> return ParsedLabelWithIcons(KissIcon.CHEVRONS_DOWN, "", null)
-        "↑" -> return ParsedLabelWithIcons(KissIcon.ARROW_UP, "", null)
-        "↓" -> return ParsedLabelWithIcons(KissIcon.ARROW_DOWN, "", null)
-        "←" -> return ParsedLabelWithIcons(KissIcon.ARROW_LEFT, "", null)
-        "→" -> return ParsedLabelWithIcons(KissIcon.ARROW_RIGHT, "", null)
-        "↗" -> return ParsedLabelWithIcons(KissIcon.EXTERNAL_LINK, "", null)
-        "↳" -> return ParsedLabelWithIcons(KissIcon.CORNER_DOWN_RIGHT, "", null)
-        "@" -> return ParsedLabelWithIcons(KissIcon.AT_SIGN, "", null)
-        "💬" -> return ParsedLabelWithIcons(KissIcon.MESSAGE_CIRCLE, "", null)
-        "🧪" -> return ParsedLabelWithIcons(KissIcon.FLASK, "", null)
-        "🤖" -> return ParsedLabelWithIcons(KissIcon.BOT, "", null)
-        "📚", "📖", "📕", "📗", "📘", "📙" -> return ParsedLabelWithIcons(KissIcon.BOOK_OPEN, "", null)
-        "⚡" -> return ParsedLabelWithIcons(KissIcon.ZAP, "", null)
-        "🎭" -> return ParsedLabelWithIcons(KissIcon.THEATER, "", null)
-        "🧭" -> return ParsedLabelWithIcons(KissIcon.COMPASS, "", null)
-        "🏷", "🏷️" -> return ParsedLabelWithIcons(KissIcon.TAG, "", null)
-        "📦" -> return ParsedLabelWithIcons(KissIcon.PACKAGE_BOX, "", null)
-        "🎨" -> return ParsedLabelWithIcons(KissIcon.PALETTE, "", null)
-        "👑" -> return ParsedLabelWithIcons(KissIcon.CROWN, "", null)
-        "🔥" -> return ParsedLabelWithIcons(KissIcon.FLAME, "", null)
-        "🛡", "🛡️", "🔒", "🔑" -> return ParsedLabelWithIcons(KissIcon.SHIELD_CHECK, "", null)
-        "🎲" -> return ParsedLabelWithIcons(KissIcon.DICE, "", null)
-        "🧮" -> return ParsedLabelWithIcons(KissIcon.CALCULATOR, "", null)
-        "🔍+" -> return ParsedLabelWithIcons(KissIcon.ZOOM_IN, "", null)
-        "🔍−", "🔍-" -> return ParsedLabelWithIcons(KissIcon.ZOOM_OUT, "", null)
-        "🔍" -> return ParsedLabelWithIcons(KissIcon.SEARCH, "", null)
-        "🖥", "🖥️" -> return ParsedLabelWithIcons(KissIcon.MONITOR, "", null)
-        "🖧" -> return ParsedLabelWithIcons(KissIcon.SERVER_NETWORK, "", null)
-        "♡", "♥", "❤️" -> return ParsedLabelWithIcons(KissIcon.HEART_PULSE, "", null)
-        "📂", "📁" -> return ParsedLabelWithIcons(KissIcon.FOLDER, "", null)
-        "☁", "☁️" -> return ParsedLabelWithIcons(KissIcon.CLOUD, "", null)
-        "○" -> return ParsedLabelWithIcons(KissIcon.CIRCLE_EMPTY, "", null)
-        "⋯" -> return ParsedLabelWithIcons(KissIcon.MORE_HORIZONTAL, "", null)
-        "🎯" -> return ParsedLabelWithIcons(KissIcon.TARGET, "", null)
-        "↺" -> return ParsedLabelWithIcons(KissIcon.REWIND, "", null)
-        "⟳", "↻", "🔄" -> return ParsedLabelWithIcons(KissIcon.REFRESH, "", null)
-        "📄", "📝" -> return ParsedLabelWithIcons(KissIcon.FILE_TEXT, "", null)
-        "🎵" -> return ParsedLabelWithIcons(KissIcon.AUDIO, "", null)
-        "🎙", "🎙️" -> return ParsedLabelWithIcons(KissIcon.MIC, "", null)
-        "🗂", "🗂️" -> return ParsedLabelWithIcons(KissIcon.TABS, "", null)
-        "⊞" -> return ParsedLabelWithIcons(KissIcon.LAYOUT_GRID, "", null)
-        "👤" -> return ParsedLabelWithIcons(KissIcon.USER, "", null)
-        "🔊" -> return ParsedLabelWithIcons(KissIcon.VOLUME_ON, "", null)
-        "🔇" -> return ParsedLabelWithIcons(KissIcon.VOLUME_OFF, "", null)
-        "✓", "✔" -> return ParsedLabelWithIcons(KissIcon.CHECK, "", null)
-        "💾", "📥", "⬇", "⬇️" -> return ParsedLabelWithIcons(KissIcon.DOWNLOAD, "", null)
-        "📤" -> return ParsedLabelWithIcons(KissIcon.UPLOAD, "", null)
-        "👁", "👁️" -> return ParsedLabelWithIcons(KissIcon.EYE, "", null)
-        "🙈" -> return ParsedLabelWithIcons(KissIcon.EYE_OFF, "", null)
-        "🖼", "🖼️" -> return ParsedLabelWithIcons(KissIcon.IMAGE, "", null)
-        "🎬" -> return ParsedLabelWithIcons(KissIcon.VIDEO, "", null)
-        "🔗", "⛓" -> return ParsedLabelWithIcons(KissIcon.LINK, "", null)
-        "⏳" -> return ParsedLabelWithIcons(KissIcon.CLOCK, "", null)
-        "■" -> return ParsedLabelWithIcons(KissIcon.STOP, "", null)
-        "⚠", "⚠️" -> return ParsedLabelWithIcons(KissIcon.WARNING, "", null)
-        "‹/›", "</>", "💻" -> return ParsedLabelWithIcons(KissIcon.CODE, "", null)
-        "🌐" -> return ParsedLabelWithIcons(KissIcon.TRANSLATE, "", null)
-        "⑂" -> return ParsedLabelWithIcons(KissIcon.GIT_BRANCH, "", null)
-        "▴", "▲" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_UP, "", null)
-        "▾", "▼" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_DOWN, "", null)
-        "▸", "▶" -> return ParsedLabelWithIcons(KissIcon.CHEVRON_RIGHT, "", null)
+    val singleIcon: KissIcon? = when (trimmed) {
+        "☰", "▤" -> KissIcon.MENU
+        "◂" -> KissIcon.SIDEBAR_CLOSE
+        "+" -> KissIcon.PLUS
+        "—", "-", "−", "–" -> KissIcon.MINUS
+        "×", "✕" -> KissIcon.CLOSE
+        "🗑", "🗑️" -> KissIcon.TRASH
+        "📋" -> KissIcon.COPY
+        "✎", "✏️", "✍", "✍️" -> KissIcon.EDIT
+        "✦", "✨" -> KissIcon.SPARKLES
+        "⚙", "⚙️" -> KissIcon.SETTINGS
+        "🔧", "🛠", "🛠️" -> KissIcon.WRENCH
+        "🐚", "⌨", "⌨️" -> KissIcon.TERMINAL
+        "📎" -> KissIcon.PAPERCLIP
+        "🧠" -> KissIcon.BRAIN
+        "📌" -> KissIcon.PIN
+        "🗺", "🗺️" -> KissIcon.MAP_TREE
+        "⤒" -> KissIcon.CHEVRONS_UP
+        "⤓" -> KissIcon.CHEVRONS_DOWN
+        "↑" -> KissIcon.ARROW_UP
+        "↓" -> KissIcon.ARROW_DOWN
+        "←" -> KissIcon.ARROW_LEFT
+        "→" -> KissIcon.ARROW_RIGHT
+        "↗" -> KissIcon.EXTERNAL_LINK
+        "↳" -> KissIcon.CORNER_DOWN_RIGHT
+        "@" -> KissIcon.AT_SIGN
+        "💬" -> KissIcon.MESSAGE_CIRCLE
+        "🧪" -> KissIcon.FLASK
+        "🤖" -> KissIcon.BOT
+        "📚", "📖", "📕", "📗", "📘", "📙" -> KissIcon.BOOK_OPEN
+        "⚡" -> KissIcon.ZAP
+        "🎭" -> KissIcon.THEATER
+        "🧭" -> KissIcon.COMPASS
+        "🏷", "🏷️" -> KissIcon.TAG
+        "📦" -> KissIcon.PACKAGE_BOX
+        "🎨" -> KissIcon.PALETTE
+        "👑" -> KissIcon.CROWN
+        "🔥" -> KissIcon.FLAME
+        "🛡", "🛡️", "🔒", "🔑" -> KissIcon.SHIELD_CHECK
+        "🎲" -> KissIcon.DICE
+        "🧮" -> KissIcon.CALCULATOR
+        "🔍+" -> KissIcon.ZOOM_IN
+        "🔍−", "🔍-" -> KissIcon.ZOOM_OUT
+        "🔍" -> KissIcon.SEARCH
+        "🖥", "🖥️" -> KissIcon.MONITOR
+        "🖧" -> KissIcon.SERVER_NETWORK
+        "♡", "♥", "❤️" -> KissIcon.HEART_PULSE
+        "📂", "📁" -> KissIcon.FOLDER
+        "☁", "☁️" -> KissIcon.CLOUD
+        "○" -> KissIcon.CIRCLE_EMPTY
+        "⋯" -> KissIcon.MORE_HORIZONTAL
+        "🎯" -> KissIcon.TARGET
+        "↺" -> KissIcon.REWIND
+        "⟳", "↻", "🔄" -> KissIcon.REFRESH
+        "📄", "📝" -> KissIcon.FILE_TEXT
+        "🎵" -> KissIcon.AUDIO
+        "🎙", "🎙️" -> KissIcon.MIC
+        "🗂", "🗂️" -> KissIcon.TABS
+        "⊞" -> KissIcon.LAYOUT_GRID
+        "👤" -> KissIcon.USER
+        "🔊" -> KissIcon.VOLUME_ON
+        "🔇" -> KissIcon.VOLUME_OFF
+        "✓", "✔" -> KissIcon.CHECK
+        "💾", "📥", "⬇", "⬇️" -> KissIcon.DOWNLOAD
+        "📤" -> KissIcon.UPLOAD
+        "👁", "👁️" -> KissIcon.EYE
+        "🙈" -> KissIcon.EYE_OFF
+        "🖼", "🖼️" -> KissIcon.IMAGE
+        "🎬" -> KissIcon.VIDEO
+        "🔗", "⛓" -> KissIcon.LINK
+        "⏳" -> KissIcon.CLOCK
+        "■" -> KissIcon.STOP
+        "⚠", "⚠️" -> KissIcon.WARNING
+        "‹/›", "</>", "💻" -> KissIcon.CODE
+        "🌐" -> KissIcon.TRANSLATE
+        "⑂" -> KissIcon.GIT_BRANCH
+        "▴", "▲" -> KissIcon.CHEVRON_UP
+        "▾", "▼" -> KissIcon.CHEVRON_DOWN
+        "▸", "▶" -> KissIcon.CHEVRON_RIGHT
+        else -> null
+    }
+    if (singleIcon != null) {
+        val result = ParsedLabelWithIcons(singleIcon, "", null)
+        synchronized(parsedKissLabelCache) { parsedKissLabelCache[trimmed] = result }
+        return result
     }
     var working = trimmed
     var leading: KissIcon? = null
     var trailing: KissIcon? = null
 
-    val prefixMappings = listOf(
-        "☰ " to KissIcon.MENU,
-        "◂ " to KissIcon.SIDEBAR_CLOSE,
-        "⚙ " to KissIcon.SETTINGS,
-        "⚙️ " to KissIcon.SETTINGS,
-        "🔧 " to KissIcon.WRENCH,
-        "🛠 " to KissIcon.WRENCH,
-        "🛠️ " to KissIcon.WRENCH,
-        "🐚 " to KissIcon.TERMINAL,
-        "🔍 " to KissIcon.SEARCH,
-        "+ " to KissIcon.PLUS,
-        "× " to KissIcon.CLOSE,
-        "✕ " to KissIcon.CLOSE,
-        "— " to KissIcon.MINUS,
-        "− " to KissIcon.MINUS,
-        "- " to KissIcon.MINUS,
-        "🗑 " to KissIcon.TRASH,
-        "🗑️ " to KissIcon.TRASH,
-        "📋 MD" to KissIcon.MARKDOWN,
-        "📋 " to KissIcon.COPY,
-        "✎ " to KissIcon.EDIT,
-        "✏️ " to KissIcon.EDIT,
-        "✍ " to KissIcon.EDIT,
-        "✍️ " to KissIcon.EDIT,
-        "✦ " to KissIcon.SPARKLES,
-        "✨ " to KissIcon.SPARKLES,
-        "↻ " to KissIcon.REFRESH,
-        "🔄 " to KissIcon.REFRESH,
-        "→ " to KissIcon.ARROW_RIGHT,
-        "← " to KissIcon.ARROW_LEFT,
-        "↗ " to KissIcon.EXTERNAL_LINK,
-        "↳ " to KissIcon.CORNER_DOWN_RIGHT,
-        "▾ " to KissIcon.CHEVRON_DOWN,
-        "▼ " to KissIcon.CHEVRON_DOWN,
-        "▸ " to KissIcon.CHEVRON_RIGHT,
-        "▴ " to KissIcon.CHEVRON_UP,
-        "▲ " to KissIcon.CHEVRON_UP,
-        "🗺 " to KissIcon.MAP_TREE,
-        "🗺️ " to KissIcon.MAP_TREE,
-        "⑂ " to KissIcon.GIT_BRANCH,
-        "🧠 " to KissIcon.BRAIN,
-        "📎 " to KissIcon.PAPERCLIP,
-        "🌐 " to KissIcon.GLOBE,
-        "🖼 " to KissIcon.IMAGE,
-        "🖼️ " to KissIcon.IMAGE,
-        "🎬 " to KissIcon.VIDEO,
-        "💻 " to KissIcon.CODE,
-        "🔗 " to KissIcon.LINK,
-        "⛓ " to KissIcon.LINK,
-        "⚡ " to KissIcon.ZAP,
-        "⏳ " to KissIcon.CLOCK,
-        "■ " to KissIcon.STOP,
-        "👁 " to KissIcon.EYE,
-        "👁️ " to KissIcon.EYE,
-        "🙈 " to KissIcon.EYE_OFF,
-        "♡ " to KissIcon.HEART_PULSE,
-        "📌 " to KissIcon.PIN,
-        "📂 " to KissIcon.FOLDER,
-        "📁 " to KissIcon.FOLDER,
-        "↑ " to KissIcon.UPLOAD,
-        "📖 " to KissIcon.BOOK_OPEN,
-        "📚 " to KissIcon.BOOK_OPEN,
-        "📕 " to KissIcon.BOOK_OPEN,
-        "▤ " to KissIcon.MENU,
-        "☁ " to KissIcon.CLOUD,
-        "☁️ " to KissIcon.CLOUD,
-        "📥 " to KissIcon.DOWNLOAD,
-        "📤 " to KissIcon.UPLOAD,
-        "⬇ " to KissIcon.DOWNLOAD,
-        "⬇️ " to KissIcon.DOWNLOAD,
-        "🖥 " to KissIcon.MONITOR,
-        "🖥️ " to KissIcon.MONITOR,
-        "🖧 " to KissIcon.SERVER_NETWORK,
-        "🤖 " to KissIcon.BOT,
-        "💬 " to KissIcon.MESSAGE_CIRCLE,
-        "🧪 " to KissIcon.FLASK,
-        "🎭 " to KissIcon.THEATER,
-        "🧭 " to KissIcon.COMPASS,
-        "🏷 " to KissIcon.TAG,
-        "🏷️ " to KissIcon.TAG,
-        "📦 " to KissIcon.PACKAGE_BOX,
-        "🎨 " to KissIcon.PALETTE,
-        "👑 " to KissIcon.CROWN,
-        "🔥 " to KissIcon.FLAME,
-        "🛡 " to KissIcon.SHIELD_CHECK,
-        "🛡️ " to KissIcon.SHIELD_CHECK,
-        "🔑 " to KissIcon.SHIELD_CHECK,
-        "🎲 " to KissIcon.DICE,
-        "🧮 " to KissIcon.CALCULATOR,
-        "⊞ " to KissIcon.LAYOUT_GRID,
-        "👤 " to KissIcon.USER,
-        "✓ " to KissIcon.CHECK,
-        "✔ " to KissIcon.CHECK,
-        "⋯ " to KissIcon.MORE_HORIZONTAL,
-        "🔊 " to KissIcon.VOLUME_ON,
-        "🔇 " to KissIcon.VOLUME_OFF,
-        "▶ " to KissIcon.PLAY,
-        "⚠ " to KissIcon.WARNING,
-        "⚠️ " to KissIcon.WARNING,
-        "🎯 " to KissIcon.TARGET,
-        "↺ " to KissIcon.REWIND,
-        "⟳ " to KissIcon.REFRESH,
-        "📄 " to KissIcon.FILE_TEXT,
-        "📝 " to KissIcon.FILE_TEXT,
-        "🎵 " to KissIcon.AUDIO,
-        "🎙 " to KissIcon.MIC,
-        "🎙️ " to KissIcon.MIC,
-        "🗂 " to KissIcon.TABS,
-        "🗂️ " to KissIcon.TABS,
-        "💾 " to KissIcon.DOWNLOAD,
-        "‹/› " to KissIcon.CODE,
-        "</> " to KissIcon.CODE
-    )
-    for ((prefix, icon) in prefixMappings) {
+    for ((prefix, icon) in PREFIX_ICON_MAPPINGS) {
         if (working.startsWith(prefix)) {
             leading = icon
             working = if (prefix == "📋 MD") "MD" else working.removePrefix(prefix).trimStart()
@@ -485,22 +385,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         }
     }
 
-    val suffixMappings = listOf(
-        " ↵" to KissIcon.SEND_ENTER,
-        " →" to KissIcon.ARROW_RIGHT,
-        " ←" to KissIcon.ARROW_LEFT,
-        " ↗" to KissIcon.EXTERNAL_LINK,
-        " ▲" to KissIcon.CHEVRON_UP,
-        " ▴" to KissIcon.CHEVRON_UP,
-        " ▼" to KissIcon.CHEVRON_DOWN,
-        " ▾" to KissIcon.CHEVRON_DOWN,
-        " ▸" to KissIcon.CHEVRON_RIGHT,
-        " ▶" to KissIcon.CHEVRON_RIGHT,
-        " 👁" to KissIcon.EYE,
-        " •" to KissIcon.CIRCLE_DOT
-    )
-
-    for ((suffix, icon) in suffixMappings) {
+    for ((suffix, icon) in SUFFIX_ICON_MAPPINGS) {
         if (working.endsWith(suffix)) {
             trailing = icon
             working = working.removeSuffix(suffix).trimEnd()
@@ -508,7 +393,9 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
         }
     }
 
-    return ParsedLabelWithIcons(leading, working, trailing)
+    val result = ParsedLabelWithIcons(leading, working, trailing)
+    synchronized(parsedKissLabelCache) { parsedKissLabelCache[trimmed] = result }
+    return result
 }
 
 @Composable
@@ -1458,6 +1345,9 @@ internal val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
     )
 )
 
+private val OPENAI_REASONING_SLUG_REGEX = Regex("""(^|[/:_-])o[134]([/:_-]|$)""")
+private val NON_ALNUM_SLUG_REGEX = Regex("[^a-z0-9]")
+
 /**
  * Maps any model ID (e.g. `gemini-4-argon`, `claude-sonnet-4`, `gpt-5`, `deepseek-r1`, `qwen/qwen3-235b`)
  * or provider name/URL to its canonical `@lobehub/icons-static-svg` icon slug.
@@ -1469,7 +1359,7 @@ fun resolveLabSlugForModelOrProvider(modelOrProvider: String, fallbackProtocolNa
         s.contains("claude") -> "claude"
         s.contains("anthropic") -> "anthropic"
         s.contains("gpt") || s.contains("openai") || s.contains("chatgpt") || s.contains("codex") || s.contains("dall-e") ||
-            Regex("""(^|[/:_-])o[134]([/:_-]|$)""").containsMatchIn(s) -> "openai"
+            OPENAI_REASONING_SLUG_REGEX.containsMatchIn(s) -> "openai"
         s.contains("deepseek") -> "deepseek"
         s.contains("grok") || s.contains("xai") || s.contains("x.ai") -> "grok"
         s.contains("qwen") || s.contains("qwq") || s.contains("tongyi") -> "qwen"
@@ -1485,7 +1375,7 @@ fun resolveLabSlugForModelOrProvider(modelOrProvider: String, fallbackProtocolNa
         s.contains("openrouter") -> "openrouter"
         s.contains("google") || s.contains("imagen") || s.contains("veo") -> "google"
         else -> {
-            val prefix = modelOrProvider.lowercase().substringBefore('/').replace(Regex("[^a-z0-9]"), "")
+            val prefix = modelOrProvider.lowercase().substringBefore('/').replace(NON_ALNUM_SLUG_REGEX, "")
             prefix.ifEmpty { "gemini" }
         }
     }
