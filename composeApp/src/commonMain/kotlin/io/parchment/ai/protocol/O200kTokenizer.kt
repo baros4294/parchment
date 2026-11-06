@@ -417,12 +417,16 @@ object O200kTokenizer {
         tc.resultText.contains(COMPACTED_TOOL_MARKER)
 
     fun compactToolCallRecord(tc: ToolCallRecord, maxKeepChars: Int = 220): ToolCallRecord {
-        if (tc.isRunning || tc.resultText.length <= maxKeepChars + 60 || isToolResultCompacted(tc)) {
-            return tc
+        val cleanSig = if (tc.thoughtSignature.length > 2048) {
+            io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(tc.thoughtSignature, forFunctionCall = true)
+        } else tc.thoughtSignature
+        if (tc.isRunning || (tc.resultText.length <= maxKeepChars + 60 && cleanSig == tc.thoughtSignature) || isToolResultCompacted(tc)) {
+            return if (cleanSig != tc.thoughtSignature) tc.copy(thoughtSignature = cleanSig) else tc
         }
         val head = tc.resultText.trim().take(maxKeepChars).trimEnd()
         return tc.copy(
             resultText = "$head\n… $COMPACTED_TOOL_MARKER",
+            thoughtSignature = cleanSig,
             precedingThinking = if (tc.precedingThinking.length > 240) {
                 tc.precedingThinking.take(240).trimEnd() + "…"
             } else tc.precedingThinking
@@ -442,10 +446,13 @@ object O200kTokenizer {
         val unmuted = historyNodes.filter { it.includedInContext }
         if (unmuted.size > keepRecentTurnsCount) return true
         val hasUncompactedNodeTools = unmuted.any { node ->
-            val completedTools = node.activeVariant.toolCalls.filter { !it.isRunning }
-            completedTools.size > 2 && completedTools.dropLast(2).any { tc ->
-                tc.resultText.length > 280 && !isToolResultCompacted(tc)
-            } || completedTools.any { tc -> tc.resultText.length > 1800 && !isToolResultCompacted(tc) }
+            val v = node.activeVariant
+            if (v.thinkingSignature.length > 4096) return@any true
+            val completedTools = v.toolCalls.filter { !it.isRunning }
+            completedTools.any { it.thoughtSignature.length > 4096 } ||
+                (completedTools.size > 2 && completedTools.dropLast(2).any { tc ->
+                    tc.resultText.length > 280 && !isToolResultCompacted(tc)
+                }) || completedTools.any { tc -> tc.resultText.length > 1800 && !isToolResultCompacted(tc) }
         }
         if (hasUncompactedNodeTools) return true
         val completedLiveTools = liveTargetTools.filter { !it.isRunning }
@@ -489,14 +496,17 @@ object O200kTokenizer {
             val lastIndex = tools.lastIndex
             return tools.mapIndexed { idx, tc ->
                 val isRecentTwo = idx >= lastIndex - 1
-                val shouldCompact = !tc.isRunning && !isToolResultCompacted(tc) && (
+                val hasBloatedSig = tc.thoughtSignature.length > 2048
+                val shouldCompact = !tc.isRunning && (!isToolResultCompacted(tc) && (
                     (!isRecentTwo && tc.resultText.length > 280) ||
                         (isRecentTwo && tc.resultText.length > 2400)
-                    )
+                    ) || hasBloatedSig)
                 if (shouldCompact) {
                     anyToolOrThinkingCompacted = true
-                    val snippet = tc.resultText.replace(WHITESPACE_RUN_REGEX, " ").trim().take(260)
-                    compactedToolNotes.add("${tc.name}(${tc.argumentsJson.take(120)}) -> $snippet")
+                    if (!isToolResultCompacted(tc) && tc.resultText.length > 280) {
+                        val snippet = tc.resultText.replace(WHITESPACE_RUN_REGEX, " ").trim().take(260)
+                        compactedToolNotes.add("${tc.name}(${tc.argumentsJson.take(120)}) -> $snippet")
+                    }
                     compactToolCallRecord(tc, maxKeepChars = if (isRecentTwo) 600 else 220)
                 } else {
                     tc
@@ -514,13 +524,28 @@ object O200kTokenizer {
                     anyToolOrThinkingCompacted = true
                     "… [Earlier reasoning compacted into Continuity Memory]\n" + activeVar.thinkingSummary.takeLast(1800)
                 } else activeVar.thinkingSummary
-                if (newTools != activeVar.toolCalls || newThinking != activeVar.thinkingSummary || activeVar.providerInteractionId.isNotEmpty()) {
+                val newSig = if (activeVar.thinkingSignature.length > 2048) {
+                    val sanitized = io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(
+                        activeVar.thinkingSignature,
+                        forFunctionCall = false
+                    )
+                    if (sanitized != activeVar.thinkingSignature) {
+                        anyToolOrThinkingCompacted = true
+                    }
+                    sanitized
+                } else activeVar.thinkingSignature
+                if (newTools != activeVar.toolCalls ||
+                    newThinking != activeVar.thinkingSummary ||
+                    newSig != activeVar.thinkingSignature ||
+                    activeVar.providerInteractionId.isNotEmpty()
+                ) {
                     node.copy(
                         variants = node.variants.mapIndexed { vIdx, v ->
                             if (vIdx == node.activeVariantIndex) {
                                 v.copy(
                                     toolCalls = newTools,
                                     thinkingSummary = newThinking,
+                                    thinkingSignature = newSig,
                                     providerInteractionId = ""
                                 )
                             } else v

@@ -771,13 +771,16 @@ fun ParchmentApp(
             var rawReq = ""
             var rawResp = ""
             var networkDone = false
+            val turnRequestStartMs = PlatformBridge.currentTimeMillis()
             var activeThinkingPhaseStartMs = 0L
             var accumulatedThinkingMs = initialDurationMs
             var thinkingDurationMs = initialDurationMs
             var firstLiveTokenMs = 0L
+            var actualToolWallMs = 0L
+            var activeToolBatchStartMs = 0L
             var liveTokensPerSec = 0.0
             var lastStopwatchTickMs = 0L
-            var lastDiskCheckpointMs = PlatformBridge.currentTimeMillis()
+            var lastDiskCheckpointMs = turnRequestStartMs
             fun pauseActiveThinkingStopwatch() {
                 if (activeThinkingPhaseStartMs > 0L) {
                     val now = PlatformBridge.currentTimeMillis()
@@ -947,10 +950,11 @@ fun ParchmentApp(
                     var changed = false
                     val now = PlatformBridge.currentTimeMillis()
                     if (firstLiveTokenMs > 0L && now - lastStopwatchTickMs >= 100L) {
-                        val toolExecMs = accumulatedTools.sumOf { it.durationMs.coerceAtLeast(0L) }
-                        val activeDecodeMs = ((now - firstLiveTokenMs) - toolExecMs).coerceAtLeast(150L)
-                        val approxGeneratedTok = ((networkContentTarget.length + networkThinkingTarget.length) / 4).coerceAtLeast(1)
-                        val rawLiveRate = (approxGeneratedTok * 1000.0) / activeDecodeMs.toDouble()
+                        val inFlightToolWait = if (activeToolBatchStartMs > 0L) (now - activeToolBatchStartMs).coerceAtLeast(0L) else 0L
+                        val netGenerationMs = ((now - turnRequestStartMs) - actualToolWallMs - inFlightToolWait).coerceAtLeast(500L)
+                        val approxToolChars = accumulatedTools.sumOf { it.name.length + it.argumentsJson.length }
+                        val approxGeneratedTok = ((networkContentTarget.length + networkThinkingTarget.length + approxToolChars) / 4).coerceAtLeast(1)
+                        val rawLiveRate = (approxGeneratedTok * 1000.0) / netGenerationMs.toDouble()
                         val newLiveRate = ((rawLiveRate * 10.0).toInt()) / 10.0
                         if (newLiveRate != liveTokensPerSec) {
                             liveTokensPerSec = newLiveRate
@@ -1255,7 +1259,8 @@ fun ParchmentApp(
                             initialToolCalls = accumulatedTools.toList(),
                             initialMediaItems = accumulatedMedia.toList(),
                             initialWebSources = accumulatedWebSources,
-                            initialGoalTracker = latestGoalTracker
+                            initialGoalTracker = latestGoalTracker,
+                            initialElapsedMs = (PlatformBridge.currentTimeMillis() - turnRequestStartMs).coerceAtLeast(0L)
                         ).collect { update ->
                             when (update) {
                                 is StreamUpdate.Status -> {
@@ -1274,7 +1279,7 @@ fun ParchmentApp(
                                     thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     networkThinkingTarget.append(update.delta)
                                     currentStepThinkingTarget.append(update.delta)
-                                    signatureSb.append(update.signatureDelta)
+                                    AiProviderEngine.appendSignatureChunkSafe(signatureSb, update.signatureDelta)
                                     val thinkWords = countWordsFast(networkThinkingTarget)
                                     val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
                                     updateSessionStreamState(sessionId) { cur ->
@@ -1307,13 +1312,20 @@ fun ParchmentApp(
                                 }
                                 is StreamUpdate.ToolCallEvent -> {
                                     val now = PlatformBridge.currentTimeMillis()
+                                    if (update.toolCall.isRunning && activeToolBatchStartMs == 0L) {
+                                        activeToolBatchStartMs = now
+                                    }
                                     // Keep the Reasoning + Tool stopwatch ticking continuously across tool calls!
                                     if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
                                     thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     val stepThinkFallback = currentStepThinkingTarget.toString().trim()
+                                    val stepSigFallback = signatureSb.toString().trim()
                                     if (stepThinkFallback.isNotEmpty()) {
                                         currentStepThinkingTarget.clear()
                                         displayedStepThinkingLen = 0
+                                    }
+                                    if (stepSigFallback.isNotEmpty()) {
+                                        signatureSb.clear()
                                     }
                                     val existingIdx = accumulatedTools.indexOfFirst {
                                         it.id == update.toolCall.id && it.id.isNotBlank()
@@ -1324,15 +1336,20 @@ fun ParchmentApp(
                                             precedingThinking = update.toolCall.precedingThinking.ifBlank { prev.precedingThinking },
                                             thoughtSignature = update.toolCall.thoughtSignature.ifBlank { prev.thoughtSignature }
                                         )
-                                    } else if (update.toolCall.precedingThinking.isBlank() && stepThinkFallback.isNotEmpty()) {
-                                        update.toolCall.copy(precedingThinking = stepThinkFallback)
                                     } else {
-                                        update.toolCall
+                                        update.toolCall.copy(
+                                            precedingThinking = update.toolCall.precedingThinking.ifBlank { stepThinkFallback },
+                                            thoughtSignature = update.toolCall.thoughtSignature.ifBlank { stepSigFallback }
+                                        )
                                     }
                                     if (existingIdx >= 0) {
                                         accumulatedTools[existingIdx] = enrichedTool
                                     } else {
                                         accumulatedTools.add(enrichedTool)
+                                    }
+                                    if (!enrichedTool.isRunning && activeToolBatchStartMs > 0L && accumulatedTools.none { it.isRunning }) {
+                                        actualToolWallMs += (now - activeToolBatchStartMs).coerceAtLeast(0L)
+                                        activeToolBatchStartMs = 0L
                                     }
                                     val toolsSnap = accumulatedTools.toList()
                                     patchVariantMemory { v ->

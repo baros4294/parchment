@@ -294,7 +294,7 @@ object AiProviderEngine {
             return results
         }
 
-        // Parallel fast path (`omp`-inspired): emit RUNNING cards for all read-only tools immediately,
+        // Parallel fast path: emit RUNNING cards for all read-only tools immediately,
         // execute them concurrently on Dispatchers.IO, and emit completed records in deterministic order!
         val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
         onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
@@ -382,7 +382,8 @@ object AiProviderEngine {
         initialToolCalls: List<ToolCallRecord> = emptyList(),
         initialMediaItems: List<GeneratedMediaItem> = emptyList(),
         initialWebSources: List<WebSourceCitation> = emptyList(),
-        initialGoalTracker: GoalTrackerState? = null
+        initialGoalTracker: GoalTrackerState? = null,
+        initialElapsedMs: Long = 0L
     ): Flow<StreamUpdate> = flow {
         val model = session.modelOverride.ifBlank { profile.defaultModel }.trim()
         if (model.isBlank()) {
@@ -425,9 +426,9 @@ object AiProviderEngine {
         var currentBurstStartMs = 0L
         var currentBurstLastMs = 0L
         var totalToolExecutionMs = 0L
+        var toolBatchActiveStartMs = 0L
         var lastRawReq = ""
         var lastRawResp = ""
-
         fun recordTokenActivity() {
             val now = PlatformBridge.currentTimeMillis()
             if (firstTokenTime == 0L) firstTokenTime = now
@@ -483,21 +484,18 @@ object AiProviderEngine {
         }
 
         fun appendSignatureIfUnique(sig: String): String {
-            if (sig.isEmpty()) return ""
-            val current = signatureBuilder.toString()
-            if (current == sig || current.endsWith(sig)) return ""
-            signatureBuilder.append(sig)
-            return sig
+            return appendSignatureChunkSafe(signatureBuilder, sig)
         }
 
         fun attachStepThinkingToToolCall(tc: ToolCallRecord): ToolCallRecord {
             val stepThink = currentStepThinkingBuilder.toString().trim()
+            val stepSig = signatureBuilder.toString().trim()
             currentStepThinkingBuilder.clear()
-            return if (tc.precedingThinking.isBlank() && stepThink.isNotEmpty()) {
-                tc.copy(precedingThinking = stepThink)
-            } else {
-                tc
-            }
+            signatureBuilder.clear()
+            return tc.copy(
+                precedingThinking = tc.precedingThinking.ifBlank { stepThink },
+                thoughtSignature = tc.thoughtSignature.ifBlank { stepSig }
+            )
         }
         suspend fun recordRawCitationAndEmit(citation: RawWebCitation) {
             if (citation.url.isBlank() || rawWebCitations.size >= 128) return
@@ -513,7 +511,11 @@ object AiProviderEngine {
         }
         suspend fun upsertToolCallAndEmit(tc: ToolCallRecord) {
             closeCurrentDecodeBurst()
-            commitCompletedStepUsage()
+            val now = PlatformBridge.currentTimeMillis()
+            if (tc.isRunning && toolBatchActiveStartMs == 0L) {
+                toolBatchActiveStartMs = now
+                commitCompletedStepUsage()
+            }
             val existingIdx = executedTools.indexOfFirst { it.id == tc.id && tc.id.isNotBlank() }
             val enriched = if (existingIdx >= 0) {
                 val prev = executedTools[existingIdx]
@@ -531,7 +533,10 @@ object AiProviderEngine {
             }
             emit(StreamUpdate.ToolCallEvent(enriched))
             if (!enriched.isRunning) {
-                if (enriched.durationMs > 0L) {
+                if (toolBatchActiveStartMs > 0L && executedTools.none { it.isRunning }) {
+                    totalToolExecutionMs += (PlatformBridge.currentTimeMillis() - toolBatchActiveStartMs).coerceAtLeast(0L)
+                    toolBatchActiveStartMs = 0L
+                } else if (toolBatchActiveStartMs == 0L && enriched.durationMs > 0L && existingIdx < 0) {
                     totalToolExecutionMs += enriched.durationMs
                 }
                 extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
@@ -1264,10 +1269,14 @@ object AiProviderEngine {
             }
 
             closeCurrentDecodeBurst()
+            if (toolBatchActiveStartMs > 0L) {
+                totalToolExecutionMs += (PlatformBridge.currentTimeMillis() - toolBatchActiveStartMs).coerceAtLeast(0L)
+                toolBatchActiveStartMs = 0L
+            }
             commitCompletedStepUsage()
 
             val endTime = PlatformBridge.currentTimeMillis()
-            val totalDurationMs = (endTime - startTime).coerceAtLeast(1L)
+            val totalDurationMs = (endTime - startTime + initialElapsedMs.coerceAtLeast(0L)).coerceAtLeast(1L)
             val ttftMs = if (firstTokenTime > startTime) (firstTokenTime - startTime) else totalDurationMs
             val fallbackInTokens = if (inputTokens > 0) {
                 inputTokens
@@ -1366,18 +1375,23 @@ object AiProviderEngine {
             O200kTokenizer.countTokens(contentText).coerceAtLeast(1)
         } else 0
 
+        val adjustedReportedOut = if (reportedReasoningTokens == 0 && bpeThinkTokens > 0 && reportedOutputTokens > bpeThinkTokens) {
+            (reportedOutputTokens - bpeThinkTokens).coerceAtLeast(1)
+        } else {
+            reportedOutputTokens
+        }
         val finalThinkTokens = maxOf(reportedReasoningTokens, bpeThinkTokens)
-        val finalOutTokens = maxOf(reportedOutputTokens, bpeContentTokens + bpeToolCallTokens).coerceAtLeast(1)
+        val finalOutTokens = maxOf(adjustedReportedOut, bpeContentTokens + bpeToolCallTokens).coerceAtLeast(1)
         val totalGeneratedTokens = (finalOutTokens + finalThinkTokens).coerceAtLeast(1)
 
-        val effectiveDecodeMs = if (activeDecodeDurationMs >= 80L) {
+        val netLlmGenerationMs = (totalDurationMs - totalToolExecutionMs.coerceAtLeast(0L)).coerceAtLeast(250L)
+        val minRealisticBurstMs = maxOf(500L, totalGeneratedTokens.toLong() * 8L)
+        val effectiveDecodeMs = if (activeDecodeDurationMs >= minRealisticBurstMs && activeDecodeDurationMs <= netLlmGenerationMs) {
             activeDecodeDurationMs
         } else {
-            val preTokenCap = ttftMs.coerceAtMost(totalDurationMs / 2)
-            (totalDurationMs - totalToolExecutionMs - preTokenCap).coerceAtLeast(120L)
+            netLlmGenerationMs
         }
         val tokPerSec = (totalGeneratedTokens * 1000.0) / effectiveDecodeMs.toDouble()
-
         return TokenMetrics(
             inputTokens = finalInTokens,
             cachedInputTokens = reportedCachedTokens,
@@ -1693,6 +1707,10 @@ object AiProviderEngine {
         var omitResponseFormatOnRetry = false
         var forceImageResponseFormatOnRetry = false
         var omitBuiltInToolsOnRetry = false
+        var foldHistoricalToolsOnRetry = false
+        val hasHistoricalToolsOrSigs = activeNodes.any {
+            it.role == MessageRole.ASSISTANT && (it.activeVariant.toolCalls.isNotEmpty() || it.activeVariant.thinkingSignature.isNotBlank())
+        }
         val extraLoopSteps = mutableListOf<JsonObject>()
         var pendingToolResults: List<ToolCallRecord> = emptyList()
         var pendingStopHookPrompt: String = ""
@@ -1726,11 +1744,7 @@ object AiProviderEngine {
             }
 
             fun emitUniqueRoundSig(sig: String): String {
-                if (sig.isEmpty()) return ""
-                val cur = roundThoughtSig.toString()
-                if (cur == sig || cur.endsWith(sig)) return ""
-                roundThoughtSig.append(sig)
-                return sig
+                return appendSignatureChunkSafe(roundThoughtSig, sig)
             }
 
             while (true) {
@@ -1746,9 +1760,9 @@ object AiProviderEngine {
                 val isContinuationHop = useChainedId && currentContinuationToken.isNotBlank()
                 val baseInputSteps = if (useChainedId && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
                     val trailingNodes = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
-                    buildGeminiInteractionsTurnsArray(trailingNodes, session, continuePrefix)
+                    buildGeminiInteractionsTurnsArray(trailingNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
                 } else {
-                    buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix)
+                    buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
                 }
 
                 // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps in-place in RAM
@@ -2385,6 +2399,14 @@ object AiProviderEngine {
                             onStatus("Endpoint rejected mixed built-in + function tools — retrying with workspace tools…", currentPrevInteractionId)
                             continue
                         }
+                        if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
+                            (errMsg.contains("couldn't process") || errMsg.contains("invalid_request") || errMsg.contains("thought") ||
+                                errMsg.contains("signature") || errMsg.contains("function_call") || errMsg.contains("tool type"))
+                        ) {
+                            foldHistoricalToolsOnRetry = true
+                            onStatus("Endpoint rejected historical tool/signature context — folding prior tool history into compact text & retrying…", currentPrevInteractionId)
+                            continue
+                        }
                     }
                     if (useChainedId && !receivedAnyStreamContent &&
                         (errMsg.contains("http 404") || errMsg.contains("previous_interaction_id") || errMsg.contains("function response turn") || errMsg.contains("function_result"))
@@ -2442,10 +2464,11 @@ object AiProviderEngine {
                 if (stopHookPrompt != null) {
                     pendingToolResults = emptyList()
                     pendingStopHookPrompt = stopHookPrompt
-                    if (roundThoughtSig.isNotEmpty()) {
+                    val cleanStopSig = sanitizeGeminiThoughtSignature(roundThoughtSig.toString(), forFunctionCall = false)
+                    if (cleanStopSig.isNotEmpty()) {
                         extraLoopSteps.add(buildJsonObject {
                             put("type", "thought")
-                            put("signature", roundThoughtSig.toString())
+                            put("signature", cleanStopSig)
                             if (roundThoughtText.isNotEmpty()) {
                                 putJsonArray("summary") {
                                     add(buildJsonObject {
@@ -2484,7 +2507,7 @@ object AiProviderEngine {
             pendingStopHookPrompt = ""
 
             // Record thought + model_output + function_call + function_result steps for next round
-            val stepSigString = roundThoughtSig.toString()
+            val stepSigString = sanitizeGeminiThoughtSignature(roundThoughtSig.toString(), forFunctionCall = true)
             if (stepSigString.isNotEmpty()) {
                 extraLoopSteps.add(buildJsonObject {
                     put("type", "thought")
@@ -2562,7 +2585,8 @@ object AiProviderEngine {
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onFunctionCall: (String, String, String) -> Unit,
         onUsage: (String, Int, Int, Int, Int) -> Unit,
-        onCitation: suspend (RawWebCitation) -> Unit = {}
+        onCitation: suspend (RawWebCitation) -> Unit = {},
+        sessionId: String = ""
     ) {
         val id = interactionObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
         val itemsArray = (interactionObj["steps"] as? JsonArray)
@@ -2594,7 +2618,7 @@ object AiProviderEngine {
                                 val uri = cObj["uri"]?.jsonPrimitive?.contentOrNull
                                     ?: cObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
                                 val mime = cObj["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
-                                saveAndEmitImage(b64, uri, mime, "", "", onMedia)
+                                saveAndEmitImage(b64, uri, mime, "", "", onMedia, sessionId = sessionId)
                             }
                         }
                     }
@@ -2604,7 +2628,7 @@ object AiProviderEngine {
                     val uri = item["uri"]?.jsonPrimitive?.contentOrNull
                         ?: item["url"]?.jsonPrimitive?.contentOrNull ?: ""
                     val mime = item["mime_type"]?.jsonPrimitive?.contentOrNull ?: "image/png"
-                    saveAndEmitImage(b64, uri, mime, "", "", onMedia)
+                    saveAndEmitImage(b64, uri, mime, "", "", onMedia, sessionId = sessionId)
                 }
                 "thought", "thought_summary" -> {
                     val summary = item["summary"]?.let { s ->
@@ -2660,10 +2684,12 @@ object AiProviderEngine {
     internal fun buildGeminiInteractionsTurnsArray(
         nodes: List<MessageNode>,
         session: ChatSession,
-        continuePrefix: String
+        continuePrefix: String,
+        foldHistoricalToolsToText: Boolean = false
     ): JsonArray {
         val stepsList = mutableListOf<JsonObject>()
         val withAuthorsNote = injectAuthorsNoteIntoHistory(nodes, session)
+        val lastAssistantIdx = nodes.indexOfLast { it.role == MessageRole.ASSISTANT }
 
         fun appendUserStep(text: String, attachments: List<ResolvedBinaryAttachment>) {
             val newContentItems = mutableListOf<JsonObject>()
@@ -2732,43 +2758,38 @@ object AiProviderEngine {
 
             if (role == MessageRole.ASSISTANT) {
                 val cleanText = stripInlineErrorNotices(text)
-                val sig = nodeVar?.thinkingSignature.orEmpty()
+                val isForeignProtocol = nodeVar?.providerProtocol != null &&
+                    nodeVar.providerProtocol != ProviderProtocol.GEMINI_INTERACTIONS
+                val rawSig = if (isForeignProtocol) "" else nodeVar?.thinkingSignature.orEmpty()
+                val sig = sanitizeGeminiThoughtSignature(rawSig, forFunctionCall = false)
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
                 val trailingThink = nodeVar?.trailingThinking.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
-                val hasAnyPrecedingThinking = toolCalls.any { it.precedingThinking.isNotBlank() }
+                val isOlderAssistantTurn = idx < lastAssistantIdx
                 var emittedThoughtForTurn = false
                 var emittedAnyStepForTurn = false
 
-                if (toolCalls.isEmpty() && sig.isNotBlank()) {
+                if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
+                    val foldedText = buildFoldedToolHistoryText(toolCalls, thinkSummary, cleanText)
                     stepsList.add(buildJsonObject {
-                        put("type", "thought")
-                        put("signature", sig)
-                        if (thinkSummary.isNotBlank()) {
-                            putJsonArray("summary") {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", thinkSummary)
-                                })
-                            }
+                        put("type", "model_output")
+                        putJsonArray("content") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", foldedText)
+                            })
                         }
                     })
-                    emittedThoughtForTurn = true
-                    emittedAnyStepForTurn = true
-                }
-
-                for ((tcIdx, tc) in toolCalls.withIndex()) {
-                    val stepSig = tc.thoughtSignature.ifBlank { if (tcIdx == 0) sig else "" }
-                    val stepSummary = tc.precedingThinking.ifBlank { if (tcIdx == 0 && !hasAnyPrecedingThinking) thinkSummary else "" }
-                    if (stepSig.isNotBlank()) {
+                } else {
+                    if (toolCalls.isEmpty() && sig.isNotBlank()) {
                         stepsList.add(buildJsonObject {
                             put("type", "thought")
-                            put("signature", stepSig)
-                            if (stepSummary.isNotBlank()) {
+                            put("signature", sig)
+                            if (thinkSummary.isNotBlank()) {
                                 putJsonArray("summary") {
                                     add(buildJsonObject {
                                         put("type", "text")
-                                        put("text", stepSummary)
+                                        put("text", thinkSummary)
                                     })
                                 }
                             }
@@ -2776,61 +2797,103 @@ object AiProviderEngine {
                         emittedThoughtForTurn = true
                         emittedAnyStepForTurn = true
                     }
-                    val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
-                        .getOrElse { JsonObject(emptyMap()) }
-                    val callId = tc.id.ifBlank { "call_${tc.name}" }
-                    stepsList.add(buildJsonObject {
-                        put("type", "function_call")
-                        put("id", callId)
-                        put("name", tc.name)
-                        put("arguments", parsedArgs)
-                    })
-                    stepsList.add(buildJsonObject {
-                        put("type", "function_result")
-                        put("name", tc.name.ifBlank { "tool" })
-                        put("call_id", callId)
-                        put("is_error", tc.isError)
-                        putJsonObject("result") {
-                            put("result", tc.resultText)
-                        }
-                    })
-                    emittedAnyStepForTurn = true
-                }
 
-                if (toolCalls.isNotEmpty() && trailingThink.isNotBlank() && sig.isNotBlank() &&
-                    toolCalls.none { it.thoughtSignature == sig }
-                ) {
-                    stepsList.add(buildJsonObject {
-                        put("type", "thought")
-                        put("signature", sig)
-                        putJsonArray("summary") {
-                            add(buildJsonObject {
-                                put("type", "text")
-                                put("text", trailingThink)
-                            })
+                    if (toolCalls.isNotEmpty()) {
+                        val batches = groupToolCallsIntoStepBatches(
+                            toolCalls = toolCalls,
+                            fallbackTurnSignature = if (isForeignProtocol) "" else rawSig,
+                            fallbackTurnThinking = thinkSummary
+                        )
+                        val totalCalls = toolCalls.size
+                        var globalCallIdx = 0
+                        for (batch in batches) {
+                            val stepSig = if (isForeignProtocol) "" else sanitizeGeminiThoughtSignature(batch.thoughtSignature, forFunctionCall = true)
+                            val stepSummary = batch.precedingThinking
+                            if (stepSig.isNotBlank()) {
+                                stepsList.add(buildJsonObject {
+                                    put("type", "thought")
+                                    put("signature", stepSig)
+                                    if (stepSummary.isNotBlank()) {
+                                        putJsonArray("summary") {
+                                            add(buildJsonObject {
+                                                put("type", "text")
+                                                put("text", stepSummary)
+                                            })
+                                        }
+                                    }
+                                })
+                                emittedThoughtForTurn = true
+                                emittedAnyStepForTurn = true
+                            }
+                            for (tc in batch.calls) {
+                                val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
+                                    .getOrElse { JsonObject(emptyMap()) }
+                                val callId = tc.id.ifBlank { "call_${tc.name}" }
+                                stepsList.add(buildJsonObject {
+                                    put("type", "function_call")
+                                    put("id", callId)
+                                    put("name", tc.name)
+                                    put("arguments", parsedArgs)
+                                })
+                            }
+                            for (tc in batch.calls) {
+                                val callId = tc.id.ifBlank { "call_${tc.name}" }
+                                val wireResult = compactHistoricalToolResultForWire(
+                                    rawResult = tc.resultText,
+                                    toolName = tc.name,
+                                    isOlderAssistantTurn = isOlderAssistantTurn,
+                                    callIndexInTurn = globalCallIdx++,
+                                    totalCallsInTurn = totalCalls
+                                )
+                                stepsList.add(buildJsonObject {
+                                    put("type", "function_result")
+                                    put("name", tc.name.ifBlank { "tool" })
+                                    put("call_id", callId)
+                                    put("is_error", tc.isError)
+                                    putJsonObject("result") {
+                                        put("result", wireResult)
+                                    }
+                                })
+                            }
+                            emittedAnyStepForTurn = true
                         }
-                    })
-                    emittedThoughtForTurn = true
-                    emittedAnyStepForTurn = true
-                }
-                val outputText = when {
-                    cleanText.isNotBlank() -> cleanText
-                    !emittedThoughtForTurn && thinkSummary.isNotBlank() && toolCalls.isEmpty() -> {
-                        "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
                     }
-                    !emittedAnyStepForTurn -> "..."
-                    else -> ""
-                }
-                if (outputText.isNotBlank()) {
-                    stepsList.add(buildJsonObject {
-                        put("type", "model_output")
-                        putJsonArray("content") {
-                            add(buildJsonObject {
-                                put("type", "text")
-                                put("text", outputText)
-                            })
+
+                    if (toolCalls.isNotEmpty() && trailingThink.isNotBlank() && sig.isNotBlank() &&
+                        toolCalls.none { sanitizeGeminiThoughtSignature(it.thoughtSignature, forFunctionCall = false) == sig }
+                    ) {
+                        stepsList.add(buildJsonObject {
+                            put("type", "thought")
+                            put("signature", sig)
+                            putJsonArray("summary") {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", trailingThink)
+                                })
+                            }
+                        })
+                        emittedThoughtForTurn = true
+                        emittedAnyStepForTurn = true
+                    }
+                    val outputText = when {
+                        cleanText.isNotBlank() -> cleanText
+                        !emittedThoughtForTurn && thinkSummary.isNotBlank() && toolCalls.isEmpty() -> {
+                            "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
                         }
-                    })
+                        !emittedAnyStepForTurn -> "..."
+                        else -> ""
+                    }
+                    if (outputText.isNotBlank()) {
+                        stepsList.add(buildJsonObject {
+                            put("type", "model_output")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", outputText)
+                                })
+                            }
+                        })
+                    }
                 }
             } else {
                 appendUserStep(text, binaryAttachments)
@@ -2877,7 +2940,10 @@ object AiProviderEngine {
 
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
-        val rollingContents = buildGeminiGenerateContentContents(activeNodes, session, continuePrefix)
+        val extraLoopContentTurns = mutableListOf<JsonObject>()
+        val hasHistoricalToolsOrSigs = activeNodes.any {
+            it.role == MessageRole.ASSISTANT && (it.activeVariant.toolCalls.isNotEmpty() || it.activeVariant.thinkingSignature.isNotBlank())
+        }
 
         val hasBuiltInTools = profile.enableWebSearch || profile.enableCodeExecution || profile.enableUrlContext
         var stripSamplingOnRetry = false
@@ -2887,6 +2953,7 @@ object AiProviderEngine {
         var disableMixedToolsOnRetry = false
         var forceImageModalityOnRetry = false
         var omitImageModalityOnRetry = false
+        var foldHistoricalToolsOnRetry = false
         var loopStep = 0
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
             loopStep++
@@ -2919,7 +2986,8 @@ object AiProviderEngine {
                         }
                     }
 
-                    put("contents", JsonArray(rollingContents))
+                    val baseContents = buildGeminiGenerateContentContents(activeNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
+                    put("contents", JsonArray(baseContents + extraLoopContentTurns))
 
                     // Tools & toolConfig (attempts mixed built-in + function tools with VALIDATED, self-healing to AUTO on HTTP 400)
                     val allowMixedTools = !disableMixedToolsOnRetry
@@ -3047,19 +3115,40 @@ object AiProviderEngine {
                             for (p in parts) {
                                 val partObj = p as? JsonObject ?: continue
                                 val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull == "true"
-                                val sig = partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull
+                                val isServerSideToolPart = partObj.containsKey("toolCall") ||
+                                    partObj.containsKey("toolResponse") ||
+                                    partObj.containsKey("executableCode") ||
+                                    partObj.containsKey("codeExecutionResult")
+                                val hasFunctionCall = partObj.containsKey("functionCall")
+                                val rawSig = partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull
                                     ?: partObj["thought_signature"]?.jsonPrimitive?.contentOrNull ?: ""
+                                val sig = if (isServerSideToolPart || (!hasFunctionCall && isGeminiServerSideToolSignature(rawSig))) {
+                                    ""
+                                } else if (hasFunctionCall) {
+                                    sanitizeGeminiThoughtSignature(rawSig, forFunctionCall = true)
+                                } else {
+                                    rawSig
+                                }
                                 val txt = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
 
-                                val uniqueSig = if (sig.isNotEmpty() && !roundThoughtSig.toString().endsWith(sig)) {
-                                    roundThoughtSig.append(sig)
-                                    sig
+                                val uniqueSig = if (sig.isNotEmpty()) {
+                                    appendSignatureChunkSafe(roundThoughtSig, sig)
                                 } else ""
 
-                                if (!isThought) {
-                                    roundModelParts.add(partObj)
+                                if (!isThought && !isServerSideToolPart) {
+                                    val cleanPart = if (rawSig.isNotEmpty()) {
+                                        val cleanPartSig = sanitizeGeminiThoughtSignature(rawSig, forFunctionCall = hasFunctionCall)
+                                        val m = partObj.toMutableMap()
+                                        m.remove("thought_signature")
+                                        if (cleanPartSig.isNotEmpty()) {
+                                            m["thoughtSignature"] = JsonPrimitive(cleanPartSig)
+                                        } else {
+                                            m.remove("thoughtSignature")
+                                        }
+                                        JsonObject(m)
+                                    } else partObj
+                                    roundModelParts.add(cleanPart)
                                 }
-
                                 if (txt.isNotEmpty() || uniqueSig.isNotEmpty()) {
                                     onFirstToken()
                                     if (isThought) {
@@ -3092,7 +3181,7 @@ object AiProviderEngine {
                                     val b64 = inlineData["data"]?.jsonPrimitive?.contentOrNull ?: ""
                                     if (b64.isNotBlank()) {
                                         stepEmittedOutput = true
-                                        saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
+                                        saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia, sessionId = session.id)
                                     }
                                 }
                             }
@@ -3194,6 +3283,14 @@ object AiProviderEngine {
                             onStatus("Endpoint rejected thinkingConfig — retrying with default thinking…")
                             continue
                         }
+                        if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
+                            (errMsg.contains("couldn't process") || errMsg.contains("invalid_request") || errMsg.contains("thought") ||
+                                errMsg.contains("signature") || errMsg.contains("functioncall") || errMsg.contains("function_call") || errMsg.contains("tool type"))
+                        ) {
+                            foldHistoricalToolsOnRetry = true
+                            onStatus("Endpoint rejected historical tool/signature context — folding prior tool history into compact text & retrying…")
+                            continue
+                        }
                     }
                     if (!stepEmittedOutput && roundToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e)) {
                         if (stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
@@ -3218,12 +3315,12 @@ object AiProviderEngine {
                 val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
                 if (stopHookPrompt != null) {
                     if (roundModelParts.isNotEmpty()) {
-                        rollingContents.add(buildJsonObject {
+                        extraLoopContentTurns.add(buildJsonObject {
                             put("role", "model")
                             put("parts", JsonArray(roundModelParts))
                         })
                     }
-                    rollingContents.add(buildJsonObject {
+                    extraLoopContentTurns.add(buildJsonObject {
                         put("role", "user")
                         putJsonArray("parts") {
                             add(buildJsonObject { put("text", stopHookPrompt) })
@@ -3237,7 +3334,8 @@ object AiProviderEngine {
 
             // Ensure the first functionCall part has a thoughtSignature (required by Gemini 3+ / 4 even when preceded by text parts!)
             val firstFunctionCallIdx = roundModelParts.indexOfFirst { it.containsKey("functionCall") }
-            val fallbackSig = roundThoughtSig.toString().ifBlank { "context_engineering_is_the_way_to_go" }
+            val cleanRoundSig = sanitizeGeminiThoughtSignature(roundThoughtSig.toString(), forFunctionCall = true)
+            val fallbackSig = cleanRoundSig.ifBlank { "skip_thought_signature_validator" }
             val signedModelParts = roundModelParts.mapIndexed { idx, part ->
                 if (idx == firstFunctionCallIdx && !part.containsKey("thoughtSignature") && !part.containsKey("thought_signature")) {
                     val mutable = part.toMutableMap()
@@ -3245,7 +3343,7 @@ object AiProviderEngine {
                     JsonObject(mutable)
                 } else part
             }
-            rollingContents.add(buildJsonObject {
+            extraLoopContentTurns.add(buildJsonObject {
                 put("role", "model")
                 put("parts", JsonArray(signedModelParts))
             })
@@ -3254,7 +3352,7 @@ object AiProviderEngine {
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
                 calls = roundToolCalls,
-                firstThoughtSignature = roundThoughtSig.toString(),
+                firstThoughtSignature = cleanRoundSig,
                 circuitBreaker = circuitBreaker,
                 onStatus = onStatus,
                 onToolCall = onToolCall,
@@ -3273,7 +3371,7 @@ object AiProviderEngine {
                     }
                 }
             }
-            rollingContents.add(buildJsonObject {
+            extraLoopContentTurns.add(buildJsonObject {
                 put("role", "user")
                 put("parts", JsonArray(responseParts))
             })
@@ -3293,37 +3391,51 @@ object AiProviderEngine {
     internal fun buildGeminiGenerateContentContents(
         activeNodes: List<MessageNode>,
         session: ChatSession,
-        continuePrefix: String
+        continuePrefix: String,
+        foldHistoricalToolsToText: Boolean = false
     ): MutableList<JsonObject> {
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
         val rollingContents = mutableListOf<JsonObject>()
+        val lastAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
 
-        fun appendOrMergeContentTurn(roleStr: String, newParts: List<JsonObject>) {
+        fun appendOrMergeContentTurn(roleStr: String, newParts: List<JsonObject>, allowMergeWithPrevious: Boolean = true) {
             if (newParts.isEmpty()) return
             val last = rollingContents.lastOrNull()
-            if (last != null && last["role"]?.jsonPrimitive?.contentOrNull == roleStr) {
+            if (allowMergeWithPrevious && last != null && last["role"]?.jsonPrimitive?.contentOrNull == roleStr) {
                 val existingParts = (last["parts"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty().toMutableList()
+                val existingHasFunction = existingParts.any { it.containsKey("functionCall") || it.containsKey("functionResponse") }
+                val newHasFunction = newParts.any { it.containsKey("functionCall") || it.containsKey("functionResponse") }
+                if (existingHasFunction && newHasFunction) {
+                    rollingContents.add(buildJsonObject {
+                        put("role", roleStr)
+                        put("parts", JsonArray(newParts))
+                    })
+                    return
+                }
                 val existingTextIdx = existingParts.indexOfLast {
                     it.containsKey("text") &&
                         it["thought"]?.jsonPrimitive?.contentOrNull != "true" &&
                         !it.containsKey("functionCall") &&
-                        !it.containsKey("functionResponse")
+                        !it.containsKey("functionResponse") &&
+                        !it.containsKey("thoughtSignature") &&
+                        !it.containsKey("thought_signature")
                 }
                 val firstNew = newParts.firstOrNull()
-                val firstIsPlainText = firstNew != null &&
+                val firstIsPlainUnsignedText = firstNew != null &&
                     firstNew.containsKey("text") &&
                     firstNew["thought"]?.jsonPrimitive?.contentOrNull != "true" &&
                     !firstNew.containsKey("functionCall") &&
-                    !firstNew.containsKey("functionResponse")
+                    !firstNew.containsKey("functionResponse") &&
+                    !firstNew.containsKey("thoughtSignature") &&
+                    !firstNew.containsKey("thought_signature")
 
-                if (existingTextIdx >= 0 && firstIsPlainText) {
+                if (existingTextIdx >= 0 && firstIsPlainUnsignedText) {
                     val targetExisting = existingParts[existingTextIdx]
                     val prevTxt = targetExisting["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     val nextTxt = firstNew["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     val joined = if (prevTxt.isBlank()) nextTxt else if (nextTxt.isBlank()) prevTxt else "$prevTxt\n\n$nextTxt"
                     val mergedMap = targetExisting.toMutableMap()
                     mergedMap["text"] = JsonPrimitive(joined)
-                    firstNew["thoughtSignature"]?.let { mergedMap["thoughtSignature"] = it }
                     existingParts[existingTextIdx] = JsonObject(mergedMap)
                     existingParts.addAll(newParts.drop(1))
                 } else {
@@ -3348,74 +3460,110 @@ object AiProviderEngine {
 
             if (role == MessageRole.ASSISTANT) {
                 val cleanText = stripInlineErrorNotices(text)
-                val savedSig = nodeVar?.thinkingSignature.orEmpty()
+                val isForeignProtocol = nodeVar?.providerProtocol != null &&
+                    nodeVar.providerProtocol != ProviderProtocol.GEMINI_INTERACTIONS
+                val rawSavedSig = if (isForeignProtocol) "" else nodeVar?.thinkingSignature.orEmpty()
+                val savedSig = sanitizeGeminiThoughtSignature(rawSavedSig, forFunctionCall = false)
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
+                val isOlderAssistantTurn = idx < lastAssistantIdx
                 var emittedAny = false
 
-                if (thinkSummary.isNotBlank()) {
-                    val thoughtPart = if (savedSig.isNotBlank()) {
-                        buildJsonObject {
-                            put("thought", true)
-                            put("text", thinkSummary)
-                            if (toolCalls.isEmpty() && cleanText.isBlank()) {
+                if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
+                    val foldedText = buildFoldedToolHistoryText(toolCalls, thinkSummary, cleanText)
+                    appendOrMergeContentTurn(
+                        "model",
+                        listOf(buildJsonObject { put("text", foldedText) })
+                    )
+                } else {
+                    if (toolCalls.isEmpty() && thinkSummary.isNotBlank()) {
+                        val thoughtPart = if (savedSig.isNotBlank()) {
+                            buildJsonObject {
+                                put("thought", true)
+                                put("text", thinkSummary)
+                                if (cleanText.isBlank()) {
+                                    put("thoughtSignature", savedSig)
+                                }
+                            }
+                        } else {
+                            buildJsonObject {
+                                put("text", "[Completed internal reasoning:\n$thinkSummary]")
+                            }
+                        }
+                        appendOrMergeContentTurn("model", listOf(thoughtPart))
+                        emittedAny = true
+                    }
+
+                    if (toolCalls.isNotEmpty()) {
+                        val batches = groupToolCallsIntoStepBatches(
+                            toolCalls = toolCalls,
+                            fallbackTurnSignature = rawSavedSig,
+                            fallbackTurnThinking = thinkSummary
+                        )
+                        val totalCalls = toolCalls.size
+                        var globalCallIdx = 0
+                        for (batch in batches) {
+                            val cleanBatchSig = if (isForeignProtocol) "" else sanitizeGeminiThoughtSignature(batch.thoughtSignature, forFunctionCall = true)
+                            val effSig = cleanBatchSig.ifBlank { "skip_thought_signature_validator" }
+                            val modelStepParts = mutableListOf<JsonObject>()
+                            if (batch.precedingThinking.isNotBlank()) {
+                                modelStepParts.add(buildJsonObject {
+                                    put("thought", true)
+                                    put("text", batch.precedingThinking)
+                                })
+                            }
+                            batch.calls.forEachIndexed { tcIdx, tc ->
+                                val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
+                                    .getOrElse { JsonObject(emptyMap()) }
+                                modelStepParts.add(buildJsonObject {
+                                    putJsonObject("functionCall") {
+                                        if (tc.id.isNotBlank() && !tc.id.startsWith("synth_call_")) {
+                                            put("id", tc.id)
+                                        }
+                                        put("name", tc.name)
+                                        put("args", parsedArgs)
+                                    }
+                                    if (tcIdx == 0) {
+                                        put("thoughtSignature", effSig)
+                                    }
+                                })
+                            }
+                            appendOrMergeContentTurn("model", modelStepParts, allowMergeWithPrevious = modelStepParts.none { it.containsKey("functionCall") })
+
+                            val frParts = batch.calls.map { tc ->
+                                val wireResult = compactHistoricalToolResultForWire(
+                                    rawResult = tc.resultText,
+                                    toolName = tc.name,
+                                    isOlderAssistantTurn = isOlderAssistantTurn,
+                                    callIndexInTurn = globalCallIdx++,
+                                    totalCallsInTurn = totalCalls
+                                )
+                                buildJsonObject {
+                                    putJsonObject("functionResponse") {
+                                        put("name", tc.name)
+                                        if (tc.id.isNotBlank() && !tc.id.startsWith("synth_call_")) {
+                                            put("id", tc.id)
+                                        }
+                                        putJsonObject("response") {
+                                            put("result", wireResult)
+                                        }
+                                    }
+                                }
+                            }
+                            appendOrMergeContentTurn("user", frParts, allowMergeWithPrevious = false)
+                        }
+                        emittedAny = true
+                    }
+
+                    if (cleanText.isNotBlank() || !emittedAny) {
+                        val modelTextPart = buildJsonObject {
+                            put("text", cleanText.ifBlank { "..." })
+                            if (savedSig.isNotBlank() && toolCalls.isEmpty()) {
                                 put("thoughtSignature", savedSig)
                             }
                         }
-                    } else {
-                        buildJsonObject {
-                            put("text", "[Completed internal reasoning:\n$thinkSummary]")
-                        }
+                        appendOrMergeContentTurn("model", listOf(modelTextPart))
                     }
-                    appendOrMergeContentTurn("model", listOf(thoughtPart))
-                    emittedAny = true
-                }
-
-                if (toolCalls.isNotEmpty()) {
-                    val fcParts = toolCalls.mapIndexed { tcIdx, tc ->
-                        val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
-                            .getOrElse { JsonObject(emptyMap()) }
-                        val effSig = tc.thoughtSignature.ifBlank { savedSig }.ifBlank { "context_engineering_is_the_way_to_go" }
-                        buildJsonObject {
-                            putJsonObject("functionCall") {
-                                if (tc.id.isNotBlank() && !tc.id.startsWith("synth_call_")) {
-                                    put("id", tc.id)
-                                }
-                                put("name", tc.name)
-                                put("args", parsedArgs)
-                            }
-                            if (tcIdx == 0) {
-                                put("thoughtSignature", effSig)
-                            }
-                        }
-                    }
-                    appendOrMergeContentTurn("model", fcParts)
-
-                    val frParts = toolCalls.map { tc ->
-                        buildJsonObject {
-                            putJsonObject("functionResponse") {
-                                put("name", tc.name)
-                                if (tc.id.isNotBlank() && !tc.id.startsWith("synth_call_")) {
-                                    put("id", tc.id)
-                                }
-                                putJsonObject("response") {
-                                    put("result", tc.resultText)
-                                }
-                            }
-                        }
-                    }
-                    appendOrMergeContentTurn("user", frParts)
-                    emittedAny = true
-                }
-
-                if (cleanText.isNotBlank() || !emittedAny) {
-                    val modelTextPart = buildJsonObject {
-                        put("text", cleanText.ifBlank { "..." })
-                        if (savedSig.isNotBlank() && toolCalls.isEmpty()) {
-                            put("thoughtSignature", savedSig)
-                        }
-                    }
-                    appendOrMergeContentTurn("model", listOf(modelTextPart))
                 }
             } else {
                 val turnParts = buildList {
@@ -3493,6 +3641,10 @@ object AiProviderEngine {
         var omitOpenAiNativeWebSearchOnRetry = false
         var omitEncryptedContentIncludeOnRetry = false
         var omitImageGenToolOnRetry = false
+        var foldHistoricalToolsOnRetry = false
+        val hasHistoricalToolsOrSigs = activeNodes.any {
+            it.role == MessageRole.ASSISTANT && (it.activeVariant.toolCalls.isNotEmpty() || it.activeVariant.thinkingSignature.isNotBlank())
+        }
         val knownModalities = resolveKnownOutputModalities(profile, model)
         val modelOutputsImages = knownModalities.contains("image")
         var loopStep = 0
@@ -3528,9 +3680,9 @@ object AiProviderEngine {
                 val useChainedId = profile.useStatefulChaining && currentPrevResponseId.isNotBlank()
                 val baseInputItems = if (useChainedId && previousAssistantIdx >= 0 && previousAssistantIdx < activeNodes.size - 1) {
                     val trailing = activeNodes.subList(previousAssistantIdx + 1, activeNodes.size)
-                    buildOpenAiResponsesInputArray(trailing, session, continuePrefix)
+                    buildOpenAiResponsesInputArray(trailing, session, continuePrefix, foldHistoricalToolsOnRetry)
                 } else {
-                    buildOpenAiResponsesInputArray(activeNodes, session, continuePrefix)
+                    buildOpenAiResponsesInputArray(activeNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
                 }
 
                 val compactedLoopItems = compactOpenAiResponsesExtraItems(extraResponsesLoopItems)
@@ -3743,7 +3895,7 @@ object AiProviderEngine {
                                             val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
                                             if (b64.isNotBlank()) {
                                                 stepEmittedOutput = true
-                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
+                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
                                             }
                                         } else if (itemType == "reasoning") {
                                             val enc = item["encrypted_content"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -3780,7 +3932,8 @@ object AiProviderEngine {
                                                 ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
                                             val thinkTok = (usage["output_tokens_details"] as? JsonObject)
                                                 ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                            val outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val rawOutTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                            val outTok = if (thinkTok in 1..rawOutTok) (rawOutTok - thinkTok) else rawOutTok
                                             onUsage(currentPrevResponseId, inTok, cacheTok, thinkTok, outTok)
                                         }
                                     }
@@ -3824,7 +3977,7 @@ object AiProviderEngine {
                                             val revised = item["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
                                             if (b64.isNotBlank()) {
                                                 stepEmittedOutput = true
-                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia)
+                                                saveAndEmitImage(b64, "", "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
                                             }
                                         }
                                     }
@@ -3880,6 +4033,14 @@ object AiProviderEngine {
                         if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                             stripSamplingOnRetry = true
                             onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                            continue
+                        }
+                        if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
+                            (errMsg.contains("invalid_request") || errMsg.contains("reasoning") || errMsg.contains("encrypted_content") ||
+                                errMsg.contains("function_call") || errMsg.contains("call_id"))
+                        ) {
+                            foldHistoricalToolsOnRetry = true
+                            onStatus("Endpoint rejected historical tool/reasoning items — folding prior tool history into compact text & retrying…")
                             continue
                         }
                     }
@@ -3948,7 +4109,7 @@ object AiProviderEngine {
             }
             pendingStopHookPrompt = ""
 
-            if (roundReasoningBuilder.isNotEmpty() || roundEncryptedReasoning.isNotEmpty()) {
+            if (isValidOpenAiEncryptedReasoning(roundEncryptedReasoning)) {
                 extraResponsesLoopItems.add(buildJsonObject {
                     put("type", "reasoning")
                     putJsonArray("summary") {
@@ -3959,9 +4120,7 @@ object AiProviderEngine {
                             })
                         }
                     }
-                    if (roundEncryptedReasoning.isNotEmpty()) {
-                        put("encrypted_content", roundEncryptedReasoning)
-                    }
+                    put("encrypted_content", roundEncryptedReasoning)
                 })
             }
 
@@ -4025,11 +4184,12 @@ object AiProviderEngine {
     internal fun buildOpenAiResponsesInputArray(
         nodes: List<MessageNode>,
         session: ChatSession,
-        continuePrefix: String
+        continuePrefix: String,
+        foldHistoricalToolsToText: Boolean = false
     ): JsonArray {
         val items = mutableListOf<JsonObject>()
         val withAuthorsNote = injectAuthorsNoteIntoHistory(nodes, session)
-
+        val lastAssistantIdx = nodes.indexOfLast { it.role == MessageRole.ASSISTANT }
         fun appendUserItem(text: String, attachments: List<ResolvedBinaryAttachment>) {
             val last = items.lastOrNull()
             if (attachments.isEmpty() && last != null &&
@@ -4087,51 +4247,11 @@ object AiProviderEngine {
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
                 val thinkSig = nodeVar?.thinkingSignature.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
+                val isOlderAssistantTurn = idx < lastAssistantIdx
                 var emittedAny = false
 
-                for ((tcIdx, tc) in toolCalls.withIndex()) {
-                    val stepEnc = tc.thoughtSignature.ifBlank { if (tcIdx == 0) thinkSig else "" }
-                    val stepSummary = tc.precedingThinking.ifBlank { if (tcIdx == 0) thinkSummary else "" }
-                    if (stepEnc.isNotBlank() || stepSummary.isNotBlank()) {
-                        items.add(buildJsonObject {
-                            put("type", "reasoning")
-                            putJsonArray("summary") {
-                                if (stepSummary.isNotBlank()) {
-                                    add(buildJsonObject {
-                                        put("type", "summary_text")
-                                        put("text", stepSummary)
-                                    })
-                                }
-                            }
-                            if (stepEnc.isNotBlank()) {
-                                put("encrypted_content", stepEnc)
-                            }
-                        })
-                        emittedAny = true
-                    }
-                    val callId = tc.id.ifBlank { "call_${tc.name}" }
-                    items.add(buildJsonObject {
-                        put("type", "function_call")
-                        put("call_id", callId)
-                        put("name", tc.name)
-                        put("arguments", tc.argumentsJson.ifBlank { "{}" })
-                        put("status", "completed")
-                    })
-                    items.add(buildJsonObject {
-                        put("type", "function_call_output")
-                        put("call_id", callId)
-                        put("output", tc.resultText)
-                    })
-                    emittedAny = true
-                }
-
-                val outputText = when {
-                    cleanText.isNotBlank() -> cleanText
-                    thinkSummary.isNotBlank() && toolCalls.isEmpty() -> "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
-                    !emittedAny -> "..."
-                    else -> ""
-                }
-                if (outputText.isNotBlank()) {
+                if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
+                    val foldedText = buildFoldedToolHistoryText(toolCalls, thinkSummary, cleanText)
                     items.add(buildJsonObject {
                         put("type", "message")
                         put("role", "assistant")
@@ -4139,10 +4259,85 @@ object AiProviderEngine {
                         putJsonArray("content") {
                             add(buildJsonObject {
                                 put("type", "output_text")
-                                put("text", outputText)
+                                put("text", foldedText)
                             })
                         }
                     })
+                } else {
+                    if (toolCalls.isNotEmpty()) {
+                        val batches = groupToolCallsIntoStepBatches(
+                            toolCalls = toolCalls,
+                            fallbackTurnSignature = thinkSig,
+                            fallbackTurnThinking = thinkSummary
+                        )
+                        val totalCalls = toolCalls.size
+                        var globalCallIdx = 0
+                        for (batch in batches) {
+                            val stepEnc = batch.thoughtSignature.trim()
+                            val stepSummary = batch.precedingThinking
+                            if (isValidOpenAiEncryptedReasoning(stepEnc, nodeVar?.providerProtocol)) {
+                                items.add(buildJsonObject {
+                                    put("type", "reasoning")
+                                    putJsonArray("summary") {
+                                        if (stepSummary.isNotBlank()) {
+                                            add(buildJsonObject {
+                                                put("type", "summary_text")
+                                                put("text", stepSummary)
+                                            })
+                                        }
+                                    }
+                                    put("encrypted_content", stepEnc)
+                                })
+                                emittedAny = true
+                            }
+                            for (tc in batch.calls) {
+                                val callId = tc.id.ifBlank { "call_${tc.name}" }
+                                items.add(buildJsonObject {
+                                    put("type", "function_call")
+                                    put("call_id", callId)
+                                    put("name", tc.name)
+                                    put("arguments", tc.argumentsJson.ifBlank { "{}" })
+                                    put("status", "completed")
+                                })
+                            }
+                            for (tc in batch.calls) {
+                                val callId = tc.id.ifBlank { "call_${tc.name}" }
+                                val wireOut = compactHistoricalToolResultForWire(
+                                    rawResult = tc.resultText,
+                                    toolName = tc.name,
+                                    isOlderAssistantTurn = isOlderAssistantTurn,
+                                    callIndexInTurn = globalCallIdx++,
+                                    totalCallsInTurn = totalCalls
+                                )
+                                items.add(buildJsonObject {
+                                    put("type", "function_call_output")
+                                    put("call_id", callId)
+                                    put("output", wireOut)
+                                })
+                            }
+                            emittedAny = true
+                        }
+                    }
+
+                    val outputText = when {
+                        cleanText.isNotBlank() -> cleanText
+                        thinkSummary.isNotBlank() && toolCalls.isEmpty() -> "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
+                        !emittedAny -> "..."
+                        else -> ""
+                    }
+                    if (outputText.isNotBlank()) {
+                        items.add(buildJsonObject {
+                            put("type", "message")
+                            put("role", "assistant")
+                            put("status", "completed")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "output_text")
+                                    put("text", outputText)
+                                })
+                            }
+                        })
+                    }
                 }
             } else {
                 appendUserItem(text, binaryAttachments)
@@ -4189,6 +4384,8 @@ object AiProviderEngine {
         var omitReasoningEffortOnRetry = false
         var omitStreamOptionsOnRetry = false
         var omitModalitiesOnRetry = false
+        var foldHistoricalToolsOnRetry = false
+        val hasHistoricalTools = activeNodes.any { it.role == MessageRole.ASSISTANT && it.activeVariant.toolCalls.isNotEmpty() }
         val knownModalities = resolveKnownOutputModalities(profile, model)
         val modelOutputsImages = knownModalities.contains("image")
         var loopStep = 0
@@ -4246,7 +4443,8 @@ object AiProviderEngine {
                             session = session,
                             systemInstruction = systemInstruction,
                             continuePrefix = continuePrefix,
-                            extraToolMessages = compactedToolMessages
+                            extraToolMessages = compactedToolMessages,
+                            foldHistoricalToolsToText = foldHistoricalToolsOnRetry
                         )
                     )
                     val wsTools = WorkspaceHarness.buildOpenAiChatCompletionsTools(
@@ -4345,10 +4543,10 @@ object AiProviderEngine {
                                                 val mime = urlVal.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
                                                 val b64 = urlVal.substringAfter("base64,")
                                                 stepEmittedOutput = true
-                                                saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia)
+                                                saveAndEmitImage(b64, "", mime, profile.mediaAspectRatio, "", onMedia, sessionId = session.id)
                                             } else if (urlVal.startsWith("http")) {
                                                 stepEmittedOutput = true
-                                                saveAndEmitImage("", urlVal, "image/png", profile.mediaAspectRatio, "", onMedia)
+                                                saveAndEmitImage("", urlVal, "image/png", profile.mediaAspectRatio, "", onMedia, sessionId = session.id)
                                             }
                                         }
                                     }
@@ -4362,7 +4560,8 @@ object AiProviderEngine {
                                         ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
                                     val thinkTok = (usage["completion_tokens_details"] as? JsonObject)
                                         ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                    val outTok = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val rawOutTok = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                                    val outTok = if (thinkTok in 1..rawOutTok) (rawOutTok - thinkTok) else rawOutTok
                                     onUsage(inTok, cacheTok, thinkTok, outTok)
                                 }
                             },
@@ -4426,6 +4625,13 @@ object AiProviderEngine {
                         if (!omitModalitiesOnRetry && modelOutputsImages && errMsg.contains("modalities")) {
                             omitModalitiesOnRetry = true
                             onStatus("Endpoint rejected modalities array — retrying without modalities…")
+                            continue
+                        }
+                        if (!foldHistoricalToolsOnRetry && hasHistoricalTools &&
+                            (errMsg.contains("tool_calls") || errMsg.contains("tool_call_id") || errMsg.contains("role 'tool'") || errMsg.contains("invalid_request"))
+                        ) {
+                            foldHistoricalToolsOnRetry = true
+                            onStatus("Endpoint rejected historical tool_calls — folding prior tool history into compact text & retrying…")
                             continue
                         }
                     }
@@ -4512,7 +4718,7 @@ object AiProviderEngine {
                 break
             }
         }
-        extractMarkdownImagesFromText(fullTextAccumulator.toString(), profile.mediaAspectRatio, onMedia)
+        extractMarkdownImagesFromText(fullTextAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id)
     }
 
     internal fun buildOpenAiChatCompletionsMessages(
@@ -4520,10 +4726,12 @@ object AiProviderEngine {
         session: ChatSession,
         systemInstruction: String,
         continuePrefix: String,
-        extraToolMessages: List<JsonObject> = emptyList()
+        extraToolMessages: List<JsonObject> = emptyList(),
+        foldHistoricalToolsToText: Boolean = false
     ): JsonArray {
         val turns = injectAuthorsNoteIntoHistory(activeNodes, session)
         val messages = mutableListOf<JsonObject>()
+        val lastAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
         if (systemInstruction.isNotBlank()) {
             messages.add(buildJsonObject {
                 put("role", "system")
@@ -4579,34 +4787,60 @@ object AiProviderEngine {
                 val cleanText = stripInlineErrorNotices(text)
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
-                if (toolCalls.isNotEmpty()) {
+                val isOlderAssistantTurn = idx < lastAssistantIdx
+                if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
+                    val foldedText = buildFoldedToolHistoryText(toolCalls, thinkSummary, cleanText)
                     messages.add(buildJsonObject {
                         put("role", "assistant")
-                        if (cleanText.isNotEmpty()) {
-                            put("content", cleanText)
-                        }
-                        if (thinkSummary.isNotBlank()) {
-                            put("reasoning_content", thinkSummary)
-                        }
-                        putJsonArray("tool_calls") {
-                            for (tc in toolCalls) {
-                                add(buildJsonObject {
-                                    put("id", tc.id.ifBlank { "call_${tc.name}" })
-                                    put("type", "function")
-                                    putJsonObject("function") {
-                                        put("name", tc.name)
-                                        put("arguments", tc.argumentsJson.ifBlank { "{}" })
-                                    }
-                                })
-                            }
-                        }
+                        put("content", foldedText)
                     })
-                    for (tc in toolCalls) {
+                } else if (toolCalls.isNotEmpty()) {
+                    val batches = groupToolCallsIntoStepBatches(
+                        toolCalls = toolCalls,
+                        fallbackTurnSignature = "",
+                        fallbackTurnThinking = thinkSummary
+                    )
+                    val totalCalls = toolCalls.size
+                    var globalCallIdx = 0
+                    for (batch in batches) {
                         messages.add(buildJsonObject {
-                            put("role", "tool")
-                            put("tool_call_id", tc.id.ifBlank { "call_${tc.name}" })
-                            put("name", tc.name)
-                            put("content", tc.resultText)
+                            put("role", "assistant")
+                            if (batch.precedingThinking.isNotBlank()) {
+                                put("reasoning_content", batch.precedingThinking)
+                            }
+                            putJsonArray("tool_calls") {
+                                for (tc in batch.calls) {
+                                    add(buildJsonObject {
+                                        put("id", tc.id.ifBlank { "call_${tc.name}" })
+                                        put("type", "function")
+                                        putJsonObject("function") {
+                                            put("name", tc.name)
+                                            put("arguments", tc.argumentsJson.ifBlank { "{}" })
+                                        }
+                                    })
+                                }
+                            }
+                        })
+                        for (tc in batch.calls) {
+                            val wireOut = compactHistoricalToolResultForWire(
+                                rawResult = tc.resultText,
+                                toolName = tc.name,
+                                isOlderAssistantTurn = isOlderAssistantTurn,
+                                callIndexInTurn = globalCallIdx++,
+                                totalCallsInTurn = totalCalls
+                            )
+                            messages.add(buildJsonObject {
+                                put("role", "tool")
+                                put("tool_call_id", tc.id.ifBlank { "call_${tc.name}" })
+                                put("name", tc.name)
+                                put("content", wireOut)
+                            })
+                        }
+                    }
+                    if (cleanText.isNotBlank()) {
+                        messages.add(buildJsonObject {
+                            put("role", "assistant")
+                            put("content", cleanText)
                         })
                     }
                 } else {
@@ -4687,8 +4921,10 @@ object AiProviderEngine {
     ) {
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
-        val coalescedBaseMessages = buildAnthropicBaseMessages(activeNodes, session, continuePrefix)
-
+        var foldHistoricalToolsOnRetry = false
+        val hasHistoricalToolsOrSigs = activeNodes.any {
+            it.role == MessageRole.ASSISTANT && (it.activeVariant.toolCalls.isNotEmpty() || it.activeVariant.thinkingSignature.isNotBlank())
+        }
         // Mutable conversation list for multi-step tool loop
         val extraLoopMessages = mutableListOf<JsonObject>()
         var stripSamplingOnRetry = false
@@ -4777,6 +5013,7 @@ object AiProviderEngine {
                     }
 
                     // Messages array with strict user-first / alternating role validation & cache_control breakpoint
+                    val coalescedBaseMessages = buildAnthropicBaseMessages(activeNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
                     putJsonArray("messages") {
                         val lastMsgIdx = coalescedBaseMessages.size - 1
                         for ((msgIdx, msgPair) in coalescedBaseMessages.withIndex()) {
@@ -5085,6 +5322,14 @@ object AiProviderEngine {
                             onStatus("Endpoint rejected thinking configuration — retrying with default model configuration…")
                             continue
                         }
+                        if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
+                            (errMsg.contains("signature") || errMsg.contains("thinking") || errMsg.contains("tool_use") ||
+                                errMsg.contains("tool_result") || errMsg.contains("invalid_request"))
+                        ) {
+                            foldHistoricalToolsOnRetry = true
+                            onStatus("Endpoint rejected historical thinking/tool blocks — folding prior tool history into compact text & retrying…")
+                            continue
+                        }
                     }
                     if (!stepEmittedOutput && !hasAnyToolUse && isTransientOrProxyTimeoutError(e)) {
                         if (stepRetryAttempt < MAX_PRE_TOKEN_RETRIES) {
@@ -5182,13 +5427,16 @@ object AiProviderEngine {
                 put("content", JsonArray(assistantContentBlocksForToolLoop))
             })
 
-            val firstSignedThinking = orderedBlocks.filterIsInstance<AnthropicStreamBlock.Thinking>()
-                .firstOrNull { it.signature.isNotEmpty() }?.signature?.toString().orEmpty()
+            val firstSignedThinkingBlock = orderedBlocks.filterIsInstance<AnthropicStreamBlock.Thinking>()
+                .firstOrNull { it.signature.isNotEmpty() }
+            val firstSignedThinking = firstSignedThinkingBlock?.signature?.toString().orEmpty()
+            val firstSignedThinkingText = firstSignedThinkingBlock?.thinking?.toString().orEmpty()
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = firstSignedThinking,
+                firstPrecedingThinking = firstSignedThinkingText,
                 circuitBreaker = circuitBreaker,
                 onStatus = onStatus,
                 onToolCall = onToolCall,
@@ -5223,10 +5471,12 @@ object AiProviderEngine {
     internal fun buildAnthropicBaseMessages(
         activeNodes: List<MessageNode>,
         session: ChatSession,
-        continuePrefix: String
+        continuePrefix: String,
+        foldHistoricalToolsToText: Boolean = false
     ): MutableList<Pair<String, MutableList<JsonObject>>> {
         val turnsWithAuthorsNote = injectAuthorsNoteIntoHistory(activeNodes, session)
         val coalescedBaseMessages = mutableListOf<Pair<String, MutableList<JsonObject>>>()
+        val lastAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
 
         fun appendRoleBlocks(roleStr: String, newBlocks: List<JsonObject>) {
             if (newBlocks.isEmpty()) return
@@ -5275,38 +5525,69 @@ object AiProviderEngine {
                 val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
                 val thinkSig = nodeVar?.thinkingSignature.orEmpty()
                 val toolCalls = nodeVar?.toolCalls.orEmpty()
+                val isOlderAssistantTurn = idx < lastAssistantIdx
 
-                if (toolCalls.isNotEmpty()) {
-                    val assistantToolBlocks = mutableListOf<JsonObject>()
-                    val effectiveSig = thinkSig.ifBlank { toolCalls.firstOrNull()?.thoughtSignature.orEmpty() }
-                    if (effectiveSig.isNotBlank()) {
-                        assistantToolBlocks.add(buildJsonObject {
-                            put("type", "thinking")
-                            put("thinking", thinkSummary)
-                            put("signature", effectiveSig)
-                        })
-                    }
-                    for (tc in toolCalls) {
-                        val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
-                            .getOrElse { JsonObject(emptyMap()) }
-                        assistantToolBlocks.add(buildJsonObject {
-                            put("type", "tool_use")
-                            put("id", tc.id.ifBlank { "toolu_${tc.name}" })
-                            put("name", tc.name)
-                            put("input", parsedArgs)
-                        })
-                    }
-                    appendRoleBlocks("assistant", assistantToolBlocks)
-
-                    val userResultBlocks = toolCalls.map { tc ->
-                        buildJsonObject {
-                            put("type", "tool_result")
-                            put("tool_use_id", tc.id.ifBlank { "toolu_${tc.name}" })
-                            put("content", tc.resultText)
-                            if (tc.isError) put("is_error", true)
+                if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
+                    val foldedText = buildFoldedToolHistoryText(toolCalls, thinkSummary, cleanText)
+                    appendRoleBlocks(
+                        "assistant",
+                        listOf(
+                            buildJsonObject {
+                                put("type", "text")
+                                put("text", foldedText)
+                            }
+                        )
+                    )
+                } else if (toolCalls.isNotEmpty()) {
+                    val batches = groupToolCallsIntoStepBatches(
+                        toolCalls = toolCalls,
+                        fallbackTurnSignature = thinkSig,
+                        fallbackTurnThinking = thinkSummary
+                    )
+                    val totalCalls = toolCalls.size
+                    var globalCallIdx = 0
+                    for (batch in batches) {
+                        val assistantToolBlocks = mutableListOf<JsonObject>()
+                        val batchSig = batch.thoughtSignature.trim()
+                        val batchThinking = batch.precedingThinking
+                        if (batchSig.isNotBlank() && batchThinking.isNotBlank() &&
+                            isValidAnthropicSignature(batchSig, nodeVar?.providerProtocol)
+                        ) {
+                            assistantToolBlocks.add(buildJsonObject {
+                                put("type", "thinking")
+                                put("thinking", batchThinking)
+                                put("signature", batchSig)
+                            })
                         }
+                        for (tc in batch.calls) {
+                            val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
+                                .getOrElse { JsonObject(emptyMap()) }
+                            assistantToolBlocks.add(buildJsonObject {
+                                put("type", "tool_use")
+                                put("id", tc.id.ifBlank { "toolu_${tc.name}" })
+                                put("name", tc.name)
+                                put("input", parsedArgs)
+                            })
+                        }
+                        appendRoleBlocks("assistant", assistantToolBlocks)
+
+                        val userResultBlocks = batch.calls.map { tc ->
+                            val wireOut = compactHistoricalToolResultForWire(
+                                rawResult = tc.resultText,
+                                toolName = tc.name,
+                                isOlderAssistantTurn = isOlderAssistantTurn,
+                                callIndexInTurn = globalCallIdx++,
+                                totalCallsInTurn = totalCalls
+                            )
+                            buildJsonObject {
+                                put("type", "tool_result")
+                                put("tool_use_id", tc.id.ifBlank { "toolu_${tc.name}" })
+                                put("content", wireOut)
+                                if (tc.isError) put("is_error", true)
+                            }
+                        }
+                        appendRoleBlocks("user", userResultBlocks)
                     }
-                    appendRoleBlocks("user", userResultBlocks)
 
                     if (cleanText.isNotBlank()) {
                         appendRoleBlocks(
@@ -5321,7 +5602,9 @@ object AiProviderEngine {
                     }
                 } else {
                     val assistantBlocks = mutableListOf<JsonObject>()
-                    if (thinkSig.isNotBlank()) {
+                    if (thinkSig.isNotBlank() && thinkSummary.isNotBlank() &&
+                        isValidAnthropicSignature(thinkSig, nodeVar?.providerProtocol)
+                    ) {
                         assistantBlocks.add(buildJsonObject {
                             put("type", "thinking")
                             put("thinking", thinkSummary)
@@ -5471,7 +5754,7 @@ object AiProviderEngine {
             val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
             val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
             val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-            saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia)
+            saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
             if (revised.isNotBlank()) {
                 onContent("*Revised Prompt:* $revised\n")
             }
@@ -5607,7 +5890,7 @@ object AiProviderEngine {
                     onRawWire = onRawWire,
                     onUsage = { _, _, _, _ -> }
                 )
-                extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia)
+                extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id)
                 return
             }
 
@@ -5666,7 +5949,7 @@ object AiProviderEngine {
             }.getOrElse { ByteArray(0) }
 
             val localPath = if (videoBytes.isNotEmpty()) {
-                PlatformBridge.saveGeneratedMediaFile("seedance-$taskId.mp4", videoBytes)
+                PlatformBridge.saveGeneratedMediaFile("seedance-$taskId.mp4", videoBytes, sessionId = session.id)
             } else ""
 
             val mediaItem = GeneratedMediaItem(
@@ -5772,7 +6055,7 @@ object AiProviderEngine {
                 val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
                 val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
                 val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-                saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia)
+                saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
             }
         }
     }
@@ -5909,7 +6192,7 @@ object AiProviderEngine {
                 return false
             }
         }
-        // Inspired by `omp`: treat all other network, socket, EOF, stream, rate-limit (429),
+        // Treat all other network, socket, EOF, stream, rate-limit (429),
         // gateway (502/503/504/520-529), and upstream proxy interruptions as retryable!
         return true
     }
@@ -6183,10 +6466,212 @@ object AiProviderEngine {
         }
     }
 
+    internal data class ToolStepBatch(
+        val thoughtSignature: String,
+        val precedingThinking: String,
+        val calls: List<ToolCallRecord>
+    )
+
+    private val BASE64_SEGMENT_REGEX = Regex("[A-Za-z0-9+/]+={0,2}")
+    private val GEMINI_SIG_MAGIC = byteArrayOf(0x01, 0x69, 0x14, 0x7d, 0x13)
+    private val GEMINI_SERVER_TOOL_TAG = byteArrayOf(0x08, 0x02, 0x12)
+
+    private fun indexOfByteSubarray(haystack: ByteArray, needle: ByteArray, endExclusive: Int = haystack.size): Int {
+        if (needle.isEmpty() || endExclusive < needle.size) return -1
+        val limit = minOf(haystack.size, endExclusive) - needle.size
+        for (i in 0..limit) {
+            var match = true
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
+        }
+        return -1
+    }
+
+    internal fun isGeminiServerSideToolSignature(seg: String): Boolean {
+        if (seg.length < 16 || seg.startsWith("gAAAAAB")) return false
+        val decoded = runCatching { Base64.decode(seg.trim()) }.getOrNull() ?: return false
+        val magicPos = indexOfByteSubarray(decoded, GEMINI_SIG_MAGIC)
+        if (magicPos <= 0) return false
+        return indexOfByteSubarray(decoded, GEMINI_SERVER_TOOL_TAG, endExclusive = magicPos) >= 0
+    }
+
+    internal fun isCompleteGeminiSignatureProtobuf(seg: String): Boolean {
+        if (seg.length < 16 || seg.startsWith("gAAAAAB")) return false
+        val decoded = runCatching { Base64.decode(seg.trim()) }.getOrNull() ?: return false
+        return indexOfByteSubarray(decoded, GEMINI_SIG_MAGIC) >= 0
+    }
+
+    /**
+     * Sanitizes a raw or historically concatenated Gemini `thoughtSignature` string:
+     * - Splits any glued Base64 segments (`...=...==...==`) into individual Base64 strings.
+     * - When `forFunctionCall == true`, filters out server-side `google_search` (`08 02`) signatures
+     *   so `/v1beta/interactions` and `:streamGenerateContent` never fail with `HTTP 400`.
+     */
+    internal fun sanitizeGeminiThoughtSignature(rawSig: String, forFunctionCall: Boolean = false): String {
+        val trimmed = rawSig.trim()
+        if (trimmed.isEmpty()) return ""
+        if (trimmed == "context_engineering_is_the_way_to_go" || trimmed == "skip_thought_signature_validator") {
+            return if (forFunctionCall) trimmed else ""
+        }
+        if (trimmed.startsWith("gAAAAAB")) return ""
+        val hasMidPadding = trimmed.indexOf('=') in 0 until trimmed.trimEnd('=').length
+        val isRealGeminiProtobuf = isCompleteGeminiSignatureProtobuf(trimmed) || isGeminiServerSideToolSignature(trimmed)
+        if (!hasMidPadding && !isRealGeminiProtobuf) {
+            return trimmed
+        }
+        val segments = BASE64_SEGMENT_REGEX.findAll(trimmed)
+            .map { it.value }
+            .filter { it.length >= 16 }
+            .toList()
+        if (segments.isEmpty()) return ""
+        if (forFunctionCall) {
+            val validNonServer = segments.firstOrNull { seg ->
+                isCompleteGeminiSignatureProtobuf(seg) && !isGeminiServerSideToolSignature(seg)
+            }
+            if (validNonServer != null) return validNonServer
+            val anyNonServer = segments.firstOrNull { seg ->
+                !isGeminiServerSideToolSignature(seg) && runCatching { Base64.decode(seg) }.isSuccess
+            }
+            return anyNonServer.orEmpty()
+        } else {
+            val lastNonServer = segments.lastOrNull { seg ->
+                isCompleteGeminiSignatureProtobuf(seg) && !isGeminiServerSideToolSignature(seg)
+            }
+            if (lastNonServer != null) return lastNonServer
+            return segments.lastOrNull { runCatching { Base64.decode(it) }.isSuccess }.orEmpty()
+        }
+    }
+
+    internal fun isValidOpenAiEncryptedReasoning(rawSig: String, savedProtocol: ProviderProtocol? = null): Boolean {
+        if (savedProtocol != null && savedProtocol != ProviderProtocol.OPENAI_RESPONSES) return false
+        val trimmed = rawSig.trim()
+        if (trimmed.isEmpty() || trimmed.contains('=') || trimmed.contains(' ')) return false
+        if (isCompleteGeminiSignatureProtobuf(trimmed) || isGeminiServerSideToolSignature(trimmed)) return false
+        return true
+    }
+
+    internal fun isValidAnthropicSignature(rawSig: String, savedProtocol: ProviderProtocol?): Boolean {
+        if (savedProtocol != null && savedProtocol != ProviderProtocol.ANTHROPIC_MESSAGES) return false
+        val trimmed = rawSig.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("gAAAAAB")) return false
+        val hasMidPadding = trimmed.indexOf('=') in 0 until trimmed.trimEnd('=').length
+        if (hasMidPadding) return false
+        return !isCompleteGeminiSignatureProtobuf(trimmed) && !isGeminiServerSideToolSignature(trimmed)
+    }
+
+    /**
+     * Appends an incoming signature chunk to `builder` while preventing distinct complete Base64
+     * signatures (e.g. ending in `=` padding or starting a new Gemini `0x12 ...` protobuf) from
+     * being concatenated into an invalid Franken-signature.
+     */
+    internal fun appendSignatureChunkSafe(builder: StringBuilder, incoming: String): String {
+        if (incoming.isEmpty()) return ""
+        val cur = builder.toString()
+        if (cur == incoming || cur.endsWith(incoming)) return ""
+        if (cur.isEmpty()) {
+            builder.append(incoming)
+            return incoming
+        }
+        val curEndsWithPadding = cur.endsWith('=')
+        val bothAreCompleteGeminiSigs = isCompleteGeminiSignatureProtobuf(cur) && isCompleteGeminiSignatureProtobuf(incoming)
+        if (curEndsWithPadding || bothAreCompleteGeminiSigs) {
+            if (isGeminiServerSideToolSignature(incoming) && !isGeminiServerSideToolSignature(cur)) {
+                return ""
+            }
+            builder.setLength(0)
+            builder.append(incoming)
+            return incoming
+        }
+        builder.append(incoming)
+        return incoming
+    }
+
+    internal fun groupToolCallsIntoStepBatches(
+        toolCalls: List<ToolCallRecord>,
+        fallbackTurnSignature: String,
+        fallbackTurnThinking: String
+    ): List<ToolStepBatch> {
+        if (toolCalls.isEmpty()) return emptyList()
+        val batches = mutableListOf<ToolStepBatch>()
+        val hasAnyPrecedingThinking = toolCalls.any { it.precedingThinking.isNotBlank() }
+        var currentCalls = mutableListOf<ToolCallRecord>()
+        var currentSig = ""
+        var currentThink = ""
+
+        for ((idx, tc) in toolCalls.withIndex()) {
+            val tcSig = tc.thoughtSignature.ifBlank { if (idx == 0) fallbackTurnSignature else "" }
+            val tcThink = tc.precedingThinking.ifBlank { if (idx == 0 && !hasAnyPrecedingThinking) fallbackTurnThinking else "" }
+            val startsNewBatch = idx == 0 || tc.thoughtSignature.isNotBlank() || tc.precedingThinking.isNotBlank()
+            if (startsNewBatch) {
+                if (currentCalls.isNotEmpty()) {
+                    batches.add(ToolStepBatch(currentSig, currentThink, currentCalls.toList()))
+                }
+                currentCalls = mutableListOf(tc)
+                currentSig = tcSig
+                currentThink = tcThink
+            } else {
+                currentCalls.add(tc)
+            }
+        }
+        if (currentCalls.isNotEmpty()) {
+            batches.add(ToolStepBatch(currentSig, currentThink, currentCalls.toList()))
+        }
+        return batches
+    }
+
+    internal fun compactHistoricalToolResultForWire(
+        rawResult: String,
+        toolName: String,
+        isOlderAssistantTurn: Boolean,
+        callIndexInTurn: Int,
+        totalCallsInTurn: Int
+    ): String {
+        val shouldCompact = (isOlderAssistantTurn && rawResult.length > 900) ||
+            (totalCallsInTurn > 10 && callIndexInTurn < totalCallsInTurn - 6 && rawResult.length > 900)
+        if (!shouldCompact) return rawResult
+        return WorkspaceHarness.compactStaleToolOutputText(
+            stepIndex = 0,
+            totalSteps = 100,
+            toolName = toolName,
+            rawOutput = rawResult,
+            keepRecentCount = 0
+        )
+    }
+
+    internal fun buildFoldedToolHistoryText(
+        toolCalls: List<ToolCallRecord>,
+        thinkingSummary: String,
+        cleanText: String
+    ): String = buildString {
+        if (thinkingSummary.isNotBlank()) {
+            appendLine("[Completed reasoning: ${thinkingSummary.take(600).trim()}]")
+        }
+        if (toolCalls.isNotEmpty()) {
+            appendLine("[Completed ${toolCalls.size} workspace tool call(s):")
+            for (tc in toolCalls.takeLast(12)) {
+                val snippet = tc.resultText.replace(Regex("\\s+"), " ").trim().take(180)
+                appendLine("- ${tc.name}(${tc.argumentsJson.take(80)}) -> $snippet")
+            }
+            appendLine("]")
+        }
+        if (cleanText.isNotBlank()) {
+            if (isNotEmpty()) appendLine()
+            append(cleanText)
+        } else if (isEmpty()) {
+            append("...")
+        }
+    }.trim()
+
     private suspend fun extractMarkdownVideosFromText(
         text: String,
         aspectRatio: String,
-        onMedia: suspend (GeneratedMediaItem) -> Unit
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        sessionId: String = ""
     ) {
         val urlRegex = Regex("""https?://[^\s)"'>]+\.mp4(?:\?[^\s)"'>]*)?""", RegexOption.IGNORE_CASE)
         for (match in urlRegex.findAll(text)) {
@@ -6194,7 +6679,7 @@ object AiProviderEngine {
             val now = PlatformBridge.currentTimeMillis()
             val videoBytes = runCatching { httpClient.get(videoUrl).readRawBytes() }.getOrElse { ByteArray(0) }
             val localPath = if (videoBytes.isNotEmpty()) {
-                PlatformBridge.saveGeneratedMediaFile("video-$now.mp4", videoBytes)
+                PlatformBridge.saveGeneratedMediaFile("video-$now.mp4", videoBytes, sessionId = sessionId)
             } else ""
             onMedia(
                 GeneratedMediaItem(
@@ -6215,7 +6700,8 @@ object AiProviderEngine {
         mimeType: String,
         aspectRatio: String,
         revisedPrompt: String,
-        onMedia: suspend (GeneratedMediaItem) -> Unit
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        sessionId: String = ""
     ) {
         val now = PlatformBridge.currentTimeMillis()
         val ext = when {
@@ -6238,7 +6724,7 @@ object AiProviderEngine {
         if (imageBytes.isEmpty() && remoteUrl.isBlank()) return
 
         val localPath = if (imageBytes.isNotEmpty()) {
-            PlatformBridge.saveGeneratedMediaFile("img-$now-${kotlin.random.Random.nextInt(100, 999)}.$ext", imageBytes)
+            PlatformBridge.saveGeneratedMediaFile("img-$now-${kotlin.random.Random.nextInt(100, 999)}.$ext", imageBytes, sessionId = sessionId)
         } else ""
 
         onMedia(
@@ -6257,7 +6743,8 @@ object AiProviderEngine {
     private suspend fun extractMarkdownImagesFromText(
         text: String,
         aspectRatio: String,
-        onMedia: suspend (GeneratedMediaItem) -> Unit
+        onMedia: suspend (GeneratedMediaItem) -> Unit,
+        sessionId: String = ""
     ) {
         if (!text.contains("![")) return
         val regex = Regex("""!\[[^\]]*\]\(([^)]+)\)""")
@@ -6266,9 +6753,9 @@ object AiProviderEngine {
             if (target.startsWith("data:image/")) {
                 val mime = target.substringAfter("data:").substringBefore(";").ifBlank { "image/png" }
                 val b64 = target.substringAfter("base64,")
-                saveAndEmitImage(b64, "", mime, aspectRatio, "", onMedia)
+                saveAndEmitImage(b64, "", mime, aspectRatio, "", onMedia, sessionId = sessionId)
             } else if (target.startsWith("http://") || target.startsWith("https://")) {
-                saveAndEmitImage("", target, "image/png", aspectRatio, "", onMedia)
+                saveAndEmitImage("", target, "image/png", aspectRatio, "", onMedia, sessionId = sessionId)
             }
         }
     }

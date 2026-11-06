@@ -651,7 +651,7 @@ object WorkspaceHarness {
     }
 
     /**
-     * Formats a concise, present-participle intent description (inspired by `omp`) for live UI status telemetry
+     * Formats a concise, present-participle intent description for live UI status telemetry
      * while a workspace or goal tool is executing.
      */
     fun describeToolCallIntent(toolName: String, argumentsJson: String): String {
@@ -934,7 +934,7 @@ object WorkspaceHarness {
     private val LINE_NUMBER_PREFIX_REGEX = Regex("""^\s*(\d+):\s?(.*)$""")
 
     /**
-     * `omp`-inspired Pre-Context Output Compression & Head+Tail Bookend Size Valve.
+     * Pre-Context Output Compression & Head+Tail Bookend Size Valve.
      * - Strips noisy ANSI escape codes, PowerShell `#< CLIXML ... </Objs>` progress XML, and excessive blank lines.
      * - Applies a Head + Tail Bookend Size Valve to `shell_exec`, `fs_search`, `fs_list`, and `fs_glob`
      *   so a single noisy command or directory dump never floods the context window, while NEVER
@@ -1021,7 +1021,7 @@ object WorkspaceHarness {
     )
 
     /**
-     * `omp`-inspired 2-Tier Exact + Whitespace/Indentation-Normalized Self-Healing Edit Engine:
+     * 2-Tier Exact + Whitespace/Indentation-Normalized Self-Healing Edit Engine:
      * 1. Tier 1: Exact substring match (with automatic stripping of accidental `fs_read` line numbers).
      * 2. Tier 2: Line-by-line trimmed/whitespace-normalized match when exact match fails due to minor
      *    indentation or trailing-space drift, automatically preserving/re-aligning relative indentation!

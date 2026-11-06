@@ -28,13 +28,21 @@
    - Keep inactive chats dehydrated as lightweight stubs (`dehydrateChatSessionToCompactStub` / `hydrateSessionFromDiskIfNeeded`) and strip duplicate in-memory `PromptAttachment.base64Data` when `localFilePath` exists on disk.
    - Reuse `sharedScratchIconPath` in `KissVectorIcon`, cache parsed `Path`s in `ModelLabSvgIcon`, and share `AiProviderEngine.httpClient`.
 
-## 3. Core Architecture Matrix (`v2.0.38+`)
+## 3. Core Architecture Matrix (`v2.0.39+`)
+- **Foolproof Multi-Protocol Signature & Tool-Batch Engine (`AiProviderEngine.kt`, `O200kTokenizer.kt`)**:
+  - `sanitizeGeminiThoughtSignature` splits legacy glued Base64 signatures (`...=...==`) into valid protobuf segments and strips server-side `08 02` (`google_search`) signatures from `function_call` steps.
+  - `appendSignatureChunkSafe` prevents concatenating distinct complete Base64 signatures across rounds or server-side tool invocations.
+  - `groupToolCallsIntoStepBatches` preserves parallel (`FC1, FC2 -> FR1, FR2`) and sequential (`Batch 1 -> Batch 2`) tool boundaries across Gemini Interactions, Gemini GenerateContent, OpenAI Responses, OpenAI Chat Completions (with closing `assistant` prose after `role: "tool"`), and Anthropic Messages, with strict cross-provider signature isolation and HTTP 400 `foldHistoricalToolsOnRetry` self-healing.
+- **Wall-Clock Generation Throughput & Per-Round Token Accounting (`AiProviderEngine.kt`, `ParchmentApp.kt`)**:
+  - Computes `tokensPerSec` by dividing total generated tokens (`finalOutTokens + finalThinkTokens`, normalized so combined `output_tokens`/`completion_tokens` never double-count `reasoning_tokens`) by net LLM wall-clock generation time (`totalDurationMs - totalToolExecutionMs`), tracking non-overlapping parallel tool batch wall-clock wait time and preserving `initialElapsedMs` across mid-stream auto-compaction.
 - **Self-Contained Per-Chat Folder Hierarchy & Split Persistence**:
-  - `parchment-settings.json` + `backups/` (`parchment-settings.prev.json`, `parchment-settings.user-backup.json`) + `chats/<sessionId>/chat.json` + `chats/<sessionId>/media/*` (auto-migrates legacy flat `chats/*.json` and root `media/*`).
+  - `parchment-settings.json` + `backups/` (`parchment-settings.prev.json`, `parchment-settings.user-backup.json`) + `chats/<sessionId>/chat.json` + `chats/<sessionId>/media/*` (auto-migrates legacy flat `chats/*.json` and root `media/*`, and saves all uploaded + AI-generated images/videos scoped to `sessionId`).
   - Streaming `.chat.zip` / `.zip` bundle export & import (`encodeChatSessionsToZipBundleBytes` / `decodeChatSessionsFromPickedFile`) bundles `chat.json` + `media/` using `8 KB` file streams and portable relative media paths.
+- **System-Wide Android Workspace Folder Picker (`AndroidManifest.xml`, `MainActivity.kt`, `PlatformBridge.android.kt`)**:
+  - Uses `ActivityResultContracts.OpenDocumentTree` + `MANAGE_EXTERNAL_STORAGE` (`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` on API 30+) and `resolveTreeUriToFilePath` (`primary:`, `raw:`, `home:`, `<volumeId>:`) so Android workspace tools can mount any folder on shared storage (`/storage/emulated/0/...`).
 - **Context-Aware Markdown, Nested Prose & LaTeX Engine (`ProseRenderer.kt`, `LatexMathRenderer.kt`)**:
   - Nested delimiter scanners (`*...*` skipping inner `**bold**`, `` `code` ``, `$math$`; word-boundary `_..._`; currency-safe `$...$`), indented/checkbox lists, multi-line display equations, and `\mathcal`/`\mathfrak`/`\textbf`/`\cancel` support.
-- **Uncapped Prompts & Compaction**: Assistant `systemPrompt`, Chat `Extra Instructions`, `Style & Tone Reminder`, `Chat Summary & Memory`, and `generateUtilityText` (`maxOutputTokens = null`) are 100% uncapped (`Int.MAX_VALUE` lines). `prepareCompactionPlan` preserves 100% of `existingStorySummary`.
+- **Uncapped Prompts & Compaction**: Assistant `systemPrompt`, Chat `Extra Instructions`, `Style & Tone Reminder`, `Chat Summary & Memory`, and `generateUtilityText` (`maxOutputTokens = null`) are 100% uncapped (`Int.MAX_VALUE` lines). `prepareCompactionPlan` preserves 100% of `existingStorySummary` and sanitizes bloated signatures on kept turns.
 - **17-Tool Agent Harness (`WorkspaceHarness.kt`)**: Parallel read/search batching, fuzzy whitespace self-healing edits, head+tail bookend size valves, live `shell_exec` streaming, and process-tree kill on Stop.
 - **Unified `o200k_base` Tokenizer & `@Immutable` Models (`O200kTokenizer.kt`, `Models.kt`)**: `@Immutable` stability across all model classes, $O(1)$ `estimateTokensFast` during active streaming (preventing `tokenCache` eviction), and `countSessionVaultItemsFast`.
 - **Android Compatibility Ceiling (`gradle/libs.versions.toml`)**: `agp = "8.13.2"`, `compileSdk = 36`, `kotlin = "2.3.21"`, `compose-multiplatform = "1.10.3"`, `ktor = "3.5.2"`. Keep Android AAR `minCompileSdk <= 36`.

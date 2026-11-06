@@ -10,8 +10,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.OpenableColumns
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -513,9 +515,59 @@ actual object PlatformBridge {
     }
 
     actual suspend fun pickWorkspaceDirectory(currentPath: String): String? {
+        val act = mainActivityRef?.get()
+        if (act != null) {
+            return act.requestPickWorkspaceDirectory(currentPath)
+        }
         val wsDir = File(resolveStorageDir(), "workspace")
         if (!wsDir.exists()) wsDir.mkdirs()
         return wsDir.absolutePath
+    }
+
+    fun buildInitialDocumentTreeUri(currentPath: String): Uri? = runCatching {
+        val extRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+        val cleaned = currentPath.trim().trimEnd('/')
+        val rel = when {
+            cleaned.isNotEmpty() && cleaned.startsWith(extRoot) -> cleaned.removePrefix(extRoot).trim('/')
+            else -> ""
+        }
+        val docId = if (rel.isEmpty()) "primary:" else "primary:$rel"
+        DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+    }.getOrNull()
+
+    fun resolveTreeUriToFilePath(treeUri: Uri): String {
+        val extRoot = runCatching { Environment.getExternalStorageDirectory().absolutePath.trimEnd('/') }
+            .getOrDefault("/storage/emulated/0")
+        val docId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull().orEmpty()
+        if (docId.isBlank()) return extRoot
+        if (docId.startsWith("raw:")) {
+            val rawPath = docId.removePrefix("raw:").trim()
+            if (rawPath.isNotEmpty()) return rawPath
+        }
+        if (docId.startsWith("primary:")) {
+            val rel = docId.substringAfter("primary:").trim('/')
+            return if (rel.isEmpty()) extRoot else "$extRoot/$rel"
+        }
+        if (docId.startsWith("home:")) {
+            val rel = docId.substringAfter("home:").trim('/')
+            val docsRoot = runCatching {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).absolutePath.trimEnd('/')
+            }.getOrDefault("$extRoot/Documents")
+            return if (rel.isEmpty()) docsRoot else "$docsRoot/$rel"
+        }
+        if (docId.contains(':')) {
+            val volumeId = docId.substringBefore(':').trim()
+            val rel = docId.substringAfter(':').trim('/')
+            val volumeCandidate = File("/storage/$volumeId")
+            if (volumeCandidate.exists()) {
+                return if (rel.isEmpty()) volumeCandidate.absolutePath else "${volumeCandidate.absolutePath}/$rel"
+            }
+            if (rel.isNotEmpty()) {
+                val fallbackCandidate = File("$extRoot/$rel")
+                if (fallbackCandidate.exists()) return fallbackCandidate.absolutePath
+            }
+        }
+        return extRoot
     }
 
     actual suspend fun pickFontFile(dialogTitle: String): String? {

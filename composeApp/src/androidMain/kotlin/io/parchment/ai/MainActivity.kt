@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -34,6 +36,8 @@ class MainActivity : ComponentActivity() {
     private var pendingExportDeferred: CompletableDeferred<String?>? = null
     private var pendingBatchExportFiles: List<Pair<String, ByteArray>>? = null
     private var pendingBatchExportDeferred: CompletableDeferred<String?>? = null
+    private var pendingWorkspaceDirDeferred: CompletableDeferred<String?>? = null
+    private var pendingWorkspaceInitialUri: Uri? = null
     private var pendingVoiceCallback: ((String) -> Unit)? = null
     private var pendingVoiceErrorCallback: ((String) -> Unit)? = null
     private var activeSpeechRecognizer: SpeechRecognizer? = null
@@ -42,6 +46,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var openMultipleDocumentsLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var createDocumentLauncher: ActivityResultLauncher<String>
     private lateinit var openDocumentTreeLauncher: ActivityResultLauncher<Uri?>
+    private lateinit var pickWorkspaceTreeLauncher: ActivityResultLauncher<Uri?>
+    private lateinit var manageAllFilesLauncher: ActivityResultLauncher<Intent>
     private lateinit var voiceRecognizerLauncher: ActivityResultLauncher<Intent>
     private lateinit var audioPermissionLauncher: ActivityResultLauncher<String>
 
@@ -120,6 +126,33 @@ class MainActivity : ComponentActivity() {
                 "$written file(s) exported"
             }.getOrNull()
             deferred.complete(summary)
+        }
+
+        pickWorkspaceTreeLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
+            val deferred = pendingWorkspaceDirDeferred
+            pendingWorkspaceDirDeferred = null
+            pendingWorkspaceInitialUri = null
+            if (treeUri == null || deferred == null) {
+                deferred?.complete(null)
+                return@registerForActivityResult
+            }
+            runCatching {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                contentResolver.takePersistableUriPermission(treeUri, flags)
+            }
+            val resolvedPath = PlatformBridge.resolveTreeUriToFilePath(treeUri)
+            deferred.complete(resolvedPath)
+        }
+
+        manageAllFilesLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val initUri = pendingWorkspaceInitialUri
+            runCatching {
+                pickWorkspaceTreeLauncher.launch(initUri)
+            }.onFailure {
+                pendingWorkspaceDirDeferred?.complete(null)
+                pendingWorkspaceDirDeferred = null
+                pendingWorkspaceInitialUri = null
+            }
         }
 
         voiceRecognizerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -290,6 +323,40 @@ class MainActivity : ComponentActivity() {
         runCatching {
             openDocumentTreeLauncher.launch(null)
         }.onFailure {
+            deferred.complete(null)
+        }
+        return deferred.await()
+    }
+
+    suspend fun requestPickWorkspaceDirectory(currentPath: String): String? {
+        val deferred = CompletableDeferred<String?>()
+        pendingWorkspaceDirDeferred = deferred
+        val initialUri = PlatformBridge.buildInitialDocumentTreeUri(currentPath)
+        pendingWorkspaceInitialUri = initialUri
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            val launchedSettings = runCatching {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                manageAllFilesLauncher.launch(intent)
+                true
+            }.getOrElse {
+                runCatching {
+                    val fallbackIntent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    manageAllFilesLauncher.launch(fallbackIntent)
+                    true
+                }.getOrDefault(false)
+            }
+            if (launchedSettings) {
+                return deferred.await()
+            }
+        }
+        runCatching {
+            pickWorkspaceTreeLauncher.launch(initialUri)
+        }.onFailure {
+            pendingWorkspaceDirDeferred = null
+            pendingWorkspaceInitialUri = null
             deferred.complete(null)
         }
         return deferred.await()

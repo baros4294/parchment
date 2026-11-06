@@ -452,9 +452,9 @@ class ParchmentProtocolAndHarnessTest {
         val mergedUserTxt = mergedInteractions[0].jsonObject["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
         assertEquals("Inspect the project structure.\n\ncontinue", mergedUserTxt)
 
-        // 7. Verify omp-inspired 10x 60s patient auto-retry configuration, error classification, and tool intent telemetry
-        assertEquals(10, AiProviderEngine.MAX_PRE_TOKEN_RETRIES, "omp-inspired patient retry must allow 10 attempts")
-        assertEquals(60, AiProviderEngine.RETRY_WAIT_SECONDS, "omp-inspired patient retry must wait 60s per attempt")
+        // 7. Verify 10x 60s patient auto-retry configuration, error classification, and tool intent telemetry
+        assertEquals(10, AiProviderEngine.MAX_PRE_TOKEN_RETRIES, "Patient retry must allow 10 attempts")
+        assertEquals(60, AiProviderEngine.RETRY_WAIT_SECONDS, "Patient retry must wait 60s per attempt")
         assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 429: Too Many Requests")))
         assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("HTTP 524: A timeout occurred")))
         assertTrue(AiProviderEngine.isTransientOrProxyTimeoutError(RuntimeException("Upstream proxy reset connection")))
@@ -1520,5 +1520,121 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(samplePngBytes.toList(), restoredBytes.toList())
 
         PlatformBridge.deleteChatSessionFile(chatId)
+
+        // 4. Verify Gemini ThoughtSignature Sanitizer (splits glued Base64 protobufs & strips 08 02 server-side search signatures),
+        //    Parallel + Sequential Tool Step Batching across all 5 protocols, Cross-Provider Signature Isolation,
+        //    and Wall-Clock Generation Duration tok/s calculation
+        // 19 bytes (% 3 == 1) -> Base64 ends with "=="
+        val fnCallProtobufBytes = byteArrayOf(
+            0x12, 0x11, 0x0A, 0x0F,
+            0x01, 0x69, 0x14, 0x7d, 0x13,
+            0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x11, 0x22, 0x33, 0x44
+        )
+        // 22 bytes (% 3 == 1) -> Base64 ends with "=="
+        val serverSearchProtobufBytes = byteArrayOf(
+            0x12, 0x14, 0x0A, 0x12,
+            0x08, 0x02, 0x12, 0x0E,
+            0x01, 0x69, 0x14, 0x7d, 0x13,
+            0x55, 0x66, 0x77, 0x44, 0x33, 0x22, 0x11, 0x00, 0x11
+        )
+        val cleanFnSigB64 = kotlin.io.encoding.Base64.encode(fnCallProtobufBytes)
+        val serverSearchSigB64 = kotlin.io.encoding.Base64.encode(serverSearchProtobufBytes)
+        val gluedCorruptedSig = serverSearchSigB64 + cleanFnSigB64 + serverSearchSigB64
+
+        assertTrue(AiProviderEngine.isGeminiServerSideToolSignature(serverSearchSigB64), "08 02 protobuf tag must be detected as server-side tool signature")
+        assertFalse(AiProviderEngine.isGeminiServerSideToolSignature(cleanFnSigB64), "Standard function_call signature must not be flagged as server-side tool")
+        assertEquals(
+            cleanFnSigB64,
+            AiProviderEngine.sanitizeGeminiThoughtSignature(gluedCorruptedSig, forFunctionCall = true),
+            "Sanitizer must split glued Base64 segments and pick the non-(08 02) function_call signature"
+        )
+
+        val sigBuilder = StringBuilder()
+        AiProviderEngine.appendSignatureChunkSafe(sigBuilder, cleanFnSigB64)
+        AiProviderEngine.appendSignatureChunkSafe(sigBuilder, serverSearchSigB64)
+        assertEquals(cleanFnSigB64, sigBuilder.toString(), "appendSignatureChunkSafe must never glue a complete Base64 signature or overwrite a function_call sig with a server-tool sig")
+
+        val multiBatchAssistantTurn = MessageNode(
+            id = "a-multibatch",
+            role = MessageRole.ASSISTANT,
+            variants = listOf(
+                MessageVariant(
+                    id = "v-multibatch",
+                    content = "Completed all parallel and sequential tool batches.",
+                    thinkingSummary = "Batch 1 reasoning",
+                    thinkingSignature = gluedCorruptedSig,
+                    providerProtocol = ProviderProtocol.GEMINI_INTERACTIONS,
+                    toolCalls = listOf(
+                        ToolCallRecord(id = "call_p1", name = "fs_search", argumentsJson = """{"query":"a"}""", resultText = "res_p1", thoughtSignature = gluedCorruptedSig, precedingThinking = "Step 1 think"),
+                        ToolCallRecord(id = "call_p2", name = "fs_search", argumentsJson = """{"query":"b"}""", resultText = "res_p2", thoughtSignature = "", precedingThinking = ""),
+                        ToolCallRecord(id = "call_s2", name = "fs_read", argumentsJson = """{"path":"x.kt"}""", resultText = "res_s2", thoughtSignature = cleanFnSigB64, precedingThinking = "Step 2 think")
+                    )
+                )
+            )
+        )
+        val multiBatchHistory = listOf(
+            MessageNode(id = "u-mb", role = MessageRole.USER, variants = listOf(MessageVariant(id = "vu-mb", content = "Run tools"))),
+            multiBatchAssistantTurn,
+            MessageNode(id = "u-mb2", role = MessageRole.USER, variants = listOf(MessageVariant(id = "vu-mb2", content = "Next turn")))
+        )
+
+        // Gemini Interactions: parallel calls p1 & p2 must be grouped (thought -> FC1 -> FC2 -> FR1 -> FR2), followed by sequential batch 2 (thought -> FC3 -> FR3 -> model_output)
+        val mbInteractions = AiProviderEngine.buildGeminiInteractionsTurnsArray(multiBatchHistory, sessionWithMedia, "")
+        val mbIntTypes = mbInteractions.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull }
+        assertEquals(
+            listOf("user_input", "thought", "function_call", "function_call", "function_result", "function_result", "thought", "function_call", "function_result", "model_output", "user_input"),
+            mbIntTypes,
+            "Parallel batch calls must emit all function_calls before function_results, with sanitized thought signature"
+        )
+        assertEquals(cleanFnSigB64, mbInteractions[1].jsonObject["signature"]?.jsonPrimitive?.contentOrNull)
+
+        // Gemini GenerateContent: batch 1 and batch 2 must be separate model -> user rounds, followed by final model prose turn
+        val mbGenContents = AiProviderEngine.buildGeminiGenerateContentContents(multiBatchHistory, sessionWithMedia, "")
+        assertEquals(
+            listOf("user", "model", "user", "model", "user", "model", "user"),
+            mbGenContents.map { it.jsonObject["role"]?.jsonPrimitive?.contentOrNull },
+            "GenerateContent must keep each sequential tool batch in its own model->user turn pair before final model prose"
+        )
+
+        // OpenAI Chat Completions: final assistant prose must appear AFTER all role='tool' messages
+        val mbChatMsgs = AiProviderEngine.buildOpenAiChatCompletionsMessages(multiBatchHistory, sessionWithMedia, "", "")
+        assertEquals(
+            listOf("user", "assistant", "tool", "tool", "assistant", "tool", "assistant", "user"),
+            mbChatMsgs.map { it.jsonObject["role"]?.jsonPrimitive?.contentOrNull },
+            "Chat Completions must emit assistant(tool_calls)->tool->tool per batch and closing assistant(content) after all tool results"
+        )
+
+        // Cross-provider isolation: Gemini signature must NOT leak into OpenAI Responses encrypted_content or Anthropic thinking.signature
+        val mbOpenAiResp = AiProviderEngine.buildOpenAiResponsesInputArray(multiBatchHistory, sessionWithMedia, "")
+        assertTrue(
+            mbOpenAiResp.none { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "reasoning" },
+            "Gemini signature must never be sent as OpenAI Responses encrypted_content"
+        )
+        val mbAnthropic = AiProviderEngine.buildAnthropicBaseMessages(multiBatchHistory, sessionWithMedia, "")
+        assertTrue(
+            mbAnthropic.flatMap { it.second }.none { it["type"]?.jsonPrimitive?.contentOrNull == "thinking" },
+            "Gemini signature must never be sent as Anthropic thinking.signature"
+        )
+
+        // Self-healing foldHistoricalToolsToText mode
+        val mbFolded = AiProviderEngine.buildGeminiInteractionsTurnsArray(multiBatchHistory, sessionWithMedia, "", foldHistoricalToolsToText = true)
+        assertEquals(listOf("user_input", "model_output", "user_input"), mbFolded.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull })
+
+        // Wall-clock tok/s calculation (no micro-burst 5000 tok/s inflation)
+        val calmMetrics = AiProviderEngine.computeTurnTokenMetrics(
+            reportedInputTokens = 100,
+            reportedCachedTokens = 0,
+            reportedReasoningTokens = 80,
+            reportedOutputTokens = 8,
+            fallbackInputTokens = 100,
+            contentText = "yo, what's good",
+            thinkingText = "Thinking about greeting.",
+            executedTools = emptyList(),
+            totalDurationMs = 10_500L,
+            ttftMs = 7_400L,
+            activeDecodeDurationMs = 40L,
+            totalToolExecutionMs = 0L
+        )
+        assertTrue(calmMetrics.tokensPerSec in 5.0..20.0, "88 tokens over 10.5s wall-clock generation must be ~8.3 tok/s, got ${calmMetrics.tokensPerSec}")
     }
 }
