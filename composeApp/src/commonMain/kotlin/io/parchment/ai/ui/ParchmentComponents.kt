@@ -526,8 +526,8 @@ fun SepiaTextField(
     monospace: Boolean = false,
     borderless: Boolean = false,
     minHeight: Dp = 36.dp,
-    maxHeight: Dp = 220.dp,
-    maxLines: Int = if (singleLine) 1 else 8,
+    maxHeight: Dp = 260.dp,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
     onEnterKeySend: ((isCtrlOrMetaPressed: Boolean, isShiftPressed: Boolean) -> Boolean)? = null,
     onClipboardPaste: (() -> Boolean)? = null
 ) {

@@ -198,6 +198,13 @@ internal fun extractLatestAgentPeek(variant: MessageVariant): LiveAgentPeekInfo 
     )
 }
 
+private val THOUGHT_BLOCK_SPLIT_REGEX = Regex("(?m)(?=^\\*\\*[^*\\n]+\\*\\*\\s*$|^#{1,4}\\s+)|\\n\\s*\\n+")
+private val HEADING_HASH_PREFIX_REGEX = Regex("^#{1,4}\\s+")
+private val PERSISTENCE_WHITESPACE_REGEX = Regex("\\s+")
+private val EXPORT_UNSAFE_CHAR_REGEX = Regex("[^a-zA-Z0-9._-]")
+private val MULTIPLE_UNDERSCORES_REGEX = Regex("_+")
+private val EXPORT_SHORT_ID_REGEX = Regex("[^a-zA-Z0-9_-]")
+
 /**
  * Extracts the latest single thought block (title + body) for the Compact Single-Thought Peek Window
  * when the user presses `Hide ▲` while the model is still actively reasoning.
@@ -206,7 +213,7 @@ internal fun extractLatestThoughtPeek(variant: MessageVariant): Pair<String, Str
     val raw = variant.trailingThinking.ifBlank { variant.thinkingSummary }.trim()
     if (raw.isEmpty()) return "" to ""
 
-    val blocks = raw.split(Regex("(?m)(?=^\\*\\*[^*\\n]+\\*\\*\\s*$|^#{1,4}\\s+)|\\n\\s*\\n+"))
+    val blocks = raw.split(THOUGHT_BLOCK_SPLIT_REGEX)
         .map { it.trim() }
         .filter { it.isNotEmpty() }
     if (blocks.isEmpty()) return "" to raw
@@ -218,20 +225,20 @@ internal fun extractLatestThoughtPeek(variant: MessageVariant): Pair<String, Str
     val isHeadingLine = (firstLine.startsWith("**") && firstLine.endsWith("**") && firstLine.length > 4) ||
         firstLine.startsWith("#")
     return if (isHeadingLine && lines.size > 1) {
-        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
-        val body = lines.drop(1).joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        val cleanTitle = firstLine.removeSurrounding("**").replace(HEADING_HASH_PREFIX_REGEX, "").trim()
+        val body = lines.drop(1).joinToString(" ").replace(PERSISTENCE_WHITESPACE_REGEX, " ").trim()
         cleanTitle to body
     } else if (isHeadingLine && lines.size == 1) {
-        val cleanTitle = firstLine.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
+        val cleanTitle = firstLine.removeSurrounding("**").replace(HEADING_HASH_PREFIX_REGEX, "").trim()
         cleanTitle to ""
     } else {
         val prevBlock = if (lastIdx > 0) blocks[lastIdx - 1].trim() else ""
         val prevIsStandaloneHeading = prevBlock.isNotEmpty() && !prevBlock.contains('\n') &&
             ((prevBlock.startsWith("**") && prevBlock.endsWith("**") && prevBlock.length > 4) || prevBlock.startsWith("#"))
         val cleanTitle = if (prevIsStandaloneHeading) {
-            prevBlock.removeSurrounding("**").replace(Regex("^#{1,4}\\s+"), "").trim()
+            prevBlock.removeSurrounding("**").replace(HEADING_HASH_PREFIX_REGEX, "").trim()
         } else ""
-        val cleanBody = lastBlock.replace(Regex("\\s+"), " ").trim()
+        val cleanBody = lastBlock.replace(PERSISTENCE_WHITESPACE_REGEX, " ").trim()
         cleanTitle to cleanBody
     }
 }
@@ -542,12 +549,12 @@ internal fun decodeChatSessionsFromRawJson(rawJsonText: String): List<ChatSessio
 
 internal fun buildExportFileNameForChat(session: ChatSession): String {
     val safeTitle = session.title.trim()
-        .replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        .replace(Regex("_+"), "_")
+        .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
+        .replace(MULTIPLE_UNDERSCORES_REGEX, "_")
         .trim('_')
         .take(42)
         .ifBlank { "chat" }
-    val shortId = session.id.takeLast(8).replace(Regex("[^a-zA-Z0-9_-]"), "")
+    val shortId = session.id.takeLast(8).replace(EXPORT_SHORT_ID_REGEX, "")
     return if (shortId.isNotEmpty()) "$safeTitle-$shortId.chat.json" else "$safeTitle.chat.json"
 }
 

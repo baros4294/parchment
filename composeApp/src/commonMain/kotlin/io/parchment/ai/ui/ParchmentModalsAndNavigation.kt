@@ -1774,7 +1774,7 @@ internal fun ParchmentRightFilesSidebar(
                                             val wsRoot = activeSession.workspacePath
                                             val liveText = if (wsRoot.isNotBlank()) {
                                                 PlatformBridge.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
-                                                    raw.lines().drop(1).joinToString("\n") { it.replaceFirst(Regex("^\\d+:\\s?"), "") }
+                                                    raw.lines().drop(1).joinToString("\n") { it.replaceFirst(VAULT_LINE_NUMBER_STRIP_REGEX, "") }
                                                 }
                                             } else null
                                             val fullLocalPath = if (wsRoot.isNotBlank()) {

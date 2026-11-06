@@ -2687,7 +2687,7 @@ private fun AssistantsSubpage(
                         placeholder = "Enter system prompt (optional)…",
                         singleLine = false,
                         minHeight = 140.dp,
-                        maxHeight = 360.dp,
+                        maxHeight = 520.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -2697,6 +2697,7 @@ private fun AssistantsSubpage(
                         label = "Default Author's Note / Post-History Injection (Optional)",
                         singleLine = false,
                         minHeight = 60.dp,
+                        maxHeight = 320.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }

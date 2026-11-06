@@ -162,18 +162,20 @@ compose.desktop {
     application {
         mainClass = "io.parchment.ai.MainKt"
 
-        // Lean JVM ergonomics & automatic OS RAM page uncommit so idle memory stays ultra-low (~130-195 MB)
+        // Lean JVM ergonomics & automatic OS RAM page uncommit:
+        // - Starts at 32 MB and aggressively uncommits freed pages back to Windows every 10s (so idle RAM stays ~130-190 MB),
+        // - Allows up to 1024 MB (-Xmx1024m) ceiling so massive 100-step agent tool turns & multi-MB attachments NEVER hit OutOfMemoryError!
         jvmArgs(
             "-Xms32m",
-            "-Xmx384m",
+            "-Xmx1024m",
             "-XX:+UseG1GC",
             "-XX:+UseStringDeduplication",
             "-XX:MinHeapFreeRatio=10",
-            "-XX:MaxHeapFreeRatio=25",
+            "-XX:MaxHeapFreeRatio=20",
             "-XX:-ShrinkHeapInSteps",
-            "-XX:G1PeriodicGCInterval=10000",
+            "-XX:G1PeriodicGCInterval=8000",
             "-XX:+G1PeriodicGCInvokesConcurrent",
-            "-XX:SoftRefLRUPolicyMSPerMB=500"
+            "-XX:SoftRefLRUPolicyMSPerMB=250"
         )
 
         nativeDistributions {

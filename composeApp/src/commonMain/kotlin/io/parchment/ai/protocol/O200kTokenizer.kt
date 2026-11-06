@@ -80,6 +80,8 @@ object O200kTokenizer {
         ).joinToString("|")
     )
 
+    private val WHITESPACE_RUN_REGEX = Regex("\\s+")
+
     private val tokenCache = object : LinkedHashMap<Int, Int>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Int>?): Boolean = size > 2048
     }
@@ -217,16 +219,13 @@ object O200kTokenizer {
     }
 
     /**
-     * Computes the unified, itemized `ContextWindowBreakdown` across all 7 categories so the
-     * Circular Context Ring, Context Breakdown Popover, and per-turn token counters always agree!
+     * Computes the session/system/history portion of `ContextWindowBreakdown` (excluding the live Composer draft).
+     * Memoizing this separately in the UI ensures typing in the Composer never re-scans chat history or tool schemas!
      */
-    fun computeContextWindowBreakdown(
+    fun computeBaseContextWindowBreakdown(
         session: ChatSession,
         assistant: AssistantAgent,
         profile: ProviderProfile,
-        draftPrompt: String,
-        draftPrefill: String,
-        pendingAttachments: List<PromptAttachment>,
         goalModeActive: Boolean = false,
         globalWorldBook: List<io.parchment.ai.model.ContextFragment> = emptyList()
     ): ContextWindowBreakdown {
@@ -286,7 +285,7 @@ object O200kTokenizer {
             enableWebTools = enableWeb
         )
         val toolSchemaTokens = activeTools.sumOf { t ->
-            countTokens(t.name) + countTokens(t.description) + countTokens(t.parametersSchema.toString()) + 8
+            countTokens(t.name) + countTokens(t.description) + countTokens(t.parametersSchemaString) + 8
         }
         val wsContextTokens = if (effectiveWsMode != WorkspaceMode.OFF && wsPath.isNotBlank()) {
             countTokens(WorkspaceHarness.discoverWorkspaceContextFiles(wsPath)) + 95
@@ -333,13 +332,6 @@ object O200kTokenizer {
             }
         }
 
-        // 6. Current Composer Draft + Prefill + Staged Attachments
-        var composerDraftTokens = countTokens(draftPrompt) + countTokens(draftPrefill)
-        for (staged in pendingAttachments) {
-            uploadedFilesCount++
-            composerDraftTokens += countAttachmentTokens(staged)
-        }
-
         return ContextWindowBreakdown(
             systemAndPersonaTokens = systemAndPersonaTokens,
             lorebookAndMemoryTokens = lorebookAndMemoryTokens,
@@ -349,9 +341,52 @@ object O200kTokenizer {
             chatHistoryTokens = chatHistoryTokens,
             activeTurnsCount = activeTurnsCount,
             mutedTurnsCount = mutedTurnsCount,
-            composerDraftTokens = composerDraftTokens,
+            composerDraftTokens = 0,
             contextLimitTokens = contextLimit
         )
+    }
+
+    /**
+     * Combines a pre-computed `baseBreakdown` with the live Composer draft & staged attachments in $O(1)$.
+     */
+    fun applyComposerDraftToBreakdown(
+        baseBreakdown: ContextWindowBreakdown,
+        draftPrompt: String,
+        draftPrefill: String,
+        pendingAttachments: List<PromptAttachment>
+    ): ContextWindowBreakdown {
+        var composerDraftTokens = countTokens(draftPrompt) + countTokens(draftPrefill)
+        for (staged in pendingAttachments) {
+            composerDraftTokens += countAttachmentTokens(staged)
+        }
+        return baseBreakdown.copy(
+            uploadedFilesCount = baseBreakdown.uploadedFilesCount + pendingAttachments.size,
+            composerDraftTokens = composerDraftTokens
+        )
+    }
+
+    /**
+     * Computes the unified, itemized `ContextWindowBreakdown` across all 7 categories so the
+     * Circular Context Ring, Context Breakdown Popover, and per-turn token counters always agree!
+     */
+    fun computeContextWindowBreakdown(
+        session: ChatSession,
+        assistant: AssistantAgent,
+        profile: ProviderProfile,
+        draftPrompt: String,
+        draftPrefill: String,
+        pendingAttachments: List<PromptAttachment>,
+        goalModeActive: Boolean = false,
+        globalWorldBook: List<io.parchment.ai.model.ContextFragment> = emptyList()
+    ): ContextWindowBreakdown {
+        val base = computeBaseContextWindowBreakdown(
+            session = session,
+            assistant = assistant,
+            profile = profile,
+            goalModeActive = goalModeActive,
+            globalWorldBook = globalWorldBook
+        )
+        return applyComposerDraftToBreakdown(base, draftPrompt, draftPrefill, pendingAttachments)
     }
 
     const val COMPACTED_TOOL_MARKER = "[Compacted into Continuity Memory]"
@@ -438,7 +473,7 @@ object O200kTokenizer {
                     )
                 if (shouldCompact) {
                     anyToolOrThinkingCompacted = true
-                    val snippet = tc.resultText.replace(Regex("\\s+"), " ").trim().take(260)
+                    val snippet = tc.resultText.replace(WHITESPACE_RUN_REGEX, " ").trim().take(260)
                     compactedToolNotes.add("${tc.name}(${tc.argumentsJson.take(120)}) -> $snippet")
                     compactToolCallRecord(tc, maxKeepChars = if (isRecentTwo) 600 else 220)
                 } else {
@@ -489,16 +524,16 @@ object O200kTokenizer {
             }
             if (turnsToSummarize.isNotEmpty()) {
                 appendLine("Older Conversation Turns to Fold into Continuity Summary:")
-                for (turn in turnsToSummarize.takeLast(24)) {
+                for (turn in turnsToSummarize.takeLast(32)) {
                     val roleLabel = if (turn.role == MessageRole.ASSISTANT) "Assistant" else "User"
                     val v = turn.activeVariant
-                    val txt = v.content.trim().take(700)
+                    val txt = v.content.trim().take(1600)
                     if (txt.isNotEmpty()) {
                         appendLine("$roleLabel: $txt")
                     }
                     if (v.toolCalls.isNotEmpty()) {
-                        val toolSummary = v.toolCalls.takeLast(6).joinToString("; ") { tc ->
-                            "${tc.name}: ${tc.resultText.replace(Regex("\\s+"), " ").trim().take(160)}"
+                        val toolSummary = v.toolCalls.takeLast(8).joinToString("; ") { tc ->
+                            "${tc.name}: ${tc.resultText.replace(WHITESPACE_RUN_REGEX, " ").trim().take(240)}"
                         }
                         appendLine("$roleLabel Tools: $toolSummary")
                     }
@@ -507,28 +542,28 @@ object O200kTokenizer {
             }
             if (compactedToolNotes.isNotEmpty()) {
                 appendLine("Completed Agent Tool Executions to Fold into Continuity Summary:")
-                for (note in compactedToolNotes.takeLast(20)) {
+                for (note in compactedToolNotes.takeLast(28)) {
                     appendLine("• $note")
                 }
                 appendLine()
             }
             if (liveTargetThinking.length > 500) {
                 appendLine("Recent Agent Reasoning Context:")
-                appendLine(liveTargetThinking.takeLast(1200).trim())
+                appendLine(liveTargetThinking.takeLast(2000).trim())
             }
         }.trim()
 
         val fallbackSummary = buildString {
             if (existingStorySummary.isNotBlank()) {
-                appendLine(existingStorySummary.trim().takeLast(2400))
+                appendLine(existingStorySummary.trim())
             }
-            for (turn in turnsToSummarize.takeLast(10)) {
+            for (turn in turnsToSummarize.takeLast(14)) {
                 val roleLabel = if (turn.role == MessageRole.ASSISTANT) "AI" else "User"
-                val txt = turn.activeVariant.content.replace(Regex("\\s+"), " ").trim().take(200)
+                val txt = turn.activeVariant.content.replace(WHITESPACE_RUN_REGEX, " ").trim().take(400)
                 if (txt.isNotEmpty()) appendLine("• $roleLabel: $txt")
             }
-            for (note in compactedToolNotes.takeLast(10)) {
-                appendLine("• Tool: ${note.take(220)}")
+            for (note in compactedToolNotes.takeLast(14)) {
+                appendLine("• Tool: ${note.take(320)}")
             }
         }.trim()
 

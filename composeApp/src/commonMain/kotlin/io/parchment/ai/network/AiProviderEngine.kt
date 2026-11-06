@@ -466,6 +466,15 @@ object AiProviderEngine {
             }
         }
 
+        fun recordRawWireBounded(req: String, resp: String) {
+            if (req.isNotEmpty()) {
+                lastRawReq = if (req.length > 4096) req.substring(0, 4096) else req
+            }
+            if (resp.isNotEmpty()) {
+                lastRawResp = if (resp.length > 4096) resp.substring(0, 4096) else resp
+            }
+        }
+
         fun recordStepUsage(inTok: Int, cacheTok: Int, thinkTok: Int, outTok: Int) {
             if (inTok > 0) inputTokens = maxOf(inputTokens, inTok)
             if (cacheTok > 0) cachedTokens = maxOf(cachedTokens, cacheTok)
@@ -621,9 +630,7 @@ object AiProviderEngine {
                                         upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
                                         recordStepUsage(inTok, cacheTok, thinkTok, outTok)
@@ -677,9 +684,7 @@ object AiProviderEngine {
                                         upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     },
                                     onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                         if (id.isNotBlank()) lastInteractionId = id
@@ -764,9 +769,7 @@ object AiProviderEngine {
                                         upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
                                         recordStepUsage(inTok, cacheTok, thinkTok, outTok)
@@ -802,9 +805,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     }
                                 )
                             } else if (isDirectImagesEndpoint) {
@@ -830,9 +831,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     }
                                 )
                             } else {
@@ -876,9 +875,7 @@ object AiProviderEngine {
                                             upsertToolCallAndEmit(tc)
                                         },
                                         onRawWire = { req, resp ->
-                                            lastRawReq = req
-                                            lastRawResp = resp
-                                            emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                            recordRawWireBounded(req, resp)
                                         },
                                         onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                             if (id.isNotBlank()) lastInteractionId = id
@@ -915,9 +912,7 @@ object AiProviderEngine {
                                                 emit(StreamUpdate.ContentDelta(delta))
                                             },
                                             onRawWire = { req, resp ->
-                                                lastRawReq = req
-                                                lastRawResp = resp
-                                                emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                recordRawWireBounded(req, resp)
                                             }
                                         )
                                     } else if (routeHint == "video") {
@@ -949,9 +944,7 @@ object AiProviderEngine {
                                                 emit(StreamUpdate.ContentDelta(delta))
                                             },
                                             onRawWire = { req, resp ->
-                                                lastRawReq = req
-                                                lastRawResp = resp
-                                                emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                recordRawWireBounded(req, resp)
                                             }
                                         )
                                     } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
@@ -1003,9 +996,7 @@ object AiProviderEngine {
                                                         emit(StreamUpdate.ContentDelta(delta))
                                                     },
                                                     onRawWire = { req, resp ->
-                                                        lastRawReq = req
-                                                        lastRawResp = resp
-                                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                        recordRawWireBounded(req, resp)
                                                     }
                                                 )
                                             } else if (chatHint == "video") {
@@ -1036,9 +1027,7 @@ object AiProviderEngine {
                                                         emit(StreamUpdate.ContentDelta(delta))
                                                     },
                                                     onRawWire = { req, resp ->
-                                                        lastRawReq = req
-                                                        lastRawResp = resp
-                                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                                        recordRawWireBounded(req, resp)
                                                     }
                                                 )
                                             } else {
@@ -1085,9 +1074,7 @@ object AiProviderEngine {
                                     upsertToolCallAndEmit(tc)
                                 },
                                 onRawWire = { req, resp ->
-                                    lastRawReq = req
-                                    lastRawResp = resp
-                                    emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                    recordRawWireBounded(req, resp)
                                 },
                                 onUsage = { id, inTok, cacheTok, outTok ->
                                     if (id.isNotBlank()) lastInteractionId = id
@@ -1134,9 +1121,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     }
                                 )
                             } else {
@@ -1173,9 +1158,7 @@ object AiProviderEngine {
                                         upsertToolCallAndEmit(tc)
                                     },
                                     onRawWire = { req, resp ->
-                                        lastRawReq = req
-                                        lastRawResp = resp
-                                        emit(StreamUpdate.RawWireSnapshot(req, resp))
+                                        recordRawWireBounded(req, resp)
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
                                         recordStepUsage(inTok, cacheTok, thinkTok, outTok)
@@ -1405,11 +1388,14 @@ object AiProviderEngine {
     /**
      * Lightweight one-shot utility text generation for Auto-Title Generation,
      * Title Regeneration (`✦`), Context Summarization, and Translation.
+     * `maxOutputTokens` defaults to `null` (unlimited) so summaries, compactions, and translations
+     * are never truncated mid-sentence.
      */
     suspend fun generateUtilityText(
         profile: ProviderProfile,
         model: String,
-        prompt: String
+        prompt: String,
+        maxOutputTokens: Int? = null
     ): Result<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
         runCatching {
             val cleanModel = model.trim().ifBlank { profile.defaultModel.trim() }
@@ -1429,7 +1415,7 @@ object AiProviderEngine {
             )
             val fastProfile = profile.copy(
                 thinkingEffort = "low",
-                maxOutputTokens = 1024,
+                maxOutputTokens = maxOutputTokens,
                 enableWebSearch = false,
                 enableCodeExecution = false,
                 enableUrlContext = false,
@@ -1438,6 +1424,7 @@ object AiProviderEngine {
                 useBackgroundLongDecode = false
             )
             val sb = StringBuilder()
+            var streamErr: String? = null
             streamGeneration(
                 profile = fastProfile,
                 session = tempSession,
@@ -1446,11 +1433,15 @@ object AiProviderEngine {
                 when (upd) {
                     is StreamUpdate.ContentDelta -> sb.append(upd.delta)
                     is StreamUpdate.Completed -> if (sb.isEmpty()) sb.append(upd.fullContent)
-                    is StreamUpdate.Error -> error(upd.message)
+                    is StreamUpdate.Error -> streamErr = upd.message
                     else -> {}
                 }
             }
-            sb.toString().trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            val finalStr = sb.toString().trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            if (finalStr.isEmpty() && !streamErr.isNullOrBlank()) {
+                error(streamErr!!)
+            }
+            finalStr
         }
     }
 
@@ -1888,7 +1879,7 @@ object AiProviderEngine {
                 }
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-                val requestJsonStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val requestJsonStr = json.encodeToString(JsonObject.serializer(), finalPayload)
 
                 val base = profile.baseUrl.trimEnd('/')
                 val defaultPath = if (base.endsWith("/v1beta") || base.endsWith("/v1")) "/interactions" else "/v1beta/interactions"
@@ -3014,7 +3005,7 @@ object AiProviderEngine {
                 }
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-                val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
                 val base = profile.baseUrl.trimEnd('/')
                 val rawUrl = when {
                     profile.endpointPathOverride.isNotBlank() && !profile.endpointPathOverride.contains("interactions") -> {
@@ -3629,7 +3620,7 @@ object AiProviderEngine {
                 }
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-                val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
                 val base = profile.baseUrl.trimEnd('/')
                 val defaultPath = when {
                     base.endsWith("/v1") || base.endsWith("/api/v3") -> "/responses"
@@ -4260,7 +4251,7 @@ object AiProviderEngine {
                 }
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-                val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
                 val base = profile.baseUrl.trimEnd('/')
                 val defaultPath = when {
                     base.endsWith("/v1") || base.endsWith("/api/v3") -> "/chat/completions"
@@ -4826,7 +4817,7 @@ object AiProviderEngine {
                 }
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-                val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+                val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
                 val base = profile.baseUrl.trimEnd('/')
                 val defaultPath = if (base.endsWith("/v1")) "/messages" else "/v1/messages"
                 val path = profile.endpointPathOverride.ifBlank { defaultPath }
@@ -5412,7 +5403,7 @@ object AiProviderEngine {
         }
 
         val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-        val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+        val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
         val base = profile.baseUrl.trimEnd('/')
         val defaultImgPath = if (base.endsWith("/v1") || base.endsWith("/api/v3")) "/images/generations" else "/v1/images/generations"
         val path = profile.endpointPathOverride.takeIf { it.contains("images", ignoreCase = true) }
@@ -5539,7 +5530,7 @@ object AiProviderEngine {
             }
 
             val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+            val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
             val candidateTaskUrls = if (profile.endpointPathOverride.isNotBlank() && profile.endpointPathOverride.contains("tasks")) {
                 listOf("$baseClean${profile.endpointPathOverride}")
             } else if (baseClean.endsWith("/v1")) {
@@ -5684,7 +5675,7 @@ object AiProviderEngine {
             }
 
             val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-            val reqStr = prettyJson.encodeToString(JsonObject.serializer(), finalPayload)
+            val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
             val candidateImgUrls = if (profile.endpointPathOverride.isNotBlank()) {
                 listOf("$baseClean${profile.endpointPathOverride}")
             } else if (baseClean.endsWith("/v1")) {

@@ -1,7 +1,6 @@
-# Goal: Execute and lock RAM footprint optimization, instant application startup, accurate tok/s telemetry, and 120fps prefix-cached streaming optimizations.
-- [x] (1) Configure lean JVM memory/G1GC page-uncommit flags in composeApp/build.gradle.kts and unify shared HttpClient across network/icon engines
-- [x] (2) Eliminate per-frame native Skia Path/Matrix allocations in KissVectorIcon and ModelLabSvgIcon (ParchmentIcons.kt) and optimize ModelsDevClient JSON parsing memory
-- [x] (3) Implement fast-path active session startup, on-demand lazy chat hydration, and inactive session dehydration in PlatformBridge, ParchmentStatePersistence.kt, and ParchmentApp.kt
-- [x] (4) Fix tok/s telemetry accuracy in AiProviderEngine.kt and ParchmentApp.kt (exclude tool & TTFT latency, accumulate multi-step usage, include reasoning+output tokens, and show live tok/s while streaming)
-- [x] (5) Implement incremental prefix-cached parseProseBlocks in ProseRenderer.kt and memoize active lookups / skip no-op pacer frames in ParchmentApp.kt
-- [x] (6) Add unit tests in ParchmentProtocolAndHarnessTest.kt, verify with ./gradlew desktopTest, and commit & push (lock) to origin/main
+# Goal: Uncap compaction/summarization/system prompts/chat notes and aggressively optimize the codebase (O(1) composer tokenization, cached tool schema tokens, zero-allocation icon label parsing, pre-compiled Regex constants, and LazyColumn contentType) without regression.
+- [x] (1) Uncap generateUtilityText maxOutputTokens, preserve full existingStorySummary in prepareCompactionPlan, uncap SepiaTextField maxLines & Chat Notes/Assistant editors, and raise WorkspaceHarness memory file line limits
+- [x] (2) Cache tool schema token counts in WorkspaceHarness and split computeContextWindowBreakdown into base session breakdown + O(1) composer draft update in O200kTokenizer.kt and ParchmentApp.kt
+- [x] (3) Optimize parseKissLabelIcons in ParchmentIcons.kt with static prefix/suffix tables, bounded LRU cache, and pre-compiled Regex constants
+- [x] (4) Pre-compile hot-path Regex constants across UI/network/harness files, gate livePeekInfo on isLivePeekOnly, add LazyColumn contentType, and use zero-allocation countLinesFast in ProseRenderer.kt
+- [x] (5) Add regression & performance unit tests in ParchmentProtocolAndHarnessTest.kt, run ./gradlew desktopTest, and commit & push (lock) to origin/main

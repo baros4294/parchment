@@ -425,22 +425,12 @@ fun ParchmentApp(
         appState = updated
         hasDirtyUnflushedChanges = true
         diskPersistJob?.cancel()
-        if (immediateFlush) {
-            appProcessScope.launch(Dispatchers.IO) {
-                runCatching {
-                    saveSettingsOnlyToDisk(updated)
-                    changedSessions.forEach { saveSingleChatSessionToDisk(it) }
-                    hasDirtyUnflushedChanges = false
-                }
-            }
-        } else {
-            diskPersistJob = appProcessScope.launch(Dispatchers.Default) {
-                delay(250L)
-                runCatching {
-                    saveSettingsOnlyToDisk(appState)
-                    changedSessions.forEach { saveSingleChatSessionToDisk(it) }
-                    hasDirtyUnflushedChanges = false
-                }
+        diskPersistJob = appProcessScope.launch(Dispatchers.IO) {
+            if (!immediateFlush) delay(250L)
+            runCatching {
+                saveSettingsOnlyToDisk(appState)
+                changedSessions.forEach { saveSingleChatSessionToDisk(it) }
+                hasDirtyUnflushedChanges = false
             }
         }
     }
@@ -448,21 +438,12 @@ fun ParchmentApp(
     fun persistSingleSession(updatedSession: ChatSession, immediateFlush: Boolean = false) {
         hasDirtyUnflushedChanges = true
         diskPersistJob?.cancel()
-        if (immediateFlush) {
-            appProcessScope.launch(Dispatchers.IO) {
-                runCatching {
-                    saveSingleChatSessionToDisk(updatedSession)
-                    hasDirtyUnflushedChanges = false
-                }
-            }
-        } else {
-            diskPersistJob = appProcessScope.launch(Dispatchers.Default) {
-                delay(250L)
-                runCatching {
-                    val latest = appState.sessions.find { it.id == updatedSession.id } ?: updatedSession
-                    saveSingleChatSessionToDisk(latest)
-                    hasDirtyUnflushedChanges = false
-                }
+        diskPersistJob = appProcessScope.launch(Dispatchers.IO) {
+            if (!immediateFlush) delay(250L)
+            runCatching {
+                val latest = appState.sessions.find { it.id == updatedSession.id } ?: updatedSession
+                saveSingleChatSessionToDisk(latest)
+                hasDirtyUnflushedChanges = false
             }
         }
     }
@@ -659,7 +640,7 @@ fun ParchmentApp(
             }
             val prompt = "${dm.titlePromptTemplate}\n\nConversation:\n$transcriptSnippet"
 
-            AiProviderEngine.generateUtilityText(resolvedProf, resolvedModel, prompt).fold(
+            AiProviderEngine.generateUtilityText(resolvedProf, resolvedModel, prompt, maxOutputTokens = 256).fold(
                 onSuccess = { genTitle ->
                     val cleaned = genTitle.lines().firstOrNull()?.trim()?.removeSurrounding("\"")?.take(60).orEmpty()
                     if (cleaned.isNotBlank()) {
@@ -932,6 +913,15 @@ fun ParchmentApp(
                     }
                 }
 
+                var cachedVisibleCont = networkContentTarget.substring(0, displayedContentLen.coerceAtMost(networkContentTarget.length))
+                var cachedVisibleContLen = displayedContentLen
+                var cachedVisibleThink = networkThinkingTarget.substring(0, displayedThinkingLen.coerceAtMost(networkThinkingTarget.length))
+                var cachedVisibleThinkLen = displayedThinkingLen
+                var cachedVisibleStepThink = ""
+                var cachedVisibleStepThinkLen = -1
+                var cachedSig = signatureSb.toString()
+                var cachedSigLen = signatureSb.length
+
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
                     val frameNanos = if (uiFrameClock != null) {
                         runCatching {
@@ -957,7 +947,11 @@ fun ParchmentApp(
                         val activeDecodeMs = ((now - firstLiveTokenMs) - toolExecMs).coerceAtLeast(150L)
                         val approxGeneratedTok = ((networkContentTarget.length + networkThinkingTarget.length) / 4).coerceAtLeast(1)
                         val rawLiveRate = (approxGeneratedTok * 1000.0) / activeDecodeMs.toDouble()
-                        liveTokensPerSec = ((rawLiveRate * 10.0).toInt()) / 10.0
+                        val newLiveRate = ((rawLiveRate * 10.0).toInt()) / 10.0
+                        if (newLiveRate != liveTokensPerSec) {
+                            liveTokensPerSec = newLiveRate
+                            changed = true
+                        }
                     }
                     if (activeThinkingPhaseStartMs > 0L && now - lastStopwatchTickMs >= 100L) {
                         lastStopwatchTickMs = now
@@ -975,6 +969,8 @@ fun ParchmentApp(
                                 } else cur
                             }
                         }
+                    } else if (now - lastStopwatchTickMs >= 100L) {
+                        lastStopwatchTickMs = now
                     }
                     val targetThinkLen = networkThinkingTarget.length
                     if (displayedThinkingLen < targetThinkLen) {
@@ -984,6 +980,10 @@ fun ParchmentApp(
                             displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
                             changed = true
                         }
+                    } else if (displayedThinkingLen > targetThinkLen) {
+                        displayedThinkingLen = targetThinkLen
+                        thinkCarry = 0f
+                        changed = true
                     } else {
                         thinkCarry = 0f
                     }
@@ -1010,20 +1010,37 @@ fun ParchmentApp(
                             displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
                             changed = true
                         }
+                    } else if (displayedContentLen > targetContLen) {
+                        displayedContentLen = targetContLen
+                        contCarry = 0f
+                        changed = true
                     } else {
                         contCarry = 0f
                     }
                     if (changed) {
-                        val visibleCont = networkContentTarget.substring(0, displayedContentLen)
-                        val visibleThink = networkThinkingTarget.substring(0, displayedThinkingLen)
-                        val visibleStepThink = if (accumulatedTools.isEmpty()) "" else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
-                        val curSig = signatureSb.toString()
+                        if (displayedContentLen != cachedVisibleContLen) {
+                            cachedVisibleCont = networkContentTarget.substring(0, displayedContentLen.coerceAtMost(networkContentTarget.length))
+                            cachedVisibleContLen = displayedContentLen
+                        }
+                        if (displayedThinkingLen != cachedVisibleThinkLen) {
+                            cachedVisibleThink = networkThinkingTarget.substring(0, displayedThinkingLen.coerceAtMost(networkThinkingTarget.length))
+                            cachedVisibleThinkLen = displayedThinkingLen
+                        }
+                        val effStepLen = if (accumulatedTools.isEmpty()) 0 else displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length)
+                        if (effStepLen != cachedVisibleStepThinkLen) {
+                            cachedVisibleStepThink = if (effStepLen == 0) "" else currentStepThinkingTarget.substring(0, effStepLen)
+                            cachedVisibleStepThinkLen = effStepLen
+                        }
+                        if (signatureSb.length != cachedSigLen) {
+                            cachedSig = signatureSb.toString()
+                            cachedSigLen = signatureSb.length
+                        }
                         patchVariantMemory { v ->
                             v.copy(
-                                content = visibleCont,
-                                thinkingSummary = visibleThink,
-                                trailingThinking = visibleStepThink,
-                                thinkingSignature = curSig,
+                                content = cachedVisibleCont,
+                                thinkingSummary = cachedVisibleThink,
+                                trailingThinking = cachedVisibleStepThink,
+                                thinkingSignature = cachedSig,
                                 thinkingDurationMs = thinkingDurationMs,
                                 tokenMetrics = if (liveTokensPerSec > 0.0) {
                                     v.tokenMetrics.copy(tokensPerSec = liveTokensPerSec)
@@ -1032,8 +1049,8 @@ fun ParchmentApp(
                             )
                         }
                     }
-                    // Atomic background disk checkpoint every 1.5 seconds so switching apps NEVER loses progress
-                    if (now - lastDiskCheckpointMs >= 1500L) {
+                    // Atomic background disk checkpoint every 3.5 seconds so switching apps NEVER loses progress without disk/JSON thrashing
+                    if (now - lastDiskCheckpointMs >= 3500L) {
                         lastDiskCheckpointMs = now
                         flushCheckpointToDisk(isFinal = false)
                     }
@@ -1104,9 +1121,9 @@ fun ParchmentApp(
                         dm.summaryModelId
                     } else modelName
 
-                    val sumPrompt = "Update the concise bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below:\n\n${plan.transcriptToSummarize}"
-                    val generatedSummary = withTimeoutOrNull(25_000L) {
-                        AiProviderEngine.generateUtilityText(sumProf, sumModel, sumPrompt).getOrNull()
+                    val sumPrompt = "Update the comprehensive bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below. Do not truncate or omit important details:\n\n${plan.transcriptToSummarize}"
+                    val generatedSummary = withTimeoutOrNull(180_000L) {
+                        AiProviderEngine.generateUtilityText(sumProf, sumModel, sumPrompt, maxOutputTokens = null).getOrNull()
                     }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { finalSessionForCall.storySummary }
 
                     finalSessionForCall = finalSessionForCall.copy(storySummary = generatedSummary)
@@ -1678,16 +1695,16 @@ fun ParchmentApp(
                             appendLine()
                         }
                         appendLine("Conversation Turns:")
-                        for (turn in sessSnap.messages.filter { it.includedInContext }.takeLast(16)) {
+                        for (turn in sessSnap.messages.filter { it.includedInContext }.takeLast(24)) {
                             val roleLabel = if (turn.role == MessageRole.ASSISTANT) "Assistant" else "User"
-                            val txt = AiProviderEngine.stripInlineErrorNotices(turn.activeVariant.content).trim().take(700)
+                            val txt = AiProviderEngine.stripInlineErrorNotices(turn.activeVariant.content).trim().take(1600)
                             if (txt.isNotEmpty()) appendLine("$roleLabel: $txt")
                         }
                     }.trim()
                 }
-                val sumPrompt = "Update the concise bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below:\n\n$transcriptForPrompt"
-                val generatedSummary = withTimeoutOrNull(25_000L) {
-                    AiProviderEngine.generateUtilityText(summaryProf, summaryModel, sumPrompt).getOrNull()
+                val sumPrompt = "Update the comprehensive bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below. Do not truncate or omit important details:\n\n$transcriptForPrompt"
+                val generatedSummary = withTimeoutOrNull(180_000L) {
+                    AiProviderEngine.generateUtilityText(summaryProf, summaryModel, sumPrompt, maxOutputTokens = null).getOrNull()
                 }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { sessSnap.storySummary }
 
                 updateSessionById(targetSessId, immediate = true) { sess ->
@@ -3823,7 +3840,7 @@ private fun ManuscriptViewport(
             }
         }
     }
-    val contextBreakdown = remember(
+    val baseContextBreakdown = remember(
         activeSession.id,
         activeSession.storySummary,
         activeSession.systemPrompt,
@@ -3835,21 +3852,28 @@ private fun ManuscriptViewport(
         appState.globalWorldBook,
         activeSession.messages.size,
         throttledBreakdownTrigger,
-        userPromptInput,
-        assistantPrefillInput,
-        pendingAttachments,
         isGoalModeEnabled,
         isStreaming
     ) {
-        O200kTokenizer.computeContextWindowBreakdown(
+        O200kTokenizer.computeBaseContextWindowBreakdown(
             session = activeSession,
             assistant = activeAssistant,
             profile = activeProfile,
-            draftPrompt = userPromptInput,
-            draftPrefill = assistantPrefillInput,
-            pendingAttachments = pendingAttachments,
             goalModeActive = isGoalModeEnabled,
             globalWorldBook = appState.globalWorldBook
+        )
+    }
+    val contextBreakdown = remember(
+        baseContextBreakdown,
+        userPromptInput,
+        assistantPrefillInput,
+        pendingAttachments
+    ) {
+        O200kTokenizer.applyComposerDraftToBreakdown(
+            baseBreakdown = baseContextBreakdown,
+            draftPrompt = userPromptInput,
+            draftPrefill = assistantPrefillInput,
+            pendingAttachments = pendingAttachments
         )
     }
     val liveContextTokens = contextBreakdown.totalUsedTokens
@@ -3895,6 +3919,8 @@ private fun ManuscriptViewport(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
                     .background(p.elevatedBg.copy(alpha = 0.45f))
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -3950,6 +3976,8 @@ private fun ManuscriptViewport(
                         label = "Extra Instructions for This Chat",
                         placeholder = "Optional instructions added specifically to this conversation…",
                         singleLine = false,
+                        minHeight = 64.dp,
+                        maxHeight = 320.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                     SepiaTextField(
@@ -3958,6 +3986,8 @@ private fun ManuscriptViewport(
                         label = "Style & Tone Reminder",
                         placeholder = "Optional reminder kept near the end of the conversation…",
                         singleLine = false,
+                        minHeight = 52.dp,
+                        maxHeight = 260.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                     @OptIn(ExperimentalLayoutApi::class)
@@ -3995,6 +4025,8 @@ private fun ManuscriptViewport(
                         onValueChange = { sum -> onUpdateSession { it.copy(storySummary = sum) } },
                         placeholder = "Key facts or summary remembered across long chats…",
                         singleLine = false,
+                        minHeight = 110.dp,
+                        maxHeight = 380.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -4101,7 +4133,11 @@ private fun ManuscriptViewport(
                     }
                 }
 
-                itemsIndexed(activeSession.messages, key = { _, node -> node.id }) { index, node ->
+                itemsIndexed(
+                    items = activeSession.messages,
+                    key = { _, node -> node.id },
+                    contentType = { _, node -> node.role }
+                ) { index, node ->
                     MessageTurnItem(
                         node = node,
                         nodeIndex = index,
@@ -5936,8 +5972,8 @@ private fun MessageTurnItem(
             enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
             exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
         ) {
-            val livePeekInfo = remember(activeVar.thinkingSummary, activeVar.trailingThinking, activeVar.toolCalls) {
-                extractLatestAgentPeek(activeVar)
+            val livePeekInfo = remember(isLivePeekOnly, activeVar.thinkingSummary, activeVar.trailingThinking, activeVar.toolCalls) {
+                if (isLivePeekOnly) extractLatestAgentPeek(activeVar) else LiveAgentPeekInfo("", "")
             }
             Column(
                 modifier = Modifier
@@ -6217,8 +6253,29 @@ private fun MessageTurnItem(
 
                 if (hasInterleavedSteps) {
                     // Chronological Interleaved Timeline: think1 -> tool1 -> think2 -> tool2 -> think3 -> tool3
-                    var thoughtStepCounter = 0
-                    activeVar.toolCalls.forEach { tc ->
+                    // Windowed during massive 25+ tool runs so Compose never mounts 100+ ProseRenderer trees simultaneously!
+                    val totalToolSteps = activeVar.toolCalls.size
+                    var showAllInterleavedSteps by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
+                    val maxVisibleTailSteps = if (isActivelyThinkingThisNode) 12 else 24
+                    val hiddenStepCount = if (!showAllInterleavedSteps && totalToolSteps > maxVisibleTailSteps) {
+                        totalToolSteps - maxVisibleTailSteps
+                    } else 0
+                    if (hiddenStepCount > 0) {
+                        SepiaButton(
+                            text = "▾ Show $hiddenStepCount earlier tool steps (${totalToolSteps} total)",
+                            compact = true,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = { showAllInterleavedSteps = true }
+                        )
+                    }
+                    val visibleTools = if (hiddenStepCount > 0) {
+                        activeVar.toolCalls.subList(hiddenStepCount, totalToolSteps)
+                    } else {
+                        activeVar.toolCalls
+                    }
+                    var thoughtStepCounter = hiddenStepCount
+                    visibleTools.forEach { tc ->
+                        key(tc.id) {
                         if (preferences.showThinkingCards && tc.precedingThinking.isNotBlank()) {
                             thoughtStepCounter++
                             Column(
@@ -6249,6 +6306,7 @@ private fun MessageTurnItem(
                         }
                         if (preferences.showToolCards) {
                             RenderToolExecutionCard(tc)
+                        }
                         }
                     }
 

@@ -37,7 +37,9 @@ object WorkspaceHarness {
         val requiresWritePermission: Boolean,
         val requiresShellPermission: Boolean = false,
         val requiresWorkspaceFolder: Boolean = true
-    )
+    ) {
+        val parametersSchemaString: String by lazy { parametersSchema.toString() }
+    }
 
     private val ALL_TOOLS: List<ToolDefinition> = listOf(
         ToolDefinition(
@@ -494,7 +496,7 @@ object WorkspaceHarness {
         val foundNames = mutableListOf<String>()
         val sb = StringBuilder()
         for (fileName in candidates) {
-            PlatformBridge.workspaceRead(cleanRoot, fileName, startLine = 1, maxLines = 150).onSuccess { content ->
+            PlatformBridge.workspaceRead(cleanRoot, fileName, startLine = 1, maxLines = 10_000).onSuccess { content ->
                 if (content.isNotBlank()) {
                     foundNames.add(fileName)
                     sb.appendLine("#### Auto-Loaded Workspace File: `$fileName`")

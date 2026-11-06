@@ -143,12 +143,141 @@ data class ParsedLabelWithIcons(
     val trailingIcon: KissIcon?
 )
 
+private val PREFIX_ICON_MAPPINGS = listOf(
+    "☰ " to KissIcon.MENU,
+    "◂ " to KissIcon.SIDEBAR_CLOSE,
+    "⚙ " to KissIcon.SETTINGS,
+    "⚙️ " to KissIcon.SETTINGS,
+    "🔧 " to KissIcon.WRENCH,
+    "🛠 " to KissIcon.WRENCH,
+    "🛠️ " to KissIcon.WRENCH,
+    "🐚 " to KissIcon.TERMINAL,
+    "🔍 " to KissIcon.SEARCH,
+    "+ " to KissIcon.PLUS,
+    "× " to KissIcon.CLOSE,
+    "✕ " to KissIcon.CLOSE,
+    "— " to KissIcon.MINUS,
+    "− " to KissIcon.MINUS,
+    "- " to KissIcon.MINUS,
+    "🗑 " to KissIcon.TRASH,
+    "🗑️ " to KissIcon.TRASH,
+    "📋 MD" to KissIcon.MARKDOWN,
+    "📋 " to KissIcon.COPY,
+    "✎ " to KissIcon.EDIT,
+    "✏️ " to KissIcon.EDIT,
+    "✍ " to KissIcon.EDIT,
+    "✍️ " to KissIcon.EDIT,
+    "✦ " to KissIcon.SPARKLES,
+    "✨ " to KissIcon.SPARKLES,
+    "↻ " to KissIcon.REFRESH,
+    "🔄 " to KissIcon.REFRESH,
+    "→ " to KissIcon.ARROW_RIGHT,
+    "← " to KissIcon.ARROW_LEFT,
+    "↗ " to KissIcon.EXTERNAL_LINK,
+    "↳ " to KissIcon.CORNER_DOWN_RIGHT,
+    "▾ " to KissIcon.CHEVRON_DOWN,
+    "▼ " to KissIcon.CHEVRON_DOWN,
+    "▸ " to KissIcon.CHEVRON_RIGHT,
+    "▴ " to KissIcon.CHEVRON_UP,
+    "▲ " to KissIcon.CHEVRON_UP,
+    "🗺 " to KissIcon.MAP_TREE,
+    "🗺️ " to KissIcon.MAP_TREE,
+    "⑂ " to KissIcon.GIT_BRANCH,
+    "🧠 " to KissIcon.BRAIN,
+    "📎 " to KissIcon.PAPERCLIP,
+    "🌐 " to KissIcon.GLOBE,
+    "🖼 " to KissIcon.IMAGE,
+    "🖼️ " to KissIcon.IMAGE,
+    "🎬 " to KissIcon.VIDEO,
+    "💻 " to KissIcon.CODE,
+    "🔗 " to KissIcon.LINK,
+    "⛓ " to KissIcon.LINK,
+    "⚡ " to KissIcon.ZAP,
+    "⏳ " to KissIcon.CLOCK,
+    "■ " to KissIcon.STOP,
+    "👁 " to KissIcon.EYE,
+    "👁️ " to KissIcon.EYE,
+    "🙈 " to KissIcon.EYE_OFF,
+    "♡ " to KissIcon.HEART_PULSE,
+    "📌 " to KissIcon.PIN,
+    "📂 " to KissIcon.FOLDER,
+    "📁 " to KissIcon.FOLDER,
+    "📚 " to KissIcon.BOOK_OPEN,
+    "📖 " to KissIcon.BOOK_OPEN,
+    "☁ " to KissIcon.CLOUD,
+    "☁️ " to KissIcon.CLOUD,
+    "⬇ " to KissIcon.DOWNLOAD,
+    "⬇️ " to KissIcon.DOWNLOAD,
+    "📥 " to KissIcon.DOWNLOAD,
+    "📤 " to KissIcon.UPLOAD,
+    "🖥 " to KissIcon.MONITOR,
+    "🖥️ " to KissIcon.MONITOR,
+    "🖧 " to KissIcon.SERVER_NETWORK,
+    "🤖 " to KissIcon.BOT,
+    "💬 " to KissIcon.MESSAGE_CIRCLE,
+    "🧪 " to KissIcon.FLASK,
+    "🎭 " to KissIcon.THEATER,
+    "🧭 " to KissIcon.COMPASS,
+    "🏷 " to KissIcon.TAG,
+    "🏷️ " to KissIcon.TAG,
+    "📦 " to KissIcon.PACKAGE_BOX,
+    "🎨 " to KissIcon.PALETTE,
+    "👑 " to KissIcon.CROWN,
+    "🔥 " to KissIcon.FLAME,
+    "🛡 " to KissIcon.SHIELD_CHECK,
+    "🛡️ " to KissIcon.SHIELD_CHECK,
+    "🔒 " to KissIcon.SHIELD_CHECK,
+    "🔑 " to KissIcon.SHIELD_CHECK,
+    "🎲 " to KissIcon.DICE,
+    "🧮 " to KissIcon.CALCULATOR,
+    "✓ " to KissIcon.CHECK,
+    "✔ " to KissIcon.CHECK,
+    "⋯ " to KissIcon.MORE_HORIZONTAL,
+    "🔊 " to KissIcon.VOLUME_ON,
+    "🔇 " to KissIcon.VOLUME_OFF,
+    "▶ " to KissIcon.PLAY,
+    "⚠ " to KissIcon.WARNING,
+    "⚠️ " to KissIcon.WARNING,
+    "● " to KissIcon.CIRCLE_DOT,
+    "○ " to KissIcon.CIRCLE_EMPTY,
+    "🎯 " to KissIcon.TARGET,
+    "↺ " to KissIcon.REWIND,
+    "📄 " to KissIcon.FILE_TEXT,
+    "📝 " to KissIcon.FILE_TEXT,
+    "🎵 " to KissIcon.AUDIO,
+    "🗂 " to KissIcon.TABS,
+    "🗂️ " to KissIcon.TABS,
+    "🎙 " to KissIcon.MIC,
+    "🎙️ " to KissIcon.MIC,
+    "⊞ " to KissIcon.LAYOUT_GRID,
+    "👤 " to KissIcon.USER,
+    "@ " to KissIcon.AT_SIGN
+)
+
+private val SUFFIX_ICON_MAPPINGS = listOf(
+    " ▾" to KissIcon.CHEVRON_DOWN,
+    " ▼" to KissIcon.CHEVRON_DOWN,
+    " ▴" to KissIcon.CHEVRON_UP,
+    " ▲" to KissIcon.CHEVRON_UP,
+    " ▸" to KissIcon.CHEVRON_RIGHT,
+    " →" to KissIcon.ARROW_RIGHT,
+    " ↵" to KissIcon.SEND_ENTER,
+    " ●" to KissIcon.CIRCLE_DOT
+)
+
+private val parsedKissLabelCache = object : LinkedHashMap<String, ParsedLabelWithIcons>(128, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ParsedLabelWithIcons>?): Boolean = size > 256
+}
+
 /**
  * Automatically strips any legacy emoji/symbol tokens from a label and resolves crisp vector `KissIcon`s.
  */
 fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return ParsedLabelWithIcons(null, "", null)
+    synchronized(parsedKissLabelCache) {
+        parsedKissLabelCache[trimmed]?.let { return it }
+    }
 
     // Exact single-icon matches (for icon-only buttons & avatar circles)
     when (trimmed) {

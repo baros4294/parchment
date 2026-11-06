@@ -1372,5 +1372,59 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(1, rehydrated.messages[1].activeVariant.toolCalls.size)
 
         PlatformBridge.deleteChatSessionFile(testSessId)
+
+        // 4. Verify uncapped existingStorySummary preservation (> 2400 chars) in prepareCompactionPlan
+        val longExistingSummary = (1..80).joinToString("\n") { "• Milestone #$it: Completed detailed architectural verification and preserved full context without truncation." }
+        assertTrue(longExistingSummary.length > 5000, "Test summary must exceed legacy 2400-char limit")
+        val compactionNodes = (1..6).map { idx ->
+            MessageNode(
+                id = "cn-$idx",
+                role = if (idx % 2 == 1) MessageRole.USER else MessageRole.ASSISTANT,
+                variants = listOf(MessageVariant(id = "cv-$idx", content = "Turn #$idx detailed discussion."))
+            )
+        }
+        val compactionPlan = O200kTokenizer.prepareCompactionPlan(
+            existingStorySummary = longExistingSummary,
+            historyNodes = compactionNodes,
+            keepRecentTurnsCount = 2
+        )
+        assertTrue(compactionPlan.transcriptToSummarize.contains("Milestone #1:"))
+        assertTrue(compactionPlan.transcriptToSummarize.contains("Milestone #80:"))
+        assertTrue(compactionPlan.fallbackSummary.contains("Milestone #1:"), "Fallback summary must never slice off the beginning of existingStorySummary")
+        assertTrue(compactionPlan.fallbackSummary.contains("Milestone #80:"))
+
+        // 5. Verify split O(1) computeBaseContextWindowBreakdown + applyComposerDraftToBreakdown matches full computeContextWindowBreakdown
+        val dummyAssistant = io.parchment.ai.model.AssistantAgent(id = "a-perf", name = "Perf", systemPrompt = "System prompt")
+        val dummyProfile = io.parchment.ai.model.ProviderProfile(id = "p-perf", name = "OpenAI", protocol = ProviderProtocol.OPENAI_RESPONSES)
+        val baseBreakdown = O200kTokenizer.computeBaseContextWindowBreakdown(
+            session = fullSession,
+            assistant = dummyAssistant,
+            profile = dummyProfile,
+            goalModeActive = true
+        )
+        val combinedFast = O200kTokenizer.applyComposerDraftToBreakdown(
+            baseBreakdown = baseBreakdown,
+            draftPrompt = "Draft message with several words",
+            draftPrefill = "Sure, here is",
+            pendingAttachments = emptyList()
+        )
+        val fullDirect = O200kTokenizer.computeContextWindowBreakdown(
+            session = fullSession,
+            assistant = dummyAssistant,
+            profile = dummyProfile,
+            draftPrompt = "Draft message with several words",
+            draftPrefill = "Sure, here is",
+            pendingAttachments = emptyList(),
+            goalModeActive = true
+        )
+        assertEquals(fullDirect, combinedFast)
+
+        // 6. Verify countLinesFast and cached parseKissLabelIcons
+        assertEquals(1, io.parchment.ai.ui.countLinesFast(""))
+        assertEquals(3, io.parchment.ai.ui.countLinesFast("a\nb\nc"))
+        val iconA = io.parchment.ai.ui.parseKissLabelIcons("⚡ Compact Context")
+        val iconB = io.parchment.ai.ui.parseKissLabelIcons("⚡ Compact Context")
+        assertEquals(iconA, iconB)
+        assertEquals("Compact Context", iconA.cleanText)
     }
 }

@@ -136,6 +136,15 @@ private val MD_STRIKE_REGEX = Regex("~~([^~]+)~~")
 private val MD_ITALIC_AST_REGEX = Regex("(?<!\\*)\\*([^*\n]+)\\*(?!\\*)")
 private val MD_INLINE_CODE_REGEX = Regex("`([^`]+)`")
 
+internal fun countLinesFast(s: String): Int {
+    if (s.isEmpty()) return 1
+    var count = 1
+    for (i in 0 until s.length) {
+        if (s[i] == '\n') count++
+    }
+    return count
+}
+
 /**
  * Strips Markdown syntax (`**bold**`, `*italic*`, `# Heading`, `` `code` ``) to clean plain text
  * for the 1-tap `📋 Copy (Text)` button.
@@ -347,8 +356,9 @@ fun LiteraryProseRenderer(
                                         tint = p.accent,
                                         size = 12.dp
                                     )
+                                    val lineCount = remember(block.code) { countLinesFast(block.code) }
                                     BasicText(
-                                        text = "${block.language.ifBlank { "code" }} (${block.code.lines().size} lines)",
+                                        text = "${block.language.ifBlank { "code" }} ($lineCount lines)",
                                         style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                     )
                                 }
