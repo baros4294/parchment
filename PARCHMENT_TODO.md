@@ -1,6 +1,7 @@
-# Goal: Uncap compaction/summarization/system prompts/chat notes and aggressively optimize the codebase (O(1) composer tokenization, cached tool schema tokens, zero-allocation icon label parsing, pre-compiled Regex constants, and LazyColumn contentType) without regression.
-- [x] (1) Uncap generateUtilityText maxOutputTokens, preserve full existingStorySummary in prepareCompactionPlan, uncap SepiaTextField maxLines & Chat Notes/Assistant editors, and raise WorkspaceHarness memory file line limits
-- [x] (2) Cache tool schema token counts in WorkspaceHarness and split computeContextWindowBreakdown into base session breakdown + O(1) composer draft update in O200kTokenizer.kt and ParchmentApp.kt
-- [x] (3) Optimize parseKissLabelIcons in ParchmentIcons.kt with static prefix/suffix tables, bounded LRU cache, and pre-compiled Regex constants
-- [x] (4) Pre-compile hot-path Regex constants across UI/network/harness files, gate livePeekInfo on isLivePeekOnly, add LazyColumn contentType, and use zero-allocation countLinesFast in ProseRenderer.kt
-- [x] (5) Add regression & performance unit tests in ParchmentProtocolAndHarnessTest.kt, run ./gradlew desktopTest, and commit & push (lock) to origin/main
+# Goal: Fix GitHub Actions Android dexBuilderRelease OOM, implement all 7 Round 2 anti-OOM/I/O/streaming optimizations across Desktop, Android, and Common, verify tests, push to main, and confirm CI status.
+- [x] (1) Fix GitHub Actions Android dexBuilderRelease heap config in gradle.properties and .github/workflows/build-installers.yml while preserving org.gradle.daemon=false
+- [x] (2) Replace readLines() with streaming useLines() in workspaceRead (supporting up to 10,000 lines with per-line cap) and bound fetchUrlText stream reads in PlatformBridge.desktop.kt and PlatformBridge.android.kt
+- [x] (3) Throttle notifyLongDecodeProgress to 1Hz across AiProviderEngine, PlatformBridge.desktop.kt, and PlatformBridge.android.kt
+- [x] (4) Implement in-place rolling tool output compaction across all 5 protocol loops (including Gemini GenerateContent) and deduplicate/cap rawWebCitations in AiProviderEngine.kt
+- [x] (5) Add fast O(1) char-estimate pre-check to computeLiveTurnAndContextTokens and debounce non-final flushCheckpointToDisk in ParchmentApp.kt
+- [/] (6) Add unit tests in ParchmentProtocolAndHarnessTest.kt, verify with ./gradlew desktopTest --no-daemon, push to origin/main, and verify GitHub Actions build

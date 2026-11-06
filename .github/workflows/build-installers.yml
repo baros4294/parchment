@@ -46,6 +46,7 @@ jobs:
           fi
           chmod +x ./gradlew
           ./gradlew :composeApp:assembleRelease \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:+UseG1GC -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
             -PappVersion="$APP_VER" \
             -PappVersionCode="$((200 + ${{ github.run_number }}))" \
             -PgithubRepo="${{ github.repository }}" \

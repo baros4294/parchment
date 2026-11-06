@@ -608,14 +608,31 @@ actual object PlatformBridge {
     actual fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int, maxLines: Int): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        val lines = target.readLines(Charsets.UTF_8)
-        val startIdx = (startLine - 1).coerceIn(0, (lines.size - 1).coerceAtLeast(0))
-        val endIdx = (startIdx + maxLines.coerceIn(1, 2000)).coerceAtMost(lines.size)
-        val sliced = lines.subList(startIdx, endIdx)
-        buildString {
-            appendLine("File: $relativePath (Lines ${startIdx + 1}..$endIdx of ${lines.size})")
+        val reqStart = (startLine - 1).coerceAtLeast(0)
+        val reqMax = maxLines.coerceIn(1, 10_000)
+        val sliced = ArrayList<String>(reqMax.coerceAtMost(512))
+        var totalLines = 0
+        var accumulatedChars = 0
+        val maxTotalChars = 200_000
+        target.useLines(Charsets.UTF_8) { seq ->
+            for (line in seq) {
+                if (totalLines >= reqStart && sliced.size < reqMax && accumulatedChars < maxTotalChars) {
+                    val safeLine = if (line.length > 4000) line.substring(0, 4000) + " … [line truncated]" else line
+                    sliced.add(safeLine)
+                    accumulatedChars += safeLine.length
+                }
+                totalLines++
+            }
+        }
+        if (totalLines == 0) {
+            return@runCatching "File: $relativePath (Lines 1..0 of 0)"
+        }
+        val actualStart = reqStart.coerceAtMost((totalLines - 1).coerceAtLeast(0))
+        val actualEnd = (actualStart + sliced.size).coerceAtMost(totalLines)
+        buildString(accumulatedChars + 128) {
+            appendLine("File: $relativePath (Lines ${actualStart + 1}..$actualEnd of $totalLines)")
             sliced.forEachIndexed { idx, line ->
-                appendLine("${startIdx + idx + 1}: $line")
+                appendLine("${actualStart + idx + 1}: $line")
             }
         }.trimEnd()
     }
@@ -856,7 +873,17 @@ actual object PlatformBridge {
         try {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
-            val body = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val maxRawChars = (maxChars.coerceIn(500, 100_000) * 4).coerceIn(32_000, 400_000)
+            val body = stream.bufferedReader(Charsets.UTF_8).use { reader ->
+                val sb = StringBuilder(maxRawChars.coerceAtMost(32_768))
+                val buf = CharArray(4096)
+                while (sb.length < maxRawChars) {
+                    val n = reader.read(buf, 0, minOf(buf.size, maxRawChars - sb.length))
+                    if (n < 0) break
+                    sb.append(buf, 0, n)
+                }
+                sb.toString()
+            }
             if (code !in 200..299) {
                 error("HTTP $code from $trimmed: ${body.take(400)}")
             }
@@ -867,7 +894,12 @@ actual object PlatformBridge {
             conn.disconnect()
         }
     }
+
+    @Volatile
+    private var lastReportedDecodeSec: Int = -1
+
     actual fun notifyLongDecodeStart(modelName: String) {
+        lastReportedDecodeSec = -1
         val ctx = appContext ?: return
         runCatching {
             val intent = Intent(ctx, LongDecodeForegroundService::class.java).apply {
@@ -883,6 +915,8 @@ actual object PlatformBridge {
     }
 
     actual fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int) {
+        if (elapsedSeconds == lastReportedDecodeSec) return
+        lastReportedDecodeSec = elapsedSeconds
         val ctx = appContext ?: return
         runCatching {
             val intent = Intent(ctx, LongDecodeForegroundService::class.java).apply {
@@ -894,6 +928,7 @@ actual object PlatformBridge {
     }
 
     actual fun notifyLongDecodeComplete() {
+        lastReportedDecodeSec = -1
         val ctx = appContext ?: return
         runCatching {
             val intent = Intent(ctx, LongDecodeForegroundService::class.java).apply {

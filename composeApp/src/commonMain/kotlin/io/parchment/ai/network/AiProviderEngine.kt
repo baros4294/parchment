@@ -500,7 +500,11 @@ object AiProviderEngine {
             }
         }
         suspend fun recordRawCitationAndEmit(citation: RawWebCitation) {
-            if (citation.url.isBlank()) return
+            if (citation.url.isBlank() || rawWebCitations.size >= 128) return
+            val isDuplicate = rawWebCitations.any {
+                it.url == citation.url && it.startIndex == citation.startIndex && it.groundedText == citation.groundedText
+            }
+            if (isDuplicate) return
             rawWebCitations.add(citation)
             val bound = bindSourcesToMessageLines(contentBuilder.toString(), rawWebCitations)
             if (bound.isNotEmpty()) {
@@ -1439,7 +1443,7 @@ object AiProviderEngine {
             }
             val finalStr = sb.toString().trim().removeSurrounding("\"").removeSurrounding("'").trim()
             if (finalStr.isEmpty() && !streamErr.isNullOrBlank()) {
-                error(streamErr!!)
+                error(streamErr)
             }
             finalStr
         }
@@ -1747,8 +1751,12 @@ object AiProviderEngine {
                     buildGeminiInteractionsTurnsArray(activeNodes, session, continuePrefix)
                 }
 
-                // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps
+                // 3-Layer Rolling Context Compaction: prune verbose tool outputs older than 8 steps in-place in RAM
                 val compactedExtraSteps = compactGeminiInteractionsExtraSteps(extraLoopSteps)
+                if (compactedExtraSteps !== extraLoopSteps) {
+                    extraLoopSteps.clear()
+                    extraLoopSteps.addAll(compactedExtraSteps)
+                }
 
                 val payloadObj = buildJsonObject {
                     put("model", model.trim().removePrefix("models/"))
@@ -3526,6 +3534,10 @@ object AiProviderEngine {
                 }
 
                 val compactedLoopItems = compactOpenAiResponsesExtraItems(extraResponsesLoopItems)
+                if (compactedLoopItems !== extraResponsesLoopItems) {
+                    extraResponsesLoopItems.clear()
+                    extraResponsesLoopItems.addAll(compactedLoopItems)
+                }
 
                 val payloadObj = buildJsonObject {
                     put("model", model)
@@ -4788,6 +4800,10 @@ object AiProviderEngine {
                             })
                         }
                         val compactedAnthropicExtras = compactAnthropicExtraMessages(extraLoopMessages)
+                        if (compactedAnthropicExtras !== extraLoopMessages) {
+                            extraLoopMessages.clear()
+                            extraLoopMessages.addAll(compactedAnthropicExtras)
+                        }
                         for (extraMsg in compactedAnthropicExtras) {
                             add(extraMsg)
                         }

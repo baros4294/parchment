@@ -1084,7 +1084,15 @@ fun ParchmentApp(
 
                 var cachedBaseTokens = computeBaseContextTokens()
 
-                fun computeLiveTurnAndContextTokens(): Int {
+                fun computeLiveTurnAndContextTokens(forceExact: Boolean = false): Int {
+                    if (!forceExact) {
+                        // Fast O(1) upper-bound check (~3 chars/token) so 1.5s mid-stream checks skip regex tokenization when well below threshold
+                        val approxToolsChars = accumulatedTools.sumOf { 24 + it.name.length + it.argumentsJson.length + it.resultText.length }
+                        val approxUpperBound = cachedBaseTokens + ((networkContentTarget.length + networkThinkingTarget.length + approxToolsChars) / 3)
+                        if (approxUpperBound < (minTokensForNextAutoCompact * 85) / 100) {
+                            return approxUpperBound
+                        }
+                    }
                     val liveAssistantTokens = O200kTokenizer.countTokens(networkContentTarget.toString()) +
                         O200kTokenizer.countTokens(networkThinkingTarget.toString()) +
                         accumulatedTools.sumOf { tc ->
