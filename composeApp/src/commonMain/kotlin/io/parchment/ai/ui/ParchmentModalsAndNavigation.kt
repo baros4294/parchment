@@ -92,6 +92,15 @@ internal fun DesktopBrowserTabBar(
     onOpenTabOverview: () -> Unit
 ) {
     val p = LocalParchmentPalette.current
+    val sessionsById = remember(appState.sessions.size, activeSessionId, openTabIds) {
+        appState.sessions.associateBy { it.id }
+    }
+    val assistantsById = remember(appState.assistants) {
+        appState.assistants.associateBy { it.id }
+    }
+    val profilesById = remember(appState.profiles) {
+        appState.profiles.associateBy { it.id }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -108,12 +117,12 @@ internal fun DesktopBrowserTabBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             openTabIds.forEach { tabId ->
-                val sess = appState.sessions.find { it.id == tabId } ?: return@forEach
+                val sess = sessionsById[tabId] ?: appState.sessions.find { it.id == tabId } ?: return@forEach
                 val isSelected = tabId == activeSessionId
                 val isTabStreaming = activeStreamsBySession.containsKey(tabId)
-                val tabAsst = appState.assistants.find { it.id == sess.assistantId && it.id.isNotBlank() }
+                val tabAsst = assistantsById[sess.assistantId]
                     ?: appState.assistants.firstOrNull()
-                val tabProf = appState.profiles.find { it.id == sess.profileId }
+                val tabProf = profilesById[sess.profileId]
                     ?: appState.profiles.firstOrNull()
                 val tabModelShort = sess.modelOverride.ifBlank { tabProf?.defaultModel.orEmpty() }
                     .substringAfterLast('/')
@@ -665,13 +674,6 @@ internal fun TopEditorialBar(
                             )
                         }
                     }
-                } else {
-                    SepiaButton(
-                        text = "+ New Tab",
-                        compact = true,
-                        style = SepiaButtonStyle.OUTLINE,
-                        onClick = onNewChatTab
-                    )
                 }
                 SepiaChip(
                     label = if (chatArtifactsCount > 0) "📁 $chatArtifactsCount" else "📁",
@@ -946,7 +948,18 @@ internal fun ParchmentSidebar(
                 }
             }
         } else {
-            val assistantTopics = remember(appState.sessions, activeAssistant.id, searchQuery) {
+            val topicsStructuralKey = remember(
+                appState.sessions.size,
+                activeSession.id,
+                activeSession.title,
+                activeSession.isPinned,
+                activeSession.messages.size,
+                activeAssistant.id,
+                searchQuery
+            ) {
+                "${appState.sessions.size}:${activeSession.id}:${activeSession.title}:${activeSession.isPinned}:${activeSession.messages.size}:${activeAssistant.id}:$searchQuery"
+            }
+            val assistantTopics = remember(topicsStructuralKey) {
                 val q = searchQuery.trim()
                 val forAsst = appState.sessions.filter { it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId } }
                 val searched = if (q.isEmpty()) forAsst else forAsst.filter { s ->
@@ -1608,11 +1621,21 @@ internal fun ParchmentRightFilesSidebar(
 ) {
     val p = LocalParchmentPalette.current
     var selectedFilter by remember(activeSession.id) { mutableStateOf(RightVaultFilter.ALL) }
-    val (aiArtifacts, userUploads, webSources) = remember(
+    val vaultStructuralKey = remember(
         activeSession.id,
-        activeSession.messages,
-        pendingAttachments
+        activeSession.messages.size,
+        pendingAttachments.size,
+        activeSession.messages.lastOrNull()?.activeVariant?.let { v ->
+            "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.count { it == '`' } / 6}"
+        }
     ) {
+        "${activeSession.id}:${activeSession.messages.size}:${pendingAttachments.size}:" +
+            activeSession.messages.sumOf {
+                val v = it.activeVariant
+                v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.count { c -> c == '`' } / 6)
+            }
+    }
+    val (aiArtifacts, userUploads, webSources) = remember(vaultStructuralKey, pendingAttachments) {
         extractSessionVaultItems(activeSession, pendingAttachments)
     }
     val totalCount = aiArtifacts.size + userUploads.size + webSources.size

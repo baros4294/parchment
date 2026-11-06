@@ -451,18 +451,6 @@ private fun WindowScope.KissDesktopTitleBar(
                         color = p.primaryInk
                     )
                 )
-                val subtitle = windowTitle.removePrefix("Parchment").removePrefix(" — ").removePrefix(" - ").trim()
-                if (subtitle.isNotEmpty()) {
-                    BasicText(
-                        text = "— $subtitle",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = p.uiLabelStyle.copy(
-                            fontSize = 11.sp,
-                            color = p.mutedInk
-                        )
-                    )
-                }
             }
         }
 

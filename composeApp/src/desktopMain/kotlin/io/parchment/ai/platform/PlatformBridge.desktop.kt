@@ -261,6 +261,73 @@ actual object PlatformBridge {
         true
     }.getOrDefault(false)
 
+    actual fun listAppStorageFiles(): List< io.parchment.ai.model.StoredAppFileItem> = runCatching {
+        val rootDir = resolveStorageDir().canonicalFile
+        val rootPath = rootDir.toPath().normalize()
+        val otaTempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota")
+        val items = mutableListOf<io.parchment.ai.model.StoredAppFileItem>()
+
+        if (rootDir.exists() && rootDir.isDirectory) {
+            rootDir.walkTopDown()
+                .maxDepth(6)
+                .filter { it.isFile }
+                .forEach { f ->
+                    val rel = runCatching { rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/') }
+                        .getOrDefault(f.name)
+                    val lowerRel = rel.lowercase()
+                    val lowerName = f.name.lowercase()
+                    val cat = when {
+                        lowerName.endsWith(".tmp") -> io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP
+                        lowerRel.startsWith("chats/") && lowerName.endsWith(".json") -> io.parchment.ai.model.StorageFileCategory.CHAT_SESSION
+                        lowerRel.startsWith("media/") && lowerName.startsWith("att-") -> io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
+                        lowerRel.startsWith("media/") -> io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
+                        else -> io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS
+                    }
+                    items.add(
+                        io.parchment.ai.model.StoredAppFileItem(
+                            fullPath = f.absolutePath,
+                            relativePath = rel,
+                            fileName = f.name,
+                            category = cat,
+                            sizeBytes = f.length(),
+                            lastModifiedMs = f.lastModified()
+                        )
+                    )
+                }
+        }
+        if (otaTempDir.exists() && otaTempDir.isDirectory) {
+            otaTempDir.listFiles()?.filter { it.isFile }?.forEach { f ->
+                items.add(
+                    io.parchment.ai.model.StoredAppFileItem(
+                        fullPath = f.absolutePath,
+                        relativePath = "temp/parchment-ota/${f.name}",
+                        fileName = f.name,
+                        category = io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP,
+                        sizeBytes = f.length(),
+                        lastModifiedMs = f.lastModified()
+                    )
+                )
+            }
+        }
+        items.sortedWith(
+            compareBy<io.parchment.ai.model.StoredAppFileItem> { it.category.ordinal }
+                .thenByDescending { it.lastModifiedMs }
+        )
+    }.getOrDefault(emptyList())
+
+    actual fun deleteAppStorageFile(fullPath: String): Boolean = runCatching {
+        if (fullPath.isBlank()) return false
+        val target = File(fullPath).canonicalFile
+        val storageRoot = resolveStorageDir().canonicalFile
+        val otaTempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota").canonicalFile
+        val insideStorage = target.toPath().normalize().startsWith(storageRoot.toPath().normalize())
+        val insideOta = target.toPath().normalize().startsWith(otaTempDir.toPath().normalize())
+        if (!insideStorage && !insideOta) return false
+        if (!target.exists() || !target.isFile) return false
+        synchronized(imageCache) { imageCache.remove(target.absolutePath) }
+        target.delete()
+    }.getOrDefault(false)
+
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? =
         pickFilesForImport(allowedExtensions).firstOrNull()
 
@@ -730,7 +797,8 @@ actual object PlatformBridge {
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
         val pb = if (isWin) {
-            val utf16LeBytes = command.toByteArray(Charsets.UTF_16LE)
+            val psCommandWithNoProgress = "\$ProgressPreference = 'SilentlyContinue'; $command"
+            val utf16LeBytes = psCommandWithNoProgress.toByteArray(Charsets.UTF_16LE)
             val encodedCommand = java.util.Base64.getEncoder().encodeToString(utf16LeBytes)
             ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
         } else {

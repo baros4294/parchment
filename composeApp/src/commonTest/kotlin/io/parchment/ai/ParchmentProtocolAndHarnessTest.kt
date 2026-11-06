@@ -1210,5 +1210,33 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(compressed.contains("Line #1 output"))
         assertTrue(compressed.contains("Line #300 output"))
         assertTrue(compressed.contains("middle lines omitted by size valve"))
+
+        // 4. PowerShell CLIXML progress noise is stripped cleanly
+        val clixmlOut = "Exit Code: 0\nHello World\n#< CLIXML\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\">Preparing modules</Obj></Objs>"
+        val cleanClixml = WorkspaceHarness.compressToolOutputWithSizeValve("shell_exec", clixmlOut)
+        assertTrue(!cleanClixml.contains("CLIXML"))
+        assertTrue(!cleanClixml.contains("<Objs"))
+        assertTrue(cleanClixml.contains("Hello World"))
+    }
+
+    @Test
+    fun testFastPrefixSuffixTrimmedDiffAndStorageListing() {
+        // 1. 400-line file with a 2-line change in the middle computes an exact unified diff via prefix/suffix trimming
+        val prefix = (1..180).joinToString("\n") { "val line$it = $it" }
+        val suffix = (183..400).joinToString("\n") { "val line$it = $it" }
+        val oldLarge = "$prefix\nval targetA = 1\nval targetB = 2\n$suffix"
+        val newLarge = "$prefix\nval targetA = 100\nval targetB = 200\n$suffix"
+        val diff = computeUnifiedLineDiff(oldLarge, newLarge)
+        assertTrue(diff.any { it.kind == io.parchment.ai.ui.DiffLineKind.REMOVED && it.text.contains("val targetA = 1") })
+        assertTrue(diff.any { it.kind == io.parchment.ai.ui.DiffLineKind.ADDED && it.text.contains("val targetA = 100") })
+        assertTrue(diff.any { it.kind == io.parchment.ai.ui.DiffLineKind.COLLAPSED })
+
+        // 2. Default PreferencesConfig has autoScrollToBottomOnOpen enabled
+        val defaultPrefs = PreferencesConfig()
+        assertTrue(defaultPrefs.autoScrollToBottomOnOpen)
+
+        // 3. Storage listing returns valid StoredAppFileItem list
+        val files = io.parchment.ai.platform.PlatformBridge.listAppStorageFiles()
+        assertNotNull(files)
     }
 }

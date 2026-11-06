@@ -84,7 +84,7 @@ enum class SettingsCategory(val icon: String, val label: String) {
     DEFAULT_MODEL("♡", "Default Model"),
     WORKSPACE("📂", "Workspace"),
     WORLD_BOOK("📖", "World Book & Cards"),
-    BACKUP_OTA("☁", "Backup & OTA")
+    BACKUP_OTA("☁", "Storage & OTA")
 }
 
 @Composable
@@ -115,6 +115,8 @@ fun ParchmentSettingsScreen(
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
     onImportChatSessions: (List<ChatSession>) -> Unit = {},
     onWipeAllData: () -> Unit,
+    onDeleteChatSessionById: (String) -> Unit = {},
+    onInspectAttachment: (io.parchment.ai.model.PromptAttachment) -> Unit = {},
     onNotify: (String) -> Unit,
     onClose: () -> Unit
 ) {
@@ -301,6 +303,8 @@ fun ParchmentSettingsScreen(
                         onRestoreFullBackup = onRestoreFullBackup,
                         onImportChatSessions = onImportChatSessions,
                         onWipeAllData = onWipeAllData,
+                        onDeleteChatSessionById = onDeleteChatSessionById,
+                        onInspectAttachment = onInspectAttachment,
                         onNotify = onNotify
                     )
                 }
@@ -342,7 +346,7 @@ fun ParchmentSettingsScreen(
                 }
                 SettingsCategory.WORKSPACE -> "Sandboxed local file agent (${activeSession.workspaceMode.label}) & shell_exec"
                 SettingsCategory.WORLD_BOOK -> "Character cards (PNG/JSON) & ${appState.globalWorldBook.size + activeSession.fragments.size} lore fragment(s)"
-                SettingsCategory.BACKUP_OTA -> "Installed v${OtaUpdateEngine.currentAppVersion} • JSON backup & GitHub OTA"
+                SettingsCategory.BACKUP_OTA -> "Storage manager, v${OtaUpdateEngine.currentAppVersion} OTA & JSON backups"
             }
 
             Column(
@@ -488,6 +492,8 @@ fun ParchmentSettingsScreen(
                             onRestoreFullBackup = onRestoreFullBackup,
                             onImportChatSessions = onImportChatSessions,
                             onWipeAllData = onWipeAllData,
+                            onDeleteChatSessionById = onDeleteChatSessionById,
+                            onInspectAttachment = onInspectAttachment,
                             onNotify = onNotify
                         )
                     } else {
@@ -593,6 +599,8 @@ private fun SettingsSubpageContent(
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
     onImportChatSessions: (List<ChatSession>) -> Unit,
     onWipeAllData: () -> Unit,
+    onDeleteChatSessionById: (String) -> Unit = {},
+    onInspectAttachment: (io.parchment.ai.model.PromptAttachment) -> Unit = {},
     onNotify: (String) -> Unit
 ) {
     if (searchQuery.trim().isNotEmpty()) {
@@ -682,6 +690,8 @@ private fun SettingsSubpageContent(
             onRestoreFullBackup = onRestoreFullBackup,
             onImportChatSessions = onImportChatSessions,
             onWipeAllData = onWipeAllData,
+            onDeleteChatSessionById = onDeleteChatSessionById,
+            onInspectAttachment = onInspectAttachment,
             onNotify = onNotify
         )
     }
@@ -1098,7 +1108,6 @@ private fun PreferencesSubpage(
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Render reasoning (thinking) with Markdown & LaTeX",
-                        subtitle = "Parses **bold**, *italic*, code blocks, and LaTeX math inside thinking traces",
                         checked = prefs.renderReasoningWithMarkdown,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(renderReasoningWithMarkdown = it)) }
                     )
@@ -1123,7 +1132,6 @@ private fun PreferencesSubpage(
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Collapse Long Messages (> 1,800 chars)",
-                        subtitle = "Folds very long messages with an inline '▸ Read Full Message' button",
                         checked = prefs.collapseLongMessages,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
                     )
@@ -1148,10 +1156,6 @@ private fun PreferencesSubpage(
                                     text = "Android Unrestricted Background Mode",
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = p.accent)
                                 )
-                                BasicText(
-                                    text = "Prevents the system from suspending active background generations when switching apps",
-                                    style = p.uiLabelStyle
-                                )
                             }
                             SepiaButton(
                                 text = if (isUnrestricted) "✓ Unrestricted" else "⚡ Allow Now",
@@ -1165,14 +1169,12 @@ private fun PreferencesSubpage(
 
                     SepiaToggleRow(
                         title = "Auto switch to Topics",
-                        subtitle = "Automatically switches sidebar to Topics list when selecting an Assistant",
                         checked = prefs.autoSwitchToTopics,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoSwitchToTopics = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Auto-collapse Thinking",
-                        subtitle = "Briefly opens live reasoning box while thinking, then collapses when reply starts",
                         checked = prefs.autoCollapseThinking,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseThinking = it)) }
                     )
@@ -1185,14 +1187,12 @@ private fun PreferencesSubpage(
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Delete messages below when regenerating",
-                        subtitle = "Removes subsequent turns below the regenerated message",
                         checked = prefs.deleteMessagesBelowWhenRegenerating,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(deleteMessagesBelowWhenRegenerating = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Delete previous message when regenerating",
-                        subtitle = "Replaces the previous reply in-place instead of adding a swipe variant",
                         checked = prefs.deletePreviousMessageWhenRegenerating,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(deletePreviousMessageWhenRegenerating = it)) }
                     )
@@ -1205,7 +1205,6 @@ private fun PreferencesSubpage(
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Confirm before deleting or clearing chats",
-                        subtitle = "Shows an 'Are you sure?' prompt before deleting a chat or clearing all chats",
                         checked = prefs.confirmBeforeDeletingChat,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
                     )
@@ -1241,6 +1240,12 @@ private fun PreferencesSubpage(
                     )
                     SepiaDivider()
                     SepiaToggleRow(
+                        title = "Auto-scroll to bottom when opening a chat",
+                        checked = prefs.autoScrollToBottomOnOpen,
+                        onCheckedChange = { onUpdatePreferences(prefs.copy(autoScrollToBottomOnOpen = it)) }
+                    )
+                    SepiaDivider()
+                    SepiaToggleRow(
                         title = "Auto-follow bottom while streaming",
                         checked = prefs.autoFollowBottom,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoFollowBottom = it)) }
@@ -1248,7 +1253,6 @@ private fun PreferencesSubpage(
                     SepiaDivider()
                     SepiaToggleRow(
                         title = "Auto-compact context when reaching 85% of context limit",
-                        subtitle = "Automatically summarizes older turns into Continuity Memory & mutes them so long chats never hit token limits",
                         checked = prefs.autoCompactWhenNearContextLimit,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
                     )
@@ -2157,8 +2161,7 @@ private fun ProviderProtocolSubpage(
         }
 
         SepiaSectionCard(
-            title = "Identity, Wire Protocol & Endpoint Override",
-            subtitle = "Switch between Gemini Interactions, OpenAI Responses, Anthropic Messages, and ByteDance Ark"
+            title = "Identity, Wire Protocol & Endpoint Override"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaTextField(
@@ -2202,19 +2205,16 @@ private fun ProviderProtocolSubpage(
                 )
                 SepiaToggleRow(
                     title = "Stateful Chain (previous_interaction_id / previous_response_id)",
-                    subtitle = "Enabled by default for multi-turn continuity",
                     checked = profile.useStatefulChaining,
                     onCheckedChange = { sc -> onUpdateProfile { it.copy(useStatefulChaining = sc) } }
                 )
                 SepiaToggleRow(
                     title = "Background Poll & Stream Recovery",
-                    subtitle = "Enabled by default — automatically recovers via GET /interactions/{id} if stream is interrupted",
                     checked = profile.useBackgroundLongDecode,
                     onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
                 )
                 SepiaToggleRow(
                     title = "Smart Legacy Endpoint Fallback (:streamGenerateContent or /v1/chat/completions)",
-                    subtitle = "Tries /v1beta/interactions or /v1/responses first; if the newer protocol errors repeatedly, automatically falls back to :streamGenerateContent or /v1/chat/completions",
                     checked = profile.useLegacyFallbackEndpoint,
                     onCheckedChange = { leg -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = leg) } }
                 )
@@ -2222,8 +2222,7 @@ private fun ProviderProtocolSubpage(
         }
 
         SepiaSectionCard(
-            title = "Nullable Sampling & Token Parameters (Delete Value = Strip from API)",
-            subtitle = "Leave any box blank to omit that field completely from the outgoing JSON payload. Set 0 for Unlimited where supported."
+            title = "Nullable Sampling & Token Parameters (Blank = Strip from API, 0 = ∞)"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val win = LocalParchmentWindowSize.current
@@ -2460,7 +2459,6 @@ private fun ModelConfigSubpage(
 
         SepiaSectionCard(
             title = "Context Window & Output Token Limits",
-            subtitle = "Set Context Window to 0 for Unlimited (∞). Leave Max Output Tokens blank to strip it from API requests.",
             headerAction = {
                 SepiaButton(
                     text = "🌐 Sync from models.dev",
@@ -2704,8 +2702,7 @@ private fun AssistantsSubpage(
                 }
             }
             SepiaSectionCard(
-                title = "Assistant Model, Thinking Effort & Workspace",
-                subtitle = "Bind this Assistant to a dedicated provider/model or local project directory"
+                title = "Assistant Model, Thinking Effort & Workspace"
             ) {
                 val scope = rememberCoroutineScope()
                 val followsGlobalModel = editingAssistant.defaultModelId.isBlank()
@@ -2795,8 +2792,7 @@ private fun AssistantsSubpage(
             }
 
             SepiaSectionCard(
-                title = "Assistant Sampling & Context Overrides (Blank = Strip / Follow Profile, 0 = Unlimited)",
-                subtitle = "Leave Temperature, Top-P, or Max Tokens blank to strip or inherit."
+                title = "Assistant Sampling & Context Overrides (Blank = Follow Profile, 0 = ∞)"
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3024,8 +3020,7 @@ private fun DefaultModelSubpage(
 
         // 1. Global Default Chat Model
         SepiaSectionCard(
-            title = "1. Global Default Model",
-            subtitle = "Primary model used across new chats and any task set to 'Follow Global Choice'"
+            title = "1. Global Default Model"
         ) {
             SepiaSearchableModelPicker(
                 profiles = appState.profiles,
@@ -3045,8 +3040,7 @@ private fun DefaultModelSubpage(
 
         // 2. Title Summary Model
         SepiaSectionCard(
-            title = "2. Title Generation Model",
-            subtitle = "Automatically generates a concise 3–6 word topic title on the first turn"
+            title = "2. Title Generation Model"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaToggleRow(
@@ -3078,8 +3072,7 @@ private fun DefaultModelSubpage(
 
         // 3. Summary / Context Compression Model
         SepiaSectionCard(
-            title = "3. Summary & Context Compression Model",
-            subtitle = "Used when summarizing long conversations into Rolling Continuity Memory"
+            title = "3. Summary & Context Compression Model"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaToggleRow(
@@ -3103,8 +3096,7 @@ private fun DefaultModelSubpage(
 
         // 4. Translation Model & Target Language
         SepiaSectionCard(
-            title = "4. Translation Model & Target Language",
-            subtitle = "Used when clicking 'Translate' inside any message's action menu"
+            title = "4. Translation Model & Target Language"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaTextField(
@@ -3206,8 +3198,7 @@ private fun WorkspaceSubpage(
         BasicText(text = "Workspace & Local Agent Harness", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Sandboxed Local File System & Autonomous Agent Harness",
-            subtitle = "Exposes all ${allTools.size} built-in file, search, atomic edit, memory, goal checklist, web search, math, and shell tools"
+            title = "Sandboxed Local File System & Autonomous Agent Harness"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 @OptIn(ExperimentalLayoutApi::class)
@@ -3308,14 +3299,12 @@ private fun WorkspaceSubpage(
 
                 SepiaToggleRow(
                     title = "Allow Sandboxed Shell Execution (shell_exec)",
-                    subtitle = "Available when Workspace Mode is set to Agent R/W (runs PowerShell on Windows or sh on Unix/Android)",
                     checked = activeProfile.allowShellExecution,
                     onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
                 )
 
                 SepiaToggleRow(
                     title = "Enable Web Search & URL Fetching (web_search, web_fetch)",
-                    subtitle = "Exposes live internet search (native provider search + free DuckDuckGo/Wikipedia/HN cascade) and URL reader",
                     checked = activeProfile.enableWebSearch,
                     onCheckedChange = { ws -> onUpdateProfile { it.copy(enableWebSearch = ws) } }
                 )
@@ -3362,10 +3351,9 @@ private fun WorkspaceSubpage(
             }
         }
 
-        // Complete 16-Tool Interactive Registry
+        // Complete 17-Tool Interactive Registry
         SepiaSectionCard(
-            title = "Complete Agent Harness Tool Registry (${activeToolNames.size} / ${allTools.size} Active)",
-            subtitle = "Click any locked tool badge below to immediately enable its required mode"
+            title = "Complete Agent Harness Tool Registry (${activeToolNames.size} / ${allTools.size} Active)"
         ) {
             val readTools = remember(allTools) {
                 allTools.filter { it.requiresWorkspaceFolder && !it.requiresWritePermission }
@@ -3548,8 +3536,7 @@ private fun WorldBookAndCardsSubpage(
         BasicText(text = "World Book & Character Cards (.png / .json)", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Import / Export .PNG & .JSON Cards",
-            subtitle = "Reads/writes embedded PNG tEXt/iTXt chunks (chara, ccv3, parchment_prompt) and extracts character_book lore"
+            title = "Import / Export .PNG & .JSON Cards"
         ) {
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3646,8 +3633,7 @@ private fun WorldBookAndCardsSubpage(
         // Saved Character Cards Library & System Prompt Presets Library
         if (appState.savedCards.isNotEmpty()) {
             SepiaSectionCard(
-                title = "Saved Character & Scenario Cards Library (${appState.savedCards.size})",
-                subtitle = "Click 'Apply' to activate any saved card in the current chat"
+                title = "Saved Character & Scenario Cards Library (${appState.savedCards.size})"
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     appState.savedCards.forEach { savedCard ->
@@ -3692,7 +3678,6 @@ private fun WorldBookAndCardsSubpage(
         if (appState.systemPromptPresets.isNotEmpty() || activeSession.systemPrompt.isNotBlank()) {
             SepiaSectionCard(
                 title = "System Prompt Presets Library (${appState.systemPromptPresets.size})",
-                subtitle = "Save and reuse system prompts across sessions",
                 headerAction = {
                     if (activeSession.systemPrompt.isNotBlank()) {
                         SepiaButton(
@@ -3761,8 +3746,7 @@ private fun WorldBookAndCardsSubpage(
         val displayedFragments = if (editingGlobalWorldBook) appState.globalWorldBook else activeSession.fragments
 
         SepiaSectionCard(
-            title = "World Book / Lore Fragments (${displayedFragments.size} entries)",
-            subtitle = "Pinned or keyword-triggered lore entries injected into context automatically"
+            title = "World Book / Lore Fragments (${displayedFragments.size} entries)"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3882,11 +3866,81 @@ private fun BackupAndOtaSubpage(
     onRestoreFullBackup: (AppStateSnapshot) -> Unit,
     onImportChatSessions: (List<ChatSession>) -> Unit,
     onWipeAllData: () -> Unit,
+    onDeleteChatSessionById: (String) -> Unit = {},
+    onInspectAttachment: (io.parchment.ai.model.PromptAttachment) -> Unit = {},
     onNotify: (String) -> Unit
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
     val scope = rememberCoroutineScope()
+    var storageRefreshTick by remember { mutableStateOf(0) }
+    var storageCategoryFilter by remember { mutableStateOf<io.parchment.ai.model.StorageFileCategory?>(null) }
+    var storageSearchQuery by remember { mutableStateOf("") }
+
+    val allStoredFiles = remember(storageRefreshTick, appState.sessions.size) {
+        PlatformBridge.listAppStorageFiles()
+    }
+    val sessionsByFileStem = remember(appState.sessions) {
+        appState.sessions.associateBy { sess ->
+            sess.id.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "session" }
+        }
+    }
+    val referencedMediaPaths = remember(appState.sessions) {
+        val set = HashSet<String>()
+        for (sess in appState.sessions) {
+            for (node in sess.messages) {
+                for (v in node.variants) {
+                    for (att in v.attachments) {
+                        if (att.localFilePath.isNotBlank()) set.add(att.localFilePath.replace('\\', '/').lowercase())
+                    }
+                    for (m in v.mediaItems) {
+                        if (m.localFilePath.isNotBlank()) set.add(m.localFilePath.replace('\\', '/').lowercase())
+                    }
+                }
+            }
+        }
+        set
+    }
+
+    fun isOrphanOrTempFile(item: io.parchment.ai.model.StoredAppFileItem): Boolean {
+        if (item.category == io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP) return true
+        if (item.category == io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA ||
+            item.category == io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
+        ) {
+            val norm = item.fullPath.replace('\\', '/').lowercase()
+            return norm !in referencedMediaPaths
+        }
+        return false
+    }
+
+    fun formatBytesCompact(bytes: Long): String {
+        return when {
+            bytes >= 1024L * 1024L -> "${((bytes / (1024.0 * 1024.0)) * 10).toInt() / 10.0} MB"
+            bytes >= 1024L -> "${((bytes / 1024.0) * 10).toInt() / 10.0} KB"
+            else -> "$bytes B"
+        }
+    }
+
+        val totalBytes = remember(allStoredFiles) { allStoredFiles.sumOf { it.sizeBytes } }
+        val orphanAndTempFiles = remember(allStoredFiles, referencedMediaPaths) {
+            allStoredFiles.filter { isOrphanOrTempFile(it) }
+        }
+        val orphanBytes = remember(orphanAndTempFiles) { orphanAndTempFiles.sumOf { it.sizeBytes } }
+
+    val filteredStorageFiles = remember(allStoredFiles, storageCategoryFilter, storageSearchQuery, sessionsByFileStem) {
+        val q = storageSearchQuery.trim().lowercase()
+        allStoredFiles.filter { item ->
+            val catOk = storageCategoryFilter == null || item.category == storageCategoryFilter
+            if (!catOk) return@filter false
+            if (q.isEmpty()) return@filter true
+            val chatTitle = if (item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION) {
+                sessionsByFileStem[item.fileName.removeSuffix(".json")]?.title.orEmpty()
+            } else ""
+            item.fileName.lowercase().contains(q) ||
+                item.relativePath.lowercase().contains(q) ||
+                chatTitle.lowercase().contains(q)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -3895,11 +3949,283 @@ private fun BackupAndOtaSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        BasicText(text = "Backup & In-App OTA Updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = "Storage, Backup & OTA Updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+
+        // Card 1: Storage & File Manager (Inspect & delete Chats, Media Uploads, AI Media, Backups, & Temp files!)
+        SepiaSectionCard(
+            title = "Storage & File Manager (${allStoredFiles.size} files • ${formatBytesCompact(totalBytes)})",
+            subtitle = PlatformBridge.getAppStorageDirectoryPath(),
+            headerAction = {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SepiaButton(
+                        text = "📂 Open Folder",
+                        compact = true,
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = { PlatformBridge.openOrPlayMedia(PlatformBridge.getAppStorageDirectoryPath()) }
+                    )
+                    SepiaButton(
+                        text = "↻",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = { storageRefreshTick++ }
+                    )
+                }
+            }
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Visual Storage Breakdown Bar by Category
+                val catTotals = remember(allStoredFiles) {
+                    io.parchment.ai.model.StorageFileCategory.entries.associateWith { cat ->
+                        allStoredFiles.filter { it.category == cat }.sumOf { it.sizeBytes }
+                    }
+                }
+                val safeTotal = totalBytes.coerceAtLeast(1L).toFloat()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(9.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(p.elevatedBg)
+                        .border(0.65.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+                ) {
+                    io.parchment.ai.model.StorageFileCategory.entries.forEach { cat ->
+                        val catBytes = catTotals[cat] ?: 0L
+                        if (catBytes > 0L) {
+                            val col = when (cat) {
+                                io.parchment.ai.model.StorageFileCategory.CHAT_SESSION -> p.accent
+                                io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA -> Color(0xFF3D6B8E)
+                                io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA -> Color(0xFF4A7C59)
+                                io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS -> p.accentSecondary
+                                io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP -> p.mutedInk
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight((catBytes.toFloat() / safeTotal).coerceAtLeast(0.02f))
+                                    .fillMaxHeight()
+                                    .background(col)
+                            )
+                        }
+                    }
+                }
+
+                // Category Filter Pills + Orphan Cleanup Action
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SepiaChip(
+                        label = "All (${allStoredFiles.size} • ${formatBytesCompact(totalBytes)})",
+                        selected = storageCategoryFilter == null,
+                        onClick = { storageCategoryFilter = null }
+                    )
+                    io.parchment.ai.model.StorageFileCategory.entries.forEach { cat ->
+                        val count = allStoredFiles.count { it.category == cat }
+                        val bytes = catTotals[cat] ?: 0L
+                        if (count > 0 || storageCategoryFilter == cat) {
+                            SepiaChip(
+                                label = "${cat.label} ($count • ${formatBytesCompact(bytes)})",
+                                selected = storageCategoryFilter == cat,
+                                onClick = {
+                                    storageCategoryFilter = if (storageCategoryFilter == cat) null else cat
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (orphanAndTempFiles.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = "${orphanAndTempFiles.size} unused media/temp file(s) (${formatBytesCompact(orphanBytes)}) can be safely freed.",
+                            style = p.uiLabelStyle.copy(color = p.accent)
+                        )
+                        SepiaButton(
+                            text = "🗑 Clean Unused (${formatBytesCompact(orphanBytes)})",
+                            compact = true,
+                            style = SepiaButtonStyle.SECONDARY,
+                            onClick = {
+                                var deletedCount = 0
+                                var freedBytes = 0L
+                                orphanAndTempFiles.forEach { item ->
+                                    if (PlatformBridge.deleteAppStorageFile(item.fullPath)) {
+                                        deletedCount++
+                                        freedBytes += item.sizeBytes
+                                    }
+                                }
+                                storageRefreshTick++
+                                onNotify("Cleaned $deletedCount unused file(s) (${formatBytesCompact(freedBytes)} freed).")
+                            }
+                        )
+                    }
+                }
+
+                // Search bar for files
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SepiaTextField(
+                        value = storageSearchQuery,
+                        onValueChange = { storageSearchQuery = it },
+                        placeholder = "🔍 Filter files by name, path, or chat title…",
+                        singleLine = true,
+                        minHeight = 34.dp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (storageSearchQuery.isNotEmpty()) {
+                        SepiaButton(
+                            text = "×",
+                            compact = true,
+                            style = SepiaButtonStyle.GHOST,
+                            onClick = { storageSearchQuery = "" }
+                        )
+                    }
+                }
+
+                // Scrollable File List
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(p.sheetBg.copy(alpha = 0.55f))
+                        .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (filteredStorageFiles.isEmpty()) {
+                        BasicText(
+                            text = "No matching files in storage.",
+                            style = p.uiLabelStyle.copy(color = p.mutedInk),
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                    filteredStorageFiles.forEach { item ->
+                        val matchedSession = if (item.category == io.parchment.ai.model.StorageFileCategory.CHAT_SESSION) {
+                            sessionsByFileStem[item.fileName.removeSuffix(".json")]
+                        } else null
+                        val isOrphan = remember(item.fullPath, referencedMediaPaths) { isOrphanOrTempFile(item) }
+                        val itemIcon = when (item.category) {
+                            io.parchment.ai.model.StorageFileCategory.CHAT_SESSION -> KissIcon.CHAT_BUBBLE
+                            io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA -> KissIcon.PAPERCLIP
+                            io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA -> KissIcon.IMAGE
+                            io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS -> KissIcon.SETTINGS
+                            io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP -> KissIcon.PACKAGE_BOX
+                        }
+                        val displayTitle = if (matchedSession != null) {
+                            "${matchedSession.title} (${matchedSession.messages.size} msgs)"
+                        } else {
+                            item.fileName
+                        }
+                        val isPrimarySettingsFile = item.fileName.equals("parchment-settings.json", ignoreCase = true)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(p.cardBg)
+                                .border(0.65.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(7.dp))
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                KissVectorIcon(icon = itemIcon, tint = p.accent, size = 14.dp)
+                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    BasicText(
+                                        text = displayTitle,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                    )
+                                    val orphanTag = if (isOrphan) " • Unused" else ""
+                                    BasicText(
+                                        text = "${item.relativePath} • ${formatBytesCompact(item.sizeBytes)} • ${formatCompactTimestamp(item.lastModifiedMs)}$orphanTag",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = p.monoStyle.copy(
+                                            fontSize = 10.sp,
+                                            color = if (isOrphan) p.accentSecondary else p.mutedInk
+                                        )
+                                    )
+                                }
+                            }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SepiaButton(
+                                    text = "👁",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = {
+                                        val lower = item.fileName.lowercase()
+                                        val mime = when {
+                                            lower.endsWith(".png") -> "image/png"
+                                            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+                                            lower.endsWith(".webp") -> "image/webp"
+                                            lower.endsWith(".gif") -> "image/gif"
+                                            lower.endsWith(".svg") -> "image/svg+xml"
+                                            lower.endsWith(".mp4") -> "video/mp4"
+                                            lower.endsWith(".pdf") -> "application/pdf"
+                                            lower.endsWith(".json") -> "application/json"
+                                            else -> "text/plain"
+                                        }
+                                        onInspectAttachment(
+                                            io.parchment.ai.model.PromptAttachment(
+                                                id = "storage-${item.fileName}",
+                                                fileName = item.fileName,
+                                                mimeType = mime,
+                                                localFilePath = item.fullPath
+                                            )
+                                        )
+                                    }
+                                )
+                                SepiaButton(
+                                    text = "📂",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = { PlatformBridge.openOrPlayMedia(item.fullPath) }
+                                )
+                                if (!isPrimarySettingsFile) {
+                                    SepiaButton(
+                                        text = "🗑",
+                                        compact = true,
+                                        style = SepiaButtonStyle.GHOST,
+                                        onClick = {
+                                            if (matchedSession != null) {
+                                                onDeleteChatSessionById(matchedSession.id)
+                                                storageRefreshTick++
+                                                onNotify("Deleted chat '${matchedSession.title}' (${formatBytesCompact(item.sizeBytes)} freed).")
+                                            } else if (PlatformBridge.deleteAppStorageFile(item.fullPath)) {
+                                                storageRefreshTick++
+                                                onNotify("Deleted '${item.fileName}' (${formatBytesCompact(item.sizeBytes)} freed).")
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         SepiaSectionCard(
             title = "In-App OTA Updates (Android .APK & Windows .EXE)",
-            subtitle = "Installed Version: v${OtaUpdateEngine.currentAppVersion} • Platform: ${PlatformBridge.platformName}"
+            subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformBridge.platformName}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SepiaTextField(
@@ -3981,16 +4307,12 @@ private fun BackupAndOtaSubpage(
             }
         }
 
-        // Card 2: Separate Per-Chat JSON Export & Import (Never mixed with Settings!)
+        // Card 3: Separate Per-Chat JSON Export & Import (Never mixed with Settings!)
         SepiaSectionCard(
             title = "Portable Chats Export & Import (Separate .json Per Chat)",
-            subtitle = "Each chat is stored in its own .json file at: ${PlatformBridge.getChatsStorageDirectoryPath()}"
+            subtitle = PlatformBridge.getChatsStorageDirectoryPath()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                BasicText(
-                    text = "Export your conversations as individual .chat.json files (preserving all messages, swipe versions, thinking summaries, tool calls, web citations, and lore fragments) to move between Desktop and Mobile without touching your device settings.",
-                    style = p.uiLabelStyle.copy(color = p.narrationInk)
-                )
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     SepiaButton(
@@ -4044,16 +4366,12 @@ private fun BackupAndOtaSubpage(
             }
         }
 
-        // Card 3: Settings, Providers, Assistants & System Prompts Backup (Decoupled from Chats!)
+        // Card 4: Settings, Providers, Assistants & System Prompts Backup (Decoupled from Chats!)
         SepiaSectionCard(
-            title = "Settings, Providers & Assistants Backup (.json — Zero Chats Inside)",
-            subtitle = "Settings file: ${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"
+            title = "Settings, Providers & Assistants Backup (.json)",
+            subtitle = "${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                BasicText(
-                    text = "Exports only your Provider Profiles, Assistants, System Prompts, Default Models, Theme, and Global World Book in a clean settings file without bundling chat histories.",
-                    style = p.uiLabelStyle.copy(color = p.narrationInk)
-                )
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     SepiaButton(
@@ -4300,6 +4618,7 @@ private fun GlobalSettingsSearchResultsSubpage(
     val hitNewChatSwitchAsst = hit("New chat when switching assistants", "Behavior & startup", "sidebar", "assistant")
     val hitNewChatDeleteTopic = hit("New chat after deleting topic", "Behavior & startup", "trash", "session")
     val hitNewChatLaunch = hit("New Chat on Launch", "Behavior & startup", "startup", "boot", "open")
+    val hitAutoScrollOnOpen = hit("Auto-scroll to bottom when opening a chat", "Behavior & startup", "scroll", "bottom", "latest", "open")
     val hitAutoFollowBottom = hit("Auto-follow bottom while streaming", "Behavior & startup", "scroll", "autoscroll")
     val hitAutoCompactLimit = hit("Auto-compact context when reaching 85% of context limit", "Behavior & startup", "compaction", "context window", "summarize", "token limit")
     val hitNavMinimap = hit("Message Navigation Minimap", "Behavior & startup", "tree", "scroll buttons", "map")
@@ -4315,7 +4634,7 @@ private fun GlobalSettingsSearchResultsSubpage(
         hitAutoCollapseCode, hitCollapseLong,
         hitAutoTopics, hitAutoCollapseThink, hitToolSummary, hitDeleteBelowRegen, hitDeletePrevRegen,
         hitConfirmRegen, hitConfirmDelete, hitKeepForkVersions, hitChatListDates, hitNewChatSwitchAsst,
-        hitNewChatDeleteTopic, hitNewChatLaunch, hitAutoFollowBottom, hitAutoCompactLimit, hitNavMinimap, hitSendShortcut, hitPasteLongFile
+        hitNewChatDeleteTopic, hitNewChatLaunch, hitAutoScrollOnOpen, hitAutoFollowBottom, hitAutoCompactLimit, hitNavMinimap, hitSendShortcut, hitPasteLongFile
     ).any { it }
 
     // 2. PROVIDERS & MODELS MATCHES
@@ -4675,7 +4994,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitCollapseLong) {
                         SepiaToggleRow(
                             title = "Collapse Long Messages (> 1,800 chars)",
-                            subtitle = "Folds very long messages with an inline '▸ Read Full Message' button",
                             checked = prefs.collapseLongMessages,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
                         )
@@ -4683,7 +5001,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitAutoTopics) {
                         SepiaToggleRow(
                             title = "Auto switch to Topics",
-                            subtitle = "Automatically switches sidebar to Topics list when selecting an Assistant",
                             checked = prefs.autoSwitchToTopics,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoSwitchToTopics = it)) }
                         )
@@ -4691,7 +5008,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitAutoCollapseThink) {
                         SepiaToggleRow(
                             title = "Auto-collapse Thinking",
-                            subtitle = "Opens live reasoning box while thinking, then collapses when reply starts",
                             checked = prefs.autoCollapseThinking,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseThinking = it)) }
                         )
@@ -4766,6 +5082,13 @@ private fun GlobalSettingsSearchResultsSubpage(
                             onCheckedChange = { onUpdatePreferences(prefs.copy(newChatOnLaunch = it)) }
                         )
                     }
+                    if (hitAutoScrollOnOpen) {
+                        SepiaToggleRow(
+                            title = "Auto-scroll to bottom when opening a chat",
+                            checked = prefs.autoScrollToBottomOnOpen,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(autoScrollToBottomOnOpen = it)) }
+                        )
+                    }
                     if (hitAutoFollowBottom) {
                         SepiaToggleRow(
                             title = "Auto-follow bottom while streaming",
@@ -4776,7 +5099,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitAutoCompactLimit) {
                         SepiaToggleRow(
                             title = "Auto-compact context when reaching 85% of context limit",
-                            subtitle = "Automatically summarizes older turns into Continuity Memory & mutes them so long chats never hit token limits",
                             checked = prefs.autoCompactWhenNearContextLimit,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
                         )
@@ -4870,7 +5192,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitLegacyFallback) {
                         SepiaToggleRow(
                             title = "Smart Legacy Endpoint Fallback (:streamGenerateContent or /v1/chat/completions)",
-                            subtitle = "Tries /v1beta/interactions or /v1/responses first; if the newer protocol errors repeatedly, automatically falls back to :streamGenerateContent or /v1/chat/completions",
                             checked = activeProfile.useLegacyFallbackEndpoint,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = v) } }
                         )
@@ -5006,7 +5327,6 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitShellExec) {
                         SepiaToggleRow(
                             title = "Allow Sandboxed Shell Execution (shell_exec)",
-                            subtitle = "Available when Workspace Mode is set to Agent R/W",
                             checked = activeProfile.allowShellExecution,
                             onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
                         )

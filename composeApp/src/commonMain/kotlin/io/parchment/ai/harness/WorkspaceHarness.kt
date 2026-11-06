@@ -923,12 +923,13 @@ object WorkspaceHarness {
     }
 
     private val ANSI_ESCAPE_REGEX = Regex("""\u001B\[[0-?]*[ -/]*[@-~]""")
+    private val PS_CLIXML_BLOCK_REGEX = Regex("""(?s)#< CLIXML\s*<Objs\b.*?</Objs>""")
     private val EXCESS_BLANK_LINES_REGEX = Regex("""\n{4,}""")
     private val LINE_NUMBER_PREFIX_REGEX = Regex("""^\s*(\d+):\s?(.*)$""")
 
     /**
      * `omp`-inspired Pre-Context Output Compression & Head+Tail Bookend Size Valve.
-     * - Strips noisy ANSI escape codes and excessive blank lines.
+     * - Strips noisy ANSI escape codes, PowerShell `#< CLIXML ... </Objs>` progress XML, and excessive blank lines.
      * - Applies a Head + Tail Bookend Size Valve to `shell_exec`, `fs_search`, `fs_list`, and `fs_glob`
      *   so a single noisy command or directory dump never floods the context window, while NEVER
      *   truncating requested `fs_read` file line ranges.
@@ -937,8 +938,11 @@ object WorkspaceHarness {
         if (rawOutput.isEmpty()) return rawOutput
         val cleaned = rawOutput
             .replace(ANSI_ESCAPE_REGEX, "")
+            .replace(PS_CLIXML_BLOCK_REGEX, "")
+            .replace("#< CLIXML", "")
             .replace("\r\n", "\n")
             .replace(EXCESS_BLANK_LINES_REGEX, "\n\n\n")
+            .trimEnd()
         if (toolName.equals("fs_read", ignoreCase = true)) {
             return cleaned
         }

@@ -168,13 +168,16 @@ fun Modifier.kissClickable(
     val scale by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMedium
+            dampingRatio = 0.78f,
+            stiffness = 680f
         )
     )
     val liftY by animateFloatAsState(
         targetValue = if (isHovered && !isPressed && enabled) -1.2f else 0f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = 560f
+        )
     )
     return this
         .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
@@ -449,17 +452,18 @@ fun <T> SepiaSegmentedBar(
     ) {
         items.forEach { (value, label) ->
             val isSelected = value == selected
+            val segColorSpec = spring<Color>(stiffness = 620f, dampingRatio = Spring.DampingRatioNoBouncy)
             val tabBg by animateColorAsState(
                 targetValue = if (isSelected) p.cardBg else Color.Transparent,
-                animationSpec = tween(160)
+                animationSpec = segColorSpec
             )
             val tabBorder by animateColorAsState(
                 targetValue = if (isSelected) p.border.copy(alpha = 0.85f) else Color.Transparent,
-                animationSpec = tween(160)
+                animationSpec = segColorSpec
             )
             val tabText by animateColorAsState(
                 targetValue = if (isSelected) p.accent else p.narrationInk,
-                animationSpec = tween(160)
+                animationSpec = segColorSpec
             )
             val parsed = remember(label) { parseKissLabelIcons(label) }
             val tabShape = RoundedCornerShape(6.dp)
@@ -1469,50 +1473,78 @@ fun computeUnifiedLineDiff(oldText: String, newText: String): List<DiffLine> {
         return oldLines.take(120).map { DiffLine(DiffLineKind.REMOVED, it) }
     }
 
-    // Cap LCS matrix dimensions on huge files for 0ms UI responsiveness
-    val maxDim = 180
-    if (oldLines.size > maxDim || newLines.size > maxDim) {
-        val removed = oldLines.take(80).map { DiffLine(DiffLineKind.REMOVED, it) }
-        val added = newLines.take(80).map { DiffLine(DiffLineKind.ADDED, it) }
-        return removed + added
+    // Fast O(N) common prefix & suffix trimming before running LCS on only the changed middle region!
+    var prefixLen = 0
+    val minTotal = minOf(oldLines.size, newLines.size)
+    while (prefixLen < minTotal && oldLines[prefixLen] == newLines[prefixLen]) {
+        prefixLen++
+    }
+    var suffixLen = 0
+    while (
+        suffixLen < (minTotal - prefixLen) &&
+        oldLines[oldLines.size - 1 - suffixLen] == newLines[newLines.size - 1 - suffixLen]
+    ) {
+        suffixLen++
     }
 
-    val m = oldLines.size
-    val n = newLines.size
-    val dp = Array(m + 1) { IntArray(n + 1) }
-    for (i in m - 1 downTo 0) {
-        for (j in n - 1 downTo 0) {
-            dp[i][j] = if (oldLines[i] == newLines[j]) {
-                1 + dp[i + 1][j + 1]
-            } else {
-                maxOf(dp[i + 1][j], dp[i][j + 1])
-            }
-        }
-    }
+    val midOld = oldLines.subList(prefixLen, oldLines.size - suffixLen)
+    val midNew = newLines.subList(prefixLen, newLines.size - suffixLen)
 
     val rawDiff = mutableListOf<DiffLine>()
-    var i = 0
-    var j = 0
-    while (i < m && j < n) {
-        if (oldLines[i] == newLines[j]) {
-            rawDiff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[i]))
+    for (k in 0 until prefixLen) {
+        rawDiff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[k]))
+    }
+
+    val maxDim = 320
+    if (midOld.isEmpty() && midNew.isEmpty()) {
+        // Identical files
+    } else if (midOld.isEmpty()) {
+        midNew.take(200).forEach { rawDiff.add(DiffLine(DiffLineKind.ADDED, it)) }
+    } else if (midNew.isEmpty()) {
+        midOld.take(200).forEach { rawDiff.add(DiffLine(DiffLineKind.REMOVED, it)) }
+    } else if (midOld.size > maxDim || midNew.size > maxDim) {
+        midOld.take(100).forEach { rawDiff.add(DiffLine(DiffLineKind.REMOVED, it)) }
+        midNew.take(100).forEach { rawDiff.add(DiffLine(DiffLineKind.ADDED, it)) }
+    } else {
+        val m = midOld.size
+        val n = midNew.size
+        val dp = Array(m + 1) { IntArray(n + 1) }
+        for (i in m - 1 downTo 0) {
+            for (j in n - 1 downTo 0) {
+                dp[i][j] = if (midOld[i] == midNew[j]) {
+                    1 + dp[i + 1][j + 1]
+                } else {
+                    maxOf(dp[i + 1][j], dp[i][j + 1])
+                }
+            }
+        }
+        var i = 0
+        var j = 0
+        while (i < m && j < n) {
+            if (midOld[i] == midNew[j]) {
+                rawDiff.add(DiffLine(DiffLineKind.CONTEXT, midOld[i]))
+                i++
+                j++
+            } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+                rawDiff.add(DiffLine(DiffLineKind.REMOVED, midOld[i]))
+                i++
+            } else {
+                rawDiff.add(DiffLine(DiffLineKind.ADDED, midNew[j]))
+                j++
+            }
+        }
+        while (i < m) {
+            rawDiff.add(DiffLine(DiffLineKind.REMOVED, midOld[i]))
             i++
-            j++
-        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-            rawDiff.add(DiffLine(DiffLineKind.REMOVED, oldLines[i]))
-            i++
-        } else {
-            rawDiff.add(DiffLine(DiffLineKind.ADDED, newLines[j]))
+        }
+        while (j < n) {
+            rawDiff.add(DiffLine(DiffLineKind.ADDED, midNew[j]))
             j++
         }
     }
-    while (i < m) {
-        rawDiff.add(DiffLine(DiffLineKind.REMOVED, oldLines[i]))
-        i++
-    }
-    while (j < n) {
-        rawDiff.add(DiffLine(DiffLineKind.ADDED, newLines[j]))
-        j++
+
+    for (k in (oldLines.size - suffixLen) until oldLines.size) {
+        rawDiff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[k]))
     }
 
     // Collapse runs of > 6 consecutive CONTEXT lines to keep the diff focused

@@ -334,6 +334,54 @@ actual object PlatformBridge {
         true
     }.getOrDefault(false)
 
+    actual fun listAppStorageFiles(): List<io.parchment.ai.model.StoredAppFileItem> = runCatching {
+        val rootDir = resolveStorageDir().canonicalFile
+        val rootPath = rootDir.toPath().normalize()
+        val items = mutableListOf<io.parchment.ai.model.StoredAppFileItem>()
+        if (rootDir.exists() && rootDir.isDirectory) {
+            rootDir.walkTopDown()
+                .maxDepth(6)
+                .filter { it.isFile }
+                .forEach { f ->
+                    val rel = runCatching { rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/') }
+                        .getOrDefault(f.name)
+                    val lowerRel = rel.lowercase()
+                    val lowerName = f.name.lowercase()
+                    val cat = when {
+                        lowerName.endsWith(".tmp") || lowerName.endsWith(".apk") -> io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP
+                        lowerRel.startsWith("chats/") && lowerName.endsWith(".json") -> io.parchment.ai.model.StorageFileCategory.CHAT_SESSION
+                        lowerRel.startsWith("media/") && lowerName.startsWith("att-") -> io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
+                        lowerRel.startsWith("media/") -> io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
+                        else -> io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS
+                    }
+                    items.add(
+                        io.parchment.ai.model.StoredAppFileItem(
+                            fullPath = f.absolutePath,
+                            relativePath = rel,
+                            fileName = f.name,
+                            category = cat,
+                            sizeBytes = f.length(),
+                            lastModifiedMs = f.lastModified()
+                        )
+                    )
+                }
+        }
+        items.sortedWith(
+            compareBy<io.parchment.ai.model.StoredAppFileItem> { it.category.ordinal }
+                .thenByDescending { it.lastModifiedMs }
+        )
+    }.getOrDefault(emptyList())
+
+    actual fun deleteAppStorageFile(fullPath: String): Boolean = runCatching {
+        if (fullPath.isBlank()) return false
+        val target = File(fullPath).canonicalFile
+        val storageRoot = resolveStorageDir().canonicalFile
+        val insideStorage = target.toPath().normalize().startsWith(storageRoot.toPath().normalize())
+        if (!insideStorage || !target.exists() || !target.isFile) return false
+        synchronized(imageCache) { imageCache.remove(target.absolutePath) }
+        target.delete()
+    }.getOrDefault(false)
+
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? {
         val act = mainActivityRef?.get() ?: return null
         return act.requestImportFile(arrayOf("image/png", "application/json", "text/plain", "*/*"))

@@ -440,6 +440,7 @@ data class PreferencesConfig(
     val sendShortcut: SendShortcutMode = SendShortcutMode.ENTER,
     val pasteLongTextAsFile: Boolean = false,
     val pasteConversionThresholdChars: Int = 5000,
+    val autoScrollToBottomOnOpen: Boolean = true,
     val autoFollowBottom: Boolean = true,
     val autoCompactWhenNearContextLimit: Boolean = true,
     val chatBackgroundOverlayOpacityPercent: Int = 100,
@@ -633,4 +634,21 @@ data class AppStateSnapshot(
     val theme: ThemeConfig = ThemeConfig(),
     val otaGithubRepo: String = "baros4294/parchment",
     val autoCheckOtaOnStartup: Boolean = true
+)
+
+enum class StorageFileCategory(val label: String) {
+    CHAT_SESSION("Chat"),
+    UPLOADED_MEDIA("Upload"),
+    GENERATED_MEDIA("AI Media"),
+    SETTINGS_AND_BACKUPS("Settings/Backup"),
+    OTA_AND_TEMP("Temp/Cache")
+}
+
+data class StoredAppFileItem(
+    val fullPath: String,
+    val relativePath: String,
+    val fileName: String,
+    val category: StorageFileCategory,
+    val sizeBytes: Long,
+    val lastModifiedMs: Long
 )

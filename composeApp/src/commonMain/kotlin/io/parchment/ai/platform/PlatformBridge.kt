@@ -2,6 +2,7 @@ package io.parchment.ai.platform
 
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
+import io.parchment.ai.model.StoredAppFileItem
 
 data class PickedBinaryFile(
     val fileName: String,
@@ -166,6 +167,8 @@ expect object PlatformBridge {
     fun isIgnoringBatteryOptimizations(): Boolean
     fun requestUnrestrictedBackgroundBattery()
     fun wipeAllLocalData(): Boolean
+    fun listAppStorageFiles(): List<StoredAppFileItem>
+    fun deleteAppStorageFile(fullPath: String): Boolean
 
     // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?

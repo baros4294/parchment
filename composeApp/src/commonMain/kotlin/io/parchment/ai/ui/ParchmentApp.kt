@@ -10,8 +10,12 @@ import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -828,11 +832,43 @@ fun ParchmentApp(
                 }
             }
 
-            // Hardware VSync Character Pacer (locks to 60Hz / 120Hz / 144Hz / 240Hz display clock via uiScope's MonotonicFrameClock,
-            // with automatic 8ms fallback when backgrounded on Android so background streams never pause or crash!)
+            // Hardware VSync Letter-by-Letter Character Pacer (locks to 60Hz / 120Hz / 144Hz / 240Hz display clock via uiScope's MonotonicFrameClock,
+            // using sub-pixel fractional accumulators so prose & thoughts glide onto the page letter-by-letter instead of jumping in word chunks!)
             val uiFrameClock = uiScope.coroutineContext[MonotonicFrameClock]
             val pacerJob = launch {
                 var lastFrameNanos = 0L
+                var thinkCarry = 0f
+                var stepThinkCarry = 0f
+                var contCarry = 0f
+
+                fun computeLetterStep(diff: Int, dtMs: Long, carry: Float, done: Boolean): Pair<Int, Float> {
+                    if (diff <= 0) return 0 to 0f
+                    val dtSec = (dtMs.coerceIn(2L, 32L)) / 1000f
+                    // Base letter-by-letter speed (~92 chars/sec -> ~0.76 chars per 120Hz frame, ~1.4 chars per 60Hz frame)
+                    // plus a gentle elastic catch-up only when buffer backlog grows beyond 28 chars
+                    val backlog = (diff - 28).coerceAtLeast(0)
+                    val catchUpPerSec = if (done) {
+                        maxOf(220f, diff * 10f)
+                    } else {
+                        backlog * 4.2f
+                    }
+                    val exactChars = carry + (92f + catchUpPerSec) * dtSec
+                    val rawStep = exactChars.toInt()
+                    return if (rawStep <= 0) {
+                        0 to exactChars
+                    } else {
+                        val maxPerFrame = when {
+                            done -> maxOf(4, diff / 4)
+                            diff <= 28 -> 1
+                            diff <= 72 -> 2
+                            diff <= 160 -> 4
+                            else -> maxOf(6, diff / 14)
+                        }
+                        val clamped = rawStep.coerceAtMost(maxPerFrame).coerceAtMost(diff)
+                        clamped to (exactChars - clamped).coerceIn(0f, 0.99f)
+                    }
+                }
+
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
                     val frameNanos = if (uiFrameClock != null) {
                         runCatching {
@@ -851,7 +887,6 @@ fun ParchmentApp(
                         lastFrameNanos = 0L
                         8L
                     }
-                    val frameScale = (dtMs / 8.0f).coerceIn(0.4f, 3.5f)
                     var changed = false
                     val now = PlatformBridge.currentTimeMillis()
                     if (activeThinkingPhaseStartMs > 0L && now - lastStopwatchTickMs >= 100L) {
@@ -873,27 +908,40 @@ fun ParchmentApp(
                     }
                     val targetThinkLen = networkThinkingTarget.length
                     if (displayedThinkingLen < targetThinkLen) {
-                        val diff = targetThinkLen - displayedThinkingLen
-                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
-                        displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
-                        changed = true
+                        val (step, nextCarry) = computeLetterStep(targetThinkLen - displayedThinkingLen, dtMs, thinkCarry, networkDone)
+                        thinkCarry = nextCarry
+                        if (step > 0) {
+                            displayedThinkingLen = (displayedThinkingLen + step).coerceAtMost(targetThinkLen)
+                            changed = true
+                        }
+                    } else {
+                        thinkCarry = 0f
                     }
                     val targetStepThinkLen = currentStepThinkingTarget.length
                     if (displayedStepThinkingLen < targetStepThinkLen) {
-                        val diff = targetStepThinkLen - displayedStepThinkingLen
-                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
-                        displayedStepThinkingLen = (displayedStepThinkingLen + step).coerceAtMost(targetStepThinkLen)
-                        changed = true
+                        val (step, nextCarry) = computeLetterStep(targetStepThinkLen - displayedStepThinkingLen, dtMs, stepThinkCarry, networkDone)
+                        stepThinkCarry = nextCarry
+                        if (step > 0) {
+                            displayedStepThinkingLen = (displayedStepThinkingLen + step).coerceAtMost(targetStepThinkLen)
+                            changed = true
+                        }
                     } else if (displayedStepThinkingLen > targetStepThinkLen) {
                         displayedStepThinkingLen = targetStepThinkLen
+                        stepThinkCarry = 0f
                         changed = true
+                    } else {
+                        stepThinkCarry = 0f
                     }
                     val targetContLen = networkContentTarget.length
                     if (displayedContentLen < targetContLen) {
-                        val diff = targetContLen - displayedContentLen
-                        val step = maxOf(1, ((maxOf(2, diff / 4)) * frameScale).toInt())
-                        displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
-                        changed = true
+                        val (step, nextCarry) = computeLetterStep(targetContLen - displayedContentLen, dtMs, contCarry, networkDone)
+                        contCarry = nextCarry
+                        if (step > 0) {
+                            displayedContentLen = (displayedContentLen + step).coerceAtMost(targetContLen)
+                            changed = true
+                        }
+                    } else {
+                        contCarry = 0f
                     }
                     if (changed) {
                         val visibleCont = networkContentTarget.substring(0, displayedContentLen)
@@ -2364,7 +2412,21 @@ fun ParchmentApp(
                     // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
                     if (!isSettingsOpen) {
                         val bgStreamingCount = activeStreamsBySession.keys.count { it != activeSession.id }
-                        val chatVaultCount = remember(activeSession.id, activeSession.messages, pendingAttachments) {
+                        val vaultCountKey = remember(
+                            activeSession.id,
+                            activeSession.messages.size,
+                            pendingAttachments.size,
+                            activeSession.messages.lastOrNull()?.activeVariant?.let { v ->
+                                "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.count { it == '`' } / 6}"
+                            }
+                        ) {
+                            "${activeSession.id}:${activeSession.messages.size}:${pendingAttachments.size}:" +
+                                activeSession.messages.sumOf {
+                                    val v = it.activeVariant
+                                    v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.count { c -> c == '`' } / 6)
+                                }
+                        }
+                        val chatVaultCount = remember(vaultCountKey, pendingAttachments) {
                             val (aiItems, uploads, sources) = extractSessionVaultItems(activeSession, pendingAttachments)
                             aiItems.size + uploads.size + sources.size
                         }
@@ -2891,6 +2953,8 @@ fun ParchmentApp(
                                         appState = createDefaultAppState()
                                         bannerNotification = "All local data wiped cleanly."
                                     },
+                                    onDeleteChatSessionById = ::executeDeleteSingleSession,
+                                    onInspectAttachment = ::openAttachmentInViewer,
                                     onNotify = { bannerNotification = it },
                                     onClose = { isSettingsOpen = false }
                                 )
@@ -3389,7 +3453,6 @@ fun ParchmentApp(
                                     )
                                     SepiaToggleRow(
                                         title = "Ask for confirmation before deleting",
-                                        subtitle = "You can also change this anytime in Settings → Preferences",
                                         checked = appState.preferences.confirmBeforeDeletingChat,
                                         onCheckedChange = { checked ->
                                             persist(
@@ -3603,38 +3666,49 @@ private fun ManuscriptViewport(
     var showMinimapTreeModal by remember { mutableStateOf(false) }
     var showContextBreakdownPopover by remember { mutableStateOf(false) }
 
-    // Smart Bottom-Edge Auto-Follow with Instant User-Scroll Disengage & 5-Second Cooldown:
-    // 1. Scrolls to the bottom spacer (`totalItemsCount - 1`) instead of `messages.size`, so long AI messages
+    // Smart Bottom-Edge Auto-Follow with Sticky Manual Scroll-Up Disengage & Auto-Scroll on Chat Open:
+    // 1. Scrolls to the bottom spacer (`totalItemsCount - 1`) with a large positive offset so long AI messages
     //    pin their BOTTOM edge to the bottom of the viewport instead of snapping to the TOP of the message!
-    // 2. Immediately pauses auto-scroll for 5 seconds (and disengages while scrolled up) the moment the user
-    //    scrolls manually with the mouse wheel or touch drag to read thoughts or earlier paragraphs.
+    // 2. Immediately disengages auto-scroll when the user scrolls up manually and stays disengaged until the user
+    //    scrolls back to the bottom or taps `↓ Latest` / `⤓` (never yanking the viewport away after 5s while reading!).
     var userScrollPausedUntilMs by remember(activeSession.id) { mutableStateOf(0L) }
     var userDisengagedAutoFollow by remember(activeSession.id) { mutableStateOf(false) }
 
+    suspend fun jumpToBottomEdge() {
+        val totalItems = listState.layoutInfo.totalItemsCount
+        val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
+        listState.scrollToItem(bottomSpacerIdx, scrollOffset = 100_000)
+    }
+
+    // Auto-scroll to bottom when opening or switching to a chat (when enabled in Settings -> Preferences)
+    LaunchedEffect(activeSession.id, preferences.autoScrollToBottomOnOpen) {
+        userDisengagedAutoFollow = false
+        userScrollPausedUntilMs = 0L
+        if (activeSession.messages.isNotEmpty()) {
+            if (preferences.autoScrollToBottomOnOpen) {
+                jumpToBottomEdge()
+                kotlinx.coroutines.delay(16L)
+                jumpToBottomEdge()
+            } else {
+                listState.scrollToItem(0)
+            }
+        }
+    }
+
     LaunchedEffect(isStreaming) {
         if (isStreaming) {
-            // Re-pin auto-follow when a brand-new generation starts if the user was near the bottom
             if (!listState.canScrollForward) {
                 userDisengagedAutoFollow = false
             }
-        } else {
-            userDisengagedAutoFollow = false
         }
     }
 
     LaunchedEffect(listState.isScrollInProgress, listState.canScrollForward) {
         if (listState.isScrollInProgress && listState.canScrollForward) {
             userDisengagedAutoFollow = true
-            userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
         } else if (!listState.isScrollInProgress && !listState.canScrollForward) {
-            val now = PlatformBridge.currentTimeMillis()
-            val remainingWait = userScrollPausedUntilMs - now
-            if (remainingWait > 0L) {
-                delay(remainingWait)
-            }
-            if (!listState.canScrollForward && !listState.isScrollInProgress) {
-                userDisengagedAutoFollow = false
-            }
+            userDisengagedAutoFollow = false
+            userScrollPausedUntilMs = 0L
         }
     }
 
@@ -3651,25 +3725,10 @@ private fun ManuscriptViewport(
             !userDisengagedAutoFollow &&
             now >= userScrollPausedUntilMs
         ) {
-            val totalItems = listState.layoutInfo.totalItemsCount
-            val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
-            listState.scrollToItem(bottomSpacerIdx)
+            jumpToBottomEdge()
         }
     }
 
-    val activeContextNodes = remember(activeSession.id, activeSession.messages, isStreaming) {
-        activeSession.messages.filter { it.includedInContext }
-    }
-    val sessionTotalInputTok = remember(activeSession.id, activeSession.messages, isStreaming) {
-        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.inputTokens }
-    }
-    val sessionTotalReasoningTok = remember(activeSession.id, activeSession.messages, isStreaming) {
-        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.reasoningTokens }
-    }
-    val sessionTotalOutputTok = remember(activeSession.id, activeSession.messages, isStreaming) {
-        activeSession.messages.sumOf { it.activeVariant.tokenMetrics.outputTokens }
-    }
-    val sessionTotalTokens = sessionTotalInputTok + sessionTotalReasoningTok + sessionTotalOutputTok
     // Bucket streaming content length into 128-char steps while streaming so 120fps VSync frames
     // never recompute full-history O200kTokenizer breakdowns on every single character!
     val throttledBreakdownTrigger = if (isStreaming) {
@@ -3734,9 +3793,21 @@ private fun ManuscriptViewport(
         }
     }
 
-    val isScrolledUpFromBottom by remember {
+    val isScrolledUpFromBottom by remember(activeSession.id, activeSession.messages.size) {
         derivedStateOf {
-            activeSession.messages.isNotEmpty() && listState.canScrollForward
+            if (activeSession.messages.isEmpty()) {
+                false
+            } else if (listState.canScrollForward) {
+                true
+            } else {
+                val layout = listState.layoutInfo
+                val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                val total = layout.totalItemsCount
+                lastVisible != null && total > 0 && (
+                    lastVisible.index < total - 1 ||
+                        (lastVisible.offset + lastVisible.size) > (layout.viewportEndOffset + 20)
+                    )
+            }
         }
     }
 
@@ -3775,12 +3846,6 @@ private fun ManuscriptViewport(
                             modifier = Modifier.padding(top = 4.dp)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            SepiaButton(
-                                text = "Export .JSON",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = onExportChatJson
-                            )
                             if (activeSession.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "Export .MD",
@@ -4064,8 +4129,17 @@ private fun ManuscriptViewport(
             ) {
                 AnimatedVisibility(
                     visible = isScrolledUpFromBottom,
-                    enter = fadeIn(tween(150)),
-                    exit = fadeOut(tween(150))
+                    enter = slideInVertically(
+                        initialOffsetY = { it / 2 },
+                        animationSpec = spring(stiffness = 580f, dampingRatio = Spring.DampingRatioNoBouncy)
+                    ) + scaleIn(
+                        initialScale = 0.90f,
+                        animationSpec = spring(stiffness = 580f, dampingRatio = 0.80f)
+                    ) + fadeIn(tween(110)),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it / 2 },
+                        animationSpec = tween(110)
+                    ) + scaleOut(targetScale = 0.92f, animationSpec = tween(110)) + fadeOut(tween(100))
                 ) {
                     val pillOuterShape = RoundedCornerShape(999.dp)
                     val pillInnerShape = RoundedCornerShape(999.dp)
@@ -4086,15 +4160,16 @@ private fun ManuscriptViewport(
                                     userDisengagedAutoFollow = false
                                     userScrollPausedUntilMs = 0L
                                     scope.launch {
-                                        val totalItems = listState.layoutInfo.totalItemsCount
-                                        val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
-                                        listState.scrollToItem(bottomSpacerIdx)
+                                        jumpToBottomEdge()
                                     }
                                 }
                                 .padding(horizontal = 14.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            if (isStreaming) {
+                                KissStreamingPulseDot(color = Color(0xFFFAF6EB))
+                            }
                             KissVectorIcon(
                                 icon = KissIcon.ARROW_DOWN,
                                 tint = Color(0xFFFAF6EB),
@@ -4333,9 +4408,7 @@ private fun ManuscriptViewport(
                                 userDisengagedAutoFollow = false
                                 userScrollPausedUntilMs = 0L
                                 scope.launch {
-                                    val totalItems = listState.layoutInfo.totalItemsCount
-                                    val bottomSpacerIdx = (totalItems - 1).coerceAtLeast(activeSession.messages.size)
-                                    listState.scrollToItem(bottomSpacerIdx)
+                                    jumpToBottomEdge()
                                 }
                             }
                         )
@@ -4526,7 +4599,11 @@ private fun ManuscriptViewport(
                     ).map { it.name }.toSet()
                 }
 
-                AnimatedVisibility(visible = showComposerToolsDrawer) {
+                AnimatedVisibility(
+                    visible = showComposerToolsDrawer,
+                    enter = expandVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeIn(tween(110)),
+                    exit = shrinkVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeOut(tween(95))
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4536,26 +4613,6 @@ private fun ManuscriptViewport(
                             .padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            BasicText(
-                                text = "Thinking:",
-                                style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.padding(top = 4.dp, end = 2.dp)
-                            )
-                            THINKING_EFFORT_PRESETS.forEach { preset ->
-                                SepiaChip(
-                                    label = preset,
-                                    selected = activeProfile.thinkingEffort.equals(preset, ignoreCase = true),
-                                    onClick = { onUpdateProfile { it.copy(thinkingEffort = preset) } }
-                                )
-                            }
-                        }
-                        SepiaDivider()
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
@@ -5039,7 +5096,7 @@ private fun ManuscriptViewport(
                             .map { it.substringBefore(" (").trim() }
                     }
                 }
-                val historyAttachments = remember(activeSession.messages) {
+                val historyAttachments = remember(activeSession.id, activeSession.messages.size) {
                     activeSession.messages.flatMap { it.activeVariant.attachments }
                         .distinctBy { it.fileName }
                 }
