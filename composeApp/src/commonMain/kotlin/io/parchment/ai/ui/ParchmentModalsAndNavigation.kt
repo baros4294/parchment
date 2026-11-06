@@ -1522,6 +1522,9 @@ private val rightVaultJson = Json {
     isLenient = true
 }
 
+private val VAULT_CODE_FENCE_REGEX = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
+private val VAULT_LINE_NUMBER_STRIP_REGEX = Regex("^\\d+:\\s?")
+
 internal fun extractSessionVaultItems(
     session: ChatSession,
     pendingAttachments: List<PromptAttachment> = emptyList()
@@ -1534,7 +1537,7 @@ internal fun extractSessionVaultItems(
         userUploads.add(UserUploadedChatArtifact(turnNumber = 0, attachment = att))
     }
 
-    val codeFenceRegex = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
+    val codeFenceRegex = VAULT_CODE_FENCE_REGEX
 
     session.messages.forEachIndexed { idx, node ->
         val turnNum = idx + 1
