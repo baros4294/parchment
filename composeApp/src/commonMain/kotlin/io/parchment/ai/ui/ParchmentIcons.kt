@@ -20,13 +20,14 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
+import io.parchment.ai.network.AiProviderEngine
 
 /**
  * Pure Compose Foundation Lucide-Inspired KISS Vector Icon Pack (24x24 coordinate grid).
@@ -400,6 +401,8 @@ fun KissVectorIcon(
     }
 }
 
+private val sharedScratchIconPath = Path()
+
 private fun DrawScope.drawKissIconPath(
     icon: KissIcon,
     color: Color,
@@ -411,7 +414,9 @@ private fun DrawScope.drawKissIconPath(
         drawLine(color, pt(x1, y1), pt(x2, y2), strokeWidth = stroke.width, cap = StrokeCap.Round)
     }
     fun path(builder: Path.() -> Unit) {
-        val p = Path().apply(builder)
+        val p = sharedScratchIconPath
+        p.rewind()
+        p.builder()
         drawPath(p, color, style = stroke)
     }
 
@@ -1252,8 +1257,10 @@ private fun DrawScope.drawKissIconPath(
 // Zhipu/GLM, Kimi/Moonshot, MiniMax, Perplexity, Cohere, OpenRouter, & Google, with live online
 // fallback lookup from raw.githubusercontent.com/lobehub/lobe-icons for any other lab slug!
 // ============================================================================================
-private val LOBE_ICONS_HTTP_CLIENT by lazy { HttpClient() }
+private val LOBE_ICONS_HTTP_CLIENT
+    get() = AiProviderEngine.httpClient
 private val DYNAMIC_LOBE_SVG_CACHE = mutableMapOf<String, List<String>>()
+private val PARSED_LAB_SVG_PATH_CACHE = mutableMapOf<String, List<Path>>()
 
 internal val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
     "gemini" to listOf(
@@ -1469,23 +1476,29 @@ fun ModelLabSvgIcon(
         }
     }
 
-    val parsedVectorPaths = remember(rawPaths) {
-        rawPaths?.mapNotNull { dStr ->
-            runCatching { parseSvgPathNormalized(dStr) }.getOrNull()
-        }.orEmpty()
+    val parsedVectorPaths = remember(slug, rawPaths) {
+        val cached = PARSED_LAB_SVG_PATH_CACHE[slug]
+        if (cached != null) {
+            cached
+        } else {
+            val parsed = rawPaths?.mapNotNull { dStr ->
+                runCatching { parseSvgPathNormalized(dStr) }.getOrNull()
+            }.orEmpty()
+            if (parsed.isNotEmpty()) {
+                PARSED_LAB_SVG_PATH_CACHE[slug] = parsed
+            }
+            parsed
+        }
     }
 
     if (parsedVectorPaths.isNotEmpty()) {
         Canvas(modifier = modifier.size(size)) {
             val scaleX = this.size.width / 24f
             val scaleY = this.size.height / 24f
-            for (srcPath in parsedVectorPaths) {
-                val scaled = Path().apply {
-                    fillType = PathFillType.EvenOdd
-                    addPath(srcPath)
-                    transform(Matrix().apply { scale(scaleX, scaleY) })
+            withTransform({ scale(scaleX, scaleY, Offset.Zero) }) {
+                for (srcPath in parsedVectorPaths) {
+                    drawPath(path = srcPath, color = tint)
                 }
-                drawPath(path = scaled, color = tint)
             }
         }
     } else {

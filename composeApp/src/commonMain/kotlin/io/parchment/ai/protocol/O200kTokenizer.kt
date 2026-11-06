@@ -80,8 +80,13 @@ object O200kTokenizer {
         ).joinToString("|")
     )
 
-    private val tokenCache = object : LinkedHashMap<Int, Int>(1024, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Int>?): Boolean = size > 8192
+    private val tokenCache = object : LinkedHashMap<Int, Int>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Int>?): Boolean = size > 2048
+    }
+
+    // Ensure warmUp() pre-compiles O200kTokenizer regex off the UI thread during startup
+    fun warmUp() {
+        countTokens("Warm up o200k_base regex and BPE subword counter.")
     }
 
     /**

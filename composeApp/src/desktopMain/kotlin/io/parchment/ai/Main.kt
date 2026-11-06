@@ -235,7 +235,7 @@ fun main() {
             val stream = Thread.currentThread().contextClassLoader?.getResourceAsStream("icon/parchment-icon.png")
             val bytes = stream?.use { it.readBytes() }
             if (bytes != null && bytes.isNotEmpty()) {
-                BitmapPainter(Image.makeFromEncoded(bytes).toComposeImageBitmap())
+                BitmapPainter(Image.makeFromEncoded(bytes).use { it.toComposeImageBitmap() })
             } else null
         }.getOrNull()
     }

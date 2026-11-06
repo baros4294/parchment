@@ -702,6 +702,7 @@ object WorkspaceHarness {
         argumentsJson: String,
         onOutputDelta: ((String) -> Unit)? = null
     ): ToolCallRecord {
+        val toolStartMs = PlatformBridge.currentTimeMillis()
         val isFolderFreeTool = toolName == "todo_write" ||
             toolName == "goal_complete" ||
             toolName == "dice_roll" ||
@@ -899,6 +900,7 @@ object WorkspaceHarness {
             invalidateWorkspaceCache(workspaceRoot)
         }
 
+        val elapsedToolMs = (PlatformBridge.currentTimeMillis() - toolStartMs).coerceAtLeast(1L)
         return result.fold(
             onSuccess = { output ->
                 val shapedOutput = compressToolOutputWithSizeValve(toolName, output)
@@ -907,7 +909,8 @@ object WorkspaceHarness {
                     name = toolName,
                     argumentsJson = argumentsJson,
                     resultText = shapedOutput,
-                    isError = false
+                    isError = false,
+                    durationMs = elapsedToolMs
                 )
             },
             onFailure = { err ->
@@ -916,7 +919,8 @@ object WorkspaceHarness {
                     name = toolName,
                     argumentsJson = argumentsJson,
                     resultText = "Tool Error (${err::class.simpleName}): ${err.message}",
-                    isError = true
+                    isError = true,
+                    durationMs = elapsedToolMs
                 )
             }
         )

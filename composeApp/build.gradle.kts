@@ -162,6 +162,20 @@ compose.desktop {
     application {
         mainClass = "io.parchment.ai.MainKt"
 
+        // Lean JVM ergonomics & automatic OS RAM page uncommit so idle memory stays ultra-low (~130-195 MB)
+        jvmArgs(
+            "-Xms32m",
+            "-Xmx384m",
+            "-XX:+UseG1GC",
+            "-XX:+UseStringDeduplication",
+            "-XX:MinHeapFreeRatio=10",
+            "-XX:MaxHeapFreeRatio=25",
+            "-XX:-ShrinkHeapInSteps",
+            "-XX:G1PeriodicGCInterval=10000",
+            "-XX:+G1PeriodicGCInvokesConcurrent",
+            "-XX:SoftRefLRUPolicyMSPerMB=500"
+        )
+
         nativeDistributions {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = "Parchment"

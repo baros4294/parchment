@@ -1,6 +1,7 @@
-# Goal: Implement letter-by-letter VSync streaming pacer, responsive spring animations & micro-details, UI redundancy cleanup, Storage & File Manager, 'Show, Don't Tell' subtitle removal, Auto-Scroll to Bottom on Open setting, '↓ Latest' pill fix, and 60/120fps performance optimizations; verify with tests and lock.
-- [x] (1) Update Models.kt, PlatformBridge (.kt, .desktop.kt, .android.kt), and WorkspaceHarness.kt with autoScrollToBottomOnOpen, StoredAppFileItem / StorageFileCategory APIs, and PowerShell CLIXML suppression.
-- [x] (2) Update Main.kt, ParchmentComponents.kt, and ParchmentModalsAndNavigation.kt: remove redundant Desktop '+ New Tab' & window subtitle, add prefix/suffix trimming to computeUnifiedLineDiff, refine spring animations, and optimize sidebar/tab-bar recompositions.
-- [x] (3) Update ParchmentApp.kt: implement letter-by-letter fractional VSync character pacer, fix '↓ Latest' derivedStateOf & sticky scroll-up disengage, implement autoScrollToBottomOnOpen, remove redundant Tools-drawer Thinking row & Notes Export .JSON, and eliminate 120fps vault/message loops.
-- [x] (4) Update ParchmentSettingsPages.kt: remove redundant 'Show, Don't Tell' subtitles across all subpages, add 'Auto-scroll to bottom when opening a chat' toggle, and build the interactive Storage & File Manager in Storage, Backup & OTA.
-- [x] (5) Add unit tests in ParchmentProtocolAndHarnessTest.kt, run ./gradlew desktopTest, and commit & push to origin/main (lock).
+# Goal: Execute and lock RAM footprint optimization, instant application startup, accurate tok/s telemetry, and 120fps prefix-cached streaming optimizations.
+- [x] (1) Configure lean JVM memory/G1GC page-uncommit flags in composeApp/build.gradle.kts and unify shared HttpClient across network/icon engines
+- [x] (2) Eliminate per-frame native Skia Path/Matrix allocations in KissVectorIcon and ModelLabSvgIcon (ParchmentIcons.kt) and optimize ModelsDevClient JSON parsing memory
+- [x] (3) Implement fast-path active session startup, on-demand lazy chat hydration, and inactive session dehydration in PlatformBridge, ParchmentStatePersistence.kt, and ParchmentApp.kt
+- [x] (4) Fix tok/s telemetry accuracy in AiProviderEngine.kt and ParchmentApp.kt (exclude tool & TTFT latency, accumulate multi-step usage, include reasoning+output tokens, and show live tok/s while streaming)
+- [x] (5) Implement incremental prefix-cached parseProseBlocks in ProseRenderer.kt and memoize active lookups / skip no-op pacer frames in ParchmentApp.kt
+- [x] (6) Add unit tests in ParchmentProtocolAndHarnessTest.kt, verify with ./gradlew desktopTest, and commit & push (lock) to origin/main

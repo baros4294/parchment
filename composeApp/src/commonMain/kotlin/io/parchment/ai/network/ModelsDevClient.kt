@@ -1,12 +1,12 @@
 package io.parchment.ai.network
 
-import io.ktor.client.HttpClient
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.parchment.ai.model.ModelPricingSpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -27,15 +27,15 @@ object ModelsDevClient {
         isLenient = true
     }
 
-    private val httpClient = HttpClient {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 45_000L
-            connectTimeoutMillis = 15_000L
-            socketTimeoutMillis = 45_000L
-        }
-    }
+    private val httpClient
+        get() = AiProviderEngine.httpClient
 
+    @Volatile
     private var cachedCatalog: Map<String, ModelPricingSpec>? = null
+
+    private val canonicalTextModality = listOf("text")
+    private val canonicalImageModality = listOf("image")
+    private val canonicalTextImageModality = listOf("text", "image")
 
 
     fun getCachedOutputModalities(modelId: String): List<String> {
@@ -78,7 +78,7 @@ object ModelsDevClient {
         bestMatch.copy(modelId = modelId.trim())
     }
 
-    private suspend fun downloadAndParseModelsDevCatalog(): Map<String, ModelPricingSpec> {
+    private suspend fun downloadAndParseModelsDevCatalog(): Map<String, ModelPricingSpec> = withContext(Dispatchers.Default) {
         val resp = httpClient.get("https://models.dev/api.json") {
             header("Accept", "application/json")
             header("User-Agent", "Parchment-AI-Studio")
@@ -116,10 +116,16 @@ object ModelsDevClient {
                 val ctxLimit = limitObj?.get("context")?.jsonPrimitive?.intOrNull ?: 128000
                 val outLimit = limitObj?.get("output")?.jsonPrimitive?.intOrNull ?: 32768
                 val modalitiesObj = mObj["modalities"] as? JsonObject
-                val outModalities = (modalitiesObj?.get("output") as? JsonArray)
+                val rawOutModalities = (modalitiesObj?.get("output") as? JsonArray)
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.lowercase() }
                     ?.filter { it.isNotEmpty() }
                     .orEmpty()
+                val outModalities = when {
+                    rawOutModalities.size == 1 && rawOutModalities[0] == "text" -> canonicalTextModality
+                    rawOutModalities.size == 1 && rawOutModalities[0] == "image" -> canonicalImageModality
+                    rawOutModalities.size == 2 && rawOutModalities[0] == "text" && rawOutModalities[1] == "image" -> canonicalTextImageModality
+                    else -> rawOutModalities
+                }
 
                 val spec = ModelPricingSpec(
                     modelId = id,
@@ -140,16 +146,16 @@ object ModelsDevClient {
                     map[normKey] = spec
                 }
                 val shortKey = normKey.substringAfter("/")
-                if (!map.containsKey(shortKey)) {
+                if (shortKey != normKey && !map.containsKey(shortKey)) {
                     map[shortKey] = spec
                 }
                 val rawNorm = modelKey.removePrefix("models/").lowercase()
-                if (!map.containsKey(rawNorm)) {
+                if (rawNorm != normKey && rawNorm != shortKey && !map.containsKey(rawNorm)) {
                     map[rawNorm] = spec
                 }
             }
         }
 
-        return map
+        map
     }
 }

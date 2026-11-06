@@ -1239,4 +1239,138 @@ class ParchmentProtocolAndHarnessTest {
         val files = io.parchment.ai.platform.PlatformBridge.listAppStorageFiles()
         assertNotNull(files)
     }
+
+    @Test
+    fun testAccurateTokPerSecIncrementalProseCacheAndLazySessionDehydration() {
+        // 1. Verify tok/s calculation excludes local tool execution time and TTFT wait, and includes reasoning + output tokens
+        val metrics = AiProviderEngine.computeTurnTokenMetrics(
+            reportedInputTokens = 2000,
+            reportedCachedTokens = 1500,
+            reportedReasoningTokens = 300,
+            reportedOutputTokens = 100,
+            fallbackInputTokens = 2000,
+            contentText = "Short final summary after tool execution.",
+            thinkingText = "Detailed reasoning across multiple steps.",
+            executedTools = listOf(
+                ToolCallRecord(
+                    id = "tc-slow",
+                    name = "shell_exec",
+                    argumentsJson = """{"command":"./gradlew test"}""",
+                    resultText = "BUILD SUCCESSFUL",
+                    durationMs = 40_000L
+                )
+            ),
+            totalDurationMs = 45_000L,      // 45s wall clock (40s spent in shell_exec + 1s TTFT + 4s active LLM streaming)
+            ttftMs = 1_000L,
+            activeDecodeDurationMs = 4_000L, // 4.0s actual LLM token streaming burst
+            totalToolExecutionMs = 40_000L
+        )
+        // 400 generated tokens (300 reasoning + 100 output) over 4.0s active decode = 100.0 tok/s (not 0.3 tok/s!)
+        assertEquals(100.0, metrics.tokensPerSec)
+        assertEquals(300, metrics.reasoningTokens)
+        assertEquals(100, metrics.outputTokens)
+
+        // 2. Verify IncrementalProseBlockCache matches full parseProseBlocks bit-for-bit during streaming
+        val sampleMarkdown = buildString {
+            appendLine("# Chapter 1: The Architecture")
+            appendLine()
+            appendLine("First paragraph with **bold** and *italic* prose that exceeds the prefix threshold when combined with subsequent blocks.")
+            appendLine()
+            appendLine("```kotlin")
+            appendLine("fun computeSpeed(tokens: Int, ms: Long): Double = (tokens * 1000.0) / ms")
+            appendLine("```")
+            appendLine()
+            appendLine("> A blockquote noting that incremental prefix caching turns O(N) into O(1).")
+            appendLine()
+            repeat(8) { idx ->
+                appendLine("Paragraph #$idx with enough literary prose content to cross the 512-character stable prefix boundary cleanly during 120Hz VSync streaming.")
+                appendLine()
+            }
+        }
+        val cache = io.parchment.ai.ui.IncrementalProseBlockCache()
+        var step = 17
+        while (step <= sampleMarkdown.length) {
+            val sub = sampleMarkdown.substring(0, step)
+            val expected = io.parchment.ai.ui.parseProseBlocks(sub, enableMath = true)
+            val actual = cache.parseIncremental(sub, enableMath = true)
+            assertEquals(expected, actual, "IncrementalProseBlockCache mismatch at length $step")
+            step += 29
+        }
+        assertEquals(
+            io.parchment.ai.ui.parseProseBlocks(sampleMarkdown, enableMath = true),
+            cache.parseIncremental(sampleMarkdown, enableMath = true)
+        )
+
+        // 3. Verify lazy session dehydration & on-demand disk hydration preserves message count, media paths, and full disk fidelity
+        val testSessId = "sess-dehydrate-test-${PlatformBridge.currentTimeMillis()}"
+        val fullSession = ChatSession(
+            id = testSessId,
+            title = "Heavy Session",
+            createdAt = 1000L,
+            updatedAt = 2000L,
+            profileId = "prof-1",
+            storySummary = "Long story summary...",
+            messages = listOf(
+                MessageNode(
+                    id = "n1",
+                    role = MessageRole.USER,
+                    variants = listOf(
+                        MessageVariant(
+                            id = "v1",
+                            content = "First user message with attachment",
+                            attachments = listOf(
+                                PromptAttachment(
+                                    id = "att1",
+                                    fileName = "photo.png",
+                                    mimeType = "image/png",
+                                    base64Data = "AAAA".repeat(500),
+                                    localFilePath = "/tmp/media/att-photo.png"
+                                )
+                            )
+                        )
+                    )
+                ),
+                MessageNode(
+                    id = "n2",
+                    role = MessageRole.ASSISTANT,
+                    variants = listOf(
+                        MessageVariant(
+                            id = "v2",
+                            content = "Final assistant reply with important conclusion.",
+                            thinkingSummary = "Long chain of thought ".repeat(200),
+                            toolCalls = listOf(
+                                ToolCallRecord(id = "tc1", name = "fs_read", argumentsJson = "{}", resultText = "File contents ".repeat(200))
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        io.parchment.ai.ui.markSessionHydrated(testSessId)
+        io.parchment.ai.ui.saveSingleChatSessionToDisk(fullSession)
+
+        val stub = io.parchment.ai.ui.dehydrateChatSessionToCompactStub(fullSession)
+        assertTrue(io.parchment.ai.ui.isSessionDehydrated(testSessId))
+        assertEquals(2, stub.messages.size, "Dehydrated stub must preserve exact message count for sidebar badges")
+        assertTrue(stub.messages.first().activeVariant.content.isEmpty(), "Earlier messages in stub must be empty")
+        assertTrue(stub.messages.last().activeVariant.thinkingSummary.isEmpty(), "Thinking summary must be freed in stub")
+        assertTrue(stub.messages.last().activeVariant.toolCalls.isEmpty(), "Tool calls must be freed in stub")
+        assertEquals("/tmp/media/att-photo.png", stub.messages.last().activeVariant.attachments.first().localFilePath)
+
+        // Pinning/renaming a dehydrated stub and saving to disk must NOT overwrite the full messages on disk!
+        val pinnedStub = stub.copy(title = "Renamed Heavy Session", isPinned = true, updatedAt = 3000L)
+        io.parchment.ai.ui.saveSingleChatSessionToDisk(pinnedStub)
+
+        val rehydrated = io.parchment.ai.ui.hydrateSessionFromDiskIfNeeded(pinnedStub)
+        assertTrue(!io.parchment.ai.ui.isSessionDehydrated(testSessId))
+        assertEquals("Renamed Heavy Session", rehydrated.title)
+        assertTrue(rehydrated.isPinned)
+        assertEquals(2, rehydrated.messages.size)
+        assertEquals("First user message with attachment", rehydrated.messages[0].activeVariant.content)
+        assertTrue(rehydrated.messages[0].activeVariant.attachments[0].base64Data.isEmpty(), "Redundant base64Data should be stripped when localFilePath exists")
+        assertTrue(rehydrated.messages[1].activeVariant.thinkingSummary.contains("Long chain of thought"))
+        assertEquals(1, rehydrated.messages[1].activeVariant.toolCalls.size)
+
+        PlatformBridge.deleteChatSessionFile(testSessId)
+    }
 }

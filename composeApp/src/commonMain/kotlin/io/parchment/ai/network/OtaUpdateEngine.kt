@@ -59,13 +59,8 @@ object OtaUpdateEngine {
         isLenient = true
     }
 
-    private val httpClient = HttpClient {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 15 * 60 * 1000L
-            connectTimeoutMillis = 20_000L
-            socketTimeoutMillis = 5 * 60 * 1000L
-        }
-    }
+    private val httpClient
+        get() = AiProviderEngine.httpClient
 
     val currentAppVersion: String
         get() = ParchmentBuildConfig.APP_VERSION

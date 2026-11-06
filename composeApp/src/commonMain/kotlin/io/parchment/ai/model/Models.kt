@@ -135,6 +135,7 @@ data class ToolCallRecord(
     val resultText: String = "",
     val isError: Boolean = false,
     val isRunning: Boolean = false,
+    val durationMs: Long = 0L,
     val thoughtSignature: String = "",
     val precedingThinking: String = ""
 )

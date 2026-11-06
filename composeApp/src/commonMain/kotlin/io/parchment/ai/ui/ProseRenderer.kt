@@ -49,7 +49,7 @@ import androidx.compose.ui.unit.sp
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.launch
 
-private sealed class ProseBlock {
+internal sealed class ProseBlock {
     data class Heading(val level: Int, val text: String) : ProseBlock()
     data class SceneBreak(val raw: String) : ProseBlock()
     data class BlockQuote(val text: String) : ProseBlock()
@@ -60,21 +60,98 @@ private sealed class ProseBlock {
 }
 
 /**
+ * Incremental prefix-cached Markdown block parser for 120Hz VSync letter-by-letter streaming.
+ * Keeps completed paragraphs/code-fences/tables cached in `stableBlocks` and only parses the active
+ * trailing <600-character tail on each frame, turning $O(N)$ per-frame parsing into $O(1)$.
+ */
+internal class IncrementalProseBlockCache {
+    private var lastEnableMath: Boolean = true
+    private var stablePrefixText: String = ""
+    private var stableBlocks: List<ProseBlock> = emptyList()
+    private var lastFullText: String = ""
+    private var lastFullBlocks: List<ProseBlock> = emptyList()
+
+    fun parseIncremental(raw: String, enableMath: Boolean = true): List<ProseBlock> {
+        if (raw.isBlank()) return emptyList()
+        if (raw == lastFullText && enableMath == lastEnableMath) {
+            return lastFullBlocks
+        }
+        if (enableMath != lastEnableMath || stablePrefixText.isEmpty() || !raw.startsWith(stablePrefixText)) {
+            lastEnableMath = enableMath
+            val full = parseProseBlocks(raw, enableMath)
+            lastFullText = raw
+            lastFullBlocks = full
+            // Try to seed a stable prefix if raw is already long
+            val splitAt = raw.lastIndexOf("\n\n")
+            if (splitAt >= 256) {
+                val candPrefix = raw.substring(0, splitAt + 2)
+                val candTail = raw.substring(splitAt + 2)
+                val headB = parseProseBlocks(candPrefix, enableMath)
+                val tailB = parseProseBlocks(candTail, enableMath)
+                if (headB + tailB == full) {
+                    stablePrefixText = candPrefix
+                    stableBlocks = headB
+                } else {
+                    stablePrefixText = ""
+                    stableBlocks = emptyList()
+                }
+            } else {
+                stablePrefixText = ""
+                stableBlocks = emptyList()
+            }
+            return full
+        }
+
+        val tail = raw.substring(stablePrefixText.length)
+        val tailBlocks = parseProseBlocks(tail, enableMath)
+        val combined = if (stableBlocks.isEmpty()) tailBlocks else stableBlocks + tailBlocks
+
+        // Advance stablePrefixText once the active tail grows past 512 chars and has a paragraph break `\n\n`
+        if (tail.length > 512) {
+            val relSplit = tail.lastIndexOf("\n\n")
+            if (relSplit >= 180) {
+                val candHead = tail.substring(0, relSplit + 2)
+                val candRem = tail.substring(relSplit + 2)
+                val headB = parseProseBlocks(candHead, enableMath)
+                val remB = parseProseBlocks(candRem, enableMath)
+                if (headB + remB == tailBlocks) {
+                    stablePrefixText += candHead
+                    stableBlocks = stableBlocks + headB
+                }
+            }
+        }
+
+        lastFullText = raw
+        lastFullBlocks = combined
+        return combined
+    }
+}
+
+private val MD_CODE_FENCE_OPEN_REGEX = Regex("```[a-zA-Z0-9_-]*\\n?")
+private val MD_HEADING_PREFIX_REGEX = Regex("(?m)^#{1,6}\\s+")
+private val MD_INLINE_LINK_REGEX = Regex("\\[([^\\]]+)\\]\\([^)]+\\)")
+private val MD_BOLD_AST_REGEX = Regex("\\*\\*([^*]+)\\*\\*")
+private val MD_BOLD_UND_REGEX = Regex("__([^_]+)__")
+private val MD_STRIKE_REGEX = Regex("~~([^~]+)~~")
+private val MD_ITALIC_AST_REGEX = Regex("(?<!\\*)\\*([^*\n]+)\\*(?!\\*)")
+private val MD_INLINE_CODE_REGEX = Regex("`([^`]+)`")
+
+/**
  * Strips Markdown syntax (`**bold**`, `*italic*`, `# Heading`, `` `code` ``) to clean plain text
  * for the 1-tap `📋 Copy (Text)` button.
  */
 fun stripMarkdownToPlainText(raw: String): String {
     if (raw.isEmpty()) return ""
     return raw
-        .replace(Regex("```[a-zA-Z0-9_-]*\\n?"), "")
+        .replace(MD_CODE_FENCE_OPEN_REGEX, "")
         .replace("```", "")
-        .replace(Regex("(?m)^#{1,6}\\s+"), "")
-        .replace(Regex("\\[([^\\]]+)\\]\\([^)]+\\)"), "$1")
-        .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
-        .replace(Regex("__([^_]+)__"), "$1")
-        .replace(Regex("~~([^~]+)~~"), "$1")
-        .replace(Regex("(?<!\\*)\\*([^*\n]+)\\*(?!\\*)"), "$1")
-        .replace(Regex("`([^`]+)`"), "$1")
+        .replace(MD_HEADING_PREFIX_REGEX, "")
+        .replace(MD_INLINE_LINK_REGEX, "$1")
+        .replace(MD_BOLD_AST_REGEX, "$1")
+        .replace(MD_BOLD_UND_REGEX, "$1")
+        .replace(MD_STRIKE_REGEX, "$1")
+        .replace(MD_ITALIC_AST_REGEX, "$1")
+        .replace(MD_INLINE_CODE_REGEX, "$1")
         .trim()
 }
 
@@ -115,7 +192,8 @@ fun LiteraryProseRenderer(
         return
     }
 
-    val blocks = remember(text, enableMath) { parseProseBlocks(text, enableMath) }
+    val blockCache = remember { IncrementalProseBlockCache() }
+    val blocks = remember(text, enableMath) { blockCache.parseIncremental(text, enableMath) }
 
     SelectionContainer {
         Column(modifier = modifier.fillMaxWidth()) {
@@ -509,7 +587,7 @@ fun LiteraryProseRenderer(
     }
 }
 
-private fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<ProseBlock> {
+internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<ProseBlock> {
     if (raw.isBlank()) return emptyList()
     val lines = raw.lines()
     val blocks = mutableListOf<ProseBlock>()

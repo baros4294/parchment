@@ -157,6 +157,7 @@ expect object PlatformBridge {
     fun getChatsStorageDirectoryPath(): String
     fun loadAppStateJson(): String?
     fun saveAppStateJson(json: String)
+    fun loadChatSessionJsonById(sessionId: String): String?
     fun loadAllChatSessionJsons(): List<String>
     fun saveChatSessionJson(sessionId: String, json: String)
     fun deleteChatSessionFile(sessionId: String)

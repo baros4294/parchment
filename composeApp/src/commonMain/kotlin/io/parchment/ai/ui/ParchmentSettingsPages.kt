@@ -4320,10 +4320,13 @@ private fun BackupAndOtaSubpage(
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
                             scope.launch {
-                                val files = appState.sessions.map { sess ->
-                                    val fileName = buildExportFileNameForChat(sess)
-                                    val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), sess).encodeToByteArray()
-                                    fileName to bytes
+                                val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    appState.sessions.map { sess ->
+                                        val fullSess = hydrateSessionFromDiskIfNeeded(sess)
+                                        val fileName = buildExportFileNameForChat(fullSess)
+                                        val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), fullSess).encodeToByteArray()
+                                        fileName to bytes
+                                    }
                                 }
                                 val exported = PlatformBridge.exportMultipleFilesToDirectory(files)
                                 if (exported != null) {

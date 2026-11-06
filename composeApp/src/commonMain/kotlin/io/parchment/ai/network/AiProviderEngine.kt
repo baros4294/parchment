@@ -354,14 +354,16 @@ object AiProviderEngine {
         prettyPrint = true
     }
 
-    private val httpClient = HttpClient {
-        install(ContentNegotiation) {
-            json(this@AiProviderEngine.json)
-        }
-        install(HttpTimeout) {
-            requestTimeoutMillis = 24 * 60 * 60 * 1000L // 24-hour per-request ceiling for ultra-long reasoning & decodes
-            connectTimeoutMillis = 45_000L
-            socketTimeoutMillis = 24 * 60 * 60 * 1000L
+    internal val httpClient by lazy {
+        HttpClient {
+            install(ContentNegotiation) {
+                json(this@AiProviderEngine.json)
+            }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 24 * 60 * 60 * 1000L // 24-hour per-request ceiling for ultra-long reasoning & decodes
+                connectTimeoutMillis = 45_000L
+                socketTimeoutMillis = 24 * 60 * 60 * 1000L
+            }
         }
     }
 
@@ -415,10 +417,61 @@ object AiProviderEngine {
         var lastInteractionId = ""
         var inputTokens = 0
         var cachedTokens = 0
-        var reasoningTokens = 0
-        var outputTokens = 0
+        var stepReasoningTokens = 0
+        var stepOutputTokens = 0
+        var completedStepsReasoningTokens = 0
+        var completedStepsOutputTokens = 0
+        var activeDecodeAccumulatedMs = 0L
+        var currentBurstStartMs = 0L
+        var currentBurstLastMs = 0L
+        var totalToolExecutionMs = 0L
         var lastRawReq = ""
         var lastRawResp = ""
+
+        fun recordTokenActivity() {
+            val now = PlatformBridge.currentTimeMillis()
+            if (firstTokenTime == 0L) firstTokenTime = now
+            if (currentBurstStartMs == 0L) {
+                currentBurstStartMs = now
+                currentBurstLastMs = now
+            } else {
+                val gap = now - currentBurstLastMs
+                if (gap > 2500L) {
+                    // Server paused >2.5s (e.g. server-side tool / web search / multi-round TTFT); close prior burst
+                    activeDecodeAccumulatedMs += (currentBurstLastMs - currentBurstStartMs).coerceAtLeast(40L)
+                    currentBurstStartMs = now
+                    currentBurstLastMs = now
+                } else {
+                    currentBurstLastMs = now
+                }
+            }
+        }
+
+        fun closeCurrentDecodeBurst() {
+            if (currentBurstStartMs > 0L && currentBurstLastMs >= currentBurstStartMs) {
+                activeDecodeAccumulatedMs += (currentBurstLastMs - currentBurstStartMs).coerceAtLeast(40L)
+            }
+            currentBurstStartMs = 0L
+            currentBurstLastMs = 0L
+        }
+
+        fun commitCompletedStepUsage() {
+            if (stepReasoningTokens > 0) {
+                completedStepsReasoningTokens += stepReasoningTokens
+                stepReasoningTokens = 0
+            }
+            if (stepOutputTokens > 0) {
+                completedStepsOutputTokens += stepOutputTokens
+                stepOutputTokens = 0
+            }
+        }
+
+        fun recordStepUsage(inTok: Int, cacheTok: Int, thinkTok: Int, outTok: Int) {
+            if (inTok > 0) inputTokens = maxOf(inputTokens, inTok)
+            if (cacheTok > 0) cachedTokens = maxOf(cachedTokens, cacheTok)
+            if (thinkTok > 0) stepReasoningTokens = maxOf(stepReasoningTokens, thinkTok)
+            if (outTok > 0) stepOutputTokens = maxOf(stepOutputTokens, outTok)
+        }
 
         fun appendSignatureIfUnique(sig: String): String {
             if (sig.isEmpty()) return ""
@@ -446,6 +499,8 @@ object AiProviderEngine {
             }
         }
         suspend fun upsertToolCallAndEmit(tc: ToolCallRecord) {
+            closeCurrentDecodeBurst()
+            commitCompletedStepUsage()
             val existingIdx = executedTools.indexOfFirst { it.id == tc.id && tc.id.isNotBlank() }
             val enriched = if (existingIdx >= 0) {
                 val prev = executedTools[existingIdx]
@@ -463,6 +518,9 @@ object AiProviderEngine {
             }
             emit(StreamUpdate.ToolCallEvent(enriched))
             if (!enriched.isRunning) {
+                if (enriched.durationMs > 0L) {
+                    totalToolExecutionMs += enriched.durationMs
+                }
                 extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
             }
         }
@@ -536,8 +594,9 @@ object AiProviderEngine {
                                         emit(StreamUpdate.Status(statusMsg, lastInteractionId))
                                     },
                                     onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta, sig ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         currentStepThinkingBuilder.append(delta)
                                         val uniqueSig = appendSignatureIfUnique(sig)
@@ -546,14 +605,15 @@ object AiProviderEngine {
                                         }
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                         val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
@@ -566,10 +626,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.RawWireSnapshot(req, resp))
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
+                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
                                     },
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
@@ -593,8 +650,9 @@ object AiProviderEngine {
                                         emit(StreamUpdate.Status(statusMsg, lastInteractionId))
                                     },
                                     onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta, sig ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         currentStepThinkingBuilder.append(delta)
                                         val uniqueSig = appendSignatureIfUnique(sig)
@@ -603,14 +661,15 @@ object AiProviderEngine {
                                         }
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                         val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
@@ -624,10 +683,7 @@ object AiProviderEngine {
                                     },
                                     onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                         if (id.isNotBlank()) lastInteractionId = id
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
+                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
                                     },
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
@@ -684,21 +740,23 @@ object AiProviderEngine {
                                     circuitBreaker = circuitBreaker,
                                     onStatus = { st -> emit(StreamUpdate.Status(st)) },
                                     onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         currentStepThinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                         val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
@@ -711,10 +769,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.RawWireSnapshot(req, resp))
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
+                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
                                     },
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
@@ -797,29 +852,28 @@ object AiProviderEngine {
                                         circuitBreaker = circuitBreaker,
                                         onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
                                         onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                        onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                        onFirstToken = { recordTokenActivity() },
                                         onThinking = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
                                             thinkingBuilder.append(delta)
                                             currentStepThinkingBuilder.append(delta)
                                             emit(StreamUpdate.ThinkingDelta(delta))
                                         },
                                         onContent = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
                                             contentBuilder.append(delta)
-                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                             val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                             PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                             emit(StreamUpdate.ContentDelta(delta))
                                         },
                                         onMedia = { item ->
-                                            onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                            recordTokenActivity()
                                             generatedMedia.add(item)
                                             emit(StreamUpdate.MediaGenerated(item))
                                         },
                                         onToolCall = { tc ->
-                                            val enriched = attachStepThinkingToToolCall(tc)
-                                            executedTools.add(enriched)
-                                            emit(StreamUpdate.ToolCallEvent(enriched))
-                                            extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                            upsertToolCallAndEmit(tc)
                                         },
                                         onRawWire = { req, resp ->
                                             lastRawReq = req
@@ -828,10 +882,7 @@ object AiProviderEngine {
                                         },
                                         onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
                                             if (id.isNotBlank()) lastInteractionId = id
-                                            inputTokens = inTok
-                                            cachedTokens = cacheTok
-                                            reasoningTokens = thinkTok
-                                            outputTokens = outTok
+                                            recordStepUsage(inTok, cacheTok, thinkTok, outTok)
                                         },
                                         onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
@@ -1012,8 +1063,9 @@ object AiProviderEngine {
                                 circuitBreaker = circuitBreaker,
                                 onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
                                 onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                onFirstToken = { recordTokenActivity() },
                                 onThinking = { delta, sig ->
+                                    if (delta.isNotEmpty()) recordTokenActivity()
                                     thinkingBuilder.append(delta)
                                     currentStepThinkingBuilder.append(delta)
                                     val uniqueSig = appendSignatureIfUnique(sig)
@@ -1022,17 +1074,15 @@ object AiProviderEngine {
                                     }
                                 },
                                 onContent = { delta ->
+                                    if (delta.isNotEmpty()) recordTokenActivity()
                                     contentBuilder.append(delta)
-                                    val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                    val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                     val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                     PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                     emit(StreamUpdate.ContentDelta(delta))
                                 },
                                 onToolCall = { tc ->
-                                    val enriched = attachStepThinkingToToolCall(tc)
-                                    executedTools.add(enriched)
-                                    emit(StreamUpdate.ToolCallEvent(enriched))
-                                    extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
+                                    upsertToolCallAndEmit(tc)
                                 },
                                 onRawWire = { req, resp ->
                                     lastRawReq = req
@@ -1041,9 +1091,7 @@ object AiProviderEngine {
                                 },
                                 onUsage = { id, inTok, cacheTok, outTok ->
                                     if (id.isNotBlank()) lastInteractionId = id
-                                    inputTokens = inTok
-                                    cachedTokens = cacheTok
-                                    outputTokens = outTok
+                                    recordStepUsage(inTok, cacheTok, 0, outTok)
                                 },
                                 onCitation = { cit -> recordRawCitationAndEmit(cit) }
                             )
@@ -1069,17 +1117,19 @@ object AiProviderEngine {
                                         if (id.isNotBlank()) lastInteractionId = id
                                         emit(StreamUpdate.Status(st, lastInteractionId))
                                     },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
@@ -1099,21 +1149,23 @@ object AiProviderEngine {
                                     circuitBreaker = circuitBreaker,
                                     onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
                                     onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { if (firstTokenTime == 0L) firstTokenTime = PlatformBridge.currentTimeMillis() },
+                                    onFirstToken = { recordTokenActivity() },
                                     onThinking = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         thinkingBuilder.append(delta)
                                         currentStepThinkingBuilder.append(delta)
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(outputTokens)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
                                         val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        onFirstTokenIfZero(firstTokenTime) { firstTokenTime = it }
+                                        recordTokenActivity()
                                         generatedMedia.add(item)
                                         emit(StreamUpdate.MediaGenerated(item))
                                     },
@@ -1126,10 +1178,7 @@ object AiProviderEngine {
                                         emit(StreamUpdate.RawWireSnapshot(req, resp))
                                     },
                                     onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        inputTokens = inTok
-                                        cachedTokens = cacheTok
-                                        reasoningTokens = thinkTok
-                                        outputTokens = outTok
+                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
                                     },
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
@@ -1227,10 +1276,13 @@ object AiProviderEngine {
                 }
             }
 
+            closeCurrentDecodeBurst()
+            commitCompletedStepUsage()
+
             val endTime = PlatformBridge.currentTimeMillis()
             val totalDurationMs = (endTime - startTime).coerceAtLeast(1L)
             val ttftMs = if (firstTokenTime > startTime) (firstTokenTime - startTime) else totalDurationMs
-            val finalInTokens = if (inputTokens > 0) {
+            val fallbackInTokens = if (inputTokens > 0) {
                 inputTokens
             } else {
                 val sysTok = O200kTokenizer.countTokens(buildCompiledSystemPrompt(session, circuitBreaker.goalState))
@@ -1239,26 +1291,19 @@ object AiProviderEngine {
                 }
                 (sysTok + histTok).coerceAtLeast(1)
             }
-            val finalThinkTokens = if (reasoningTokens > 0) {
-                reasoningTokens
-            } else if (thinkingBuilder.isNotEmpty()) {
-                O200kTokenizer.countTokens(thinkingBuilder.toString()).coerceAtLeast(1)
-            } else 0
-            val finalOutTokens = if (outputTokens > 0) {
-                outputTokens
-            } else {
-                O200kTokenizer.countTokens(contentBuilder.toString()).coerceAtLeast(1)
-            }
-            val tokPerSec = (finalOutTokens * 1000.0) / totalDurationMs.toDouble()
-
-            val rawMetrics = TokenMetrics(
-                inputTokens = finalInTokens,
-                cachedInputTokens = cachedTokens,
-                reasoningTokens = finalThinkTokens,
-                outputTokens = finalOutTokens,
+            val rawMetrics = computeTurnTokenMetrics(
+                reportedInputTokens = inputTokens,
+                reportedCachedTokens = cachedTokens,
+                reportedReasoningTokens = completedStepsReasoningTokens,
+                reportedOutputTokens = completedStepsOutputTokens,
+                fallbackInputTokens = fallbackInTokens,
+                contentText = contentBuilder.toString(),
+                thinkingText = thinkingBuilder.toString(),
+                executedTools = executedTools,
+                totalDurationMs = totalDurationMs,
                 ttftMs = ttftMs,
-                durationMs = totalDurationMs,
-                tokensPerSec = (tokPerSec * 10.0).toInt() / 10.0
+                activeDecodeDurationMs = activeDecodeAccumulatedMs,
+                totalToolExecutionMs = totalToolExecutionMs
             )
             val costUsd = profile.calculateTurnCostUsd(rawMetrics)
 
@@ -1303,6 +1348,59 @@ object AiProviderEngine {
             PlatformBridge.notifyLongDecodeComplete()
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Computes accurate turn-level `TokenMetrics` and `tokensPerSec`:
+     * - Numerator includes both `finalOutTokens` (prose + tool call arguments across all rounds) and `finalThinkTokens`.
+     * - Denominator uses `activeDecodeDurationMs` (active token streaming bursts excluding TTFT wait and local tool execution time).
+     */
+    internal fun computeTurnTokenMetrics(
+        reportedInputTokens: Int,
+        reportedCachedTokens: Int,
+        reportedReasoningTokens: Int,
+        reportedOutputTokens: Int,
+        fallbackInputTokens: Int,
+        contentText: String,
+        thinkingText: String,
+        executedTools: List<ToolCallRecord>,
+        totalDurationMs: Long,
+        ttftMs: Long,
+        activeDecodeDurationMs: Long,
+        totalToolExecutionMs: Long
+    ): TokenMetrics {
+        val finalInTokens = if (reportedInputTokens > 0) reportedInputTokens else fallbackInputTokens.coerceAtLeast(1)
+        val bpeThinkTokens = if (thinkingText.isNotEmpty()) {
+            O200kTokenizer.countTokens(thinkingText).coerceAtLeast(1)
+        } else 0
+        val bpeToolCallTokens = executedTools.sumOf { tc ->
+            O200kTokenizer.countTokens(tc.name) + O200kTokenizer.countTokens(tc.argumentsJson)
+        }
+        val bpeContentTokens = if (contentText.isNotEmpty()) {
+            O200kTokenizer.countTokens(contentText).coerceAtLeast(1)
+        } else 0
+
+        val finalThinkTokens = maxOf(reportedReasoningTokens, bpeThinkTokens)
+        val finalOutTokens = maxOf(reportedOutputTokens, bpeContentTokens + bpeToolCallTokens).coerceAtLeast(1)
+        val totalGeneratedTokens = (finalOutTokens + finalThinkTokens).coerceAtLeast(1)
+
+        val effectiveDecodeMs = if (activeDecodeDurationMs >= 80L) {
+            activeDecodeDurationMs
+        } else {
+            val preTokenCap = ttftMs.coerceAtMost(totalDurationMs / 2)
+            (totalDurationMs - totalToolExecutionMs - preTokenCap).coerceAtLeast(120L)
+        }
+        val tokPerSec = (totalGeneratedTokens * 1000.0) / effectiveDecodeMs.toDouble()
+
+        return TokenMetrics(
+            inputTokens = finalInTokens,
+            cachedInputTokens = reportedCachedTokens,
+            reasoningTokens = finalThinkTokens,
+            outputTokens = finalOutTokens,
+            ttftMs = ttftMs,
+            durationMs = totalDurationMs,
+            tokensPerSec = ((tokPerSec * 10.0).toInt()) / 10.0
+        )
+    }
 
     /**
      * Lightweight one-shot utility text generation for Auto-Title Generation,

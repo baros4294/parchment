@@ -66,6 +66,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -126,6 +127,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -142,7 +144,9 @@ fun ParchmentApp(
 ) {
     val uiScope = rememberCoroutineScope()
 
-    var appState by remember { mutableStateOf(loadOrCreateDefaultAppState()) }
+    val initialFastPair = remember { loadFastInitialAppState() }
+    var appState by remember { mutableStateOf(initialFastPair.first) }
+    var needsBackgroundChatHydration by remember { mutableStateOf(initialFastPair.second) }
     var isSettingsOpen by remember { mutableStateOf(false) }
     var activeSettingsCategory by remember { mutableStateOf(SettingsCategory.PREFERENCES) }
     var startMobileSettingsAtRoot by remember { mutableStateOf(true) }
@@ -162,14 +166,52 @@ fun ParchmentApp(
     var activeStreamsBySession by remember { mutableStateOf<Map<String, SessionStreamRuntime>>(emptyMap()) }
     var queuedPromptsBySession by remember { mutableStateOf<Map<String, List<QueuedPromptItem>>>(emptyMap()) }
 
-    val activeProfile = appState.profiles.find { it.id == appState.activeProfileId }
-        ?: appState.profiles.first()
-    val activeSession = appState.sessions.find { it.id == appState.activeSessionId }
-        ?: appState.sessions.first()
-    val activeAssistant = appState.assistants.find { it.id == activeSession.assistantId && it.id.isNotBlank() }
-        ?: appState.assistants.find { it.id == appState.activeAssistantId && it.id.isNotBlank() }
-        ?: appState.assistants.firstOrNull()
-        ?: AssistantAgent(id = "asst-default", name = "Default Assistant", iconEmoji = "💬", systemPrompt = "")
+    val activeProfile = remember(appState.profiles, appState.activeProfileId) {
+        appState.profiles.find { it.id == appState.activeProfileId }
+            ?: appState.profiles.first()
+    }
+    val activeSession = remember(appState.sessions, appState.activeSessionId) {
+        appState.sessions.find { it.id == appState.activeSessionId }
+            ?: appState.sessions.first()
+    }
+    val activeAssistant = remember(appState.assistants, activeSession.assistantId, appState.activeAssistantId) {
+        appState.assistants.find { it.id == activeSession.assistantId && it.id.isNotBlank() }
+            ?: appState.assistants.find { it.id == appState.activeAssistantId && it.id.isNotBlank() }
+            ?: appState.assistants.firstOrNull()
+            ?: AssistantAgent(id = "asst-default", name = "Default Assistant", iconEmoji = "💬", systemPrompt = "")
+    }
+
+    // Background startup hydration: after Frame 1 renders, pre-warm O200kTokenizer and load inactive chat stubs on Dispatchers.Default
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        withContext(Dispatchers.Default) {
+            O200kTokenizer.warmUp()
+        }
+        if (needsBackgroundChatHydration) {
+            needsBackgroundChatHydration = false
+            val hydrated = withContext(Dispatchers.Default) {
+                loadRemainingHistoricalSessionsDehydrated(appState, activeStreamsBySession.keys)
+            }
+            appState = hydrated
+        }
+    }
+
+    // On-demand lazy hydration when switching active chat + automatic dehydration of inactive chats to keep RAM ultra-low
+    LaunchedEffect(appState.activeSessionId) {
+        val current = appState
+        val target = current.sessions.find { it.id == current.activeSessionId }
+        if (target != null && isSessionDehydrated(target.id)) {
+            val rebalanced = withContext(Dispatchers.Default) {
+                ensureActiveSessionHydratedAndDehydrateOthers(appState, activeStreamsBySession.keys)
+            }
+            appState = rebalanced
+        } else {
+            val rebalanced = ensureActiveSessionHydratedAndDehydrateOthers(current, activeStreamsBySession.keys)
+            if (rebalanced !== current) {
+                appState = rebalanced
+            }
+        }
+    }
 
     // Active tab's stream state
     val currentTabStream = activeStreamsBySession[activeSession.id]
@@ -608,7 +650,10 @@ fun ParchmentApp(
             }
             if (resolvedModel.isBlank()) return@launch
 
-            val transcriptSnippet = targetSess.messages.take(4).joinToString("\n\n") { n ->
+            val hydratedTarget = withContext(Dispatchers.Default) {
+                hydrateSessionFromDiskIfNeeded(targetSess)
+            }
+            val transcriptSnippet = hydratedTarget.messages.take(4).joinToString("\n\n") { n ->
                 val who = if (n.role == MessageRole.ASSISTANT) "Assistant" else "User"
                 "$who: ${n.activeVariant.content.take(450)}"
             }
@@ -747,6 +792,8 @@ fun ParchmentApp(
             var activeThinkingPhaseStartMs = 0L
             var accumulatedThinkingMs = initialDurationMs
             var thinkingDurationMs = initialDurationMs
+            var firstLiveTokenMs = 0L
+            var liveTokensPerSec = 0.0
             var lastStopwatchTickMs = 0L
             var lastDiskCheckpointMs = PlatformBridge.currentTimeMillis()
             fun pauseActiveThinkingStopwatch() {
@@ -759,16 +806,32 @@ fun ParchmentApp(
             }
             fun patchVariantMemory(updater: (MessageVariant) -> MessageVariant) {
                 updateActiveSessionInMemoryOnly(sessionId) { sess ->
-                    sess.copy(
-                        messages = sess.messages.map { node ->
-                            if (node.id != targetAssistantNodeId) node
-                            else node.copy(
-                                variants = node.variants.map { v ->
-                                    if (v.id == targetVariantId) updater(v) else v
-                                }
-                            )
-                        }
-                    )
+                    val msgs = sess.messages
+                    val lastIdx = msgs.lastIndex
+                    if (lastIdx >= 0 && msgs[lastIdx].id == targetAssistantNodeId) {
+                        // Fast O(1) path for the active streaming turn at the bottom of the chat
+                        val lastNode = msgs[lastIdx]
+                        val updatedLast = lastNode.copy(
+                            variants = lastNode.variants.map { v ->
+                                if (v.id == targetVariantId) updater(v) else v
+                            }
+                        )
+                        val nextList = ArrayList<MessageNode>(msgs.size)
+                        for (i in 0 until lastIdx) nextList.add(msgs[i])
+                        nextList.add(updatedLast)
+                        sess.copy(messages = nextList)
+                    } else {
+                        sess.copy(
+                            messages = msgs.map { node ->
+                                if (node.id != targetAssistantNodeId) node
+                                else node.copy(
+                                    variants = node.variants.map { v ->
+                                        if (v.id == targetVariantId) updater(v) else v
+                                    }
+                                )
+                            }
+                        )
+                    }
                 }
             }
 
@@ -889,6 +952,13 @@ fun ParchmentApp(
                     }
                     var changed = false
                     val now = PlatformBridge.currentTimeMillis()
+                    if (firstLiveTokenMs > 0L && now - lastStopwatchTickMs >= 100L) {
+                        val toolExecMs = accumulatedTools.sumOf { it.durationMs.coerceAtLeast(0L) }
+                        val activeDecodeMs = ((now - firstLiveTokenMs) - toolExecMs).coerceAtLeast(150L)
+                        val approxGeneratedTok = ((networkContentTarget.length + networkThinkingTarget.length) / 4).coerceAtLeast(1)
+                        val rawLiveRate = (approxGeneratedTok * 1000.0) / activeDecodeMs.toDouble()
+                        liveTokensPerSec = ((rawLiveRate * 10.0).toInt()) / 10.0
+                    }
                     if (activeThinkingPhaseStartMs > 0L && now - lastStopwatchTickMs >= 100L) {
                         lastStopwatchTickMs = now
                         thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
@@ -955,6 +1025,9 @@ fun ParchmentApp(
                                 trailingThinking = visibleStepThink,
                                 thinkingSignature = curSig,
                                 thinkingDurationMs = thinkingDurationMs,
+                                tokenMetrics = if (liveTokensPerSec > 0.0) {
+                                    v.tokenMetrics.copy(tokensPerSec = liveTokensPerSec)
+                                } else v.tokenMetrics,
                                 isStreaming = true
                             )
                         }
@@ -1154,6 +1227,7 @@ fun ParchmentApp(
                                 }
                                 is StreamUpdate.ThinkingDelta -> {
                                     val now = PlatformBridge.currentTimeMillis()
+                                    if (firstLiveTokenMs == 0L) firstLiveTokenMs = now
                                     if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
                                     thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     networkThinkingTarget.append(update.delta)
@@ -1173,6 +1247,8 @@ fun ParchmentApp(
                                     }
                                 }
                                 is StreamUpdate.ContentDelta -> {
+                                    val now = PlatformBridge.currentTimeMillis()
+                                    if (firstLiveTokenMs == 0L) firstLiveTokenMs = now
                                     pauseActiveThinkingStopwatch()
                                     networkContentTarget.append(update.delta)
                                     val wordCount = countWordsFast(networkContentTarget)
@@ -1182,7 +1258,6 @@ fun ParchmentApp(
                                             statusText = "Writing ($modelName • +$wordCount words)…"
                                         )
                                     }
-                                    val now = PlatformBridge.currentTimeMillis()
                                     if (now - lastMidStreamCompactCheckMs >= 1500L) {
                                         lastMidStreamCompactCheckMs = now
                                         checkMidStreamAutoCompactAndThrowIfNeeded()
@@ -5085,15 +5160,17 @@ private fun ManuscriptViewport(
                     }
                 }
                 val effectiveWorkspacePath = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
-                val workspaceFiles = remember(effectiveWorkspacePath, activeAtQuery != null) {
-                    if (activeAtQuery == null || effectiveWorkspacePath.isBlank()) emptyList()
-                    else {
-                        PlatformBridge.workspaceGlob(effectiveWorkspacePath, "*", maxResults = 160)
-                            .getOrDefault("")
-                            .lines()
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() && !it.startsWith("No files") && !it.endsWith("/") }
-                            .map { it.substringBefore(" (").trim() }
+                var workspaceFiles by remember(effectiveWorkspacePath) { mutableStateOf<List<String>>(emptyList()) }
+                LaunchedEffect(effectiveWorkspacePath, activeAtQuery != null) {
+                    if (activeAtQuery != null && effectiveWorkspacePath.isNotBlank() && workspaceFiles.isEmpty()) {
+                        workspaceFiles = withContext(Dispatchers.Default) {
+                            PlatformBridge.workspaceGlob(effectiveWorkspacePath, "*", maxResults = 160)
+                                .getOrDefault("")
+                                .lines()
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() && !it.startsWith("No files") && !it.endsWith("/") }
+                                .map { it.substringBefore(" (").trim() }
+                        }
                     }
                 }
                 val historyAttachments = remember(activeSession.id, activeSession.messages.size) {
@@ -6863,7 +6940,8 @@ private fun MessageTurnItem(
                 if (isAssistant && preferences.showTokenAndContextStats &&
                     (activeVar.content.isNotBlank() || activeVar.toolCalls.isNotEmpty() || m.outputTokens > 0)
                 ) {
-                    val outProseTok = remember(activeVar.content, activeVar.attachments, m.outputTokens) {
+                    val proseTokenKey = if (activeVar.isStreaming) activeVar.content.length / 64 else activeVar.content.hashCode()
+                    val outProseTok = remember(proseTokenKey, activeVar.isStreaming, activeVar.attachments, m.outputTokens) {
                         val counted = O200kTokenizer.countMessageVariantTokens(
                             role = MessageRole.ASSISTANT,
                             variant = activeVar,
@@ -6878,7 +6956,8 @@ private fun MessageTurnItem(
                                 O200kTokenizer.countTokens(tc.resultText)
                         }
                     }
-                    val thinkTok = remember(activeVar.thinkingSummary, m.reasoningTokens) {
+                    val thinkTokenKey = if (activeVar.isStreaming) activeVar.thinkingSummary.length / 64 else activeVar.thinkingSummary.hashCode()
+                    val thinkTok = remember(thinkTokenKey, activeVar.isStreaming, m.reasoningTokens) {
                         if (activeVar.thinkingSummary.isNotBlank()) {
                             O200kTokenizer.countTokens(activeVar.thinkingSummary)
                         } else {

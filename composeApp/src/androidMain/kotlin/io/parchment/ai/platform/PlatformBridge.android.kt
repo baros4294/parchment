@@ -247,6 +247,22 @@ actual object PlatformBridge {
         }
     }
 
+    actual fun loadChatSessionJsonById(sessionId: String): String? = runCatching {
+        if (sessionId.isBlank()) return null
+        val dir = chatsDir()
+        val safeId = sanitizeSessionFileName(sessionId)
+        val primary = File(dir, "$safeId.json")
+        if (primary.exists() && primary.isFile && primary.length() > 5L) {
+            return primary.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+        }
+        val tmp = File(dir, "$safeId.json.tmp")
+        if (tmp.exists() && tmp.isFile && tmp.length() > 10L) {
+            runCatching { tmp.copyTo(primary, overwrite = true) }
+            return tmp.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+        }
+        null
+    }.getOrNull()
+
     actual fun loadAllChatSessionJsons(): List<String> = runCatching {
         val dir = chatsDir()
         val files = dir.listFiles()?.toList().orEmpty()

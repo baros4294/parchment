@@ -188,6 +188,22 @@ actual object PlatformBridge {
         }
     }
 
+    actual fun loadChatSessionJsonById(sessionId: String): String? = runCatching {
+        if (sessionId.isBlank()) return null
+        val dir = chatsDir()
+        val safeId = sanitizeSessionFileName(sessionId)
+        val primary = File(dir, "$safeId.json")
+        if (primary.exists() && primary.isFile && primary.length() > 5L) {
+            return primary.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+        }
+        val tmp = File(dir, "$safeId.json.tmp")
+        if (tmp.exists() && tmp.isFile && tmp.length() > 10L) {
+            runCatching { tmp.copyTo(primary, overwrite = true) }
+            return tmp.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+        }
+        null
+    }.getOrNull()
+
     actual fun loadAllChatSessionJsons(): List<String> = runCatching {
         val dir = chatsDir()
         val files = dir.listFiles()?.toList().orEmpty()
@@ -202,7 +218,10 @@ actual object PlatformBridge {
         dir.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".json", ignoreCase = true) && it.length() > 5L }
             ?.sortedByDescending { it.lastModified() }
-            ?.mapNotNull { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            ?.parallelStream()
+            ?.map { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            ?.toList()
+            ?.filterNotNull()
             .orEmpty()
     }.getOrDefault(emptyList())
 
@@ -1093,10 +1112,10 @@ actual object PlatformBridge {
         return runCatching {
             val f = File(filePath)
             if (!f.exists() || !f.isFile) return null
-            val bmp = Image.makeFromEncoded(f.readBytes()).toComposeImageBitmap()
+            val bmp = Image.makeFromEncoded(f.readBytes()).use { it.toComposeImageBitmap() }
             synchronized(imageCache) {
-                if (imageCache.size >= 16) {
-                    imageCache.keys.firstOrNull()?.let { imageCache.remove(it) }
+                while (imageCache.size >= 6) {
+                    imageCache.keys.firstOrNull()?.let { imageCache.remove(it) } ?: break
                 }
                 imageCache[filePath] = bmp
             }
