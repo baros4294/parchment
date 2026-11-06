@@ -4114,7 +4114,7 @@ private fun BackupAndOtaSubpage(
                         } else null
                         val isOrphan = remember(item.fullPath, referencedMediaPaths) { isOrphanOrTempFile(item) }
                         val itemIcon = when (item.category) {
-                            io.parchment.ai.model.StorageFileCategory.CHAT_SESSION -> KissIcon.CHAT
+                            io.parchment.ai.model.StorageFileCategory.CHAT_SESSION -> KissIcon.FILE_TEXT
                             io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA -> KissIcon.PAPERCLIP
                             io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA -> KissIcon.IMAGE
                             io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS -> KissIcon.SETTINGS
