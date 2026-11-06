@@ -1232,7 +1232,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(diff.any { it.kind == io.parchment.ai.ui.DiffLineKind.COLLAPSED })
 
         // 2. Default PreferencesConfig has autoScrollToBottomOnOpen enabled
-        val defaultPrefs = PreferencesConfig()
+        val defaultPrefs = io.parchment.ai.model.PreferencesConfig()
         assertTrue(defaultPrefs.autoScrollToBottomOnOpen)
 
         // 3. Storage listing returns valid StoredAppFileItem list
