@@ -31,7 +31,19 @@
    - Keep inactive chats dehydrated as lightweight stubs (`dehydrateChatSessionToCompactStub` / `hydrateSessionFromDiskIfNeeded`) and strip duplicate in-memory `PromptAttachment.base64Data` when `localFilePath` exists on disk.
    - Reuse `sharedScratchIconPath` in `KissVectorIcon`, cache parsed `Path`s in `ModelLabSvgIcon`, and share `AiProviderEngine.httpClient`.
 
-## 3. Core Architecture Matrix (`v2.0.52+`)
+## 3. Core Architecture Matrix (`v2.0.53+`)
+- **Big Three + Custom Protocol (`Models.kt`, `AiProviderEngine.kt`, `ParchmentSettingsPages.kt`)**:
+  - `ProviderProtocol` = `GEMINI_INTERACTIONS`, `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES`, `CUSTOM` (`ProviderProtocol.bigThree` exposes the managed trio).
+  - `CUSTOM` sends `baseUrl` **verbatim** (zero tail-building) and requires an explicit `customDialect` (`openai_chat` / `openai_responses` / `anthropic_messages` / `gemini_interactions`). Empty dialect = `resolveWireProtocol()` returns `CUSTOM` and `isCustomDialectUnresolved()` blocks Send with a visible notice — never a silent wire-shape guess.
+  - Legacy `useExactEndpointUrl = true` profiles auto-migrate to `CUSTOM` + preserved dialect via `migrateLegacyProviderJson()`.
+- **Privacy-First Stateless Defaults**: `useStatefulChaining = false` and `storeServerSide = false` by default, so `store=false` is sent and full history is serialized locally. Stateful Chain / Background Poll toggles render **only** for `GEMINI_INTERACTIONS`.
+- **Model-Scoped Chain Guard**: `previous_interaction_id` is only replayed when the previous turn's `MessageVariant.modelUsed` matches the current model — a chain minted by a different model would otherwise omit all local history.
+- **Cross-Provider Reasoning Handoff (`applyCrossProviderReasoningHandoff`)**: prior reasoning *narrative* (`thinkingSummary`) is carried forward as `[Prior reasoning summary]` text for every historical assistant turn minted by a different protocol (capped at 2000 chars). Signatures remain dropped, never translated. Skipped entirely when server-side chaining is active.
+- **Reasoning Effort**: official Anthropic tiers `low | medium | high | xhigh | max` pass through verbatim (`xhigh` must NOT collapse to `max`); only non-official `minimal` folds to `low`. `adaptive` / `auto` are first-class presets, plus a `Custom…` free-form chip in both the composer and the Assistant override that writes the raw string verbatim. `thinkingBudgetTokens` is relabeled a legacy pre-4.7 escape hatch (Claude 4.7+ returns HTTP 400).
+- **Typography Baseline**: `proseFontSizeSp = 14.0f`, `codeFontSizeSp = 14.0f`; `migrateThemeTypefaceDefaults()` rewrites only values still equal to the old 16.5 / 12.5 defaults. List bullet spacing widened to 9dp (7dp compact).
+- **Tabs & Media Polish**: `normalizeOpenTabs()` de-dupes, guarantees the active tab, and MRU-caps at `MAX_OPEN_TABS = 12`; tab switching no longer force-closes settings; tab-switcher scrim removed. Composer media chips gained `Custom…` free-form aspect-ratio and duration (1–30s) inputs, and generated images gained a `Copy Image` action via `PlatformBridge.copyImageToClipboard()`.
+
+## 3b. Prior Architecture Matrix (`v2.0.52`)
 - **Multi-Source Unified Model Registry & Universal Background Auto-Router (`ModelsDevClient.kt`, `AiProviderEngine.kt`, `ParchmentIcons.kt`)**:
   - Concurrently fetches and merges **OpenRouter** (`/v1/models?output_modalities=all` + `/v1/videos/models`), **Vercel AI Gateway** (`/v1/models`), **AIMLAPI** (`/models`), and **LiteLLM** (`model_prices_and_context_window.json`) with canonical fuzzy slug normalization (`5-0` ↔ `5.0`, stripping wrapper prefixes and date snapshots) and modality-preserving `mergeModelSpecs`.
   - Consolidates `ProviderProtocol` to the **Big Three** (`GEMINI_INTERACTIONS`, `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES`) with automatic persistence migration for legacy `BYTEDANCE_ARK` profiles and tail-free URL resolution (`resolveSmartEndpointUrl` supporting `useExactEndpointUrl`, trailing `#`, concrete endpoint URLs, and `/v1`/`/v2`/`/v3`/`/v4`/`/v1beta` roots).

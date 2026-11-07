@@ -1649,14 +1649,23 @@ class ParchmentProtocolAndHarnessTest {
 
     @Test
     fun testMultiSourceRegistryUniversalAutoRoutingAndLabIcons() {
-        // 1. Verify Big Three Protocol Consolidation & Legacy BYTEDANCE_ARK Migration
+        // 1. Verify Big Three + Custom Protocol Consolidation & Legacy BYTEDANCE_ARK Migration
+        assertEquals(
+            listOf(
+                ProviderProtocol.GEMINI_INTERACTIONS,
+                ProviderProtocol.OPENAI_RESPONSES,
+                ProviderProtocol.ANTHROPIC_MESSAGES,
+                ProviderProtocol.CUSTOM
+            ),
+            ProviderProtocol.entries.toList()
+        )
         assertEquals(
             listOf(
                 ProviderProtocol.GEMINI_INTERACTIONS,
                 ProviderProtocol.OPENAI_RESPONSES,
                 ProviderProtocol.ANTHROPIC_MESSAGES
             ),
-            ProviderProtocol.entries.toList()
+            ProviderProtocol.bigThree
         )
         val legacyJson = """{"profiles":[{"id":"p-bd","name":"Ark","protocol":"BYTEDANCE_ARK","baseUrl":"https://ark.ap-southeast.bytepluses.com/api/v3"}]}"""
         val migratedState = io.parchment.ai.ui.recoverAppStateFromPartialJson(legacyJson)
@@ -1674,8 +1683,19 @@ class ParchmentProtocolAndHarnessTest {
         val zhipuV4Profile = defaultOpenAi.copy(baseUrl = "https://open.bigmodel.cn/api/paas/v4")
         assertEquals("https://open.bigmodel.cn/api/paas/v4/chat/completions", AiProviderEngine.resolveSmartEndpointUrl(zhipuV4Profile, "/v1/chat/completions", "/chat/completions"))
 
-        val exactToggleProfile = defaultOpenAi.copy(baseUrl = "https://future-api.example.com/custom/v5/run", useExactEndpointUrl = true)
-        assertEquals("https://future-api.example.com/custom/v5/run", AiProviderEngine.resolveSmartEndpointUrl(exactToggleProfile, "/v1/responses", "/responses"))
+        val customProtocolProfile = defaultOpenAi.copy(
+            protocol = ProviderProtocol.CUSTOM,
+            customDialect = io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT,
+            baseUrl = "https://future-api.example.com/custom/v5/run"
+        )
+        assertEquals("https://future-api.example.com/custom/v5/run", AiProviderEngine.resolveSmartEndpointUrl(customProtocolProfile, "/v1/responses", "/responses"))
+
+        // Custom protocol with no dialect must resolve to CUSTOM (Send blocked, never guessed).
+        val unresolvedCustom = customProtocolProfile.copy(customDialect = "")
+        assertEquals(ProviderProtocol.CUSTOM, AiProviderEngine.resolveWireProtocol(unresolvedCustom))
+        assertTrue(AiProviderEngine.isCustomDialectUnresolved(unresolvedCustom))
+        assertEquals(ProviderProtocol.OPENAI_RESPONSES, AiProviderEngine.resolveWireProtocol(customProtocolProfile))
+        assertFalse(AiProviderEngine.isCustomDialectUnresolved(customProtocolProfile))
 
         val hashTailFreeProfile = defaultOpenAi.copy(baseUrl = "https://my-proxy.example.com/custom-endpoint#")
         assertEquals("https://my-proxy.example.com/custom-endpoint", AiProviderEngine.resolveSmartEndpointUrl(hashTailFreeProfile, "/v1/responses", "/responses"))
@@ -1761,5 +1781,85 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("minimax", resolveLabSlugForModelOrProvider("hailuo-3-max", "OPENAI_RESPONSES"))
         assertEquals("openai", resolveLabSlugForModelOrProvider("sora-2-pro", "GEMINI_INTERACTIONS"))
         assertEquals("openai", resolveLabSlugForModelOrProvider("Custom Proxy Name", "OPENAI_RESPONSES"))
+    }
+
+    @Test
+    fun testV2053CustomProtocolReasoningHandoffAndMigrations() {
+        // 1. Effort normalization: `xhigh` is an official tier and must pass through verbatim.
+        assertEquals("xhigh", io.parchment.ai.ui.normalizeThinkingEffort("xhigh"))
+        assertEquals("max", io.parchment.ai.ui.normalizeThinkingEffort("max"))
+        assertEquals("low", io.parchment.ai.ui.normalizeThinkingEffort("minimal"))
+        assertEquals("adaptive", io.parchment.ai.ui.normalizeThinkingEffort("adaptive"))
+        assertEquals("auto", io.parchment.ai.ui.normalizeThinkingEffort("auto"))
+        assertEquals("", io.parchment.ai.ui.normalizeThinkingEffort("   "))
+
+        // 2. One-shot typeface migration only rewrites the OLD defaults.
+        val legacyTheme = io.parchment.ai.model.ThemeConfig(proseFontSizeSp = 16.5f, codeFontSizeSp = 12.5f)
+        val migratedTheme = io.parchment.ai.ui.migrateThemeTypefaceDefaults(legacyTheme)
+        assertEquals(14.0f, migratedTheme.proseFontSizeSp)
+        assertEquals(14.0f, migratedTheme.codeFontSizeSp)
+        val userTheme = io.parchment.ai.model.ThemeConfig(proseFontSizeSp = 18.0f, codeFontSizeSp = 11.0f)
+        val untouched = io.parchment.ai.ui.migrateThemeTypefaceDefaults(userTheme)
+        assertEquals(18.0f, untouched.proseFontSizeSp)
+        assertEquals(11.0f, untouched.codeFontSizeSp)
+
+        // 3. Tab strip normalization: dedupe, guarantee active, MRU cap.
+        assertEquals(listOf("a", "b"), io.parchment.ai.ui.normalizeOpenTabs(listOf("a", "a", "b"), "b"))
+        assertEquals(listOf("a", "b"), io.parchment.ai.ui.normalizeOpenTabs(listOf("a"), "b"))
+        val many = (1..20).map { "s$it" }
+        val capped = io.parchment.ai.ui.normalizeOpenTabs(many, "s1")
+        assertEquals(io.parchment.ai.ui.MAX_OPEN_TABS, capped.size)
+        assertTrue("s1" in capped)
+
+        // 4. Cross-provider reasoning handoff: summary text carries, signatures never do.
+        val geminiVariant = io.parchment.ai.model.MessageVariant(
+            id = "v1",
+            content = "Answer from Gemini.",
+            thinkingSummary = "I considered the vault layout first.",
+            providerProtocol = ProviderProtocol.GEMINI_INTERACTIONS,
+            modelUsed = "gemini-4-argon"
+        )
+        val node = io.parchment.ai.model.MessageNode(
+            id = "n1",
+            role = io.parchment.ai.model.MessageRole.ASSISTANT,
+            variants = listOf(geminiVariant),
+            activeVariantIndex = 0
+        )
+        val handedOff = AiProviderEngine.applyCrossProviderReasoningHandoff(
+            nodes = listOf(node),
+            currentProtocol = ProviderProtocol.ANTHROPIC_MESSAGES,
+            chainingActive = false
+        )
+        val handedContent = handedOff.first().activeVariant.content
+        assertTrue(handedContent.contains(AiProviderEngine.REASONING_HANDOFF_MARKER))
+        assertTrue(handedContent.contains("I considered the vault layout first."))
+        assertTrue(handedContent.contains("Answer from Gemini."))
+
+        // Same protocol -> no handoff (the model already owns that reasoning).
+        val sameProtocol = AiProviderEngine.applyCrossProviderReasoningHandoff(
+            nodes = listOf(node),
+            currentProtocol = ProviderProtocol.GEMINI_INTERACTIONS,
+            chainingActive = false
+        )
+        assertEquals("Answer from Gemini.", sameProtocol.first().activeVariant.content)
+
+        // Chaining active -> no handoff (server already holds those steps).
+        val chained = AiProviderEngine.applyCrossProviderReasoningHandoff(
+            nodes = listOf(node),
+            currentProtocol = ProviderProtocol.ANTHROPIC_MESSAGES,
+            chainingActive = true
+        )
+        assertEquals("Answer from Gemini.", chained.first().activeVariant.content)
+
+        // 5. Privacy-first defaults: stateless unless explicitly enabled.
+        val freshProfile = io.parchment.ai.model.ProviderProfile(
+            id = "p1",
+            name = "Fresh",
+            protocol = ProviderProtocol.GEMINI_INTERACTIONS,
+            baseUrl = "https://generativelanguage.googleapis.com"
+        )
+        assertFalse(freshProfile.useStatefulChaining)
+        assertFalse(freshProfile.storeServerSide)
+        assertEquals("", freshProfile.customDialect)
     }
 }

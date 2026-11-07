@@ -227,7 +227,7 @@ fun ParchmentApp(
     // Open Browser Tabs list (always includes activeSession.id)
     val openTabIds = remember(appState.openTabSessionIds, appState.sessions, activeSession.id) {
         val validSaved = appState.openTabSessionIds.filter { id -> appState.sessions.any { it.id == id } }
-        if (activeSession.id in validSaved) validSaved else (validSaved + activeSession.id)
+        normalizeOpenTabs(validSaved, activeSession.id)
     }
 
     // Per-session composer inputs & staged attachments (synced per session so switching tabs never leaks or loses files!)
@@ -1843,6 +1843,29 @@ fun ParchmentApp(
         var currentAtts = pendingAttachmentsBySession[sessId].orEmpty()
         if (rawInput.isEmpty() && prefill.isEmpty() && currentAtts.isEmpty()) return
 
+        // Custom Protocol with no wire dialect chosen must never guess a payload shape.
+        if (AiProviderEngine.isCustomDialectUnresolved(activeProfile)) {
+            val noticeId = "sys-${PlatformBridge.currentTimeMillis()}"
+            updateActiveSession { sess ->
+                sess.copy(
+                    messages = sess.messages + MessageNode(
+                        id = noticeId,
+                        role = MessageRole.ASSISTANT,
+                        variants = listOf(
+                            MessageVariant(
+                                id = "$noticeId-v",
+                                content = "Custom Protocol has no wire dialect selected. Open Provider settings → Wire Dialect and choose one before sending.",
+                                modelUsed = "system",
+                                createdAt = PlatformBridge.currentTimeMillis()
+                            )
+                        ),
+                        activeVariantIndex = 0
+                    )
+                )
+            }
+            return
+        }
+
         // Handle `/compact` slash command (Summarizes into Memory + Mutes older turns, keeping last 4 active)
         if (rawInput.equals("/compact", ignoreCase = true) && currentAtts.isEmpty()) {
             userPromptInput = ""
@@ -2314,7 +2337,10 @@ fun ParchmentApp(
 
     fun switchToTab(sessionId: String) {
         val target = appState.sessions.find { it.id == sessionId } ?: return
-        val updatedTabs = if (sessionId in openTabIds) openTabIds else (openTabIds + sessionId)
+        // Derive from persisted state (not the remembered snapshot) so rapid tab clicks never
+        // operate on a stale list, and cap the strip with MRU eviction.
+        val persistedTabs = appState.openTabSessionIds.filter { id -> appState.sessions.any { it.id == id } }
+        val updatedTabs = normalizeOpenTabs(persistedTabs, sessionId)
         persist(
             appState.copy(
                 activeSessionId = sessionId,
@@ -2323,7 +2349,7 @@ fun ParchmentApp(
             ),
             immediateFlush = true
         )
-        isSettingsOpen = false
+        // Switching tabs must not silently discard the user's settings context.
         showMobileTabSwitcher = false
     }
 
@@ -4776,6 +4802,10 @@ private fun ManuscriptViewport(
         // ZEN-BY-DEFAULT FLOATING COMPOSER WITH DESKTOP ENTER-TO-SEND & STEER / QUEUE
         // ========================================================================================
         var showComposerToolsDrawer by remember { mutableStateOf(false) }
+        var showCustomEffortField by remember { mutableStateOf(false) }
+        var customEffortDraft by remember { mutableStateOf("") }
+        var customMediaTarget by remember { mutableStateOf<String?>(null) }
+        var customMediaDraft by remember { mutableStateOf("") }
         val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
 
         Column(
@@ -5806,6 +5836,14 @@ private fun ManuscriptViewport(
                                     onUpdateProfile { it.copy(mediaResolution = next) }
                                 }
                             )
+                            SepiaChip(
+                                label = "Custom…",
+                                selected = customMediaTarget == "image_ratio",
+                                onClick = {
+                                    customMediaTarget = if (customMediaTarget == "image_ratio") null else "image_ratio"
+                                    customMediaDraft = activeProfile.mediaAspectRatio
+                                }
+                            )
                         }
                         if (activeModalityProfile.isAnyVideoModel) {
                             val currentRatio = activeProfile.mediaAspectRatio.ifBlank { "16:9" }
@@ -5840,6 +5878,14 @@ private fun ManuscriptViewport(
                                     val idx = videoDurationPresets.indexOf(currentDur)
                                     val next = videoDurationPresets[(idx + 1) % videoDurationPresets.size]
                                     onUpdateProfile { it.copy(videoDurationSeconds = next) }
+                                }
+                            )
+                            SepiaChip(
+                                label = "Custom…",
+                                selected = customMediaTarget == "video_duration",
+                                onClick = {
+                                    customMediaTarget = if (customMediaTarget == "video_duration") null else "video_duration"
+                                    customMediaDraft = activeProfile.videoDurationSeconds.toString()
                                 }
                             )
                             SepiaChip(
@@ -5892,11 +5938,79 @@ private fun ManuscriptViewport(
                                     onUpdateProfile { it.copy(thinkingEffort = next) }
                                 }
                             )
+                            SepiaChip(
+                                label = "Custom…",
+                                selected = showCustomEffortField,
+                                onClick = {
+                                    showCustomEffortField = !showCustomEffortField
+                                    if (showCustomEffortField) customEffortDraft = activeProfile.thinkingEffort
+                                }
+                            )
                         }
                         SepiaChip(
                             label = toolsChipLabel,
                             selected = showComposerToolsDrawer || hasActiveTools,
                             onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
+                        )
+                    }
+                }
+
+                if (showCustomEffortField) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SepiaTextField(
+                            value = customEffortDraft,
+                            onValueChange = { raw ->
+                                customEffortDraft = raw
+                                onUpdateProfile { it.copy(thinkingEffort = raw.trim()) }
+                            },
+                            placeholder = "Raw effort value (e.g. adaptive, auto, budget:4096)",
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        SepiaChip(
+                            label = "Done",
+                            selected = false,
+                            onClick = { showCustomEffortField = false }
+                        )
+                    }
+                }
+
+                customMediaTarget?.let { target ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SepiaTextField(
+                            value = customMediaDraft,
+                            onValueChange = { raw ->
+                                customMediaDraft = raw
+                                when (target) {
+                                    "image_ratio" -> onUpdateProfile { it.copy(mediaAspectRatio = raw.trim()) }
+                                    "video_duration" -> {
+                                        val secs = raw.trim().toIntOrNull()
+                                        if (secs != null) {
+                                            onUpdateProfile { it.copy(videoDurationSeconds = secs.coerceIn(1, 30)) }
+                                        }
+                                    }
+                                }
+                            },
+                            placeholder = if (target == "video_duration") {
+                                "Duration in seconds (1–30)"
+                            } else {
+                                "Aspect ratio (e.g. 21:9, 4:5, 9:16)"
+                            },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        SepiaChip(
+                            label = "Done",
+                            selected = false,
+                            onClick = { customMediaTarget = null }
                         )
                     }
                 }
@@ -7142,6 +7256,19 @@ private fun MessageTurnItem(
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
                                                 onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                            )
+                                        }
+                                        if (media.localFilePath.isNotBlank()) {
+                                            SepiaButton(
+                                                text = "Copy Image",
+                                                compact = true,
+                                                style = SepiaButtonStyle.OUTLINE,
+                                                onClick = {
+                                                    val bytes = PlatformBridge.readBinaryFileBytes(media.localFilePath)
+                                                    if (bytes != null) {
+                                                        PlatformBridge.copyImageToClipboard(bytes)
+                                                    }
+                                                }
                                             )
                                         }
                                     }

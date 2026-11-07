@@ -3,6 +3,9 @@ package io.parchment.ai.ui
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.CharacterOrScenarioCard
+import io.parchment.ai.model.CUSTOM_DIALECT_ANTHROPIC
+import io.parchment.ai.model.CUSTOM_DIALECT_GEMINI
+import io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.ContextFragment
 import io.parchment.ai.model.DefaultModelConfig
@@ -15,6 +18,7 @@ import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
+import io.parchment.ai.model.mapProtocolToDialect
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.platform.PlatformBridge
@@ -101,14 +105,110 @@ internal val BUILTIN_SLASH_COMMANDS = listOf(
 )
 
 internal val THINKING_EFFORT_PRESETS = listOf(
-    "minimal",
     "none",
     "low",
     "medium",
     "high",
     "xhigh",
-    "max"
+    "max",
+    "adaptive",
+    "auto"
 )
+
+/** Maximum number of simultaneously open chat tabs before MRU eviction kicks in. */
+internal const val MAX_OPEN_TABS = 12
+
+/**
+ * Normalizes the open-tab strip: de-duplicates, guarantees [activeId] is present,
+ * and evicts the least-recently-used tabs beyond [MAX_OPEN_TABS] (active always kept).
+ */
+internal fun normalizeOpenTabs(tabs: List<String>, activeId: String): List<String> {
+    val deduped = tabs.filter { it.isNotBlank() }.distinct()
+    val withActive = if (activeId.isBlank() || activeId in deduped) deduped else deduped + activeId
+    if (withActive.size <= MAX_OPEN_TABS) return withActive
+    val keep = withActive.takeLast(MAX_OPEN_TABS).toMutableList()
+    if (activeId.isNotBlank() && activeId !in keep) {
+        keep.removeAt(0)
+        keep.add(activeId)
+    }
+    return keep
+}
+
+/** Official Anthropic effort tiers (pass-through), plus legacy/custom escape values. */
+internal fun normalizeThinkingEffort(raw: String): String {
+    val v = raw.trim()
+    if (v.isEmpty()) return ""
+    return when (v.lowercase()) {
+        "off", "disabled", "false" -> "none"
+        // `minimal` is not an official tier; the closest legal value is `low`.
+        "minimal" -> "low"
+        else -> v
+    }
+}
+
+/**
+ * One-shot, idempotent migration of legacy typeface defaults (16.5 / 12.5) to the
+ * v2.0.53 baseline (14 / 14). Only rewrites values that still equal the OLD defaults,
+ * so any deliberate user choice survives untouched.
+ */
+internal fun migrateThemeTypefaceDefaults(theme: ThemeConfig): ThemeConfig {
+    val prose = if (theme.proseFontSizeSp == 16.5f) 14.0f else theme.proseFontSizeSp
+    val code = if (theme.codeFontSizeSp == 12.5f) 14.0f else theme.codeFontSizeSp
+    return if (prose != theme.proseFontSizeSp || code != theme.codeFontSizeSp) {
+        theme.copy(proseFontSizeSp = prose, codeFontSizeSp = code)
+    } else {
+        theme
+    }
+}
+
+/**
+ * Migrates legacy provider JSON shapes before deserialization:
+ *  - `BYTEDANCE_ARK` -> `OPENAI_RESPONSES`
+ *  - `useExactEndpointUrl = true` -> `protocol = CUSTOM` (verbatim URL, dialect preserved)
+ *  - legacy unsurfaced `useStatefulChaining = true` -> stateless/privacy-first defaults
+ */
+internal fun migrateLegacyProviderJson(raw: String): String {
+    val preprocessed = raw.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
+    if (!preprocessed.contains("useExactEndpointUrl") && !preprocessed.contains("\"useStatefulChaining\"")) {
+        return preprocessed
+    }
+    val root = runCatching { compactStateJson.parseToJsonElement(preprocessed) as? JsonObject }.getOrNull()
+        ?: return preprocessed
+    val profiles = root["profiles"] as? JsonArray ?: return preprocessed
+    var mutated = false
+    val migratedProfiles = profiles.map { elem ->
+        val obj = elem as? JsonObject ?: return@map elem
+        val legacyProtocol = obj["protocol"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val exactUrl = obj["useExactEndpointUrl"]?.jsonPrimitive?.booleanOrNull == true
+        val hadStoreKey = obj.containsKey("storeServerSide")
+        val legacyChain = obj["useStatefulChaining"]?.jsonPrimitive?.booleanOrNull == true
+        val withoutLegacy = JsonObject(
+            obj.filterKeys { it != "useExactEndpointUrl" }.mapValues { (_, v) -> v } +
+                buildMap {
+                    if (exactUrl) {
+                        // Keep the concrete dialect so payload shape is unchanged; only URL handling differs.
+                        put("protocol", kotlinx.serialization.json.JsonPrimitive("CUSTOM"))
+                        if (legacyProtocol.isNotBlank() && !obj.containsKey("customDialect")) {
+                            put("customDialect", kotlinx.serialization.json.JsonPrimitive(mapProtocolToDialect(legacyProtocol)))
+                        }
+                    }
+                    if (legacyChain && !hadStoreKey) {
+                        // Previously an unsurfaced default; reset to privacy-first stateless.
+                        put("useStatefulChaining", kotlinx.serialization.json.JsonPrimitive(false))
+                        put("storeServerSide", kotlinx.serialization.json.JsonPrimitive(false))
+                    }
+                }
+        )
+        if (exactUrl || (legacyChain && !hadStoreKey)) mutated = true
+        withoutLegacy
+    }
+    if (!mutated) return preprocessed
+    val rebuilt = JsonObject(root + ("profiles" to JsonArray(migratedProfiles)))
+    return compactStateJson.encodeToString(JsonObject.serializer(), rebuilt)
+}
+
+
+
 
 internal fun formatDurationFromMs(ms: Long): String {
     val totalTenths = (ms.coerceAtLeast(0L) + 50L) / 100L
@@ -692,7 +792,7 @@ internal fun decodeChatSessionsFromPickedFile(
  * Remaining historical chats are hydrated as lightweight stubs in the background on `Dispatchers.Default`.
  */
 internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
-    val rawSettings = PlatformBridge.loadAppStateJson()?.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
+    val rawSettings = PlatformBridge.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
     if (!rawSettings.isNullOrBlank()) {
         val baseLoaded: AppStateSnapshot? = runCatching {
             compactStateJson.decodeFromString<AppStateSnapshot>(rawSettings)
@@ -756,7 +856,7 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
 }
 
 internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
-    val rawSettings = PlatformBridge.loadAppStateJson()?.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
+    val rawSettings = PlatformBridge.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
     val rawChatFiles = PlatformBridge.loadAllChatSessionJsons()
     val diskSessions = rawChatFiles.mapNotNull { rawChat ->
         runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull()
@@ -862,11 +962,13 @@ internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot 
     val validSessionIdSet = recoveredSessions.map { it.id }.toSet()
     val safeOpenTabs = (loaded.openTabSessionIds.filter { it in validSessionIdSet } + safeActiveSessionId).distinct()
 
-    val migratedTheme = if (loaded.theme.name.endsWith("Warm Ivory (Light)") && !loaded.theme.name.startsWith("Parchment ")) {
-        loaded.theme.copy(name = "Parchment Warm Ivory (Light)")
-    } else {
-        loaded.theme
-    }
+    val migratedTheme = migrateThemeTypefaceDefaults(
+        if (loaded.theme.name.endsWith("Warm Ivory (Light)") && !loaded.theme.name.startsWith("Parchment ")) {
+            loaded.theme.copy(name = "Parchment Warm Ivory (Light)")
+        } else {
+            loaded.theme
+        }
+    )
 
     return loaded.copy(
         profiles = safeProfiles,
@@ -882,7 +984,7 @@ internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot 
 
 internal fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
     val fallback = createDefaultAppState()
-    val migratedRaw = raw.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
+    val migratedRaw = migrateLegacyProviderJson(raw)
     val root = compactStateJson.parseToJsonElement(migratedRaw) as? JsonObject ?: return fallback
 
     fun <T> decodeListItems(key: String, itemDeserializer: kotlinx.serialization.DeserializationStrategy<T>): List<T> {
@@ -913,7 +1015,7 @@ internal fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
     val globalWorldBook = decodeListItems("globalWorldBook", ContextFragment.serializer())
     val theme = root["theme"]?.let {
         runCatching { compactStateJson.decodeFromJsonElement(ThemeConfig.serializer(), it) }.getOrNull()
-    } ?: fallback.theme
+    }?.let { migrateThemeTypefaceDefaults(it) } ?: fallback.theme
     val otaRepo = root["otaGithubRepo"]?.jsonPrimitive?.contentOrNull ?: fallback.otaGithubRepo
     val autoOta = root["autoCheckOtaOnStartup"]?.jsonPrimitive?.booleanOrNull ?: fallback.autoCheckOtaOnStartup
 

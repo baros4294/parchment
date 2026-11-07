@@ -181,6 +181,9 @@ expect object PlatformBridge {
     fun loadCustomFontFamily(fontPath: String): FontFamily?
     fun loadBundledFontFamily(bundleName: String): FontFamily?
 
+    /** Copies raw image bytes (PNG/JPEG/WebP) to the system clipboard as an image. */
+    fun copyImageToClipboard(bytes: ByteArray): Boolean
+
     // Built-in Local File System Agent Harness (Sandboxed to workspaceRoot)
     fun workspaceList(workspaceRoot: String, relativePath: String = "", recursive: Boolean = false): Result<String>
     fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int = 200): Result<String>

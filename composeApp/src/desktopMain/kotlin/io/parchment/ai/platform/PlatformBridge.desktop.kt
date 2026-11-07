@@ -572,6 +572,21 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
+    actual fun copyImageToClipboard(bytes: ByteArray): Boolean = runCatching {
+        val image = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(bytes)) ?: return false
+        val transferable = object : java.awt.datatransfer.Transferable {
+            override fun getTransferDataFlavors(): Array<java.awt.datatransfer.DataFlavor> =
+                arrayOf(java.awt.datatransfer.DataFlavor.imageFlavor)
+
+            override fun isDataFlavorSupported(flavor: java.awt.datatransfer.DataFlavor): Boolean =
+                flavor == java.awt.datatransfer.DataFlavor.imageFlavor
+
+            override fun getTransferData(flavor: java.awt.datatransfer.DataFlavor): Any = image
+        }
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(transferable, null)
+        true
+    }.getOrDefault(false)
+
     actual fun loadBundledFontFamily(bundleName: String): FontFamily? {
         val key = "bundled:$bundleName"
         fontCache[key]?.let { return it }

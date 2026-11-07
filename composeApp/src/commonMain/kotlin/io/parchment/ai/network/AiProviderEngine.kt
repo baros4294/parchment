@@ -20,6 +20,9 @@ import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readLine
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AuthHeaderMode
+import io.parchment.ai.model.CUSTOM_DIALECT_ANTHROPIC
+import io.parchment.ai.model.CUSTOM_DIALECT_GEMINI
+import io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.GoalTrackerState
@@ -114,6 +117,12 @@ object AiProviderEngine {
     private const val MAX_SAFETY_HORIZON_STEPS = 10_000
     internal const val MAX_PRE_TOKEN_RETRIES = 10
     internal const val RETRY_WAIT_SECONDS = 60
+
+/** Marker prefixing a carried-forward reasoning narrative from a different provider. */
+internal const val REASONING_HANDOFF_MARKER = "[Prior reasoning summary]"
+
+/** Upper bound on carried reasoning text per historical turn (keeps context lean). */
+internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     internal const val LEGACY_FALLBACK_PRIMARY_MAX_RETRIES = 2
     internal const val LEGACY_FALLBACK_PRIMARY_WAIT_SECONDS = 3
     private const val MAX_GOAL_NETWORK_RETRIES = 120
@@ -570,7 +579,11 @@ object AiProviderEngine {
         PlatformBridge.notifyLongDecodeStart(model)
 
         try {
-            var activeBaseHistoryNodes = historyNodes
+            var activeBaseHistoryNodes = applyCrossProviderReasoningHandoff(
+                nodes = historyNodes,
+                currentProtocol = resolveWireProtocol(profile),
+                chainingActive = profile.useStatefulChaining
+            )
             var currentContinuePrefix = cleanInitialPrefix
             var retryAttempt = 0
             var continuationPass = 0
@@ -612,7 +625,7 @@ object AiProviderEngine {
                 )
 
                 try {
-                    when (effectiveProfileForPass.protocol) {
+                    when (resolveWireProtocol(effectiveProfileForPass)) {
                         ProviderProtocol.GEMINI_INTERACTIONS -> {
                             suspend fun runLegacyGeminiGenerateContent(
                                 targetHistoryNodes: List<MessageNode>,
@@ -1049,6 +1062,12 @@ object AiProviderEngine {
                                     recordStepUsage(inTok, cacheTok, 0, outTok)
                                 },
                                 onCitation = { cit -> recordRawCitationAndEmit(cit) }
+                            )
+                        }
+                        ProviderProtocol.CUSTOM -> {
+                            // Unresolved dialect must never silently guess a wire shape.
+                            throw IllegalStateException(
+                                "Custom Protocol has no wire dialect selected. Choose one in Provider settings → Wire Dialect."
                             )
                         }
                     }
@@ -1744,7 +1763,14 @@ object AiProviderEngine {
         val previousAssistantIdx = activeNodes.indexOfLast { it.role == MessageRole.ASSISTANT }
         val previousInteractionId = if (profile.useStatefulChaining && continuePrefix.isBlank() && previousAssistantIdx >= 0) {
             val prevVar = activeNodes[previousAssistantIdx].activeVariant
-            if (prevVar.providerProtocol == ProviderProtocol.GEMINI_INTERACTIONS && prevVar.providerInteractionId.isNotBlank()) {
+            // Model-scoped: a chain minted by a DIFFERENT model must never be replayed, because
+            // chaining omits local history — the new model would see nothing at all.
+            val sameModel = prevVar.modelUsed.isBlank() ||
+                prevVar.modelUsed.trim().equals(model.trim().removePrefix("models/"), ignoreCase = true)
+            if (prevVar.providerProtocol == ProviderProtocol.GEMINI_INTERACTIONS &&
+                prevVar.providerInteractionId.isNotBlank() &&
+                sameModel
+            ) {
                 prevVar.providerInteractionId
             } else ""
         } else ""
@@ -3148,7 +3174,7 @@ object AiProviderEngine {
 
                 val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
                 val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                val rawUrl = if (profile.endpointPathOverride.contains("interactions", ignoreCase = true) && !profile.useExactEndpointUrl) {
+                val rawUrl = if (profile.endpointPathOverride.contains("interactions", ignoreCase = true) && !profile.protocol.isCustomWire) {
                     val base = profile.baseUrl.trim().trimEnd('#').trimEnd('/')
                     val hasVer = Regex("/(?:api/)?(?:paas/)?v\\d+(?:beta\\d*|alpha\\d*)?$", RegexOption.IGNORE_CASE).containsMatchIn(base)
                     if (hasVer) "$base/models/$cleanModel:streamGenerateContent?alt=sse"
@@ -5065,9 +5091,11 @@ object AiProviderEngine {
                             put("display", "summarized")
                         }
                         if (effort.isNotEmpty() && lowerEffort != "default" && lowerEffort != "auto") {
+                            // Official tiers: low | medium | high | xhigh | max. `xhigh` is its own
+                            // level and must pass through verbatim; only the non-official
+                            // `minimal` is folded down to `low`.
                             val normalizedAnthropicEffort = when (lowerEffort) {
                                 "minimal" -> "low"
-                                "xhigh" -> "max"
                                 else -> lowerEffort
                             }
                             putJsonObject("output_config") {
@@ -5877,6 +5905,65 @@ object AiProviderEngine {
     //    - Universal Audio Speech / TTS (`POST /v1/audio/speech` & `/audio/speech` with fallback to `/chat/completions`)
     //    - Automatic fallback to `/v1/chat/completions` when a proxy wraps media generation inside chat completions!
     // ============================================================================================
+    /**
+     * Cross-provider reasoning continuity.
+     *
+     * Signatures are provider-private receipts and are dropped on replay (see `isForeignProtocol`).
+     * The *narrative* of prior reasoning is not a receipt, so it is carried forward as plain text
+     * for every historical assistant turn minted by a different protocol — giving the new model
+     * the reasoning context without ever handing it an unverifiable blob.
+     *
+     * Skipped entirely when server-side chaining is active: the provider already holds those steps,
+     * so re-injecting them would duplicate context.
+     */
+    internal fun applyCrossProviderReasoningHandoff(
+        nodes: List<MessageNode>,
+        currentProtocol: ProviderProtocol,
+        chainingActive: Boolean
+    ): List<MessageNode> {
+        if (chainingActive) return nodes
+        var changed = false
+        val out = nodes.map { node ->
+            if (node.role != MessageRole.ASSISTANT || !node.includedInContext) return@map node
+            val variant = node.activeVariant
+            val summary = variant.thinkingSummary.trim()
+            if (summary.isEmpty()) return@map node
+            val bornProtocol = variant.providerProtocol
+            if (bornProtocol == currentProtocol) return@map node
+            if (variant.content.contains(REASONING_HANDOFF_MARKER)) return@map node
+            val handoff = buildString {
+                append(REASONING_HANDOFF_MARKER)
+                append('\n')
+                append(summary.take(MAX_REASONING_HANDOFF_CHARS))
+                append("\n\n")
+                append(variant.content)
+            }
+            val newVariants = node.variants.toMutableList()
+            val idx = node.activeVariantIndex.coerceIn(0, (newVariants.size - 1).coerceAtLeast(0))
+            if (idx !in newVariants.indices) return@map node
+            newVariants[idx] = variant.copy(content = handoff)
+            changed = true
+            node.copy(variants = newVariants)
+        }
+        return if (changed) out else nodes
+    }
+
+    /** Resolves the concrete wire dialect for a profile (Custom delegates to its explicit [ProviderProfile.customDialect]). */
+    internal fun resolveWireProtocol(profile: ProviderProfile): ProviderProtocol {
+        if (!profile.protocol.isCustomWire) return profile.protocol
+        return when (profile.customDialect.trim().lowercase()) {
+            "gemini_interactions", "gemini" -> ProviderProtocol.GEMINI_INTERACTIONS
+            "anthropic_messages", "anthropic" -> ProviderProtocol.ANTHROPIC_MESSAGES
+            "openai_responses", "responses" -> ProviderProtocol.OPENAI_RESPONSES
+            "openai_chat", "chat" -> ProviderProtocol.OPENAI_RESPONSES
+            else -> ProviderProtocol.CUSTOM
+        }
+    }
+
+    /** True when the custom profile has no dialect chosen yet — Send must be blocked. */
+    internal fun isCustomDialectUnresolved(profile: ProviderProfile): Boolean =
+        profile.protocol.isCustomWire && resolveWireProtocol(profile) == ProviderProtocol.CUSTOM
+
     internal fun resolveSmartEndpointUrl(
         profile: ProviderProfile,
         defaultPathWithV1: String,
@@ -5887,8 +5974,24 @@ object AiProviderEngine {
         val rawBase = profile.baseUrl.trim()
         val rawOverride = profile.endpointPathOverride.trim()
 
-        // 1. Explicit tail-free / exact endpoint URL mode (`useExactEndpointUrl`, trailing `#`, or override == "/")
-        if (profile.useExactEndpointUrl || rawBase.endsWith("#") || rawOverride == "/" || rawOverride == "#") {
+        // 1. Custom protocol / explicit tail-free mode: the URL is sent VERBATIM, never rebuilt.
+        if (profile.protocol.isCustomWire) {
+            if (rawOverride.startsWith("http://", ignoreCase = true) || rawOverride.startsWith("https://", ignoreCase = true)) {
+                return rawOverride.trimEnd('#')
+            }
+            if (rawOverride.isNotEmpty() && rawOverride != "/" && rawOverride != "#") {
+                val cleanOverride = "/" + rawOverride.trimEnd('#').trimStart('/')
+                return if (rawBase.trimEnd('/').endsWith(cleanOverride, ignoreCase = true)) {
+                    rawBase.trimEnd('#')
+                } else {
+                    rawBase.trimEnd('/') + cleanOverride
+                }
+            }
+            return rawBase.trimEnd('#').trimEnd('/')
+        }
+
+        // 1b. Trailing `#` opt-out on managed protocols.
+        if (rawBase.endsWith("#") || rawOverride == "/" || rawOverride == "#") {
             return rawBase.trimEnd('#').trimEnd('/')
         }
 
@@ -6159,7 +6262,7 @@ object AiProviderEngine {
                 baseClean.endsWith("/api/v3", ignoreCase = true)
 
             val candidateTaskUrls = when {
-                profile.useExactEndpointUrl || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
+                profile.protocol.isCustomWire || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
                     listOf(resolveSmartEndpointUrl(profile, "/v1/videos/generations", "/videos/generations"))
                 isByteDanceFamily -> buildList {
                     if (hasVersionSuffix) {
@@ -6413,7 +6516,7 @@ object AiProviderEngine {
             )
 
             val candidateImgUrls = when {
-                profile.useExactEndpointUrl || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
+                profile.protocol.isCustomWire || profile.baseUrl.trim().endsWith("#") || profile.endpointPathOverride.isNotBlank() ->
                     listOf(resolveSmartEndpointUrl(profile, "/v1/images/generations", "/images/generations"))
                 hasVersionSuffix -> listOf(
                     "$baseClean/images/generations",
@@ -7406,6 +7509,19 @@ object AiProviderEngine {
                             header("x-api-key", key)
                             if (!profile.baseUrl.contains("anthropic.com", ignoreCase = true)) {
                                 header("Authorization", "Bearer $key")
+                            }
+                        }
+                        ProviderProtocol.CUSTOM -> {
+                            when (profile.customDialect) {
+                                CUSTOM_DIALECT_GEMINI -> {
+                                    header("x-goog-api-key", key)
+                                    if (key.startsWith("sk-")) header("Authorization", "Bearer $key")
+                                }
+                                CUSTOM_DIALECT_ANTHROPIC -> {
+                                    header("x-api-key", key)
+                                    header("anthropic-version", "2023-06-01")
+                                }
+                                else -> header("Authorization", "Bearer $key")
                             }
                         }
                     }

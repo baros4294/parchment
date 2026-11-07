@@ -1,7 +1,9 @@
-# Goal: Execute & Lock: Multi-Source Model Registry, KISS Big Three Protocols + Tail-Free Custom URLs, Universal Background Auto-Routing (Text/Image/Video/Audio), Accurate Model Lab Icons, Context-Aware Composer Media Controls, and Non-Overlapping Floating Live Audio Pill
-- [x] (1) Upgrade ModelsDevClient.kt into a Multi-Source Unified Model Registry (OpenRouter multimodal+video, Vercel AI Gateway, AIMLAPI, LiteLLM + models.dev fallback) with modality-preserving merge, vendor slug resolution, and canonical fuzzy ID indexing
-- [x] (2) Consolidate ProviderProtocol to the Big Three (remove BYTEDANCE_ARK with seamless persistence migration) and add audioVoice / useExactEndpointUrl fields in Models.kt & ParchmentStatePersistence.kt
-- [x] (3) Implement KISS tail-free URL resolution (resolveSmartEndpointUrl), 3-tier universal modality classifier (ModelModalityProfile), and universal background auto-routing for Image, Video, Audio/TTS, and Multimodal models in AiProviderEngine.kt
-- [x] (4) Fix resolveLabSlugForModelOrProvider in ParchmentIcons.kt so modelOrProvider is matched first before fallbackProtocolName, with expanded model family slugs and registry vendor lookup + add vector icons for aspect ratio / resolution / duration / audio if needed
-- [x] (5) Implement context-aware Composer Bar media controls (Image: Aspect Ratio + Resolution; Video: Aspect Ratio + Resolution + Duration + Audio; Audio/Live: Voice Preset + Live Audio) and non-overlapping Floating Live Audio/TTS Pill above the 'Latest' pill in ParchmentApp.kt & update ParchmentSettingsPages.kt
-- [/] (6) Bump version to 2.0.52, add comprehensive unit tests in ParchmentProtocolAndHarnessTest.kt, run Gradle test & compile verification (--no-daemon), update PARCHMENT_MEMORY.md, and commit & push to origin/main (lock)
+# Goal: Execute & lock v2.0.53: custom reasoning input, CUSTOM protocol enum (stateless/privacy-first, no default dialect), custom media inputs, image clipboard copy, tabs audit + no dim, 14/14 type defaults, Gemini-only chaining toggles, cross-provider reasoning handoff
+- [x] (1) Models.kt: CUSTOM enum, customDialect/storeServerSide, useStatefulChaining=false, 14/14 type defaults
+- [x] (2) ParchmentStatePersistence.kt: legacy provider JSON migration, one-shot typeface migration, effort presets + normalizeThinkingEffort
+- [x] (3) AiProviderEngine.kt: CUSTOM verbatim URL + auth, xhigh passthrough, store=false, model-scoped chain guard, cross-provider reasoning handoff
+- [x] (4) ParchmentSettingsPages.kt: Custom dialect levers, Gemini-only chaining toggles, custom reasoning text input, legacy budget relabel
+- [x] (5) ParchmentApp.kt: media drawer with Custom... verbs, copy-image action, tab logic fixes
+- [x] (6) ParchmentModalsAndNavigation.kt: remove tab-menu dim scrim; ProseRenderer.kt looser bullet spacing
+- [x] (7) PlatformBridge copyImageToClipboard expect/actual
+- [x] (8) Tests, compile verification, memory update, commit & push

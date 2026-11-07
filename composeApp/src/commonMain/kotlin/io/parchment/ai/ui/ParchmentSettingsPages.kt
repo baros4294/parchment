@@ -61,7 +61,9 @@ import io.parchment.ai.model.MessageNavVisibility
 import io.parchment.ai.model.ModelPricingSpec
 import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.ProviderProfile
+import io.parchment.ai.model.CUSTOM_DIALECTS
 import io.parchment.ai.model.ProviderProtocol
+import io.parchment.ai.model.customDialectLabel
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
@@ -1820,12 +1822,40 @@ private fun ProvidersSubpage(
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    SepiaToggleRow(
-                        title = "Use Exact Base URL (No Auto-Appended Path Tail)",
-                        subtitle = "Send requests directly to Base URL without appending protocol path tails.",
-                        checked = activeProfile.useExactEndpointUrl,
-                        onCheckedChange = { exact -> onUpdateProfileById(activeProfile.id) { it.copy(useExactEndpointUrl = exact) } }
-                    )
+                    if (activeProfile.protocol.isCustomWire) {
+                        Spacer(Modifier.height(6.dp))
+                        BasicText(
+                            text = "Wire Dialect",
+                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold)
+                        )
+                        BasicText(
+                            text = "The URL above is sent verbatim. Pick the payload shape your endpoint speaks.",
+                            style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CUSTOM_DIALECTS.forEach { dialect ->
+                                SepiaChip(
+                                    label = customDialectLabel(dialect),
+                                    selected = activeProfile.customDialect == dialect,
+                                    onClick = {
+                                        onUpdateProfileById(activeProfile.id) { it.copy(customDialect = dialect) }
+                                    }
+                                )
+                            }
+                        }
+                        if (activeProfile.customDialect.isBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            BasicText(
+                                text = "No dialect selected — Send stays blocked until you choose one.",
+                                style = p.uiLabelStyle.copy(color = p.danger, fontSize = 11.sp)
+                            )
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(4.dp))
@@ -2194,12 +2224,22 @@ private fun ProviderProtocolSubpage(
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                SepiaToggleRow(
-                    title = "Use Exact Base URL (No Auto-Appended Path Tail)",
-                    subtitle = "Send requests directly to Base URL without appending protocol path tails.",
-                    checked = profile.useExactEndpointUrl,
-                    onCheckedChange = { exact -> onUpdateProfile { it.copy(useExactEndpointUrl = exact) } }
-                )
+                if (profile.protocol.isCustomWire) {
+                    BasicText(
+                        text = "Wire Dialect",
+                        style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold)
+                    )
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CUSTOM_DIALECTS.forEach { dialect ->
+                            SepiaChip(
+                                label = customDialectLabel(dialect),
+                                selected = profile.customDialect == dialect,
+                                onClick = { onUpdateProfile { it.copy(customDialect = dialect) } }
+                            )
+                        }
+                    }
+                }
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     AuthHeaderMode.entries.forEach { mode ->
@@ -2215,16 +2255,19 @@ private fun ProviderProtocolSubpage(
                     checked = profile.autoFetchModels,
                     onCheckedChange = { af -> onUpdateProfile { it.copy(autoFetchModels = af) } }
                 )
-                SepiaToggleRow(
-                    title = "Stateful Chain (previous_interaction_id / previous_response_id)",
-                    checked = profile.useStatefulChaining,
-                    onCheckedChange = { sc -> onUpdateProfile { it.copy(useStatefulChaining = sc) } }
-                )
-                SepiaToggleRow(
-                    title = "Background Poll & Stream Recovery",
-                    checked = profile.useBackgroundLongDecode,
-                    onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
-                )
+                if (profile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
+                    SepiaToggleRow(
+                        title = "Stateful Chain (previous_interaction_id)",
+                        subtitle = "Off by default: full history is sent locally and nothing is stored provider-side.",
+                        checked = profile.useStatefulChaining,
+                        onCheckedChange = { sc -> onUpdateProfile { it.copy(useStatefulChaining = sc) } }
+                    )
+                    SepiaToggleRow(
+                        title = "Background Poll & Stream Recovery",
+                        checked = profile.useBackgroundLongDecode,
+                        onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
+                    )
+                }
                 SepiaToggleRow(
                     title = "Smart Legacy Endpoint Fallback (:streamGenerateContent or /v1/chat/completions)",
                     checked = profile.useLegacyFallbackEndpoint,
@@ -2301,10 +2344,14 @@ private fun ProviderProtocolSubpage(
                                 trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
                             }
                         },
-                        label = "Thinking Budget Tokens (0 / blank = auto)",
+                        label = "Legacy Thinking Budget (pre-4.7 only — blank = adaptive)",
                         placeholder = "Adaptive",
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
+                    )
+                    BasicText(
+                        text = "Deprecated: Claude 4.7+ rejects budget_tokens with HTTP 400. Leave blank to use adaptive thinking steered by effort.",
+                        style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                     )
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2335,7 +2382,7 @@ private fun ProviderProtocolSubpage(
                                     trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
                                 }
                             },
-                            label = "Thinking Budget Tokens (Blank or 0 = Adaptive / Strip)",
+                            label = "Legacy Thinking Budget (pre-4.7 only)",
                             placeholder = "Omitted / Adaptive",
                             monospace = true,
                             modifier = Modifier.weight(1f)
@@ -2623,6 +2670,8 @@ private fun AssistantsSubpage(
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
     var editingAssistantId by remember { mutableStateOf<String?>(null) }
+    var showCustomAssistantEffort by remember { mutableStateOf(false) }
+    var customAssistantEffortDraft by remember { mutableStateOf("") }
 
     val editingAssistant = appState.assistants.find { it.id == editingAssistantId }
 
@@ -2760,13 +2809,44 @@ private fun AssistantsSubpage(
                     SepiaAdaptiveRow(label = "Thinking Effort Override") {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("" to "Inherit", "none" to "None", "low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "XHigh").forEach { (effVal, effLabel) ->
+                            listOf(
+                                "" to "Inherit",
+                                "none" to "None",
+                                "low" to "Low",
+                                "medium" to "Medium",
+                                "high" to "High",
+                                "xhigh" to "XHigh",
+                                "max" to "Max",
+                                "adaptive" to "Adaptive",
+                                "auto" to "Auto"
+                            ).forEach { (effVal, effLabel) ->
                                 SepiaChip(
                                     label = effLabel,
                                     selected = editingAssistant.thinkingEffort.equals(effVal, ignoreCase = true),
                                     onClick = { updateCurrent { it.copy(thinkingEffort = effVal) } }
                                 )
                             }
+                            SepiaChip(
+                                label = "Custom…",
+                                selected = showCustomAssistantEffort,
+                                onClick = {
+                                    showCustomAssistantEffort = !showCustomAssistantEffort
+                                    if (showCustomAssistantEffort) customAssistantEffortDraft = editingAssistant.thinkingEffort
+                                }
+                            )
+                        }
+                        if (showCustomAssistantEffort) {
+                            Spacer(Modifier.height(6.dp))
+                            SepiaTextField(
+                                value = customAssistantEffortDraft,
+                                onValueChange = { raw ->
+                                    customAssistantEffortDraft = raw
+                                    updateCurrent { it.copy(thinkingEffort = raw.trim()) }
+                                },
+                                placeholder = "Raw effort value (e.g. adaptive, auto, budget:4096)",
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
                         }
                     }
                     SepiaDivider()

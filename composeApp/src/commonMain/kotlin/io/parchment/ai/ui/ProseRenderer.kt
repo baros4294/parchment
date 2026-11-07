@@ -593,7 +593,7 @@ fun LiteraryProseRenderer(
                     val bothAreListItems = block is ProseBlock.Paragraph && nextBlock is ProseBlock.Paragraph &&
                         isListItemParagraph(block.text) && isListItemParagraph(nextBlock.text)
                     val gap = when {
-                        bothAreListItems -> if (compactReasoningMode) 4.dp else 6.dp
+                        bothAreListItems -> if (compactReasoningMode) 7.dp else 9.dp
                         compactReasoningMode -> 10.dp
                         else -> p.paragraphSpacing.coerceAtLeast(16.dp)
                     }

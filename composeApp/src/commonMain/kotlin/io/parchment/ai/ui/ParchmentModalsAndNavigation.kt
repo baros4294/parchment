@@ -265,7 +265,6 @@ internal fun MobileTabSwitcherModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.52f))
             .clickable { onCloseModal() },
         contentAlignment = if (isCompactScreen) Alignment.BottomCenter else Alignment.Center
     ) {

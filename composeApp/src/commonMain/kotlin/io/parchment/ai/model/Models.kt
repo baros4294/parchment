@@ -19,7 +19,51 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
         displayName = "Anthropic Messages API",
         defaultBaseUrl = "https://api.anthropic.com",
         defaultEndpointPath = "/v1/messages"
-    )
+    ),
+    CUSTOM(
+        displayName = "Custom Protocol",
+        defaultBaseUrl = "",
+        defaultEndpointPath = ""
+    );
+
+    val isCustomWire: Boolean get() = this == CUSTOM
+
+    companion object {
+        /** The Big Three: fully-managed protocol dialects with auto-resolved endpoint tails. */
+        val bigThree: List<ProviderProtocol> = listOf(
+            GEMINI_INTERACTIONS,
+            OPENAI_RESPONSES,
+            ANTHROPIC_MESSAGES
+        )
+    }
+}
+
+const val CUSTOM_DIALECT_OPENAI_CHAT = "openai_chat"
+const val CUSTOM_DIALECT_OPENAI_RESPONSES = "openai_responses"
+const val CUSTOM_DIALECT_ANTHROPIC = "anthropic_messages"
+const val CUSTOM_DIALECT_GEMINI = "gemini_interactions"
+
+val CUSTOM_DIALECTS: List<String> = listOf(
+    CUSTOM_DIALECT_OPENAI_CHAT,
+    CUSTOM_DIALECT_OPENAI_RESPONSES,
+    CUSTOM_DIALECT_ANTHROPIC,
+    CUSTOM_DIALECT_GEMINI
+)
+
+/** Maps a legacy protocol name onto a concrete custom wire dialect. */
+fun mapProtocolToDialect(protocolName: String): String = when (protocolName) {
+    "GEMINI_INTERACTIONS" -> CUSTOM_DIALECT_GEMINI
+    "ANTHROPIC_MESSAGES" -> CUSTOM_DIALECT_ANTHROPIC
+    else -> CUSTOM_DIALECT_OPENAI_CHAT
+}
+
+/** Human-facing label for a custom wire dialect. */
+fun customDialectLabel(dialect: String): String = when (dialect) {
+    CUSTOM_DIALECT_OPENAI_CHAT -> "OpenAI Chat Completions"
+    CUSTOM_DIALECT_OPENAI_RESPONSES -> "OpenAI Responses"
+    CUSTOM_DIALECT_ANTHROPIC -> "Anthropic Messages"
+    CUSTOM_DIALECT_GEMINI -> "Gemini Interactions"
+    else -> "Unresolved"
 }
 
 @Serializable
@@ -74,7 +118,8 @@ data class ProviderProfile(
     val enabled: Boolean = true,
     val baseUrl: String = protocol.defaultBaseUrl,
     val endpointPathOverride: String = "",
-    val useExactEndpointUrl: Boolean = false,
+    /** Custom wire dialect when [protocol] == [ProviderProtocol.CUSTOM]. Empty = unresolved (Send blocked). */
+    val customDialect: String = "",
     val apiKey: String = "",
     val authHeaderMode: AuthHeaderMode = AuthHeaderMode.NATIVE,
     val customHeadersRaw: String = "",
@@ -82,7 +127,12 @@ data class ProviderProfile(
     val savedModels: List<String> = emptyList(),
     val autoFetchModels: Boolean = true,
     val timeoutMinutes: Int = 60,
-    val useStatefulChaining: Boolean = true,
+    /**
+     * Privacy-first: server-side conversation state is OFF by default (`store=false`),
+     * so full history is always serialized locally and nothing persists provider-side.
+     */
+    val useStatefulChaining: Boolean = false,
+    val storeServerSide: Boolean = false,
     val useBackgroundLongDecode: Boolean = true,
     val useLegacyFallbackEndpoint: Boolean = true,
     val enableWebSearch: Boolean = false,
@@ -534,8 +584,8 @@ data class ThemeConfig(
     val customProseFontPath: String = "",
     val codeFontFamily: String = "JetBrainsMono Nerd",
     val customCodeFontPath: String = "",
-    val proseFontSizeSp: Float = 16.5f,
-    val codeFontSizeSp: Float = 12.5f,
+    val proseFontSizeSp: Float = 14.0f,
+    val codeFontSizeSp: Float = 14.0f,
     val proseLineHeightMultiplier: Float = 1.54f,
     val paragraphSpacingDp: Float = 18f,
     val firstLineIndentChars: Int = 0,

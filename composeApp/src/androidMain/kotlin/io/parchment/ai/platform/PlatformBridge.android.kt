@@ -606,6 +606,14 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
+    actual fun copyImageToClipboard(bytes: ByteArray): Boolean = runCatching {
+        val ctx = appContext ?: return false
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
+        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newBitmap("Parchment Image", bitmap))
+        true
+    }.getOrDefault(false)
+
     actual fun loadBundledFontFamily(bundleName: String): FontFamily? {
         val key = "bundled:$bundleName"
         fontCache[key]?.let { return it }
