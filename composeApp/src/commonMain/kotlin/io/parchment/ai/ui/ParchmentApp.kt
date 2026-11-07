@@ -4802,10 +4802,8 @@ private fun ManuscriptViewport(
         // ZEN-BY-DEFAULT FLOATING COMPOSER WITH DESKTOP ENTER-TO-SEND & STEER / QUEUE
         // ========================================================================================
         var showComposerToolsDrawer by remember { mutableStateOf(false) }
-        var showCustomEffortField by remember { mutableStateOf(false) }
-        var customEffortDraft by remember { mutableStateOf("") }
-        var customMediaTarget by remember { mutableStateOf<String?>(null) }
-        var customMediaDraft by remember { mutableStateOf("") }
+        var customOverrideTarget by remember { mutableStateOf<String?>(null) }
+        var customOverrideDraft by remember { mutableStateOf("") }
         val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
 
         Column(
@@ -4997,6 +4995,97 @@ private fun ManuscriptViewport(
                             .padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // 0. Manual Override Bar: type a raw value for any parameter instead of cycling presets.
+                        val drawerModelId = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
+                        val drawerModalityProfile = remember(
+                            drawerModelId,
+                            activeProfile.endpointPathOverride,
+                            activeProfile.customModelSpecs
+                        ) {
+                            AiProviderEngine.resolveModelModalityProfile(activeProfile, drawerModelId)
+                        }
+                        val overrideTargets = buildList {
+                            if (!drawerModalityProfile.isDedicatedImage &&
+                                !drawerModalityProfile.isDedicatedVideo &&
+                                !drawerModalityProfile.isDedicatedAudioTts
+                            ) {
+                                add("reasoning" to "🧠 Reasoning")
+                            }
+                            if (drawerModalityProfile.isAnyImageModel || drawerModalityProfile.isAnyVideoModel) {
+                                add("aspect" to "🖼 Aspect Ratio")
+                                add("resolution" to "🖼 Resolution")
+                            }
+                            if (drawerModalityProfile.isAnyVideoModel) {
+                                add("duration" to "🎬 Duration")
+                            }
+                            if (drawerModalityProfile.isAnyAudioModel) {
+                                add("voice" to "🎵 Voice")
+                                if (drawerModalityProfile.isDedicatedAudioTts) {
+                                    add("speed" to "🎵 Speed")
+                                }
+                            }
+                        }
+                        val overrideTarget = customOverrideTarget
+                            ?.takeIf { key -> overrideTargets.any { it.first == key } }
+                            ?: overrideTargets.firstOrNull()?.first
+                        if (overrideTarget != null) {
+                            val overrideCurrentValue = when (overrideTarget) {
+                                "aspect" -> activeProfile.mediaAspectRatio
+                                "resolution" -> activeProfile.mediaResolution
+                                "duration" -> activeProfile.videoDurationSeconds.toString()
+                                "voice" -> activeProfile.audioVoice
+                                "speed" -> activeProfile.audioSpeed.toString()
+                                else -> activeProfile.thinkingEffort
+                            }
+                            LaunchedEffect(overrideTarget) {
+                                customOverrideDraft = overrideCurrentValue
+                            }
+                            val overridePlaceholder = when (overrideTarget) {
+                                "aspect" -> "Aspect ratio (e.g. 21:9, 4:5)"
+                                "duration" -> "Duration in seconds (4–15)"
+                                "voice" -> "Voice id (e.g. alloy, nova, Puck)"
+                                "speed" -> "Speed multiplier (0.25–4.0)"
+                                "resolution" -> "Resolution (512, 1K, 2K, 4K)"
+                                else -> "Reasoning effort (e.g. high, xhigh, adaptive)"
+                            }
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                overrideTargets.forEach { (key, label) ->
+                                    SepiaChip(
+                                        label = label,
+                                        selected = overrideTarget == key,
+                                        onClick = { customOverrideTarget = key }
+                                    )
+                                }
+                            }
+                            SepiaTextField(
+                                value = customOverrideDraft,
+                                onValueChange = { raw ->
+                                    customOverrideDraft = raw
+                                    val typed = raw.trim()
+                                    when (overrideTarget) {
+                                        "aspect" -> onUpdateProfile { it.copy(mediaAspectRatio = typed) }
+                                        "resolution" -> onUpdateProfile { it.copy(mediaResolution = typed) }
+                                        "duration" -> typed.toIntOrNull()?.let { secs ->
+                                            onUpdateProfile { it.copy(videoDurationSeconds = secs.coerceIn(4, 15)) }
+                                        }
+                                        "voice" -> onUpdateProfile { it.copy(audioVoice = typed) }
+                                        "speed" -> typed.toDoubleOrNull()?.let { rate ->
+                                            onUpdateProfile { it.copy(audioSpeed = rate.coerceIn(0.25, 4.0)) }
+                                        }
+                                        else -> onUpdateProfile { it.copy(thinkingEffort = typed) }
+                                    }
+                                },
+                                placeholder = overridePlaceholder,
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            SepiaDivider()
+                        }
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
@@ -5836,14 +5925,6 @@ private fun ManuscriptViewport(
                                     onUpdateProfile { it.copy(mediaResolution = next) }
                                 }
                             )
-                            SepiaChip(
-                                label = "Custom…",
-                                selected = customMediaTarget == "image_ratio",
-                                onClick = {
-                                    customMediaTarget = if (customMediaTarget == "image_ratio") null else "image_ratio"
-                                    customMediaDraft = activeProfile.mediaAspectRatio
-                                }
-                            )
                         }
                         if (activeModalityProfile.isAnyVideoModel) {
                             val currentRatio = activeProfile.mediaAspectRatio.ifBlank { "16:9" }
@@ -5878,14 +5959,6 @@ private fun ManuscriptViewport(
                                     val idx = videoDurationPresets.indexOf(currentDur)
                                     val next = videoDurationPresets[(idx + 1) % videoDurationPresets.size]
                                     onUpdateProfile { it.copy(videoDurationSeconds = next) }
-                                }
-                            )
-                            SepiaChip(
-                                label = "Custom…",
-                                selected = customMediaTarget == "video_duration",
-                                onClick = {
-                                    customMediaTarget = if (customMediaTarget == "video_duration") null else "video_duration"
-                                    customMediaDraft = activeProfile.videoDurationSeconds.toString()
                                 }
                             )
                             SepiaChip(
@@ -5938,79 +6011,11 @@ private fun ManuscriptViewport(
                                     onUpdateProfile { it.copy(thinkingEffort = next) }
                                 }
                             )
-                            SepiaChip(
-                                label = "Custom…",
-                                selected = showCustomEffortField,
-                                onClick = {
-                                    showCustomEffortField = !showCustomEffortField
-                                    if (showCustomEffortField) customEffortDraft = activeProfile.thinkingEffort
-                                }
-                            )
                         }
                         SepiaChip(
                             label = toolsChipLabel,
                             selected = showComposerToolsDrawer || hasActiveTools,
                             onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
-                        )
-                    }
-                }
-
-                if (showCustomEffortField) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        SepiaTextField(
-                            value = customEffortDraft,
-                            onValueChange = { raw ->
-                                customEffortDraft = raw
-                                onUpdateProfile { it.copy(thinkingEffort = raw.trim()) }
-                            },
-                            placeholder = "Raw effort value (e.g. adaptive, auto, budget:4096)",
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
-                        )
-                        SepiaChip(
-                            label = "Done",
-                            selected = false,
-                            onClick = { showCustomEffortField = false }
-                        )
-                    }
-                }
-
-                customMediaTarget?.let { target ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        SepiaTextField(
-                            value = customMediaDraft,
-                            onValueChange = { raw ->
-                                customMediaDraft = raw
-                                when (target) {
-                                    "image_ratio" -> onUpdateProfile { it.copy(mediaAspectRatio = raw.trim()) }
-                                    "video_duration" -> {
-                                        val secs = raw.trim().toIntOrNull()
-                                        if (secs != null) {
-                                            onUpdateProfile { it.copy(videoDurationSeconds = secs.coerceIn(1, 30)) }
-                                        }
-                                    }
-                                }
-                            },
-                            placeholder = if (target == "video_duration") {
-                                "Duration in seconds (1–30)"
-                            } else {
-                                "Aspect ratio (e.g. 21:9, 4:5, 9:16)"
-                            },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
-                        )
-                        SepiaChip(
-                            label = "Done",
-                            selected = false,
-                            onClick = { customMediaTarget = null }
                         )
                     }
                 }
