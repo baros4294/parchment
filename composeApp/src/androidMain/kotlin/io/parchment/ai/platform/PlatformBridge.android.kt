@@ -608,9 +608,16 @@ actual object PlatformBridge {
 
     actual fun copyImageToClipboard(bytes: ByteArray): Boolean = runCatching {
         val ctx = appContext ?: return false
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
-        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        clipboard.setPrimaryClip(android.content.ClipData.newBitmap("Parchment Image", bitmap))
+        if (bytes.isEmpty()) return false
+        // Android's clipboard carries images as content:// URIs, not raw bitmaps.
+        // Stage the bytes in cacheDir (an allowed ParchmentFileProvider root) and hand
+        // the resolver a URI so no FileUriExposedException can ever be triggered.
+        val dir = File(ctx.cacheDir, "clipboard").apply { mkdirs() }
+        val file = File(dir, "parchment-clip-${System.currentTimeMillis()}.png")
+        file.writeBytes(bytes)
+        val uri = ParchmentFileProvider.getUriForFile(ctx, file)
+        val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newUri(ctx.contentResolver, "Parchment Image", uri))
         true
     }.getOrDefault(false)
 
