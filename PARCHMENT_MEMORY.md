@@ -66,3 +66,19 @@
 - **17-Tool Agent Harness (`WorkspaceHarness.kt`)**: Parallel read/search batching, fuzzy whitespace self-healing edits, head+tail bookend size valves, live `shell_exec` streaming, and process-tree kill on Stop.
 - **Unified `o200k_base` Tokenizer & `@Immutable` Models (`O200kTokenizer.kt`, `Models.kt`)**: `@Immutable` stability across all model classes, $O(1)$ `estimateTokensFast` during active streaming (preventing `tokenCache` eviction), and `countSessionVaultItemsFast`.
 - **Android Compatibility Ceiling (`gradle/libs.versions.toml`)**: `agp = "8.13.2"`, `compileSdk = 36`, `kotlin = "2.3.21"`, `compose-multiplatform = "1.10.3"`, `ktor = "3.5.2"`. Keep Android AAR `minCompileSdk <= 36`.
+
+
+## 4. Android Build Verification Recipe (local, no CI round-trip)
+- **Android SDK on this machine:** `$env:LOCALAPPDATA\Android\Sdk` (exists, but `ANDROID_HOME` is NOT set globally). Always export before any Android task:
+  ```powershell
+  $env:JAVA_HOME = "C:\Users\Baros\.jdks\temurin-21"
+  $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+  $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+  ```
+- **`compileKotlinDesktop` alone is NOT sufficient verification.** `androidMain` has its own `actual` implementations that desktop never compiles. Always run `:composeApp:compileDebugKotlinAndroid` (fast, ~1 min) after touching any `PlatformBridge.android.kt` / `androidMain` file, and `:composeApp:assembleRelease` (~5 min, R8 + lintVital) before pushing anything that touches Android.
+- **CI job names:** `Build Android .APK (Universal)` (ubuntu, step 5 = "Build Signed Release APK") and `Build Windows .EXE Installer` (windows). A 50-second Android job failure = Kotlin compile error; a multi-minute failure = R8/lint/signing.
+- **GitHub Actions logs are NOT readable without admin rights** (`/actions/jobs/{id}/logs` → HTTP 403). Use the public `/actions/runs/{id}/jobs` endpoint for step-level pass/fail, then reproduce locally for the actual error text.
+
+## 5. Android Clipboard Image Invariant
+- **`ClipData.newBitmap()` does not exist** in the Android SDK — it is a common hallucination. Android's clipboard carries images as `content://` URIs, never raw bitmaps.
+- Correct pattern (implemented in `PlatformBridge.android.kt` `copyImageToClipboard`): write bytes to `cacheDir/clipboard/`, obtain a URI via the existing `ParchmentFileProvider.getUriForFile(ctx, file)` (authority `io.parchment.ai.fileprovider`, `cacheDir` is an allowed root), then `clipboard.setPrimaryClip(ClipData.newUri(ctx.contentResolver, "Parchment Image", uri))`. This also avoids `FileUriExposedException` from `Uri.fromFile`.
