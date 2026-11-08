@@ -339,3 +339,12 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - Changing any input regenerates ParchmentBuildConfig.kt. Repeating unchanged inputs must remain up to date.
 - Verification changed all three values, checked generated constants, restored the verified configuration, and compared its SHA-256 content.
 - Desktop regressions (27 tests), Android debug/release compilation and assembleRelease passed for 2.0.59/259; APK and runtime versions match.
+
+## 19. Tabs Dismissal and Narrow Layout (Verified 2026-11-08)
+
+- Tabs dismissal must have indication=null; a transparent full-screen clickable can otherwise shade the entire window on hover/focus/press.
+- Consume blank sheet taps without a fake disabled clickable or visual effect. Tab selection, outside-tap dismissal and system Back remain functional.
+- On very narrow compact layouts use a full-width vertical list; keep two columns where there is adequate width.
+- Bound the sheet/body height while allowing a short list to fit its content. Use the canvas palette for the sheet so it does not darken the reading surface.
+- Real-device verification at 1216x2640 / density 560 confirmed a compact full-width card, unchanged outside-sheet RGB, inside-gap tap preservation, and outside/Back dismissal.
+- Desktop regression suite (27 tests), both Kotlin targets and Android release build passed. Further full-app mobile/animation/2026 capability audits remain open in TODO.

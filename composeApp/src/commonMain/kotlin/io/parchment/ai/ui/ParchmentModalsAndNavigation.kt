@@ -242,6 +242,9 @@ internal fun MobileTabSwitcherModal(
 ) {
     val p = LocalParchmentPalette.current
     val runningTotal = activeStreamsBySession.size
+    val win = LocalParchmentWindowSize.current
+    val columns = if (isCompactScreen && win.isVeryNarrow) 1 else 2
+    val dismissInteractionSource = remember { MutableInteractionSource() }
     var tabFilterQuery by remember { mutableStateOf("") }
     val emptyTabsCount = remember(openTabIds, appState.sessions, activeStreamsBySession) {
         openTabIds.count { tabId ->
@@ -265,7 +268,7 @@ internal fun MobileTabSwitcherModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable { onCloseModal() },
+            .clickable(interactionSource = dismissInteractionSource, indication = null) { onCloseModal() },
         contentAlignment = if (isCompactScreen) Alignment.BottomCenter else Alignment.Center
     ) {
         val sheetShape = if (isCompactScreen) {
@@ -276,11 +279,11 @@ internal fun MobileTabSwitcherModal(
         Column(
             modifier = Modifier
                 .then(if (isCompactScreen) Modifier.fillMaxWidth() else Modifier.widthIn(max = 860.dp).fillMaxWidth(0.92f))
-                .fillMaxHeight(if (isCompactScreen) 0.84f else 0.80f)
+                .heightIn(max = win.heightDp * if (isCompactScreen) 0.84f else 0.80f)
                 .clip(sheetShape)
-                .background(p.sheetBg)
+                .background(p.canvasBg)
                 .border(1.dp, p.border, sheetShape)
-                .clickable(enabled = false) {}
+                .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -338,9 +341,9 @@ internal fun MobileTabSwitcherModal(
 
             SepiaDivider()
 
-            val rows = remember(filteredTabIds) { filteredTabIds.chunked(2) }
+            val rows = remember(filteredTabIds, columns) { filteredTabIds.chunked(columns) }
             LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.heightIn(max = win.heightDp * 0.68f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 itemsIndexed(rows) { _, rowPair ->
@@ -468,7 +471,7 @@ internal fun MobileTabSwitcherModal(
                                 }
                             }
                         }
-                        if (rowPair.size == 1) {
+                        if (columns == 2 && rowPair.size == 1) {
                             Spacer(Modifier.weight(1f))
                         }
                     }

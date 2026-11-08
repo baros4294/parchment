@@ -197,7 +197,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 ### 14 — P1: Workspace/Tools permission UI and background diagnostics
 
-- [ ] Fix Tabs-menu screen dimming; inspect native dialog and Compose scrim separately, preserve outside-tap/back behavior, and verify the rendered Android/desktop result.
+- [x] Fix Tabs-menu screen dimming; remove full-screen dismissal indication, adapt narrow cards and sheet height, verify actual Android rendering/interactions and desktop/Android compilation.
 - [ ] Use a shared effective-policy editor in Workspace settings and the Tools drawer.
 - [ ] Expose approval, access, folders, enabled tools, shell/network and long-run readiness without misleading sandbox claims.
 - [ ] Keep the Manual Override Bar first; use existing vectors and bounded wrapped layouts.
@@ -216,7 +216,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - [ ] Unify spacing, typography, vector icon sizes, corners, borders, hover/press feedback and selected/disabled/error states.
 - [ ] Make transitions calm and consistent with shared motion primitives; prevent layout jumps, overlapping animations and excessive effects.
 - [ ] Respect platform motion/accessibility settings and maintain touch targets, contrast, keyboard navigation and screen-reader semantics.
-- [ ] Verify Tabs dismissal has no full-screen indication/dimming and that sheet interactions do not accidentally dismiss it.
+- [x] Verify Tabs dismissal has no full-screen indication/dimming and that sheet interactions do not accidentally dismiss it.
 - Files: ParchmentApp.kt; ParchmentComponents.kt; ParchmentSettingsPages.kt; ParchmentModalsAndNavigation.kt; ParchmentTheme.kt; relevant platform UI hooks only if required.
 - Verification: rendered desktop and real-device screenshots/interactions, keyboard and font-scale matrix, existing regression suite, both targets and Android release build.
 - Lock: focused verified UI improvements and pushes; update MEMORY, TODO and README with the final behavior.
@@ -307,8 +307,8 @@ Fetched and read during the audit; retrieve specific sections again before imple
 
 ## Verification and lock log
 
-- Build-input milestone verified: 27/27 regressions, desktop/Android compilation and Android release passed. Unchanged inputs stayed up to date; changed version/code/repository regenerated; restored output matches the verified APK runtime configuration by SHA-256. Lock is the commit publishing this entry.
-- Tabs mobile verification passed on Android 17/API 37: compact full-width card/list, content-sized sheet, identical outside-sheet RGB (244,236,216), inside-gap tap preserved the menu, outside tap and Back dismissed it. UI publication remains pending.
+- Build-input milestone locked and pushed: 24f4d3a6a1661ac81ed88bd6289735c67980d080. 27/27 regressions, both targets and Android release passed; unchanged/changed-input behavior and restored SHA-256 were verified.
+- Tabs mobile verification passed on Android 17/API 37: compact full-width card/list, content-sized sheet, identical outside-sheet RGB (244,236,216), inside-gap tap preserved the menu, outside tap and Back dismissed it. The commit containing this completion publishes the verified shared UI fix; broader UI audits remain open.
 - Baseline: 20/20 existing desktop tests passed; Android debug compilation passed. An initially unquoted Gradle property was split by PowerShell; the quoted invocation passed.
 - Windows milestone: 27/27 desktop tests passed (20 existing + 7 native/process regressions); desktop and Android debug compilation passed. Tests now guard UInt32 conversion, Java/PowerShell command encoding, progress output, owner races, quiet helper recovery and parent/final-owner cleanup.
 - Windows milestone locked and pushed: 01a28498458ec0141f24a188ebe80b2ce9ff0048; origin/main reachability verified. GitHub rejected the initial private author email, so only the unpublished commit was amended using the repository's existing verified noreply address. The remaining queue is open.
