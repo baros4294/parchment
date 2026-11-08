@@ -42,11 +42,13 @@ $env:JAVA_HOME = "$env:USERPROFILE\.jdks\temurin-21"
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
 # Run Desktop App
-.\gradlew.bat :composeApp:run
+.\gradlew.bat :composeApp:run --no-daemon
 
 # Run Tests & Build Release Binaries (Windows App Image + Signed Android APK)
-.\gradlew.bat :composeApp:desktopTest :composeApp:createDistributable :composeApp:assembleRelease
+.\gradlew.bat :composeApp:desktopTest :composeApp:createDistributable :composeApp:assembleRelease --no-daemon
 ```
+
+Release builds accept `-PappVersion`, `-PappVersionCode`, and `-PgithubRepo`. Changes to these properties regenerate the runtime version and OTA configuration; unchanged values remain eligible for incremental builds.
 
 ---
 

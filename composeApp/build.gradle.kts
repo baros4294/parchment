@@ -17,6 +17,9 @@ val githubRepoProp = (project.findProperty("githubRepo") as? String)?.trim()
 
 val generateBuildConfig by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/parchmentConfig")
+    inputs.property("appVersion", appVersionProp)
+    inputs.property("appVersionCode", appVersionCodeProp)
+    inputs.property("githubRepo", githubRepoProp)
     outputs.dir(outputDir)
     val ver = appVersionProp
     val code = appVersionCodeProp

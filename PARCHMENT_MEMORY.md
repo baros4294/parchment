@@ -332,3 +332,10 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - Actual sleep suspends local execution. OS power policy, explicit sleep and battery limits can override requests; never describe this as unconditional sleep immunity.
 - Seven native/process regressions cover acquisition, concurrent ownership, independent restart, external termination, parent exit, arbitrary clock origin and final-owner cleanup.
 - Verified 27 desktop tests with zero failures and Android debug compilation. Use the quoted local argument '-Pkotlin.compiler.execution.strategy=in-process'.
+
+## 18. Build Configuration Input Tracking (Verified 2026-11-08)
+
+- generateBuildConfig must declare appVersion, appVersionCode and githubRepo as Gradle inputs. Otherwise local incremental builds can package a new APK manifest with stale runtime/OTA constants.
+- Changing any input regenerates ParchmentBuildConfig.kt. Repeating unchanged inputs must remain up to date.
+- Verification changed all three values, checked generated constants, restored the verified configuration, and compared its SHA-256 content.
+- Desktop regressions (27 tests), Android debug/release compilation and assembleRelease passed for 2.0.59/259; APK and runtime versions match.

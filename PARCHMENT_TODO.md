@@ -58,6 +58,15 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - Verification: real native-call/process-boundary regression, two owners with one completing, helper failure/termination, desktopTest and desktop compilation.
 - Lock: completion is published by the commit containing this verified Windows milestone; confirm origin/main reachability after push.
 
+### 19 — P0: Generated build configuration tracks its inputs
+
+- [x] Declare appVersion, appVersionCode and githubRepo as generateBuildConfig inputs.
+- [x] Verify changing build properties regenerates runtime constants and matches APK metadata; unchanged inputs remain up to date.
+- [x] Re-run relevant desktop/Android/release checks and verify the signing identity before device validation.
+- Files: composeApp/build.gradle.kts; build verification evidence; MEMORY/TODO/README.
+- Evidence: validation APK manifest was 2.0.59/259 while generated runtime constants remained 2.0.0/200.
+- Lock: verified build-cache correction commit and push.
+
 ### 03 — P0: Atomic persistence and lossless dirty-session scheduling
 
 - [ ] Review settings, chat, backup and temporary-file replacement paths on both platforms.
@@ -116,6 +125,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - [ ] Restore only valid persisted runs, distinguish user stop from system interruption, and avoid phantom notifications/locks.
 - [ ] Request notification access through the activity UI; denial does not by itself prohibit foreground-service startup.
 - [ ] Run device tests on Android 17/API 37 using generic capabilities, not OnePlus/ColorOS branches.
+- [ ] Add app-owned instrumentation for private service lifecycle checks; direct shell starts were correctly rejected by exported=false and are not a startup-failure result.
 - Files: AndroidManifest.xml; LongDecodeForegroundService.kt; MainActivity.kt; PlatformBridge.android.kt; application bootstrap if needed; background-state UI.
 - Verification: compileDebugKotlinAndroid and assembleRelease, then on-device app switching, screen-off/Doze, notification denial, compaction, two runs, pending approvals, process death and cleanup.
 - Lock: verified Android improvement commit(s) and push; runtime acceptance remains open until device results exist.
@@ -187,6 +197,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 ### 14 — P1: Workspace/Tools permission UI and background diagnostics
 
+- [ ] Fix Tabs-menu screen dimming; inspect native dialog and Compose scrim separately, preserve outside-tap/back behavior, and verify the rendered Android/desktop result.
 - [ ] Use a shared effective-policy editor in Workspace settings and the Tools drawer.
 - [ ] Expose approval, access, folders, enabled tools, shell/network and long-run readiness without misleading sandbox claims.
 - [ ] Keep the Manual Override Bar first; use existing vectors and bounded wrapped layouts.
@@ -196,6 +207,32 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - Files: ParchmentSettingsPages.kt; ParchmentApp.kt; ParchmentComponents.kt; ParchmentModalsAndNavigation.kt; O200kTokenizer.kt.
 - Verification: both targets, desktop and compact device renders, inheritance/reset, two-tab pending approvals, revocation, keyboard/back navigation and no redundant/emoji UI regressions.
 - Lock: verified UI commit and push after the enforcement layer.
+
+### 17 — P1: UI consistency, mobile fit and calm editorial motion
+
+- [ ] Audit all option rows, chip groups, drawers, palettes and settings; prefer compact vertical lists for substantial choices and remove horizontal option scrolling.
+- [ ] Identify clipped, truncated or unnatural controls on the actual Android device at portrait/landscape widths, with IME open, long labels and enlarged font scale.
+- [ ] Keep necessary action text readable; distinguish deliberate content previews from accidental truncation.
+- [ ] Unify spacing, typography, vector icon sizes, corners, borders, hover/press feedback and selected/disabled/error states.
+- [ ] Make transitions calm and consistent with shared motion primitives; prevent layout jumps, overlapping animations and excessive effects.
+- [ ] Respect platform motion/accessibility settings and maintain touch targets, contrast, keyboard navigation and screen-reader semantics.
+- [ ] Verify Tabs dismissal has no full-screen indication/dimming and that sheet interactions do not accidentally dismiss it.
+- Files: ParchmentApp.kt; ParchmentComponents.kt; ParchmentSettingsPages.kt; ParchmentModalsAndNavigation.kt; ParchmentTheme.kt; relevant platform UI hooks only if required.
+- Verification: rendered desktop and real-device screenshots/interactions, keyboard and font-scale matrix, existing regression suite, both targets and Android release build.
+- Lock: focused verified UI improvements and pushes; update MEMORY, TODO and README with the final behavior.
+
+### 18 — P1: Current 2026 capability coverage for all three workflows
+
+- [ ] Build an evidence-based feature matrix for agent work, everyday chat and roleplay, recording implemented/partial/missing status and current official sources.
+- [ ] Classify core requirements, workflow-dependent capabilities and optional additions; prioritize practical gaps while retaining KISS.
+- [ ] Agent coverage: safe approvals/access boundaries, reliable background/recovery, accurate tool/protocol state, parallel calls, user questions/steering/queues, context management, evidence/diffs, cost/usage observability and extension/integration needs.
+- [ ] Daily-chat coverage: dynamic model/provider capabilities, search/navigation, editable/regenerable/forkable messages, attachments/media/PDF, voice, rich rendering/copy, privacy, backup/export, OTA and responsive mobile operation.
+- [ ] Roleplay coverage: character/scenario cards, greetings/variants, lore activation, persona/macros, author notes, continuity memory, branching/rewind, configurable context and readable dialogue/narration.
+- [ ] Check current protocol/platform support rather than fixed model-name lists; add only justified missing core capabilities as individual planned/testable tasks.
+- [ ] Verify end-to-end workflows and keep the capability matrix/documentation current after each implementation.
+- Files: PARCHMENT_TODO.md feature matrix; affected modules justified by confirmed gaps; README.md and PARCHMENT_MEMORY.md.
+- Verification: current official documentation, code-path evidence, workflow tests and rendered/runtime output; no unsupported "bleeding-edge" or completeness claims.
+- Lock: every implemented capability separately verified and pushed.
 
 ### 15 — P2: Build/CI/process hygiene and documentation
 
@@ -270,9 +307,11 @@ Fetched and read during the audit; retrieve specific sections again before imple
 
 ## Verification and lock log
 
+- Build-input milestone verified: 27/27 regressions, desktop/Android compilation and Android release passed. Unchanged inputs stayed up to date; changed version/code/repository regenerated; restored output matches the verified APK runtime configuration by SHA-256. Lock is the commit publishing this entry.
+- Tabs mobile verification passed on Android 17/API 37: compact full-width card/list, content-sized sheet, identical outside-sheet RGB (244,236,216), inside-gap tap preserved the menu, outside tap and Back dismissed it. UI publication remains pending.
 - Baseline: 20/20 existing desktop tests passed; Android debug compilation passed. An initially unquoted Gradle property was split by PowerShell; the quoted invocation passed.
 - Windows milestone: 27/27 desktop tests passed (20 existing + 7 native/process regressions); desktop and Android debug compilation passed. Tests now guard UInt32 conversion, Java/PowerShell command encoding, progress output, owner races, quiet helper recovery and parent/final-owner cleanup.
-- Lock evidence for this milestone: the commit containing this completion and its reachability from origin/main after push. The remaining queue is open.
+- Windows milestone locked and pushed: 01a28498458ec0141f24a188ebe80b2ce9ff0048; origin/main reachability verified. GitHub rejected the initial private author email, so only the unpublished commit was amended using the repository's existing verified noreply address. The remaining queue is open.
 
 ## Previous completed work
 
