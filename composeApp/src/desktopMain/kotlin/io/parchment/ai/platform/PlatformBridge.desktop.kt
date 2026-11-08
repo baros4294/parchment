@@ -73,8 +73,15 @@ actual object PlatformBridge {
         cachedStorageDir?.let { if (it.exists()) return it }
         // 0. Isolate Gradle/JUnit test workers so unit tests NEVER touch the user's real %LOCALAPPDATA%\ParchmentAI folder!
         if (!System.getProperty("org.gradle.test.worker").isNullOrBlank()) {
-            val testDir = File(System.getProperty("java.io.tmpdir"), "parchment-test-data")
-            if (!testDir.exists()) testDir.mkdirs()
+            val testDir = java.nio.file.Files.createTempDirectory("parchment-test-data-").toFile()
+            val ownedPath = testDir.canonicalFile.toPath()
+            Runtime.getRuntime().addShutdownHook(Thread({
+                val temporaryRoot = File(System.getProperty("java.io.tmpdir")).canonicalFile.toPath()
+                if (testDir.canonicalFile.toPath() == ownedPath && ownedPath.startsWith(temporaryRoot) &&
+                    testDir.name.startsWith("parchment-test-data-")) {
+                    runCatching { AtomicFileStorage.deleteTree(ownedPath) }
+                }
+            }, "parchment-test-storage-cleanup"))
             cachedStorageDir = testDir
             return testDir
         }
@@ -100,240 +107,32 @@ actual object PlatformBridge {
 
     actual fun getAppStorageDirectoryPath(): String = resolveStorageDir().absolutePath
 
+    actual fun isReadableLocalFile(filePath: String): Boolean =
+        File(filePath).let { it.isFile && it.canRead() && it.length() > 0L }
+
     private fun chatsDir(): File = File(resolveStorageDir(), "chats").also {
         if (!it.exists()) it.mkdirs()
     }
 
     actual fun getChatsStorageDirectoryPath(): String = chatsDir().absolutePath
 
-    private fun backupsDir(): File = File(resolveStorageDir(), "backups").also {
-        if (!it.exists()) it.mkdirs()
-    }
-
-    private fun settingsFile(): File = File(resolveStorageDir(), "parchment-settings.json")
-    private fun legacyStateFile(): File = File(resolveStorageDir(), "parchment-state.json")
-
     private val SAFE_SESSION_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
-    private val API_KEY_NONEMPTY_REGEX = Regex("\"apiKey\":\"[^\"]+\"")
-    private val NON_DEFAULT_ASST_ID_REGEX = Regex("\"id\":\"asst-(?!default\")")
-    private val NON_EMPTY_SYS_PROMPT_REGEX = Regex("\"systemPrompt\":\"[^\"]+\"")
     private val UNSAFE_EXPORT_FILENAME_REGEX = Regex("[\\\\/:*?\"<>|]")
 
     private fun sanitizeSessionFileName(sessionId: String): String =
         sessionId.trim().replace(SAFE_SESSION_NAME_REGEX, "_").ifBlank { "session" }
 
     private fun chatSessionFolder(sessionId: String): File =
-        File(chatsDir(), sanitizeSessionFileName(sessionId))
+        snapshotStorage.chatDirectory(sessionId)
 
-    private fun isBlankDefaultStateJson(json: String): Boolean {
-        val hasNoApiKeys = API_KEY_NONEMPTY_REGEX.find(json) == null
-        val hasNoAssistants = json.contains("\"assistants\":[]") || (
-            !NON_DEFAULT_ASST_ID_REGEX.containsMatchIn(json) &&
-                !NON_EMPTY_SYS_PROMPT_REGEX.containsMatchIn(json)
-            )
-        val hasNoMessages = !json.contains("\"role\":\"USER\"") && !json.contains("\"role\":\"ASSISTANT\"")
-        val hasNoSavedCards = !json.contains("\"savedCards\":[{")
-        val hasNoPresets = !json.contains("\"systemPromptPresets\":[{")
-        val hasNoGlobalWorldBook = !json.contains("\"globalWorldBook\":[{")
-        val isInitialSessionId = json.contains("\"activeSessionId\":\"sess-initial\"") ||
-            json.contains("\"activeSessionId\":\"\"")
-        return hasNoApiKeys && hasNoAssistants && hasNoMessages &&
-            hasNoSavedCards && hasNoPresets && hasNoGlobalWorldBook && isInitialSessionId
-    }
+    private val snapshotStorage = SnapshotFileStorage(::resolveStorageDir)
 
-    actual fun loadAppStateJson(): String? {
-        val dir = resolveStorageDir()
-        val bakDir = backupsDir()
-        val f = settingsFile()
-        val tmp = File(dir, "parchment-settings.json.tmp")
-        val prev = File(bakDir, "parchment-settings.prev.json")
-        val userBak = File(bakDir, "parchment-settings.user-backup.json")
-        val legacyRootPrev = File(dir, "parchment-settings.prev.json")
-        val legacyRootUserBak = File(dir, "parchment-settings.user-backup.json")
-        if (legacyRootPrev.exists() && !prev.exists()) {
-            runCatching { legacyRootPrev.copyTo(prev, overwrite = true); legacyRootPrev.delete() }
-        }
-        if (legacyRootUserBak.exists() && !userBak.exists()) {
-            runCatching { legacyRootUserBak.copyTo(userBak, overwrite = true); legacyRootUserBak.delete() }
-        }
-        val legacy = legacyStateFile()
-        val legacyTmp = File(dir, "parchment-state.json.tmp")
-        val legacyPrev = File(dir, "parchment-state.prev.json")
-        val legacyBak = File(dir, "parchment-state.user-backup.json")
-
-        // Retry up to 6 times (50ms apart) in case the previous process during an OTA restart is still releasing its file handle
-        repeat(6) { attempt ->
-            val candidates = listOf(f, tmp, prev, userBak, legacyRootPrev, legacyRootUserBak, legacy, legacyTmp, legacyPrev, legacyBak)
-            for (cand in candidates) {
-                val content = runCatching {
-                    if (cand.exists() && cand.isFile && cand.length() > 10L) {
-                        AtomicFileStorage.readText(cand)
-                    } else null
-                }.getOrNull()
-                if (!content.isNullOrBlank()) {
-                    val activeBak = when {
-                        userBak.exists() && userBak.length() > 50L -> userBak
-                        legacyRootUserBak.exists() && legacyRootUserBak.length() > 50L -> legacyRootUserBak
-                        else -> legacyBak
-                    }
-                    if (cand != activeBak && isBlankDefaultStateJson(content) && activeBak.exists() && activeBak.length() > 50L) {
-                        val bakContent = runCatching { AtomicFileStorage.readText(activeBak) }.getOrNull()
-                        if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
-                            return bakContent
-                        }
-                    }
-                    return content
-                }
-            }
-            if (attempt < 5 && candidates.any { it.exists() }) {
-                runCatching { Thread.sleep(50L) }
-            }
-        }
-        return null
-    }
-
-    @Synchronized
-    actual fun saveAppStateJson(json: String) {
-        runCatching {
-            val dir = resolveStorageDir()
-            if (!dir.exists()) dir.mkdirs()
-            val bakDir = backupsDir()
-            val prev = File(bakDir, "parchment-settings.prev.json")
-            val userBak = File(bakDir, "parchment-settings.user-backup.json")
-            val target = settingsFile()
-
-            val incomingIsBlankDefault = isBlankDefaultStateJson(json)
-
-            // Guard: Never allow a blank default state to overwrite an existing populated user settings file on disk!
-            if (incomingIsBlankDefault && userBak.exists() && userBak.length() > 50L) {
-                return
-            }
-
-            AtomicFileStorage.writeText(
-                target, json, previousBackup = prev.takeIf { target.exists() && target.length() > 50L }
-            )
-            // Whenever the state contains actual user customizations, persist a protected user backup in backups/!
-            if (!incomingIsBlankDefault && json.length > 50) {
-                runCatching { AtomicFileStorage.copy(target, userBak) }
-            }
-            // Clean up any legacy root-level backup files once backups/ is populated
-            File(dir, "parchment-settings.prev.json").takeIf { it.exists() }?.delete()
-            File(dir, "parchment-settings.user-backup.json").takeIf { it.exists() }?.delete()
-        }
-    }
-
-    private fun migrateLegacyFlatChatFileIfPresent(safeId: String): File? {
-        val dir = chatsDir()
-        val folder = File(dir, safeId)
-        val folderChatJson = File(folder, "chat.json")
-        val legacyFlat = File(dir, "$safeId.json")
-        val legacyTmp = File(dir, "$safeId.json.tmp")
-        if (legacyFlat.exists() && legacyFlat.isFile && legacyFlat.length() > 5L) {
-            if (!folder.exists()) folder.mkdirs()
-            if (!folderChatJson.exists() || legacyFlat.lastModified() > folderChatJson.lastModified()) {
-                runCatching { legacyFlat.copyTo(folderChatJson, overwrite = true) }
-            }
-            runCatching { legacyFlat.delete() }
-            runCatching { legacyTmp.delete() }
-            return folderChatJson
-        }
-        if (legacyTmp.exists() && legacyTmp.isFile && legacyTmp.length() > 10L) {
-            if (!folder.exists()) folder.mkdirs()
-            if (!folderChatJson.exists()) {
-                runCatching { legacyTmp.copyTo(folderChatJson, overwrite = true) }
-            }
-            runCatching { legacyTmp.delete() }
-            return folderChatJson
-        }
-        return if (folderChatJson.exists()) folderChatJson else null
-    }
-
-    actual fun loadChatSessionJsonById(sessionId: String): String? = runCatching {
-        if (sessionId.isBlank()) return null
-        val safeId = sanitizeSessionFileName(sessionId)
-        migrateLegacyFlatChatFileIfPresent(safeId)
-        val folder = chatSessionFolder(safeId)
-        val primary = File(folder, "chat.json")
-        if (primary.exists() && primary.isFile && primary.length() > 5L) {
-            return AtomicFileStorage.readText(primary).takeIf { it.isNotBlank() }
-        }
-        val tmp = File(folder, "chat.json.tmp")
-        if (tmp.exists() && tmp.isFile && tmp.length() > 10L) {
-            runCatching { tmp.copyTo(primary, overwrite = true) }
-            return AtomicFileStorage.readText(tmp).takeIf { it.isNotBlank() }
-        }
-        null
-    }.getOrNull()
-
-    actual fun loadAllChatSessionJsons(): List<String> = runCatching {
-        val dir = chatsDir()
-        val entries = dir.listFiles()?.toList().orEmpty()
-        // 1. Migrate any legacy flat chats/<sessionId>.json or .json.tmp files into chats/<sessionId>/chat.json
-        for (f in entries) {
-            if (f.isFile) {
-                when {
-                    f.name.endsWith(".json.tmp", ignoreCase = true) -> {
-                        val safeId = f.name.removeSuffix(".tmp").removeSuffix(".json")
-                        migrateLegacyFlatChatFileIfPresent(safeId)
-                    }
-                    f.name.endsWith(".json", ignoreCase = true) -> {
-                        val safeId = f.name.removeSuffix(".json")
-                        migrateLegacyFlatChatFileIfPresent(safeId)
-                    }
-                }
-            }
-        }
-        // 2. Scan all per-chat subdirectories chats/<sessionId>/chat.json
-        val chatJsonFiles = dir.listFiles()
-            ?.filter { it.isDirectory }
-            ?.mapNotNull { folder ->
-                val primary = File(folder, "chat.json")
-                val tmp = File(folder, "chat.json.tmp")
-                if ((!primary.exists() || primary.length() <= 5L) && tmp.exists() && tmp.length() > 10L) {
-                    runCatching { tmp.copyTo(primary, overwrite = true) }
-                }
-                primary.takeIf { it.exists() && it.isFile && it.length() > 5L }
-            }
-            .orEmpty()
-
-        chatJsonFiles
-            .sortedByDescending { it.lastModified() }
-            .parallelStream()
-            .map { f -> runCatching { AtomicFileStorage.readText(f) }.getOrNull()?.takeIf { it.isNotBlank() } }
-            .toList()
-            .filterNotNull()
-    }.getOrDefault(emptyList())
-
-    @Synchronized
-    actual fun saveChatSessionJson(sessionId: String, json: String) {
-        if (sessionId.isBlank() || json.isBlank()) return
-        runCatching {
-            val safeId = sanitizeSessionFileName(sessionId)
-            val folder = chatSessionFolder(safeId)
-            if (!folder.exists()) folder.mkdirs()
-            val target = File(folder, "chat.json")
-            AtomicFileStorage.writeText(target, json)
-            // Remove any legacy flat file if still present
-            val dir = chatsDir()
-            File(dir, "$safeId.json").takeIf { it.exists() }?.delete()
-            File(dir, "$safeId.json.tmp").takeIf { it.exists() }?.delete()
-        }
-    }
-
-    @Synchronized
-    actual fun deleteChatSessionFile(sessionId: String) {
-        if (sessionId.isBlank()) return
-        runCatching {
-            val dir = chatsDir()
-            val safeId = sanitizeSessionFileName(sessionId)
-            val folder = File(dir, safeId)
-            if (folder.exists()) {
-                folder.deleteRecursively()
-            }
-            File(dir, "$safeId.json").delete()
-            File(dir, "$safeId.json.tmp").delete()
-        }
-    }
+    actual fun loadAppStateJson(): String? = snapshotStorage.loadSettings()
+    actual fun saveAppStateJson(json: String) = snapshotStorage.saveSettings(json)
+    actual fun loadChatSessionJsonById(sessionId: String): String? = snapshotStorage.loadChat(sessionId)
+    actual fun loadAllChatSessionJsons(): List<String> = snapshotStorage.loadAllChats()
+    actual fun saveChatSessionJson(sessionId: String, json: String) = snapshotStorage.saveChat(sessionId, json)
+    actual fun deleteChatSessionFile(sessionId: String) = snapshotStorage.deleteChat(sessionId)
 
     actual fun registerStateFlushCallback(callback: () -> Unit) {
         stateFlushCallback = callback

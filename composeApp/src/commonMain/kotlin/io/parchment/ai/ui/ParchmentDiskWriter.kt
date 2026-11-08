@@ -25,9 +25,15 @@ internal class ParchmentDiskWriter(
     private val saveSettings: (AppStateSnapshot) -> Unit,
     private val saveSession: (ChatSession) -> Unit,
     private val deleteSession: (String) -> Unit,
-    private val debounceMs: Long = 250L
+    private val debounceMs: Long = 250L,
+    private val retryInitialMs: Long = 250L,
+    private val retryMaxMs: Long = 30_000L
 ) {
-    private data class SettingsWrite(val revision: Long, val snapshot: AppStateSnapshot)
+    private data class SettingsWrite(
+        val revision: Long,
+        val snapshot: AppStateSnapshot,
+        val requiredChats: Map<String, Long> = emptyMap()
+    )
     private data class ChatWrite(val revision: Long, val session: ChatSession?)
     private data class Pending(
         val revision: Long = 0L,
@@ -43,15 +49,22 @@ internal class ParchmentDiskWriter(
     val lastError: StateFlow<String?> = errorState.asStateFlow()
 
     init {
+        require(debounceMs >= 0L && retryInitialMs > 0L && retryMaxMs >= retryInitialMs)
         scope.launch(Dispatchers.IO) {
             for (ignored in wakeups) {
                 if (!pending.value.urgent && debounceMs > 0L) delay(debounceMs)
-                try {
-                    flush()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // flush recorded the failure and retained the uncommitted entries.
+                var retryDelay = retryInitialMs
+                while (true) {
+                    try {
+                        flush()
+                        break
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // Retain failures and retry without waiting for another user edit.
+                        delay(retryDelay)
+                        retryDelay += minOf(retryDelay, retryMaxMs - retryDelay)
+                    }
                 }
             }
         }
@@ -62,16 +75,25 @@ internal class ParchmentDiskWriter(
         sessions: List<ChatSession> = emptyList(),
         deletedIds: Set<String> = emptySet(),
         urgent: Boolean = false,
-        notify: Boolean = true
+        notify: Boolean = true,
+        settingsRequiresSessions: Boolean = false
     ) {
         pending.update { old ->
             val revision = old.revision + 1L
             val chats = old.chats.toMutableMap()
             deletedIds.forEach { chats[it] = ChatWrite(revision, null) }
-            sessions.forEach { chats[it.id] = ChatWrite(revision, it) }
+            sessions.forEach { session ->
+                val fullPending = chats[session.id]?.session?.takeUnless { it.isCompactStub }
+                val value = if (session.isCompactStub && fullPending != null) mergeSessionMetadata(fullPending, session) else session
+                chats[session.id] = ChatWrite(revision, value)
+            }
             Pending(
                 revision = revision,
-                settings = settings?.let { SettingsWrite(revision, it.copy(sessions = emptyList())) } ?: old.settings,
+                settings = settings?.let {
+                    val required = old.settings?.requiredChats.orEmpty().filterKeys { id -> id !in deletedIds } +
+                        if (settingsRequiresSessions) sessions.associate { session -> session.id to revision } else emptyMap()
+                    SettingsWrite(revision, it.copy(sessions = emptyList()), required)
+                } ?: old.settings?.let { it.copy(requiredChats = it.requiredChats.filterKeys { id -> id !in deletedIds }) },
                 chats = chats,
                 urgent = old.urgent || urgent
             )
@@ -83,39 +105,65 @@ internal class ParchmentDiskWriter(
         pending.update { old ->
             val revision = old.revision + 1L
             val chats = deletedIds.associateWith { ChatWrite(revision, null) }.toMutableMap()
-            snapshot.sessions.forEach { chats[it.id] = ChatWrite(revision, it) }
-            Pending(revision, SettingsWrite(revision, snapshot.copy(sessions = emptyList())), chats, urgent = true)
+            snapshot.sessions.forEach { session ->
+                val fullPending = old.chats[session.id]?.session?.takeUnless { it.isCompactStub }
+                val value = if (session.isCompactStub && fullPending != null) mergeSessionMetadata(fullPending, session) else session
+                chats[session.id] = ChatWrite(revision, value)
+            }
+            val required = snapshot.sessions.associate { it.id to revision }
+            Pending(revision, SettingsWrite(revision, snapshot.copy(sessions = emptyList()), required), chats, urgent = true)
         }
         wakeups.trySend(Unit)
     }
 
+    fun pendingFullSession(sessionId: String): ChatSession? = pending.value.chats[sessionId]?.session?.takeUnless { it.isCompactStub }
+
     suspend fun flush() = writeMutex.withLock {
         val batch = pending.value
-        try {
-            batch.settings?.let { entry ->
-                saveSettings(entry.snapshot)
+        var failure: Exception? = null
+        fun attempt(write: () -> Unit): Boolean = try {
+            write()
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (failure == null) failure = error
+            false
+        }
+        for ((id, entry) in batch.chats) {
+            if (attempt {
+                    val session = entry.session
+                    if (session == null) deleteSession(id) else saveSession(session)
+                }) {
                 pending.update { latest ->
-                    if (latest.settings?.revision == entry.revision) latest.copy(settings = null) else latest
+                    latest.copy(
+                        chats = if (latest.chats[id]?.revision == entry.revision) latest.chats - id else latest.chats,
+                        settings = latest.settings?.let { settings ->
+                            if ((settings.requiredChats[id] ?: Long.MAX_VALUE) <= entry.revision) {
+                                settings.copy(requiredChats = settings.requiredChats - id)
+                            } else settings
+                        }
+                    )
                 }
             }
-            for ((id, entry) in batch.chats) {
-                val session = entry.session
-                if (session == null) deleteSession(id) else saveSession(session)
-                pending.update { latest ->
-                    if (latest.chats[id]?.revision == entry.revision) {
-                        latest.copy(chats = latest.chats - id)
-                    } else latest
+        }
+        // A settings migration may strip embedded history; commit it only after its chat files succeed.
+        pending.value.settings?.takeIf { it.revision == batch.settings?.revision && it.requiredChats.isEmpty() }?.let { entry ->
+                if (attempt { saveSettings(entry.snapshot) }) {
+                    pending.update { latest ->
+                        if (latest.settings?.revision == entry.revision) latest.copy(settings = null) else latest
+                    }
                 }
-            }
+        }
+        val error = failure
+        if (error != null) {
+            errorState.value = error.message?.take(1000) ?: "Unable to persist local changes."
+            throw error
+        } else {
             pending.update { latest ->
                 if (latest.revision == batch.revision) latest.copy(urgent = false) else latest
             }
             errorState.value = null
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            errorState.value = error.message?.take(1000) ?: "Unable to persist local changes."
-            throw error
         }
     }
 

@@ -5,9 +5,11 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 ## Execution contract
 
 - Plan each improvement before editing its implementation. Investigate every source area and refine this plan when evidence reveals another defect.
-- Implement focused changes, run meaningful regressions and the relevant platform builds, then commit and push to origin/main.
-- An item is complete only after its implementation, verification and lock succeed. Failed verification keeps the item open.
+- Group related checklist items under a subheader into a coherent implementation batch. Verify the complete batch with meaningful regressions/platform builds, then commit and push once to origin/main.
+- Split unusually large or high-risk work into independently verifiable batches. Keep unfinished items open and update MEMORY/TODO/README with the batch's actual results.
+- An item is complete only after its implementation, batch verification and lock succeed. Failed verification keeps the batch and affected items open.
 - Preserve the five existing platform edits and review them as part of the relevant background-lifecycle milestones.
+- Four supplied Android background edits are preserved in stash 7e1827538dd5e9bbf8ad836346bbeda62577104c during the persistence batch; reapply before the background batch and retain the stash until integration is verified.
 - Never copy builds into the installed Windows Parchment directory. Use workspace build artifacts for testing and GitHub Release OTA for installed updates.
 - Keep Compose Foundation UI, vector icons, bounded vertical palettes and wrapped rows. Keep model routing independent of model identifiers and device routing independent of manufacturer/version names.
 - Search the web and retrieve current official documentation before changing protocol behavior. This session has no exposed web_search tool; use actual HTTP web searches and official page retrieval, recording the sources below.
@@ -41,7 +43,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 - [ ] Map every source file, build/release configuration and public boundary; distinguish verified defects from investigation candidates.
 - [ ] Fetch current official references for Responses, Chat Completions, Gemini Interactions, GenerateContent, Anthropic Messages, streaming, reasoning/signatures and tool-result formats.
-- [ ] Run the existing desktop suite and Android compilation; record exact outcomes and test counts.
+- [x] Run the existing desktop suite and Android compilation; baseline 20/20 passed and the current verified persistence batch passes 66/66.
 - [ ] Review test storage, subprocess cleanup and isolation before broadening the suite.
 - Files: all source areas; PARCHMENT_TODO.md; build and workflow configuration.
 - Verification: source coverage matrix below, fetched official references, baseline test/build results.
@@ -69,11 +71,21 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 ### 03 — P0: Atomic persistence and lossless dirty-session scheduling
 
+- Snapshot hydration/shared-storage batch verified: 66/66 tests, both Kotlin targets, Android release and real-device draft/checkpoint/restart smoke; published by the commit containing this completion log.
+- Batch implementation order: make the compact/full marker part of each in-memory snapshot; merge metadata onto queued/full history; apply asynchronous hydration to the current state without resurrecting deleted chats or replacing edits; refuse export/generation from missing full history.
+- Attachment recovery boundary: retain inline bytes when the referenced local file is missing/unreadable; verify readable persisted media before dropping redundant base64.
+- Consolidate Android/desktop atomic writes and JSON recovery in `src/jvmShared`; use API-26-compatible NIO readers, synced staging and atomic replacement without a truncating fallback. Preserve migration sources until a valid destination commits, and preserve valid backups when the primary is corrupt.
+- Make native write/delete failures reach the dirty writer; allow healthy files to checkpoint when another file fails and retry retained failures with bounded backoff. Give each test worker an owned temporary directory.
+- Batch files: Models.kt, ParchmentDiskWriter.kt, ParchmentStatePersistence.kt, ParchmentApp.kt, both platform bridges, shared JVM storage helpers, composeApp/build.gradle.kts, focused hydration/storage/writer regressions and MEMORY/TODO/README.
+- Batch verification: full-versus-stub snapshot races, metadata clearing, async hydration versus edits/deletions, corrupt-primary/valid-backup recovery, failed migration preservation, native error propagation, independent-file writes/retry, desktopTest, both Kotlin targets and Android release; inspect the connected device for smoke verification when applicable.
 - [x] Desktop atomic storage verified: complete staging/sync, atomic target and backup replacement, sharing-friendly reads, bounded transient-lock recovery; five new regressions. Android replacement and shared scheduling remain open.
-- [ ] Review settings, chat, backup and temporary-file replacement paths on both platforms.
-- [ ] Replace truncate-in-place fallbacks with safe staged replacement and recoverable failure handling.
+- [x] Review settings, chat, backup and temporary-file replacement paths on both platforms; consolidate validated snapshot storage in `src/jvmShared`.
+- [x] Replace truncate-in-place fallbacks with safe staged replacement and recoverable failure handling for settings/chats/backups and legacy chat migration.
 - [x] Coalesce all dirty session IDs through one serialized writer; retain per-file revisions, in-flight updates, deletions and lifecycle checkpoints.
-- [ ] Propagate native save errors into the shared writer; current legacy native wrappers can still suppress I/O failures.
+- [x] Propagate native save/delete errors; checkpoint healthy files independently, gate migration settings on required chat revisions, retry retained failures, and clear the recovered save notice.
+- [x] Make hydration snapshot-local; preserve full pending payloads, explicit metadata clears, drafts, concurrent loading edits/deletions and missing-file inline attachments.
+- [x] Recover valid settings/chat backups without replacing them with corrupt primaries, and retain failed migration sources and invalid snapshots.
+- [ ] Add clear recovery UI for chats/settings with no usable complete snapshot; review all startup/bulk-operation and per-chat draft callback ownership races.
 - [ ] Keep disk checkpoints independent of rendering and avoid synchronous full-vault rewrites during activity transitions.
 - [ ] Recover from truncated/corrupt writes without overwriting valid history with defaults or dehydrated stubs.
 - Files: ParchmentStatePersistence.kt; ParchmentApp.kt persistence callbacks; both PlatformBridge actuals; common/desktop persistence tests.
@@ -211,6 +223,24 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - Verification: both targets, desktop and compact device renders, inheritance/reset, two-tab pending approvals, revocation, keyboard/back navigation and no redundant/emoji UI regressions.
 - Lock: verified UI commit and push after the enforcement layer.
 
+### 23 — P1: Harness token efficiency and API-credit accountability
+
+- User priority: reduce API-credit consumption during multi-day coding work; investigate both input and output tokens before selecting optimizations.
+- First efficiency batch: record the actual request composition and every billed round, check stable cache prefixes and historical tool-output growth, then implement only changes with measurable savings and preserved task evidence.
+- Confirmed accounting findings: input/cache-read totals currently use a maximum across rounds; Anthropic cache creation and OpenAI `cache_write_tokens`/TTL charges are omitted; utility calls discard usage. Read the current schemas listed below before implementing the ledger.
+- Observed mobile baseline: the empty General chat shows approximately 2.4k estimated context tokens; distinguish this local estimate from actual provider billing when measuring system/tool overhead.
+- [ ] Audit per-round input, cache read/write, reasoning and output usage across all protocols; ensure totals include every billed round.
+- [ ] Verify price estimates against provider usage semantics, including cache creation, and clearly label unknown/estimated costs.
+- [ ] Measure repeated history/system/tool overhead, workspace/lore context, retries/nudges, and compaction/title/summary utility calls.
+- [ ] Keep stable cacheable prefixes/tool definitions where supported and use documented caching/continuation without changing privacy defaults or model-name routing.
+- [ ] Shape stale/noisy output and use targeted search/read ranges; preserve editable source, required reasoning/signatures and essential evidence.
+- [ ] Avoid duplicate requests/completed tools and unnecessary continuation/summaries; recognize accepted jobs before retrying creation.
+- [ ] Add justified spend/efficiency controls and usage breakdowns while retaining explicit model/effort choices and uncapped instructions.
+- [ ] Validate token savings on representative coding workloads alongside correctness/recovery checks.
+- Files: provider/harness/tokenizer, Models/registry, prompt/context/compaction, usage/settings UI and regressions.
+- Verification: current official caching/billing/protocol docs, per-round fixtures and before/after input/output/cache/reasoning measurements.
+- Lock: coherent verified efficiency/accounting batches; update MEMORY, TODO and README with measured results.
+
 ### 21 — P1: Whole-app performance, memory, startup and modularity
 
 - [ ] Measure cold/warm startup, first useful frame, ready-to-type time, idle working set/heap, streaming frame work/allocations, and large-session/vault behavior on desktop and Android.
@@ -320,9 +350,13 @@ Fetched and read during the audit; retrieve specific sections again before imple
 - Anthropic tool use: https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
 - Anthropic thinking/caching: https://platform.claude.com/docs/en/build-with-claude/extended-thinking and https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 - Kotlin compilation/cache documentation: https://kotlinlang.org/docs/gradle-compilation-and-caches.html . Installed KGP 2.3.21 and successful builds validate the quoted '-Pkotlin.compiler.execution.strategy=in-process' argument.
+- Atomic filesystem contracts re-fetched on 2026-11-08: https://developer.android.com/reference/java/nio/file/Files (API 26), https://developer.android.com/reference/android/util/AtomicFile (caller-owned threading protection), and https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Files.html (ATOMIC_MOVE may reject replacement and must not fall back to an unsafe copy). HTTP Google/Bing web searches were attempted; their responses did not provide useful source results, so the official references were read directly.
+- Usage/cache schemas fetched on 2026-11-08: https://developers.openai.com/api/docs/guides/prompt-caching.md (cache writes, TTL breakdown, stable prefixes and cost calculation); https://developers.openai.com/api/reference/resources/responses/methods/create ; https://platform.claude.com/docs/en/build-with-claude/prompt-caching (uncached + cache-read + cache-creation input totals); https://ai.google.dev/api/generate-content ; https://aistudio.google.com/api-reference/interactions-api .
+- Device verification uses the official ADB reference: https://developer.android.com/tools/adb . Verify signer/version before reinstalling, preserve data, verify focus/input before lifecycle tests, and wait for Home completion before restarting.
 
 ## Verification and lock log
 
+- Snapshot/shared-storage batch verified: 66/66 desktop tests, both Kotlin compilations and `assembleRelease` passed; release DEX/lint gates completed with minification disabled. Runtime constants/APK match 2.0.63/263 and the installed certificate. Real Android 17 draft checkpoint/cold-restart and cleanup passed after correcting an automation focus/Home race. Desktop JAR contains both shared storage helpers. The commit containing this log publishes the batch once; broader run-recovery/permissions/cost work stays open.
 - Runtime shell-toggle milestone verified: 42/42 tests, both target compilations and Android release passed; default/explicit denial and read-only precedence are covered. The commit containing this entry publishes the dispatch fix.
 - Shared disk writer locked and pushed: d4f5e612d86e9552afb96a66c89dbe30376a9728; 39 tests, both compilations and Android release passed.
 - Shared disk-writer milestone verified: 39/39 desktop tests, both compilations and Android release passed; seven regressions cover asynchronous dirty-write ordering/recovery. The commit containing this entry publishes the scoped scheduler improvement.

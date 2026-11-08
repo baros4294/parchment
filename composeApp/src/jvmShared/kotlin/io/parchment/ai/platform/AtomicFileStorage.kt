@@ -7,13 +7,17 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.AccessDeniedException
 import java.nio.file.StandardCopyOption
+import java.nio.file.FileVisitResult
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * Stages and flushes complete content beside its target before an atomic rename.
  * A failed commit preserves both the previous target and the recoverable .tmp.
  */
 internal object AtomicFileStorage {
-    fun readText(file: File): String = Files.readString(file.toPath(), Charsets.UTF_8)
+    // Close the shared NIO handle before UTF-8 decoding; buffered readers can starve Windows replacement.
+    fun readText(file: File): String = Files.readAllBytes(file.toPath()).toString(Charsets.UTF_8)
 
     @Synchronized
     fun writeText(
@@ -22,7 +26,7 @@ internal object AtomicFileStorage {
         previousBackup: File? = null,
         commit: (Path, Path) -> Unit = ::commitAtomically
     ) {
-        val parent = target.absoluteFile.parentFile
+        val parent = checkNotNull(target.absoluteFile.parentFile) { "Storage target has no parent directory." }
         check(parent.exists() || parent.mkdirs()) { "Unable to create storage directory." }
         val staged = File(parent, target.name + ".tmp")
         FileOutputStream(staged).use { stream ->
@@ -39,7 +43,7 @@ internal object AtomicFileStorage {
 
     @Synchronized
     fun copy(source: File, target: File) {
-        val parent = target.absoluteFile.parentFile
+        val parent = checkNotNull(target.absoluteFile.parentFile) { "Backup target has no parent directory." }
         check(parent.exists() || parent.mkdirs()) { "Unable to create backup directory." }
         val staged = File(parent, target.name + ".tmp")
         FileOutputStream(staged).use { output ->
@@ -61,5 +65,22 @@ internal object AtomicFileStorage {
                 Thread.sleep(minOf(8L shl attempt, 256L))
             }
         }
+    }
+
+    /** Deletes owned storage without following directory links into another tree. */
+    fun deleteTree(root: Path) {
+        if (!Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+        Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.delete(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(dir: Path, error: java.io.IOException?): FileVisitResult {
+                if (error != null) throw error
+                Files.delete(dir)
+                return FileVisitResult.CONTINUE
+            }
+        })
     }
 }

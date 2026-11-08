@@ -149,7 +149,7 @@ class ParchmentDiskWriterTest {
             writer.enqueue(sessions = listOf(chat("old")), notify = false)
             writer.replaceState(AppStateSnapshot(activeSessionId = "new", sessions = listOf(chat("new"))), setOf("old"))
             writer.flush()
-            assertEquals(listOf("settings:new", "delete:old", "save:new"), operations)
+            assertEquals(listOf("delete:old", "save:new", "settings:new"), operations)
         } finally {
             scope.cancel()
         }
@@ -164,6 +164,65 @@ class ParchmentDiskWriterTest {
             writer.enqueue(sessions = listOf(chat("a", "stream checkpoint")), notify = false)
             writer.flushBlocking()
             assertEquals(listOf("stream checkpoint"), saved)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun failedChatDoesNotBlockHealthyChatsOrStripLegacySettings() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        val operations = mutableListOf<String>()
+        var fail = true
+        try {
+            val writer = ParchmentDiskWriter(scope, { operations.add("settings") }, { session ->
+                if (session.id == "broken" && fail) throw IllegalStateException("unwritable chat")
+                operations.add(session.id)
+            }, {}, debounceMs = 60_000)
+            writer.enqueue(settings = AppStateSnapshot(), sessions = listOf(chat("broken"), chat("healthy")), notify = false,
+                settingsRequiresSessions = true)
+            assertFailsWith<IllegalStateException> { writer.flush() }
+            assertEquals(listOf("healthy"), operations)
+            fail = false
+            writer.flush()
+            assertEquals(listOf("healthy", "broken", "settings"), operations)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun workerRecoversWithoutAnotherEditAfterTransientFailure() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        val recovered = CompletableDeferred<Unit>()
+        var attempts = 0
+        try {
+            val writer = ParchmentDiskWriter(scope, {}, {
+                if (++attempts == 1) throw IllegalStateException("transient failure")
+                recovered.complete(Unit)
+            }, {}, debounceMs = 0, retryInitialMs = 20, retryMaxMs = 40)
+            writer.enqueue(sessions = listOf(chat("recover")))
+            withTimeout(3_000) { recovered.await() }
+            writer.flush()
+            assertEquals(2, attempts)
+            assertEquals(null, writer.lastError.value)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun unrelatedSettingsChangesPersistDespiteAFailedChat() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        var saved: AppStateSnapshot? = null
+        val settings = AppStateSnapshot(autoCheckOtaOnStartup = false)
+        try {
+            val writer = ParchmentDiskWriter(scope, { saved = it }, { throw IllegalStateException("unwritable chat") }, {},
+                debounceMs = 60_000)
+            writer.enqueue(settings = settings, sessions = listOf(chat("broken")), notify = false)
+            assertFailsWith<IllegalStateException> { writer.flush() }
+            assertEquals(settings, saved)
+            assertEquals("unwritable chat", writer.lastError.value)
         } finally {
             scope.cancel()
         }

@@ -12,6 +12,8 @@ Work in an explicit interleaved loop. Before each tool call, state a brief Thoug
 
 The loop maps to the project three-command workflow:
 
+Group related checklist items into coherent batches. Implement the batch, verify its complete regression/platform matrix, and lock once per verified batch to reduce redundant release builds. Split high-risk or unusually large work into independently verifiable batches.
+
 - plan: Investigate read-only. Audit root causes, edge cases, loopholes, developer point of view, and end-user point of view. Design the optimal architecture, UI, and UX. Never modify project code during plan. Produce a written plan naming the files to touch, the approach, the order, and the verification signal.
 - execute: Implement changes surgically in project files. Verify builds and tests locally before claiming success. Prefer the smallest diff that fully solves the problem.
 - lock: Commit and push verified changes to origin/main (baros4294/parchment) only after execute verification passes. If verification failed, do not lock. Pushing is externally visible; treat it as authorized by this workflow contract, but never push unverified work.
@@ -267,7 +269,7 @@ The Android SDK on this machine is at $env:LOCALAPPDATA\Android\Sdk. It exists, 
 compileKotlinDesktop alone is not sufficient verification. androidMain has its own actual implementations that desktop never compiles.
 
 - Always run :composeApp:compileDebugKotlinAndroid (fast, roughly 1 minute) after touching any PlatformBridge.android.kt or androidMain file.
-- Run :composeApp:assembleRelease (roughly 5 minutes, R8 plus lintVital) before pushing anything that touches Android.
+- Run :composeApp:assembleRelease before pushing anything that touches Android. The current release configuration uses DEX packaging and lintVital with minification/resource shrinking disabled; do not describe this gate as R8 verification.
 
 ### 13.3 CI Job Names and Failure Signatures
 
@@ -374,3 +376,25 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - The public dispatcher defaults to shell disabled. A model requesting an unadvertised command cannot bypass the disabled Shell toggle.
 - Three permission regressions cover default denial, explicit denial and read-only precedence; the explicitly allowed streaming test remains valid.
 - Verified 42 desktop tests, both Kotlin targets and Android release build. The broader per-assistant/chat approval policy and UI remain open.
+
+## 23. Snapshot Hydration and Shared Storage Recovery (Verified 2026-11-08)
+
+- `ChatSession.isCompactStub` is transient and belongs to the snapshot. The global hydrated/dehydrated ID registry was removed; a stale preview cannot become full data because another snapshot hydrates.
+- Keep complete pending chat payloads when metadata changes or state restores. Hydrate from the pending payload before disk, merge explicit clears/drafts, and never save/export or generate from an unavailable full chat.
+- Apply background loading to the current state so concurrent edits, tab changes and known deletions survive. Preserve live content while hydrating compact metadata.
+- Strip redundant attachment base64 only when the resolved local file is readable and nonempty. Missing local media retains its inline recovery copy.
+- `src/jvmShared` provides the Android/desktop atomic store and JSON recovery. NIO reads close their handle before UTF-8 decoding to avoid Windows replacement starvation; no truncate-in-place fallback is permitted.
+- Validate candidate snapshots/identifiers before recovery or migration. Preserve valid backups when a primary is corrupt, retain the corrupt source, retain failed migration sources, and reject dot-directory identifiers/path collisions.
+- Native save/delete failures reach the shared writer. Healthy files and unrelated settings checkpoint independently; migration settings depend on successful required chat revisions. Retained failures retry with bounded backoff, and recovery clears only its own save-error banner.
+- Startup migrations enqueue complete chats before stripping embedded history; test workers own unique temporary directories and clean only those directories.
+- Verified 66/66 desktop regressions (24 added), both Kotlin targets and Android release packaging/lint. Same-version 2.0.63/263 APK certificate parity and installation were verified on Android 17/API 37; a verified draft survived Home/checkpoint plus a cold process restart, then was cleared. The initial automation attempt raced focus/Home transitions and was repeated with verified input and idle transitions.
+- Android foreground-service/run recovery, exhaustive startup/media performance and unrecoverable-file recovery UI remain separate open tasks.
+
+## 24. Harness API-Credit Priority and Current Schema Evidence (Open)
+
+- Optimize both input and output spend without dropping instructions, required reasoning/signatures, permissions or essential task evidence. Measure coding workloads and lock coherent verified batches.
+- Confirmed audit defect: `recordStepUsage` takes the maximum input/cache-read counts across requests rather than summing billed rounds. Utility generation returns text and discards usage; these costs remain unaccounted.
+- OpenAI Responses now documents `input_tokens_details.cached_tokens`, `cache_write_tokens` and non-overlapping `cache_write_tokens_details.ttl_30m_tokens`/`ttl_12h_tokens`. Cache reads and writes are distinct, with documented write rates; routing must remain model-independent.
+- Anthropic `input_tokens` excludes cache reads and creation. Total input is uncached input plus `cache_read_input_tokens` plus `cache_creation_input_tokens`; creation TTL details must not be counted twice.
+- Gemini prompt/interaction input totals already include cached input. Preserve the documented distinction between output and thought counts.
+- Current official sources were fetched and read: https://developers.openai.com/api/docs/guides/prompt-caching.md ; https://developers.openai.com/api/reference/resources/responses/methods/create ; https://platform.claude.com/docs/en/build-with-claude/prompt-caching ; https://ai.google.dev/api/generate-content ; https://aistudio.google.com/api-reference/interactions-api . Accounting implementation and measured token savings remain open in TODO 23.

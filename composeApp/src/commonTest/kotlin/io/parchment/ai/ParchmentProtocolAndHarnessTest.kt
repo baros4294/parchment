@@ -1301,6 +1301,7 @@ class ParchmentProtocolAndHarnessTest {
 
         // 3. Verify lazy session dehydration & on-demand disk hydration preserves message count, media paths, and full disk fidelity
         val testSessId = "sess-dehydrate-test-${PlatformBridge.currentTimeMillis()}"
+        val persistedAttachmentPath = PlatformBridge.saveGeneratedMediaFile("att-photo.png", ByteArray(1500), testSessId)
         val fullSession = ChatSession(
             id = testSessId,
             title = "Heavy Session",
@@ -1322,7 +1323,7 @@ class ParchmentProtocolAndHarnessTest {
                                     fileName = "photo.png",
                                     mimeType = "image/png",
                                     base64Data = "AAAA".repeat(500),
-                                    localFilePath = "/tmp/media/att-photo.png"
+                                    localFilePath = persistedAttachmentPath
                                 )
                             )
                         )
@@ -1344,23 +1345,22 @@ class ParchmentProtocolAndHarnessTest {
                 )
             )
         )
-        io.parchment.ai.ui.markSessionHydrated(testSessId)
         io.parchment.ai.ui.saveSingleChatSessionToDisk(fullSession)
 
         val stub = io.parchment.ai.ui.dehydrateChatSessionToCompactStub(fullSession)
-        assertTrue(io.parchment.ai.ui.isSessionDehydrated(testSessId))
+        assertTrue(stub.isCompactStub)
         assertEquals(2, stub.messages.size, "Dehydrated stub must preserve exact message count for sidebar badges")
         assertTrue(stub.messages.first().activeVariant.content.isEmpty(), "Earlier messages in stub must be empty")
         assertTrue(stub.messages.last().activeVariant.thinkingSummary.isEmpty(), "Thinking summary must be freed in stub")
         assertTrue(stub.messages.last().activeVariant.toolCalls.isEmpty(), "Tool calls must be freed in stub")
-        assertEquals("/tmp/media/att-photo.png", stub.messages.last().activeVariant.attachments.first().localFilePath)
+        assertEquals(persistedAttachmentPath, stub.messages.last().activeVariant.attachments.first().localFilePath)
 
         // Pinning/renaming a dehydrated stub and saving to disk must NOT overwrite the full messages on disk!
         val pinnedStub = stub.copy(title = "Renamed Heavy Session", isPinned = true, updatedAt = 3000L)
         io.parchment.ai.ui.saveSingleChatSessionToDisk(pinnedStub)
 
         val rehydrated = io.parchment.ai.ui.hydrateSessionFromDiskIfNeeded(pinnedStub)
-        assertTrue(!io.parchment.ai.ui.isSessionDehydrated(testSessId))
+        assertFalse(rehydrated.isCompactStub)
         assertEquals("Renamed Heavy Session", rehydrated.title)
         assertTrue(rehydrated.isPinned)
         assertEquals(2, rehydrated.messages.size)

@@ -176,10 +176,12 @@ fun ParchmentApp(
         }
         if (needsBackgroundChatHydration) {
             needsBackgroundChatHydration = false
+            val beforeLoad = appState
+            val keepHydrated = activeStreamsBySession.keys
             val hydrated = withContext(Dispatchers.Default) {
-                loadRemainingHistoricalSessionsDehydrated(appState, activeStreamsBySession.keys)
+                loadRemainingHistoricalSessionsDehydrated(beforeLoad, keepHydrated)
             }
-            appState = hydrated
+            appState = mergeLoadedSessions(appState, beforeLoad, hydrated)
         }
     }
 
@@ -187,11 +189,15 @@ fun ParchmentApp(
     LaunchedEffect(appState.activeSessionId) {
         val current = appState
         val target = current.sessions.find { it.id == current.activeSessionId }
-        if (target != null && isSessionDehydrated(target.id)) {
+        if (target != null && target.isCompactStub) {
+            val keepHydrated = activeStreamsBySession.keys
             val rebalanced = withContext(Dispatchers.Default) {
-                ensureActiveSessionHydratedAndDehydrateOthers(appState, activeStreamsBySession.keys)
+                ensureActiveSessionHydratedAndDehydrateOthers(current, keepHydrated)
             }
-            appState = rebalanced
+            appState = mergeLoadedSessions(appState, current, rebalanced)
+            if (appState.sessions.find { it.id == appState.activeSessionId }?.isCompactStub == true) {
+                bannerNotification = "Chat history is unavailable. Restore its saved data before editing or sending."
+            }
         } else {
             val rebalanced = ensureActiveSessionHydratedAndDehydrateOthers(current, activeStreamsBySession.keys)
             if (rebalanced !== current) {
@@ -397,8 +403,12 @@ fun ParchmentApp(
         PlatformBridge.registerStateFlushCallback { appDiskWriter.flushBlocking() }
     }
     LaunchedEffect(Unit) {
+        var previousSaveNotice = ""
         appDiskWriter.lastError.collect { message ->
-            if (!message.isNullOrBlank()) bannerNotification = "Unable to save changes: " + message
+            val notice = message?.takeIf { it.isNotBlank() }?.let { "Unable to save changes: $it" }.orEmpty()
+            if (notice.isNotEmpty()) bannerNotification = notice
+            else if (bannerNotification == previousSaveNotice) bannerNotification = ""
+            previousSaveNotice = notice
         }
     }
 
@@ -420,14 +430,27 @@ fun ParchmentApp(
         appDiskWriter.enqueue(sessions = listOf(updatedSession), urgent = immediateFlush)
     }
 
+    fun completeSessionForAction(session: ChatSession): ChatSession? {
+        val complete = runCatching { hydrateSessionFromDiskIfNeeded(session) }.getOrElse { error ->
+            bannerNotification = "Unable to load chat history: " + error.message.orEmpty()
+            return null
+        }
+        if (complete.isCompactStub) {
+            bannerNotification = "Chat history is unavailable. Restore its saved data before editing or sending."
+            return null
+        }
+        return complete
+    }
+
     fun updateActiveSession(immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
         val currentSnap = appState
         val targetId = currentSnap.sessions.find { it.id == currentSnap.activeSessionId }?.id
             ?: currentSnap.sessions.firstOrNull()?.id ?: return
+        val complete = completeSessionForAction(currentSnap.sessions.first { it.id == targetId }) ?: return
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == targetId) {
-                val mod = transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val mod = transform(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
                 modifiedSession = mod
                 mod
             } else it
@@ -438,12 +461,17 @@ fun ParchmentApp(
 
     fun updateSessionById(sessionId: String, immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
         val currentSnap = appState
+        val target = currentSnap.sessions.find { it.id == sessionId } ?: return
+        val complete = completeSessionForAction(target) ?: return
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == sessionId) {
-                val mod = transform(it).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val mod = transform(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
                 modifiedSession = mod
-                mod
+                if (target.isCompactStub && sessionId != currentSnap.activeSessionId && sessionId !in activeStreamsBySession &&
+                    mod.messages.none { node -> node.activeVariant.isStreaming }) {
+                    dehydrateChatSessionToCompactStub(mod)
+                } else mod
             } else it
         }
         appState = currentSnap.copy(sessions = newSessions)
@@ -452,9 +480,11 @@ fun ParchmentApp(
 
     fun updateActiveSessionInMemoryOnly(sessionId: String, transform: (ChatSession) -> ChatSession) {
         val currentState = appState
+        val target = currentState.sessions.find { it.id == sessionId } ?: return
+        val complete = completeSessionForAction(target) ?: return
         var modifiedSession: ChatSession? = null
         val newSessions = currentState.sessions.map {
-            if (it.id == sessionId) transform(it).also { updated -> modifiedSession = updated } else it
+            if (it.id == sessionId) transform(complete).also { updated -> modifiedSession = updated } else it
         }
         appState = currentState.copy(sessions = newSessions)
         modifiedSession?.let { appDiskWriter.enqueue(sessions = listOf(it), notify = false) }
@@ -625,6 +655,10 @@ fun ParchmentApp(
             val hydratedTarget = withContext(Dispatchers.Default) {
                 hydrateSessionFromDiskIfNeeded(targetSess)
             }
+            if (hydratedTarget.isCompactStub) {
+                if (forceRegenerate) bannerNotification = "Chat history is unavailable for title generation."
+                return@launch
+            }
             val transcriptSnippet = hydratedTarget.messages.take(4).joinToString("\n\n") { n ->
                 val who = if (n.role == MessageRole.ASSISTANT) "Assistant" else "User"
                 "$who: ${n.activeVariant.content.take(450)}"
@@ -677,9 +711,13 @@ fun ParchmentApp(
         continuePrefix: String = "",
         autoMuteNodeIdsOnFinish: Set<String> = emptySet()
     ) {
+        val sessionSnap = appState.sessions.find { it.id == sessionId } ?: return
+        if (sessionSnap.isCompactStub) {
+            bannerNotification = "Chat history is still loading. Try again when it is ready."
+            return
+        }
         // Cancel only any prior job on THIS sessionId — never interrupt other running tabs!
         activeStreamsBySession[sessionId]?.job?.cancel()
-        val sessionSnap = appState.sessions.find { it.id == sessionId } ?: activeSession
         val assistantSnap = appState.assistants.find { it.id == sessionSnap.assistantId } ?: activeAssistant
         val profileSnap = appState.profiles.find { it.id == sessionSnap.profileId } ?: activeProfile
 
@@ -1555,7 +1593,7 @@ fun ParchmentApp(
         isGuidedDirection: Boolean,
         isBtwSideQuestion: Boolean = false
     ) {
-        val targetSess = appState.sessions.find { it.id == sessionId } ?: activeSession
+        val targetSess = appState.sessions.find { it.id == sessionId }?.let(::completeSessionForAction) ?: return
         val now = PlatformBridge.currentTimeMillis()
         val updatedMessages = targetSess.messages.toMutableList()
         val userNodeId = "node-$now-u"
@@ -1646,9 +1684,10 @@ fun ParchmentApp(
     }
 
     fun continueAssistantNodeAt(nodeIndex: Int) {
-        val targetNode = activeSession.messages.getOrNull(nodeIndex) ?: return
+        val complete = completeSessionForAction(activeSession) ?: return
+        val targetNode = complete.messages.getOrNull(nodeIndex) ?: return
         if (targetNode.role != MessageRole.ASSISTANT) return
-        val historyBefore = activeSession.messages.subList(0, nodeIndex)
+        val historyBefore = complete.messages.subList(0, nodeIndex)
         val existingText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content)
         // Immediately strip any inline error banner in UI state so the user sees clean resumption at 0ms!
         updateActiveSession(immediate = true) { sess ->
@@ -1673,8 +1712,9 @@ fun ParchmentApp(
     }
 
     fun triggerAutoSummarizeStory(autoMuteOlderTurns: Boolean = false) {
-        val targetSessId = activeSession.id
-        if (activeSession.messages.isEmpty()) return
+        val complete = completeSessionForAction(activeSession) ?: return
+        val targetSessId = complete.id
+        if (complete.messages.isEmpty()) return
         val prevStream = activeStreamsBySession[targetSessId]
         val wasStreaming = prevStream != null
         val dm = appState.defaultModels
@@ -1683,7 +1723,7 @@ fun ParchmentApp(
         } else activeProfile
         val summaryModel = if (!dm.summaryFollowGlobal && dm.summaryModelId.isNotBlank()) {
             dm.summaryModelId
-        } else activeSession.modelOverride.ifBlank { summaryProf.defaultModel }
+        } else complete.modelOverride.ifBlank { summaryProf.defaultModel }
 
         val sumStatus = when {
             wasStreaming && autoMuteOlderTurns ->
@@ -1713,7 +1753,7 @@ fun ParchmentApp(
                     SessionStreamRuntime(sessionId = targetSessId, statusText = sumStatus, job = coroutineContext[kotlinx.coroutines.Job]!!)
                 }
 
-                val sessSnap = appState.sessions.find { it.id == targetSessId } ?: activeSession
+                val sessSnap = appState.sessions.find { it.id == targetSessId }?.let(::completeSessionForAction) ?: return@launch
                 val keepTurnsCount = if (wasStreaming) 2 else 4
                 val plan = O200kTokenizer.prepareCompactionPlan(
                     existingStorySummary = sessSnap.storySummary,
@@ -1809,6 +1849,7 @@ fun ParchmentApp(
     }
 
     fun sendUserTurn() {
+        if (completeSessionForAction(activeSession) == null) return
         val rawInput = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
         val sessId = activeSession.id
@@ -1932,6 +1973,7 @@ fun ParchmentApp(
     }
 
     fun sendGuidedDirection() {
+        if (completeSessionForAction(activeSession) == null) return
         val direction = userPromptInput.trim()
         val prefill = assistantPrefillInput.trim()
         val sessId = activeSession.id
@@ -2016,6 +2058,7 @@ fun ParchmentApp(
     }
 
     fun triggerImpersonateDraft() {
+        val complete = completeSessionForAction(activeSession) ?: return
         val targetSessId = activeSession.id
         if (activeStreamsBySession.containsKey(targetSessId)) return
         val now = PlatformBridge.currentTimeMillis()
@@ -2031,7 +2074,7 @@ fun ParchmentApp(
             role = MessageRole.USER,
             variants = listOf(MessageVariant(id = "var-imp-$now", content = instruction, createdAt = now))
         )
-        val historyForCall = activeSession.messages + syntheticNode
+        val historyForCall = complete.messages + syntheticNode
         userPromptInput = ""
 
         val impJob = appProcessScope.launch {
@@ -2039,7 +2082,7 @@ fun ParchmentApp(
             try {
                 AiProviderEngine.streamGeneration(
                     profile = activeProfile,
-                    session = activeSession,
+                    session = complete,
                     historyNodes = historyForCall
                 ).collect { update ->
                     when (update) {
@@ -2081,9 +2124,7 @@ fun ParchmentApp(
      */
     fun executeRegenerateFromNode(nodeIndex: Int, sessionId: String = activeSession.id) {
         val curSnap = appState
-        val sess = curSnap.sessions.find { it.id == sessionId }
-            ?: curSnap.sessions.find { it.id == curSnap.activeSessionId }
-            ?: curSnap.sessions.firstOrNull() ?: return
+        val sess = curSnap.sessions.find { it.id == sessionId }?.let(::completeSessionForAction) ?: return
         val targetNode = sess.messages.getOrNull(nodeIndex) ?: return
 
         // Cancel any active stream on this session before mutating the message list
@@ -2176,8 +2217,7 @@ fun ParchmentApp(
      */
     fun triggerTranslateNode(nodeIndex: Int) {
         val curSnap = appState
-        val sess = curSnap.sessions.find { it.id == curSnap.activeSessionId }
-            ?: curSnap.sessions.firstOrNull() ?: return
+        val sess = curSnap.sessions.find { it.id == curSnap.activeSessionId }?.let(::completeSessionForAction) ?: return
         val targetNode = sess.messages.getOrNull(nodeIndex) ?: return
         val sourceText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content).trim()
         if (sourceText.isEmpty()) return

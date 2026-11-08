@@ -2,6 +2,7 @@ package io.parchment.ai.model
 
 import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String, val defaultEndpointPath: String) {
@@ -560,7 +561,8 @@ data class ChatSession(
     val viewMode: ViewMode = ViewMode.EDITORIAL_TURNS,
     val workspacePath: String = "",
     val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
-    val messages: List<MessageNode> = emptyList()
+    val messages: List<MessageNode> = emptyList(),
+    @Transient val isCompactStub: Boolean = false
 )
 
 @Immutable

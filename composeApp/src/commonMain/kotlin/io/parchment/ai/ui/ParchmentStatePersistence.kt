@@ -404,17 +404,8 @@ internal fun buildFreshSessionForAssistant(
     )
 }
 
-private val dehydratedSessionIds = mutableSetOf<String>()
-
 private val EMPTY_STUB_VARIANT = MessageVariant(id = "stub-var", content = "")
 private val EMPTY_STUB_NODE = MessageNode(id = "stub-node", role = MessageRole.USER, variants = listOf(EMPTY_STUB_VARIANT))
-
-internal fun isSessionDehydrated(sessionId: String): Boolean =
-    synchronized(dehydratedSessionIds) { sessionId in dehydratedSessionIds }
-
-internal fun markSessionHydrated(sessionId: String) {
-    synchronized(dehydratedSessionIds) { dehydratedSessionIds.remove(sessionId) }
-}
 
 /**
  * Strips duplicate in-memory base64 strings from attachments when `localFilePath` is already persisted on disk,
@@ -432,7 +423,8 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
                     val relocatedPath = if (att.localFilePath.isNotBlank() && sessId.isNotBlank()) {
                         PlatformBridge.relocateLegacyMediaToChatFolder(att.localFilePath, sessId)
                     } else att.localFilePath
-                    val shouldStripB64 = relocatedPath.isNotBlank() && att.base64Data.isNotBlank()
+                    val shouldStripB64 = relocatedPath.isNotBlank() && att.base64Data.isNotBlank() &&
+                        PlatformBridge.isReadableLocalFile(relocatedPath)
                     if (relocatedPath != att.localFilePath || shouldStripB64) {
                         varAttChanged = true
                         att.copy(
@@ -499,17 +491,33 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
     return if (changed) session.copy(messages = cleanedMessages) else session
 }
 
+internal fun mergeSessionMetadata(full: ChatSession, metadata: ChatSession): ChatSession = full.copy(
+    title = metadata.title,
+    isPinned = metadata.isPinned,
+    isTitleManuallySet = metadata.isTitleManuallySet,
+    updatedAt = maxOf(full.updatedAt, metadata.updatedAt),
+    assistantId = metadata.assistantId,
+    profileId = metadata.profileId,
+    modelOverride = metadata.modelOverride,
+    workspacePath = metadata.workspacePath,
+    workspaceMode = metadata.workspaceMode,
+    draftInput = metadata.draftInput,
+    draftPrefill = metadata.draftPrefill,
+    userName = metadata.userName,
+    viewMode = metadata.viewMode,
+    systemPrompt = metadata.systemPrompt,
+    activeCard = metadata.activeCard,
+    authorsNoteDepth = metadata.authorsNoteDepth,
+    isCompactStub = false
+)
+
 /**
- * Converts an inactive `ChatSession` into an ultra-lightweight memory stub (~200 bytes) while preserving
+ * Converts an inactive `ChatSession` into a compact preview while preserving
  * exact `messages.size` and a 140-char preview of the final message so sidebar badges and tab switchers
- * work identically with 99.9% less RAM.
+ * work identically without retaining full conversation content.
  */
 internal fun dehydrateChatSessionToCompactStub(session: ChatSession): ChatSession {
-    if (session.id.isBlank() || session.messages.isEmpty()) return session
-    synchronized(dehydratedSessionIds) {
-        if (session.id in dehydratedSessionIds) return session
-        dehydratedSessionIds.add(session.id)
-    }
+    if (session.isCompactStub || session.id.isBlank() || session.messages.isEmpty()) return session
     val msgCount = session.messages.size
     val lastNode = session.messages.last()
     val lastPreviewText = lastNode.activeVariant.content.take(140)
@@ -551,37 +559,28 @@ internal fun dehydrateChatSessionToCompactStub(session: ChatSession): ChatSessio
         storySummary = "",
         fragments = emptyList(),
         authorsNote = "",
-        messages = stubList
+        messages = stubList,
+        isCompactStub = true
     )
 }
 
 /**
- * Transparently loads the full `ChatSession` from `chats/<sessionId>.json` if `session` is currently
+ * Loads the full `ChatSession` from pending writes or `chats/<sessionId>/chat.json` if `session` is
  * a dehydrated stub in RAM.
  */
 internal fun hydrateSessionFromDiskIfNeeded(session: ChatSession): ChatSession {
-    if (!isSessionDehydrated(session.id)) return session
-    val raw = PlatformBridge.loadChatSessionJsonById(session.id)
+    if (!session.isCompactStub) return session
+    val pendingFull = appDiskWriter.pendingFullSession(session.id)
+    if (pendingFull != null) {
+        return stripRedundantAttachmentBase64(mergeSessionMetadata(pendingFull, session))
+    }
+    val raw = runCatching { PlatformBridge.loadChatSessionJsonById(session.id) }.getOrNull()
     if (!raw.isNullOrBlank()) {
         val decoded = runCatching { compactStateJson.decodeFromString<ChatSession>(raw) }.getOrNull()
-        if (decoded != null) {
-            markSessionHydrated(session.id)
-            return stripRedundantAttachmentBase64(
-                decoded.copy(
-                    title = session.title,
-                    isPinned = session.isPinned,
-                    isTitleManuallySet = session.isTitleManuallySet,
-                    updatedAt = maxOf(decoded.updatedAt, session.updatedAt),
-                    assistantId = session.assistantId.ifBlank { decoded.assistantId },
-                    profileId = session.profileId.ifBlank { decoded.profileId },
-                    modelOverride = session.modelOverride.ifBlank { decoded.modelOverride },
-                    workspacePath = session.workspacePath.ifBlank { decoded.workspacePath },
-                    workspaceMode = session.workspaceMode
-                )
-            )
+        if (decoded != null && decoded.id == session.id) {
+            return stripRedundantAttachmentBase64(mergeSessionMetadata(decoded, session))
         }
     }
-    markSessionHydrated(session.id)
     return session
 }
 
@@ -598,16 +597,15 @@ internal fun ensureActiveSessionHydratedAndDehydrateOthers(
     val updatedSessions = state.sessions.map { sess ->
         val shouldStayHydrated = sess.id == activeId || sess.id in keepHydratedIds
         if (shouldStayHydrated) {
-            if (isSessionDehydrated(sess.id)) {
-                anyChanged = true
-                hydrateSessionFromDiskIfNeeded(sess)
+            if (sess.isCompactStub) {
+                hydrateSessionFromDiskIfNeeded(sess).also { if (it !== sess) anyChanged = true }
             } else {
                 val stripped = stripRedundantAttachmentBase64(sess)
                 if (stripped !== sess) anyChanged = true
                 stripped
             }
         } else {
-            if (!isSessionDehydrated(sess.id) && sess.messages.isNotEmpty()) {
+            if (!sess.isCompactStub && sess.messages.isNotEmpty()) {
                 anyChanged = true
                 dehydrateChatSessionToCompactStub(sess)
             } else {
@@ -624,26 +622,38 @@ internal fun saveSettingsOnlyToDisk(snapshot: AppStateSnapshot) {
     PlatformBridge.saveAppStateJson(encoded)
 }
 
-internal fun saveSingleChatSessionToDisk(session: ChatSession) {
-    if (isSessionDehydrated(session.id)) {
-        // Never overwrite a populated chat file on disk with a dehydrated stub; if metadata changed, merge onto disk copy
-        val raw = PlatformBridge.loadChatSessionJsonById(session.id)
-        val fullDiskSession = raw?.let { runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull() }
-        if (fullDiskSession != null) {
-            val merged = fullDiskSession.copy(
-                title = session.title,
-                isPinned = session.isPinned,
-                isTitleManuallySet = session.isTitleManuallySet,
-                updatedAt = session.updatedAt,
-                assistantId = session.assistantId,
-                profileId = session.profileId,
-                modelOverride = session.modelOverride,
-                workspacePath = session.workspacePath,
-                workspaceMode = session.workspaceMode
-            )
-            val encoded = compactStateJson.encodeToString(ChatSession.serializer(), merged)
-            PlatformBridge.saveChatSessionJson(merged.id, encoded)
+/** Applies background I/O results without replacing concurrent edits or resurrecting deleted chats. */
+internal fun mergeLoadedSessions(
+    current: AppStateSnapshot,
+    beforeLoad: AppStateSnapshot,
+    loaded: AppStateSnapshot
+): AppStateSnapshot {
+    val originals = beforeLoad.sessions.associateBy { it.id }
+    val results = loaded.sessions.associateBy { it.id }
+    val currentIds = current.sessions.map { it.id }.toSet()
+    val sessions = current.sessions.map { session ->
+        val result = results[session.id] ?: return@map session
+        when {
+            session.isCompactStub && !result.isCompactStub -> mergeSessionMetadata(result, session)
+            session === originals[session.id] -> result
+            else -> session
         }
+    } + loaded.sessions.filter { it.id !in currentIds && it.id !in originals }
+    return current.copy(sessions = sessions)
+}
+
+internal fun saveSingleChatSessionToDisk(session: ChatSession) {
+    if (session.isCompactStub) {
+        // Never overwrite a populated chat file on disk with a dehydrated stub; if metadata changed, merge onto disk copy
+        val pendingFull = appDiskWriter.pendingFullSession(session.id)
+        val raw = if (pendingFull == null) PlatformBridge.loadChatSessionJsonById(session.id) else null
+        val fullDiskSession = pendingFull ?: raw?.let {
+            runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull()
+        }?.takeIf { it.id == session.id }
+        check(fullDiskSession != null) { "Complete chat data is unavailable; refusing to save a compact preview." }
+        val merged = mergeSessionMetadata(fullDiskSession, session)
+        val encoded = compactStateJson.encodeToString(ChatSession.serializer(), merged)
+        PlatformBridge.saveChatSessionJson(merged.id, encoded)
         return
     }
     val cleanSession = stripRedundantAttachmentBase64(session).let { stripped ->
@@ -665,13 +675,6 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
     }
     val encoded = compactStateJson.encodeToString(ChatSession.serializer(), cleanSession)
     PlatformBridge.saveChatSessionJson(cleanSession.id, encoded)
-}
-
-internal fun saveSplitAppStateToDisk(snapshot: AppStateSnapshot) {
-    saveSettingsOnlyToDisk(snapshot)
-    for (sess in snapshot.sessions) {
-        saveSingleChatSessionToDisk(sess)
-    }
 }
 
 internal fun decodeChatSessionsFromRawJson(rawJsonText: String): List<ChatSession> {
@@ -726,6 +729,7 @@ internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): By
 
     for (rawSession in sessions) {
         val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
+        check(!fullSession.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
         val safeSessId = fullSession.id.trim().replace(EXPORT_UNSAFE_CHAR_REGEX, "_").ifBlank { "session" }
         val portableMessages = fullSession.messages.map { node ->
             node.copy(
@@ -791,7 +795,7 @@ internal fun decodeChatSessionsFromPickedFile(
 
 /**
  * Fast-path Frame 0 startup loader: reads ONLY `parchment-settings.json` and the single active
- * `chats/<activeSessionId>.json` file synchronously so the window draws its first frame in < 30ms.
+ * `chats/<activeSessionId>/chat.json` file synchronously before drawing the first frame.
  * Remaining historical chats are hydrated as lightweight stubs in the background on `Dispatchers.Default`.
  */
 internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
@@ -808,7 +812,6 @@ internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
                 runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull()
             }?.let { stripRedundantAttachmentBase64(it) }
             if (activeSession != null) {
-                markSessionHydrated(activeSession.id)
                 val sanitized = sanitizeLoadedSnapshot(baseLoaded.copy(sessions = listOf(activeSession)))
                 return sanitized to true
             }
@@ -818,8 +821,8 @@ internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
 }
 
 /**
- * Background worker (`Dispatchers.Default`) that loads all remaining `chats/<sessionId>.json` files after Frame 1,
- * immediately converting every inactive session into a compact ~200-byte stub so RAM stays minimal.
+ * Background worker (`Dispatchers.Default`) that loads remaining `chats/<sessionId>/chat.json` files after Frame 1,
+ * converting inactive sessions into compact previews.
  */
 internal fun loadRemainingHistoricalSessionsDehydrated(
     currentState: AppStateSnapshot,
@@ -841,7 +844,6 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
             continue
         }
         val prepared = if (decoded.id == activeId || decoded.id in keepHydratedIds) {
-            markSessionHydrated(decoded.id)
             stripRedundantAttachmentBase64(decoded)
         } else {
             dehydrateChatSessionToCompactStub(decoded)
@@ -878,24 +880,23 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
             for (ds in diskSessions) {
                 if (ds.id.isNotBlank()) mergedById[ds.id] = ds
             }
-            var migratedLegacySessions = false
+            val migratedLegacySessions = mutableListOf<ChatSession>()
             for (legacySess in baseLoaded.sessions) {
                 if (legacySess.id.isBlank()) continue
                 val existing = mergedById[legacySess.id]
                 if (existing == null || legacySess.updatedAt > existing.updatedAt) {
                     mergedById[legacySess.id] = legacySess
-                    saveSingleChatSessionToDisk(legacySess)
-                    migratedLegacySessions = true
+                    migratedLegacySessions.add(legacySess)
                 }
             }
             val combinedSessions = mergedById.values
                 .sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
             val sanitized = sanitizeLoadedSnapshot(baseLoaded.copy(sessions = combinedSessions))
-            if (migratedLegacySessions || baseLoaded.sessions.isNotEmpty()) {
-                // Only rewrite settings (to strip legacy embedded sessions) when migrating from legacy state!
-                saveSettingsOnlyToDisk(sanitized)
+            if (migratedLegacySessions.isNotEmpty() || baseLoaded.sessions.isNotEmpty()) {
+                // The writer saves full chats before committing settings without embedded history.
+                appDiskWriter.enqueue(settings = sanitized, sessions = migratedLegacySessions, urgent = true, settingsRequiresSessions = true)
             } else if (diskSessions.isEmpty()) {
-                saveSplitAppStateToDisk(sanitized)
+                appDiskWriter.enqueue(settings = sanitized, sessions = sanitized.sessions, urgent = true, settingsRequiresSessions = true)
             }
             return sanitized
         }
@@ -904,12 +905,12 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     if (diskSessions.isNotEmpty()) {
         val fallback = createDefaultAppState()
         val sanitized = sanitizeLoadedSnapshot(fallback.copy(sessions = diskSessions))
-        saveSplitAppStateToDisk(sanitized)
+        appDiskWriter.enqueue(settings = sanitized, sessions = sanitized.sessions, urgent = true, settingsRequiresSessions = true)
         return sanitized
     }
 
     val fresh = createDefaultAppState()
-    saveSplitAppStateToDisk(fresh)
+    appDiskWriter.enqueue(settings = fresh, sessions = fresh.sessions, urgent = true, settingsRequiresSessions = true)
     return fresh
 }
 

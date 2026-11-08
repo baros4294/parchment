@@ -60,6 +60,8 @@ kotlin {
 
     sourceSets {
         val desktopMain by getting
+        val androidMain by getting
+        desktopMain.kotlin.srcDir("src/jvmShared/kotlin")
 
         commonMain {
             kotlin.srcDir(generateBuildConfig.map { it.outputs.files.singleFile })
@@ -86,6 +88,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.ktor.client.okhttp)
         }
+        androidMain.kotlin.srcDir("src/jvmShared/kotlin")
 
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)

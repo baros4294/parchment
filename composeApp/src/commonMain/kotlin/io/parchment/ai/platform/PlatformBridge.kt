@@ -221,6 +221,7 @@ expect object PlatformBridge {
     ): ByteArray
     fun extractZipArchiveToChatStorage(zipBytes: ByteArray): List<String>
     fun readBinaryFileBytes(filePath: String): ByteArray?
+    fun isReadableLocalFile(filePath: String): Boolean
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)
 
