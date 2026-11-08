@@ -36,6 +36,15 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 internal val appProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+internal val appDiskWriter by lazy {
+    ParchmentDiskWriter(
+        appProcessScope,
+        saveSettings = ::saveSettingsOnlyToDisk,
+        saveSession = ::saveSingleChatSessionToDisk,
+        deleteSession = PlatformBridge::deleteChatSessionFile
+    )
+}
+
 internal val compactStateJson = Json {
     ignoreUnknownKeys = true
     isLenient = true

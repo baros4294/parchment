@@ -229,7 +229,6 @@ fun ParchmentApp(
     var pendingRegenerateConfirm by remember { mutableStateOf<RegenerateConfirmRequest?>(null) }
     var activeViewerItem by remember { mutableStateOf<ActiveMediaViewerItem?>(null) }
     var isDraggingFilesOverWindow by remember { mutableStateOf(false) }
-    var diskPersistJob by remember { mutableStateOf<Job?>(null) }
     fun openAttachmentInViewer(att: PromptAttachment) {
         val mime = att.mimeType.lowercase().trim()
         val lower = att.fileName.lowercase().trim()
@@ -393,46 +392,32 @@ fun ParchmentApp(
         )
     }
 
-    // Track dirty user state so ShutdownHook / onPause ONLY writes when the user actually changed state!
-    var hasDirtyUnflushedChanges by remember { mutableStateOf(false) }
-
-    // Register synchronous flush callback for Android MainActivity.onPause/onStop, OTA updates, & Desktop Shutdown Hook
+    // One process-wide writer retains all dirty sessions across debounce and UI lifecycle changes.
     LaunchedEffect(Unit) {
-        PlatformBridge.registerStateFlushCallback {
-            runCatching {
-                saveSplitAppStateToDisk(appState)
-                hasDirtyUnflushedChanges = false
-            }
+        PlatformBridge.registerStateFlushCallback { appDiskWriter.flushBlocking() }
+    }
+    LaunchedEffect(Unit) {
+        appDiskWriter.lastError.collect { message ->
+            if (!message.isNullOrBlank()) bannerNotification = "Unable to save changes: " + message
         }
     }
 
     fun persist(updated: AppStateSnapshot, immediateFlush: Boolean = false) {
-        val prevSessionsById = appState.sessions.associateBy { it.id }
-        val changedSessions = updated.sessions.filter { s -> prevSessionsById[s.id] != s }
+        val previous = appState
+        val previousSessionsById = previous.sessions.associateBy { it.id }
+        val changedSessions = updated.sessions.filter { previousSessionsById[it.id] != it }
+        val removedIds = previousSessionsById.keys - updated.sessions.map { it.id }.toSet()
         appState = updated
-        hasDirtyUnflushedChanges = true
-        diskPersistJob?.cancel()
-        diskPersistJob = appProcessScope.launch(Dispatchers.IO) {
-            if (!immediateFlush) delay(250L)
-            runCatching {
-                saveSettingsOnlyToDisk(appState)
-                changedSessions.forEach { saveSingleChatSessionToDisk(it) }
-                hasDirtyUnflushedChanges = false
-            }
-        }
+        appDiskWriter.enqueue(
+            settings = updated,
+            sessions = changedSessions,
+            deletedIds = removedIds,
+            urgent = immediateFlush
+        )
     }
 
     fun persistSingleSession(updatedSession: ChatSession, immediateFlush: Boolean = false) {
-        hasDirtyUnflushedChanges = true
-        diskPersistJob?.cancel()
-        diskPersistJob = appProcessScope.launch(Dispatchers.IO) {
-            if (!immediateFlush) delay(250L)
-            runCatching {
-                val latest = appState.sessions.find { it.id == updatedSession.id } ?: updatedSession
-                saveSingleChatSessionToDisk(latest)
-                hasDirtyUnflushedChanges = false
-            }
-        }
+        appDiskWriter.enqueue(sessions = listOf(updatedSession), urgent = immediateFlush)
     }
 
     fun updateActiveSession(immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
@@ -467,11 +452,12 @@ fun ParchmentApp(
 
     fun updateActiveSessionInMemoryOnly(sessionId: String, transform: (ChatSession) -> ChatSession) {
         val currentState = appState
+        var modifiedSession: ChatSession? = null
         val newSessions = currentState.sessions.map {
-            if (it.id == sessionId) transform(it) else it
+            if (it.id == sessionId) transform(it).also { updated -> modifiedSession = updated } else it
         }
         appState = currentState.copy(sessions = newSessions)
-        hasDirtyUnflushedChanges = true
+        modifiedSession?.let { appDiskWriter.enqueue(sessions = listOf(it), notify = false) }
     }
 
     fun updateActiveProfile(transform: (ProviderProfile) -> ProviderProfile) {
@@ -3063,7 +3049,9 @@ fun ParchmentApp(
                                             byId.values.toList()
                                         }
                                         val finalSnap = sanitizeLoadedSnapshot(restored.copy(sessions = mergedSessions))
-                                        saveSplitAppStateToDisk(finalSnap)
+                                        val removedIds = appState.sessions.map { it.id }.toSet() - finalSnap.sessions.map { it.id }.toSet()
+                                        appDiskWriter.replaceState(finalSnap, removedIds)
+                                        appDiskWriter.flushBlocking()
                                         appState = finalSnap
                                         bannerNotification = "Imported settings & assistants (preserved ${finalSnap.sessions.size} chat(s))."
                                     },

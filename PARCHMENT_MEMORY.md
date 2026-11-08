@@ -139,7 +139,7 @@ The target is an idle working set of roughly 130 to 190 MB while 100-step agent 
 - Never emit per-SSE-line full request or response snapshots through Flow. Bound raw wire previews in place at 4096 characters or fewer and use compact json.encodeToString.
 - In pacerJob, only slice StringBuilder.substring() or signatureSb.toString() when the displayed length actually changes.
 - Window long interleaved Thinking and Tool Timelines with maxVisibleTailSteps = 12 while streaming so Compose never mounts 50 or more LiteraryProseRenderer trees at once.
-- Serialize all background disk saves through a single cancellable diskPersistJob.
+- Serialize background saves through the single process-wide appDiskWriter worker; preserve all dirty session revisions rather than cancelling away another chat's pending write.
 
 ### 10.4 Bounded File and Network I/O
 
@@ -356,3 +356,13 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - Use NIO sharing-friendly reads for saved JSON. Windows readers/indexers without delete sharing can block replacement; bounded AccessDenied retries preserve integrity.
 - Five desktop regressions cover existing-file UTF-8 replacement, failed commit recovery, backups, concurrent complete-version readers and transient legacy-reader locks.
 - Verified 32 desktop tests and Android debug compilation. Android atomic writes and the process-wide dirty-session scheduler remain open in TODO.
+
+## 21. Process-Wide Dirty Write Scheduling (Verified 2026-11-08)
+
+- appDiskWriter retains the latest dirty settings/chat/deletion entries by revision. The conflated channel carries wakeups, not snapshots.
+- One mutex serializes writes and lifecycle flushes. Clear an entry only when its successfully completed callback still matches that revision.
+- Updates received during a write remain pending; a deletion follows an older in-flight save so it cannot resurrect a removed chat.
+- Streaming memory-only updates mark their latest session dirty without forcing per-frame disk I/O. Pause/Stop flush pending entries instead of rewriting the entire vault.
+- Restores replace pending state and retain removals. Callback failures preserve unwritten entries and publish an error for the UI.
+- Seven regressions cover debounce across chats, in-flight updates/deletions, failed callbacks, settings/chat coalescing, restore and lifecycle checkpoints.
+- Verified 39 desktop tests, both target compilations and Android release build. Native write-error propagation and Android atomic replacement remain open.

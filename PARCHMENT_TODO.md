@@ -72,7 +72,8 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - [x] Desktop atomic storage verified: complete staging/sync, atomic target and backup replacement, sharing-friendly reads, bounded transient-lock recovery; five new regressions. Android replacement and shared scheduling remain open.
 - [ ] Review settings, chat, backup and temporary-file replacement paths on both platforms.
 - [ ] Replace truncate-in-place fallbacks with safe staged replacement and recoverable failure handling.
-- [ ] Coalesce all dirty session IDs through one serialized writer; cancelling debounce must not discard another chat's changes.
+- [x] Coalesce all dirty session IDs through one serialized writer; retain per-file revisions, in-flight updates, deletions and lifecycle checkpoints.
+- [ ] Propagate native save errors into the shared writer; current legacy native wrappers can still suppress I/O failures.
 - [ ] Keep disk checkpoints independent of rendering and avoid synchronous full-vault rewrites during activity transitions.
 - [ ] Recover from truncated/corrupt writes without overwriting valid history with defaults or dehydrated stubs.
 - Files: ParchmentStatePersistence.kt; ParchmentApp.kt persistence callbacks; both PlatformBridge actuals; common/desktop persistence tests.
@@ -209,6 +210,19 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 - Verification: both targets, desktop and compact device renders, inheritance/reset, two-tab pending approvals, revocation, keyboard/back navigation and no redundant/emoji UI regressions.
 - Lock: verified UI commit and push after the enforcement layer.
 
+### 21 — P1: Whole-app performance, memory, startup and modularity
+
+- [ ] Measure cold/warm startup, first useful frame, ready-to-type time, idle working set/heap, streaming frame work/allocations, and large-session/vault behavior on desktop and Android.
+- [ ] Keep startup work off the critical UI path where safe; review settings/chat loading, migrations, fonts/icons, tokenizer warming, model discovery and hydration.
+- [ ] Minimize idle CPU/disk/network work, redundant serialization, full-buffer scans, large byte/string copies, duplicate attachment payloads and retained inactive state.
+- [ ] Bound caches and queues; preserve the lean runtime heap, compact inactive chats and windowed streaming timelines without losing content.
+- [ ] Remove proven dead code/imports/dependencies and consolidate tested duplication across protocols, persistence, platform I/O and UI.
+- [ ] Split oversized controllers/adapters into clear modules with explicit ownership and contracts; keep platform code and shared logic separated.
+- [ ] Record before/after measurements and regression outcomes for each optimization/refactor; preserve correctness, history, permissions and recovery behavior.
+- Files: modules justified by profiling/audit; ParchmentApp/StatePersistence/DiskWriter, provider/registry, renderers/icons, platform bridges, build configuration and focused regression/benchmark code.
+- Verification: representative cold/warm launches, idle and sustained streaming measurements, large chats/media/tool sequences, behavior-equivalence tests, both platform builds and real-device UI behavior.
+- Lock: each measured/verified improvement committed and pushed; update MEMORY, TODO and README with practical limits and final results.
+
 ### 17 — P1: UI consistency, mobile fit and calm editorial motion
 
 - [ ] Audit all option rows, chip groups, drawers, palettes and settings; prefer compact vertical lists for substantial choices and remove horizontal option scrolling.
@@ -308,6 +322,8 @@ Fetched and read during the audit; retrieve specific sections again before imple
 
 ## Verification and lock log
 
+- Shared disk-writer milestone verified: 39/39 desktop tests, both compilations and Android release passed; seven regressions cover asynchronous dirty-write ordering/recovery. The commit containing this entry publishes the scoped scheduler improvement.
+- Desktop atomic-storage milestone locked and pushed: 39db6ea74e902094aa49dca700c6ea8664d16ff9; 32 tests and target compilation passed.
 - Desktop atomic-storage milestone verified: 32/32 tests, including five new filesystem regressions; desktop and Android debug compilation passed. The commit containing this entry publishes the scoped desktop improvement.
 - Tabs milestone locked and pushed: cd6c43bfbe4875c67698d9666b441b695085cc54, with Android device interactions/rendering and compilation/release verification.
 - Build-input milestone locked and pushed: 24f4d3a6a1661ac81ed88bd6289735c67980d080. 27/27 regressions, both targets and Android release passed; unchanged/changed-input behavior and restored SHA-256 were verified.
