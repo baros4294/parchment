@@ -69,6 +69,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 ### 03 — P0: Atomic persistence and lossless dirty-session scheduling
 
+- [x] Desktop atomic storage verified: complete staging/sync, atomic target and backup replacement, sharing-friendly reads, bounded transient-lock recovery; five new regressions. Android replacement and shared scheduling remain open.
 - [ ] Review settings, chat, backup and temporary-file replacement paths on both platforms.
 - [ ] Replace truncate-in-place fallbacks with safe staged replacement and recoverable failure handling.
 - [ ] Coalesce all dirty session IDs through one serialized writer; cancelling debounce must not discard another chat's changes.
@@ -307,6 +308,8 @@ Fetched and read during the audit; retrieve specific sections again before imple
 
 ## Verification and lock log
 
+- Desktop atomic-storage milestone verified: 32/32 tests, including five new filesystem regressions; desktop and Android debug compilation passed. The commit containing this entry publishes the scoped desktop improvement.
+- Tabs milestone locked and pushed: cd6c43bfbe4875c67698d9666b441b695085cc54, with Android device interactions/rendering and compilation/release verification.
 - Build-input milestone locked and pushed: 24f4d3a6a1661ac81ed88bd6289735c67980d080. 27/27 regressions, both targets and Android release passed; unchanged/changed-input behavior and restored SHA-256 were verified.
 - Tabs mobile verification passed on Android 17/API 37: compact full-width card/list, content-sized sheet, identical outside-sheet RGB (244,236,216), inside-gap tap preserved the menu, outside tap and Back dismissed it. The commit containing this completion publishes the verified shared UI fix; broader UI audits remain open.
 - Baseline: 20/20 existing desktop tests passed; Android debug compilation passed. An initially unquoted Gradle property was split by PowerShell; the quoted invocation passed.

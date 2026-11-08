@@ -167,7 +167,7 @@ actual object PlatformBridge {
             for (cand in candidates) {
                 val content = runCatching {
                     if (cand.exists() && cand.isFile && cand.length() > 10L) {
-                        cand.readText(Charsets.UTF_8)
+                        AtomicFileStorage.readText(cand)
                     } else null
                 }.getOrNull()
                 if (!content.isNullOrBlank()) {
@@ -177,7 +177,7 @@ actual object PlatformBridge {
                         else -> legacyBak
                     }
                     if (cand != activeBak && isBlankDefaultStateJson(content) && activeBak.exists() && activeBak.length() > 50L) {
-                        val bakContent = runCatching { activeBak.readText(Charsets.UTF_8) }.getOrNull()
+                        val bakContent = runCatching { AtomicFileStorage.readText(activeBak) }.getOrNull()
                         if (!bakContent.isNullOrBlank() && !isBlankDefaultStateJson(bakContent)) {
                             return bakContent
                         }
@@ -198,7 +198,6 @@ actual object PlatformBridge {
             val dir = resolveStorageDir()
             if (!dir.exists()) dir.mkdirs()
             val bakDir = backupsDir()
-            val tmp = File(dir, "parchment-settings.json.tmp")
             val prev = File(bakDir, "parchment-settings.prev.json")
             val userBak = File(bakDir, "parchment-settings.user-backup.json")
             val target = settingsFile()
@@ -210,17 +209,12 @@ actual object PlatformBridge {
                 return
             }
 
-            tmp.writeText(json, Charsets.UTF_8)
-            if (target.exists() && target.length() > 50L) {
-                runCatching { target.copyTo(prev, overwrite = true) }
-            }
-            if (!tmp.renameTo(target)) {
-                target.writeText(json, Charsets.UTF_8)
-                tmp.delete()
-            }
+            AtomicFileStorage.writeText(
+                target, json, previousBackup = prev.takeIf { target.exists() && target.length() > 50L }
+            )
             // Whenever the state contains actual user customizations, persist a protected user backup in backups/!
             if (!incomingIsBlankDefault && json.length > 50) {
-                runCatching { target.copyTo(userBak, overwrite = true) }
+                runCatching { AtomicFileStorage.copy(target, userBak) }
             }
             // Clean up any legacy root-level backup files once backups/ is populated
             File(dir, "parchment-settings.prev.json").takeIf { it.exists() }?.delete()
@@ -261,12 +255,12 @@ actual object PlatformBridge {
         val folder = chatSessionFolder(safeId)
         val primary = File(folder, "chat.json")
         if (primary.exists() && primary.isFile && primary.length() > 5L) {
-            return primary.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+            return AtomicFileStorage.readText(primary).takeIf { it.isNotBlank() }
         }
         val tmp = File(folder, "chat.json.tmp")
         if (tmp.exists() && tmp.isFile && tmp.length() > 10L) {
             runCatching { tmp.copyTo(primary, overwrite = true) }
-            return tmp.readText(Charsets.UTF_8).takeIf { it.isNotBlank() }
+            return AtomicFileStorage.readText(tmp).takeIf { it.isNotBlank() }
         }
         null
     }.getOrNull()
@@ -305,7 +299,7 @@ actual object PlatformBridge {
         chatJsonFiles
             .sortedByDescending { it.lastModified() }
             .parallelStream()
-            .map { f -> runCatching { f.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() } }
+            .map { f -> runCatching { AtomicFileStorage.readText(f) }.getOrNull()?.takeIf { it.isNotBlank() } }
             .toList()
             .filterNotNull()
     }.getOrDefault(emptyList())
@@ -318,12 +312,7 @@ actual object PlatformBridge {
             val folder = chatSessionFolder(safeId)
             if (!folder.exists()) folder.mkdirs()
             val target = File(folder, "chat.json")
-            val tmp = File(folder, "chat.json.tmp")
-            tmp.writeText(json, Charsets.UTF_8)
-            if (!tmp.renameTo(target)) {
-                target.writeText(json, Charsets.UTF_8)
-                tmp.delete()
-            }
+            AtomicFileStorage.writeText(target, json)
             // Remove any legacy flat file if still present
             val dir = chatsDir()
             File(dir, "$safeId.json").takeIf { it.exists() }?.delete()

@@ -348,3 +348,11 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - Bound the sheet/body height while allowing a short list to fit its content. Use the canvas palette for the sheet so it does not darken the reading surface.
 - Real-device verification at 1216x2640 / density 560 confirmed a compact full-width card, unchanged outside-sheet RGB, inside-gap tap preservation, and outside/Back dismissal.
 - Desktop regression suite (27 tests), both Kotlin targets and Android release build passed. Further full-app mobile/animation/2026 capability audits remain open in TODO.
+
+## 20. Desktop Atomic Storage (Verified 2026-11-08)
+
+- Desktop settings, chats and backups stage complete UTF-8 content beside the target, flush/sync it and commit with ATOMIC_MOVE/REPLACE_EXISTING.
+- Never fall back to truncating a valid target. Failed commits preserve the previous target and a complete recoverable .tmp.
+- Use NIO sharing-friendly reads for saved JSON. Windows readers/indexers without delete sharing can block replacement; bounded AccessDenied retries preserve integrity.
+- Five desktop regressions cover existing-file UTF-8 replacement, failed commit recovery, backups, concurrent complete-version readers and transient legacy-reader locks.
+- Verified 32 desktop tests and Android debug compilation. Android atomic writes and the process-wide dirty-session scheduler remain open in TODO.
