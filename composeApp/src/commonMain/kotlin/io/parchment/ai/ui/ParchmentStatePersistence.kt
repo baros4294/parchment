@@ -1,11 +1,8 @@
-package io.parchment.ai.ui
+﻿package io.parchment.ai.ui
 
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.CharacterOrScenarioCard
-import io.parchment.ai.model.CUSTOM_DIALECT_ANTHROPIC
-import io.parchment.ai.model.CUSTOM_DIALECT_GEMINI
-import io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.ContextFragment
 import io.parchment.ai.model.DefaultModelConfig
@@ -206,9 +203,6 @@ internal fun migrateLegacyProviderJson(raw: String): String {
     val rebuilt = JsonObject(root + ("profiles" to JsonArray(migratedProfiles)))
     return compactStateJson.encodeToString(JsonObject.serializer(), rebuilt)
 }
-
-
-
 
 internal fun formatDurationFromMs(ms: Long): String {
     val totalTenths = (ms.coerceAtLeast(0L) + 50L) / 100L

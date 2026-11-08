@@ -1,4 +1,4 @@
-package io.parchment.ai.ui
+﻿package io.parchment.ai.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -407,93 +407,6 @@ fun SepiaChip(
                     tint = txtCol,
                     size = if (parsed.trailingIcon == KissIcon.CIRCLE_DOT) 8.dp else 11.5.dp
                 )
-            }
-        }
-    }
-}
-
-/**
- * Clean KISS Segmented Control (inspired by iA Writer / Linear / Raycast)
- * for switching between primary views or studio tabs without pill clutter.
- */
-@Composable
-fun <T> SepiaSegmentedBar(
-    items: List<Pair<T, String>>,
-    selected: T,
-    onSelect: (T) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val p = LocalParchmentPalette.current
-    val outerShape = RoundedCornerShape(9.dp)
-    Row(
-        modifier = modifier
-            .clip(outerShape)
-            .background(p.sheetBg.copy(alpha = 0.85f))
-            .border(0.85.dp, p.border.copy(alpha = 0.75f), outerShape)
-            .padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        items.forEach { (value, label) ->
-            val isSelected = value == selected
-            val segColorSpec = spring<Color>(stiffness = 620f, dampingRatio = Spring.DampingRatioNoBouncy)
-            val tabBg by animateColorAsState(
-                targetValue = if (isSelected) p.cardBg else Color.Transparent,
-                animationSpec = segColorSpec
-            )
-            val tabBorder by animateColorAsState(
-                targetValue = if (isSelected) p.border.copy(alpha = 0.85f) else Color.Transparent,
-                animationSpec = segColorSpec
-            )
-            val tabText by animateColorAsState(
-                targetValue = if (isSelected) p.accent else p.narrationInk,
-                animationSpec = segColorSpec
-            )
-            val parsed = remember(label) { parseKissLabelIcons(label) }
-            val tabShape = RoundedCornerShape(6.dp)
-            Box(
-                modifier = Modifier
-                    .kissClickable(pressScale = 0.97f) { onSelect(value) }
-                    .clip(tabShape)
-                    .background(tabBg)
-                    .then(
-                        if (isSelected) Modifier.border(0.75.dp, tabBorder, tabShape) else Modifier
-                    )
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (parsed.leadingIcon != null) {
-                        KissVectorIcon(
-                            icon = parsed.leadingIcon,
-                            tint = tabText,
-                            size = 13.dp
-                        )
-                    }
-                    if (parsed.cleanText.isNotEmpty()) {
-                        BasicText(
-                            text = parsed.cleanText,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = tabText,
-                                fontSize = 12.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
-                            )
-                        )
-                    }
-                    if (parsed.trailingIcon != null) {
-                        KissVectorIcon(
-                            icon = parsed.trailingIcon,
-                            tint = tabText,
-                            size = 11.5.dp
-                        )
-                    }
-                }
             }
         }
     }

@@ -3,4 +3,4 @@
 - [x] (2) Add Manual Override Bar at top of Tools drawer writing reasoning/aspect/resolution/duration/voice/speed
 - [x] (3) Verify UI consistency: vector-mapped icons only, no leftover custom state, drawer chips intact
 - [x] (4) Verify builds: compileKotlinDesktop, compileDebugKotlinAndroid, assembleRelease
-- [/] (5) Update PARCHMENT_MEMORY.md and lock (commit + push) to origin/main
+- [x] (5) Update PARCHMENT_MEMORY.md and lock (commit + push) to origin/main

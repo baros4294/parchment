@@ -189,6 +189,8 @@ expect object PlatformBridge {
     fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int = 200): Result<String>
     fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int = 1, maxLines: Int = 250): Result<String>
     fun workspaceWrite(workspaceRoot: String, relativePath: String, content: String): Result<String>
+    /** Appends [content] to a file without reading it back, so arbitrarily large files are never truncated. */
+    fun workspaceAppend(workspaceRoot: String, relativePath: String, content: String): Result<String>
     fun workspaceEdit(workspaceRoot: String, relativePath: String, oldText: String, newText: String, replaceAll: Boolean = false): Result<String>
     fun workspaceMultiEdit(workspaceRoot: String, relativePath: String, edits: List<Triple<String, String, Boolean>>): Result<String>
     fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String>

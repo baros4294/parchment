@@ -867,13 +867,10 @@ object WorkspaceHarness {
                         if (mode != WorkspaceMode.READ_WRITE) {
                             Result.failure(IllegalStateException("Switch to Agent R/W mode to update PARCHMENT_MEMORY.md."))
                         } else {
-                            val existing = PlatformBridge.workspaceRead(workspaceRoot, "PARCHMENT_MEMORY.md", 1, 2000)
-                                .getOrDefault("")
-                                .lines()
-                                .drop(1) // drop header line from workspaceRead
-                                .joinToString("\n") { it.replaceFirst(Regex("^\\d+:\\s?"), "") }
-                            val combined = if (existing.isBlank()) content else "$existing\n\n$content"
-                            PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", combined)
+                            // Append without a read-modify-write cycle. Reading the file back would route
+                            // through workspaceRead, which caps at 10k lines / 250k chars and truncates
+                            // over-long lines, silently destroying any memory file past those limits.
+                            PlatformBridge.workspaceAppend(workspaceRoot, "PARCHMENT_MEMORY.md", "\n\n$content")
                         }
                     }
                     "overwrite" -> {

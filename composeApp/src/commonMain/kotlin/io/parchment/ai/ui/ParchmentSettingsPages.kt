@@ -1,4 +1,4 @@
-package io.parchment.ai.ui
+﻿package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -77,7 +76,6 @@ import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 enum class SettingsCategory(val icon: String, val label: String) {
     PREFERENCES("🖥", "Preferences"),

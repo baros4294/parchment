@@ -1,4 +1,4 @@
-package io.parchment.ai
+﻿package io.parchment.ai
 
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.CharacterOrScenarioCard
@@ -16,7 +16,6 @@ import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.ProviderProfile
-import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.platform.PlatformBridge
@@ -40,11 +39,9 @@ import io.parchment.ai.ui.SettingsCategory
 import io.parchment.ai.ui.buildExportFileNameForChat
 import io.parchment.ai.ui.decodeChatSessionsFromRawJson
 import io.parchment.ai.ui.extractSessionVaultItems
-import io.parchment.ai.ui.loadOrCreateDefaultAppState
 import io.parchment.ai.ui.parseKissLabelIcons
 import io.parchment.ai.ui.resolveToolKissIcon
 import io.parchment.ai.ui.saveSingleChatSessionToDisk
-import io.parchment.ai.ui.saveSplitAppStateToDisk
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -1861,5 +1858,38 @@ class ParchmentProtocolAndHarnessTest {
         assertFalse(freshProfile.useStatefulChaining)
         assertFalse(freshProfile.storeServerSide)
         assertEquals("", freshProfile.customDialect)
+    }
+
+    @Test
+    fun presetCyclingWrapsAndRecoversFromFreeFormValues() {
+        val presets = listOf("1:1", "16:9", "9:16")
+
+        // Wraps at the end of the list rather than sticking on the last entry.
+        assertEquals("16:9", io.parchment.ai.ui.nextPreset(presets, "1:1"))
+        assertEquals("1:1", io.parchment.ai.ui.nextPreset(presets, "9:16"))
+
+        // A free-form value typed in the Tools drawer falls back to the first preset,
+        // so the chip stays usable instead of becoming a no-op.
+        assertEquals("1:1", io.parchment.ai.ui.nextPreset(presets, "21:9"))
+        assertEquals("medium", io.parchment.ai.ui.nextPreset(presets, "custom", fallback = "medium"))
+
+        // Voice presets match case-insensitively because providers report mixed casing.
+        val voices = listOf("alloy", "nova", "Puck")
+        assertEquals(
+            "nova",
+            io.parchment.ai.ui.nextPreset(
+                voices,
+                "ALLOY",
+                matches = { a, b -> a.equals(b, ignoreCase = true) }
+            )
+        )
+        assertEquals(
+            "alloy",
+            io.parchment.ai.ui.nextPreset(
+                voices,
+                "PUCK",
+                matches = { a, b -> a.equals(b, ignoreCase = true) }
+            )
+        )
     }
 }

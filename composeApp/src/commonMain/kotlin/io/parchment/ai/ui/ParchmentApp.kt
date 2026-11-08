@@ -1,4 +1,4 @@
-package io.parchment.ai.ui
+﻿package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -21,8 +21,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -72,7 +70,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -85,12 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
-import io.parchment.ai.model.CharacterOrScenarioCard
 import io.parchment.ai.model.ChatSession
-import io.parchment.ai.model.ContextFragment
-import io.parchment.ai.model.DefaultModelConfig
-import io.parchment.ai.model.DesktopWindowConfig
-import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.GoalTrackerState
 import io.parchment.ai.model.MediaKind
@@ -104,12 +96,9 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.QueuedPromptItem
 import io.parchment.ai.model.SendShortcutMode
-import io.parchment.ai.model.SystemPromptPreset
-import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
-import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
@@ -122,10 +111,8 @@ import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.O200kTokenizer
 import io.parchment.ai.protocol.CardAndPromptCodec
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -133,7 +120,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -3798,6 +3784,21 @@ fun ParchmentApp(
 // MAIN MANUSCRIPT / CHAT VIEWPORT WITH FLOATING MINIMAP (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
 // AND STEER / QUEUE COMMAND DECK COMPOSER
 // ============================================================================================
+/**
+ * Advances to the next value in a preset list, wrapping at the end.
+ * Falls back to [fallback] when [current] is not one of the presets, so a free-form value
+ * typed in the Tools drawer still cycles predictably instead of sticking.
+ */
+internal fun <T> nextPreset(
+    presets: List<T>,
+    current: T,
+    fallback: T = presets.first(),
+    matches: (T, T) -> Boolean = { a, b -> a == b }
+): T {
+    val idx = presets.indexOfFirst { matches(it, current) }
+    return if (idx >= 0) presets[(idx + 1) % presets.size] else fallback
+}
+
 @Composable
 private fun ManuscriptViewport(
     appState: AppStateSnapshot,
@@ -4259,7 +4260,11 @@ private fun ManuscriptViewport(
                             onUpdateSession { sess ->
                                 sess.copy(
                                     messages = sess.messages.mapIndexed { i, n ->
-                                        if (i == index) n.copy(activeVariantIndex = newIdx.coerceIn(0, n.variants.lastIndex)) else n
+                                        if (i == index && n.variants.isNotEmpty()) {
+                                            n.copy(activeVariantIndex = newIdx.coerceIn(0, n.variants.lastIndex))
+                                        } else {
+                                            n
+                                        }
                                     }
                                 )
                             }
@@ -5911,8 +5916,7 @@ private fun ManuscriptViewport(
                                 label = "🖼 $currentRatio",
                                 selected = true,
                                 onClick = {
-                                    val idx = imageAspectPresets.indexOf(currentRatio)
-                                    val next = imageAspectPresets[(idx + 1) % imageAspectPresets.size]
+                                    val next = nextPreset(imageAspectPresets, currentRatio)
                                     onUpdateProfile { it.copy(mediaAspectRatio = next) }
                                 }
                             )
@@ -5920,8 +5924,7 @@ private fun ManuscriptViewport(
                                 label = currentRes,
                                 selected = currentRes in listOf("2K", "4K"),
                                 onClick = {
-                                    val idx = imageResolutionPresets.indexOf(currentRes)
-                                    val next = imageResolutionPresets[(idx + 1) % imageResolutionPresets.size]
+                                    val next = nextPreset(imageResolutionPresets, currentRes)
                                     onUpdateProfile { it.copy(mediaResolution = next) }
                                 }
                             )
@@ -5938,8 +5941,7 @@ private fun ManuscriptViewport(
                                 label = "🎬 $currentRatio",
                                 selected = true,
                                 onClick = {
-                                    val idx = videoAspectPresets.indexOf(currentRatio)
-                                    val next = videoAspectPresets[(idx + 1) % videoAspectPresets.size]
+                                    val next = nextPreset(videoAspectPresets, currentRatio)
                                     onUpdateProfile { it.copy(mediaAspectRatio = next) }
                                 }
                             )
@@ -5947,8 +5949,7 @@ private fun ManuscriptViewport(
                                 label = currentRes,
                                 selected = currentRes in listOf("1080p", "4K"),
                                 onClick = {
-                                    val idx = videoResolutionPresets.indexOf(currentRes)
-                                    val next = videoResolutionPresets[(idx + 1) % videoResolutionPresets.size]
+                                    val next = nextPreset(videoResolutionPresets, currentRes)
                                     onUpdateProfile { it.copy(mediaResolution = next) }
                                 }
                             )
@@ -5956,8 +5957,7 @@ private fun ManuscriptViewport(
                                 label = "${currentDur}s",
                                 selected = currentDur > 5,
                                 onClick = {
-                                    val idx = videoDurationPresets.indexOf(currentDur)
-                                    val next = videoDurationPresets[(idx + 1) % videoDurationPresets.size]
+                                    val next = nextPreset(videoDurationPresets, currentDur)
                                     onUpdateProfile { it.copy(videoDurationSeconds = next) }
                                 }
                             )
@@ -5975,8 +5975,11 @@ private fun ManuscriptViewport(
                                 label = "🗣 $currentVoice",
                                 selected = true,
                                 onClick = {
-                                    val idx = audioVoicePresets.indexOfFirst { it.equals(currentVoice, ignoreCase = true) }
-                                    val next = audioVoicePresets[(idx + 1) % audioVoicePresets.size]
+                                    val next = nextPreset(
+                                        audioVoicePresets,
+                                        currentVoice,
+                                        matches = { a, b -> a.equals(b, ignoreCase = true) }
+                                    )
                                     onUpdateProfile { it.copy(audioVoice = next) }
                                 }
                             )
@@ -5986,8 +5989,7 @@ private fun ManuscriptViewport(
                                     label = "${currentSpeed}x",
                                     selected = currentSpeed != 1.0,
                                     onClick = {
-                                        val idx = audioSpeedPresets.indexOf(currentSpeed)
-                                        val next = audioSpeedPresets[(idx + 1) % audioSpeedPresets.size]
+                                        val next = nextPreset(audioSpeedPresets, currentSpeed)
                                         onUpdateProfile { it.copy(audioSpeed = next) }
                                     }
                                 )
@@ -6001,13 +6003,7 @@ private fun ManuscriptViewport(
                                 label = thinkingLabel,
                                 selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
                                 onClick = {
-                                    val cur = activeProfile.thinkingEffort.lowercase()
-                                    val idx = THINKING_EFFORT_PRESETS.indexOf(cur)
-                                    val next = if (idx >= 0) {
-                                        THINKING_EFFORT_PRESETS[(idx + 1) % THINKING_EFFORT_PRESETS.size]
-                                    } else {
-                                        "medium"
-                                    }
+                                    val next = nextPreset(THINKING_EFFORT_PRESETS, activeProfile.thinkingEffort.lowercase(), "medium")
                                     onUpdateProfile { it.copy(thinkingEffort = next) }
                                 }
                             )

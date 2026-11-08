@@ -148,6 +148,7 @@ The target is an idle working set of roughly 130 to 190 MB while 100-step agent 
 - Keep inactive chats dehydrated as lightweight stubs via dehydrateChatSessionToCompactStub and hydrateSessionFromDiskIfNeeded.
 - Strip duplicate in-memory PromptAttachment.base64Data when localFilePath exists on disk.
 - Reuse sharedScratchIconPath in KissVectorIcon, cache parsed Paths in ModelLabSvgIcon, and share AiProviderEngine.httpClient.
+- Never round-trip a file through workspaceRead when rewriting it. workspaceRead caps at 10k lines and 250k chars and replaces lines over 4000 chars with "[line truncated]", so a read-modify-write silently destroys large files. Append with workspaceAppend, which writes without reading back.
 
 ## 11. Core Architecture Matrix (v2.0.53 and Later)
 
@@ -191,6 +192,7 @@ applyCrossProviderReasoningHandoff carries prior reasoning narrative (thinkingSu
 - Tab-switcher scrim removed.
 - Composer media chips cycle presets only. Free-form aspect-ratio, resolution, duration, voice, and speed entry moved to the Tools drawer Manual Override Bar, which writes mediaAspectRatio, mediaResolution, videoDurationSeconds (clamped 4 to 15 to match the engine), audioVoice, audioSpeed (clamped 0.25 to 4.0), and thinkingEffort.
 - Generated images gained a Copy Image action via PlatformBridge.copyImageToClipboard.
+- Preset cycling goes through the single nextPreset helper, which wraps at the end and falls back when the current value is free-form. Do not open-code indexOf plus modulo at call sites.
 
 ## 12. Prior Architecture Matrix (v2.0.52, Preserved Context)
 

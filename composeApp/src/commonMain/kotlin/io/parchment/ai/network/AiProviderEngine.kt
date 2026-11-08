@@ -1,4 +1,4 @@
-package io.parchment.ai.network
+﻿package io.parchment.ai.network
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
@@ -22,7 +22,6 @@ import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AuthHeaderMode
 import io.parchment.ai.model.CUSTOM_DIALECT_ANTHROPIC
 import io.parchment.ai.model.CUSTOM_DIALECT_GEMINI
-import io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.GoalTrackerState
@@ -43,12 +42,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -5807,95 +5804,6 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
         return coalescedBaseMessages
     }
-    // ============================================================================================
-    // 4. OPENAI DIRECT IMAGE GENERATION ENDPOINT (/v1/images/generations)
-    //    For standalone GPT Image / DALL-E models and OpenAI-compatible image proxies.
-    // ============================================================================================
-    private suspend fun executeOpenAiDirectImagesEndpoint(
-        profile: ProviderProfile,
-        model: String,
-        session: ChatSession,
-        historyNodes: List<MessageNode>,
-        circuitBreaker: WorkspaceHarness.LoopCircuitBreaker,
-        onStatus: suspend (String) -> Unit,
-        onFirstToken: () -> Unit,
-        onThinking: suspend (String) -> Unit,
-        onMedia: suspend (GeneratedMediaItem) -> Unit,
-        onContent: suspend (String) -> Unit,
-        onRawWire: suspend (String, String) -> Unit
-    ) {
-        val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
-            .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
-        require(latestUserPrompt.isNotBlank()) { "Image generation prompt cannot be empty." }
-
-        val size = resolveOpenAiImageSize(profile.mediaAspectRatio, profile.mediaResolution)
-        val payloadObj = buildJsonObject {
-            put("model", model)
-            put("prompt", latestUserPrompt)
-            if (size != "auto") {
-                put("size", size)
-            }
-        }
-
-        val finalPayload = mergeRawJsonExtraBody(payloadObj, profile.rawJsonExtraBody)
-        val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-        val base = profile.baseUrl.trimEnd('/')
-        val defaultImgPath = if (base.endsWith("/v1") || base.endsWith("/api/v3")) "/images/generations" else "/v1/images/generations"
-        val path = profile.endpointPathOverride.takeIf { it.contains("images", ignoreCase = true) }
-            ?: defaultImgPath
-        val url = buildUrlWithAuthQuery(profile, "$base$path")
-
-        onStatus("Generating image via $model…")
-        onRawWire(reqStr, "Dispatching to $url ...")
-
-        val resp = httpClient.post(url) {
-            applyAuthAndCustomHeaders(profile)
-            contentType(ContentType.Application.Json)
-            setBody(reqStr)
-        }
-        val bodyText = resp.bodyAsText()
-        val statusVal = resp.status.value
-        onRawWire(reqStr, bodyText)
-        if (statusVal == 404 || statusVal == 405 || statusVal == 501 ||
-            (statusVal == 400 && (bodyText.contains("chat", ignoreCase = true) || bodyText.contains("messages", ignoreCase = true)))
-        ) {
-            onStatus("Proxy serves $model via /v1/chat/completions — routing automatically…")
-            executeOpenAiChatCompletionsLoop(
-                profile = profile,
-                model = model,
-                session = session,
-                historyNodes = historyNodes,
-                continuePrefix = "",
-                circuitBreaker = circuitBreaker,
-                onStatus = onStatus,
-                onGoalProgress = {},
-                onFirstToken = onFirstToken,
-                onThinking = onThinking,
-                onContent = onContent,
-                onMedia = onMedia,
-                onToolCall = {},
-                onRawWire = onRawWire,
-                onUsage = { _, _, _, _ -> }
-            )
-            return
-        }
-        if (!resp.status.isSuccess()) {
-            error("Image Generation HTTP $statusVal: $bodyText")
-        }
-
-        val root = json.parseToJsonElement(bodyText).jsonObject
-        val dataArr = root["data"] as? JsonArray ?: JsonArray(emptyList())
-        for (itemEl in dataArr) {
-            val itemObj = itemEl as? JsonObject ?: continue
-            val b64 = itemObj["b64_json"]?.jsonPrimitive?.contentOrNull ?: ""
-            val remoteUrl = itemObj["url"]?.jsonPrimitive?.contentOrNull ?: ""
-            val revised = itemObj["revised_prompt"]?.jsonPrimitive?.contentOrNull ?: ""
-            saveAndEmitImage(b64, remoteUrl, "image/png", profile.mediaAspectRatio, revised, onMedia, sessionId = session.id)
-            if (revised.isNotBlank()) {
-                onContent("*Revised Prompt:* $revised\n")
-            }
-        }
-    }
 
     // ============================================================================================
     // 5. UNIVERSAL MEDIA & AUDIO DRIVER (IMAGE, VIDEO, AND TTS AUTO-ROUTING)
@@ -6393,7 +6301,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 ?: createObj["generation_id"]?.jsonPrimitive?.contentOrNull
                 ?: (createObj["data"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
                 ?: (createObj["data"] as? JsonObject)?.get("task_id")?.jsonPrimitive?.contentOrNull
-                ?: if (immediateVideoUrl != null) "sync-${PlatformBridge.currentTimeMillis()}" else null
+                ?: immediateVideoUrl?.let { "sync-${PlatformBridge.currentTimeMillis()}" }
                 ?: error("Video generation response did not contain a task 'id' or 'url': $createBody")
 
             var latestTaskObj = createObj
@@ -7694,9 +7602,6 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }?.take(180).orEmpty()
         return listOf(RawWebCitation(url = url, title = titleLine, snippet = snippetLine))
     }
-
-    internal fun extractCitationFromToolCall(tc: ToolCallRecord): RawWebCitation? =
-        extractCitationsFromToolCall(tc).firstOrNull()
 
     internal fun extractMarkdownLinksAsCitations(text: String): List<RawWebCitation> {
         if (!text.contains("http")) return emptyList()

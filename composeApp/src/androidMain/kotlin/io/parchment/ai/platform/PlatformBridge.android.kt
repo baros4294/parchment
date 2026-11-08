@@ -800,6 +800,13 @@ actual object PlatformBridge {
         "Successfully wrote ${content.length} chars to '$relativePath'."
     }
 
+    actual fun workspaceAppend(workspaceRoot: String, relativePath: String, content: String): Result<String> = runCatching {
+        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
+        target.parentFile?.mkdirs()
+        target.appendText(content, Charsets.UTF_8)
+        "Successfully appended ${content.length} chars to '$relativePath'."
+    }
+
     actual fun workspaceEdit(
         workspaceRoot: String,
         relativePath: String,
