@@ -366,3 +366,11 @@ If you cannot verify, say so explicitly. If a required tool or environment varia
 - Restores replace pending state and retain removals. Callback failures preserve unwritten entries and publish an error for the UI.
 - Seven regressions cover debounce across chats, in-flight updates/deletions, failed callbacks, settings/chat coalescing, restore and lifecycle checkpoints.
 - Verified 39 desktop tests, both target compilations and Android release build. Native write-error propagation and Android atomic replacement remain open.
+
+## 22. Runtime Shell Permission Enforcement (Verified 2026-11-08)
+
+- Workspace READ_WRITE does not by itself authorize shell_exec. Dispatch requires allowShell=true as well as read/write mode.
+- All five provider tool loops pass the effective shell flag through sequential/parallel execution helpers to the harness.
+- The public dispatcher defaults to shell disabled. A model requesting an unadvertised command cannot bypass the disabled Shell toggle.
+- Three permission regressions cover default denial, explicit denial and read-only precedence; the explicitly allowed streaming test remains valid.
+- Verified 42 desktop tests, both Kotlin targets and Android release build. The broader per-assistant/chat approval policy and UI remain open.

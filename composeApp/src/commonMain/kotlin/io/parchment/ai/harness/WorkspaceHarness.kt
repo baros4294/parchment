@@ -702,7 +702,8 @@ object WorkspaceHarness {
         callId: String,
         toolName: String,
         argumentsJson: String,
-        onOutputDelta: ((String) -> Unit)? = null
+        onOutputDelta: ((String) -> Unit)? = null,
+        allowShell: Boolean = false
     ): ToolCallRecord {
         val toolStartMs = PlatformBridge.currentTimeMillis()
         val isFolderFreeTool = toolName == "todo_write" ||
@@ -884,7 +885,9 @@ object WorkspaceHarness {
                 }
             }
             "shell_exec" -> {
-                if (mode != WorkspaceMode.READ_WRITE) {
+                if (!allowShell) {
+                    Result.failure(IllegalStateException("Shell execution is disabled. Enable it explicitly before running commands."))
+                } else if (mode != WorkspaceMode.READ_WRITE) {
                     Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to execute shell commands."))
                 } else {
                     val cmd = strArg("command")

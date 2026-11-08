@@ -1106,6 +1106,7 @@ class ParchmentProtocolAndHarnessTest {
             mode = WorkspaceMode.READ_WRITE,
             callId = "call-live-shell",
             toolName = "shell_exec",
+            allowShell = true,
             argumentsJson = """{"command":"echo parchment_live_stream_ok","timeout_seconds":10}""",
             onOutputDelta = { partial ->
                 synchronized(deltas) { deltas.add(partial) }

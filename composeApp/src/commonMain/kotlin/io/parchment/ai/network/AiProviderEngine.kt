@@ -206,6 +206,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     private suspend fun executeWorkspaceToolWithLiveProgress(
         workspaceRoot: String,
         mode: io.parchment.ai.model.WorkspaceMode,
+        allowShell: Boolean,
         callId: String,
         toolName: String,
         argumentsJson: String,
@@ -237,6 +238,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     WorkspaceHarness.executeToolCall(
                         workspaceRoot = workspaceRoot,
                         mode = mode,
+                        allowShell = allowShell,
                         callId = callId,
                         toolName = toolName,
                         argumentsJson = argumentsJson,
@@ -282,6 +284,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     private suspend fun executeWorkspaceToolBatchWithLiveProgress(
         workspaceRoot: String,
         mode: io.parchment.ai.model.WorkspaceMode,
+        allowShell: Boolean,
         calls: List<Triple<String, String, String>>, // (callId, toolName, argumentsJson)
         firstThoughtSignature: String = "",
         firstPrecedingThinking: String = "",
@@ -301,6 +304,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 val signedRec = executeWorkspaceToolWithLiveProgress(
                     workspaceRoot = workspaceRoot,
                     mode = mode,
+                    allowShell = allowShell,
                     callId = callId,
                     toolName = fnName,
                     argumentsJson = argsJson,
@@ -342,6 +346,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val raw = WorkspaceHarness.executeToolCall(
                         workspaceRoot = workspaceRoot,
                         mode = mode,
+                        allowShell = allowShell,
                         callId = callId,
                         toolName = fnName,
                         argumentsJson = argsJson
@@ -2638,6 +2643,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val results = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
+                allowShell = profile.allowShellExecution,
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = stepSigString,
                 firstPrecedingThinking = stepThoughtTxt,
@@ -3440,6 +3446,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
+                allowShell = profile.allowShellExecution,
                 calls = roundToolCalls,
                 firstThoughtSignature = cleanRoundSig,
                 circuitBreaker = circuitBreaker,
@@ -4238,6 +4245,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val results = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
+                allowShell = profile.allowShellExecution,
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = roundEncryptedReasoning,
                 firstPrecedingThinking = roundReasoningBuilder.toString().trim(),
@@ -4815,6 +4823,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
+                allowShell = profile.allowShellExecution,
                 calls = validCalls.map { (callId, fnName, argsSb) -> Triple(callId, fnName, argsSb.toString().ifBlank { "{}" }) },
                 circuitBreaker = circuitBreaker,
                 onStatus = onStatus,
@@ -5566,6 +5575,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
+                allowShell = profile.allowShellExecution,
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = firstSignedThinking,
                 firstPrecedingThinking = firstSignedThinkingText,

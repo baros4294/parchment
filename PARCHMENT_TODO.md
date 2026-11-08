@@ -82,6 +82,7 @@ Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea 
 
 ### 04 — P0: Authoritative agent permissions and cancellable approvals
 
+- [x] Enforce the existing Shell toggle at dispatch; READ_WRITE alone cannot authorize a command, and all five provider paths pass the permission explicitly.
 - [ ] Add assistant defaults and explicit chat overrides for approval, sandbox/file access, enabled tools, shell and web-tool permissions.
 - [ ] Distinguish inherited settings from explicit Off/unmount. Move local permissions out of provider ownership.
 - [ ] Migrate existing workspaces without silently granting full access or preserving blanket approval.
@@ -322,6 +323,8 @@ Fetched and read during the audit; retrieve specific sections again before imple
 
 ## Verification and lock log
 
+- Runtime shell-toggle milestone verified: 42/42 tests, both target compilations and Android release passed; default/explicit denial and read-only precedence are covered. The commit containing this entry publishes the dispatch fix.
+- Shared disk writer locked and pushed: d4f5e612d86e9552afb96a66c89dbe30376a9728; 39 tests, both compilations and Android release passed.
 - Shared disk-writer milestone verified: 39/39 desktop tests, both compilations and Android release passed; seven regressions cover asynchronous dirty-write ordering/recovery. The commit containing this entry publishes the scoped scheduler improvement.
 - Desktop atomic-storage milestone locked and pushed: 39db6ea74e902094aa49dca700c6ea8664d16ff9; 32 tests and target compilation passed.
 - Desktop atomic-storage milestone verified: 32/32 tests, including five new filesystem regressions; desktop and Android debug compilation passed. The commit containing this entry publishes the scoped desktop improvement.
