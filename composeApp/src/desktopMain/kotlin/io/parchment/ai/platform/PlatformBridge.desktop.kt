@@ -58,7 +58,11 @@ actual object PlatformBridge {
     init {
         runCatching {
             Runtime.getRuntime().addShutdownHook(Thread {
-                flushPendingStateNow()
+                try {
+                    flushPendingStateNow()
+                } finally {
+                    if (isWindows) windowsPowerLease.close()
+                }
             })
         }
     }
@@ -1125,64 +1129,39 @@ actual object PlatformBridge {
             conn.disconnect()
         }
     }
-    @Volatile
-    private var keepAwakeProcess: Process? = null
-
-    private fun setWindowsKeepAwake(active: Boolean) {
-        runCatching {
-            val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
-            if (!isWin) return@runCatching
-            if (!active) {
-                keepAwakeProcess?.destroyForcibly()
-                keepAwakeProcess = null
-                return@runCatching
-            }
-            if (keepAwakeProcess?.isAlive == true) return@runCatching
-            val parentPid = runCatching { ProcessHandle.current().pid() }.getOrDefault(0L)
-            // Holds Win32 SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED = 0x80000041)
-            // while the active generation/goal is running so Windows never suspends CPU/network during multi-day runs.
-            val psCmd = buildString {
-                append("\$code = '[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint esFlags);'; ")
-                append("\$ste = Add-Type -MemberDefinition \$code -Name 'Win32Ste' -Namespace 'Parchment' -PassThru; ")
-                append("try { ")
-                append("while (\$true) { ")
-                append("[void]\$ste::SetThreadExecutionState(0x80000041); ")
-                if (parentPid > 0L) {
-                    append("if (-not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) { break }; ")
-                }
-                append("Start-Sleep -Seconds 30 ")
-                append("} ")
-                append("} finally { [void]\$ste::SetThreadExecutionState(0x80000000) }")
-            }
-            keepAwakeProcess = ProcessBuilder(
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle", "Hidden",
-                "-Command", psCmd
-            ).start()
-        }
-    }
+    private val windowsPowerLease by lazy { WindowsPowerLease() }
+    private val isWindows: Boolean
+        get() = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
 
     @Volatile
     private var lastReportedDecodeSec: Int = -1
 
+    private fun reportDecodeWindowStatus(text: String) {
+        val unavailable = isWindows && windowsPowerLease.snapshot.status == WindowsPowerLeaseStatus.UNAVAILABLE
+        windowStatusCallback?.invoke(text + if (unavailable) " — Keep-awake unavailable" else "")
+    }
+
     actual fun notifyLongDecodeStart(modelName: String) {
         lastReportedDecodeSec = -1
-        windowStatusCallback?.invoke("Parchment — Decoding ($modelName)…")
-        setWindowsKeepAwake(true)
+        if (isWindows) windowsPowerLease.acquire()
+        reportDecodeWindowStatus("Parchment — Decoding (" + modelName + ")…")
     }
 
     actual fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int) {
         if (elapsedSeconds == lastReportedDecodeSec) return
         lastReportedDecodeSec = elapsedSeconds
-        windowStatusCallback?.invoke("Parchment — $modelName (+$outputTokens tok • ${elapsedSeconds}s)")
+        if (isWindows) windowsPowerLease.refresh()
+        reportDecodeWindowStatus("Parchment — " + modelName + " (+" + outputTokens + " tok • " + elapsedSeconds + "s)")
     }
 
     actual fun notifyLongDecodeComplete() {
         lastReportedDecodeSec = -1
-        windowStatusCallback?.invoke("Parchment — Literary & Bleeding-Edge AI Studio")
-        setWindowsKeepAwake(false)
+        if (isWindows) windowsPowerLease.release()
+        val remaining = if (isWindows) windowsPowerLease.snapshot.owners else 0
+        reportDecodeWindowStatus(
+            if (remaining > 0) "Parchment — " + remaining + " active generations"
+            else "Parchment — Literary & Bleeding-Edge AI Studio"
+        )
     }
 
     actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {

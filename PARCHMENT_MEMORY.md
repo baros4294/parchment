@@ -321,3 +321,14 @@ You may end a turn only when one of the following is true:
 - An irreversible or externally visible action requires user confirmation.
 
 If you cannot verify, say so explicitly. If a required tool or environment variable is missing, state the exact missing item and the command that would fix it. Do not silently downgrade the scope or claim partial work is complete.
+
+## 17. Verified Windows Power Lease (2026-11-08)
+
+- WindowsPowerLease owns one synchronized, monitored helper across active generation calls. Ending one call never clears another call's lease.
+- Windows PowerShell treats high hexadecimal literals as negative Int32 values. Pass explicit UInt32 values: 2147483649 for continuous/system-required and 2147483648 to clear.
+- Use UTF-16LE Base64 -EncodedCommand for helper scripts; Java ProcessBuilder -Command loses quotes in C# DllImport declarations.
+- Set ProgressPreference to SilentlyContinue so CLIXML progress cannot masquerade as native failure. Declare ACTIVE only after a successful native call emits its heartbeat.
+- The independent monitor recovers failed, terminated or stalled helpers during quiet phases. Final-owner release, close and parent exit stop the owned helper.
+- Actual sleep suspends local execution. OS power policy, explicit sleep and battery limits can override requests; never describe this as unconditional sleep immunity.
+- Seven native/process regressions cover acquisition, concurrent ownership, independent restart, external termination, parent exit, arbitrary clock origin and final-owner cleanup.
+- Verified 27 desktop tests with zero failures and Android debug compilation. Use the quoted local argument '-Pkotlin.compiler.execution.strategy=in-process'.
