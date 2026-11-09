@@ -149,8 +149,11 @@ fun normalizePickedBinaryFile(
 expect object PlatformBridge {
     val platformName: String
     val isAndroid: Boolean
+    val backgroundExecutionNotice: kotlinx.coroutines.flow.StateFlow<String>
 
     fun currentTimeMillis(): Long
+    fun monotonicTimeMillis(): Long
+    fun createRunId(): String
 
     // Local persistent storage (split into parchment-settings.json + per-chat files in chats/)
     fun getAppStorageDirectoryPath(): String
@@ -200,14 +203,14 @@ expect object PlatformBridge {
         workspaceRoot: String,
         command: String,
         timeoutSeconds: Int = 30,
-        onOutputDelta: ((String) -> Unit)? = null
+        onOutputDelta: ((String) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null
     ): Result<String>
     fun killActiveShellProcesses()
-    fun fetchUrlText(url: String, maxChars: Int = 24000): Result<String>
-    // Long Decode Lifecycle Hook (Android Foreground Service / Desktop status)
-    fun notifyLongDecodeStart(modelName: String)
+    fun fetchUrlText(url: String, maxChars: Int = 24000, isCancelled: (() -> Boolean)? = null): Result<String>
+    // Process-owned run snapshots include preparation, tools, compaction and approval waits.
+    fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
-    fun notifyLongDecodeComplete()
 
     // In-App Zero-Browser OTA Update Installer
     fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String>

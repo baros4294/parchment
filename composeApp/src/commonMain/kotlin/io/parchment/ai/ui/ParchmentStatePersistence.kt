@@ -1,6 +1,9 @@
 ﻿package io.parchment.ai.ui
 
 import io.parchment.ai.model.AppStateSnapshot
+import io.parchment.ai.model.AgentPermissionOverrides
+import io.parchment.ai.model.AgentPermissionResolver
+import io.parchment.ai.model.withImportedPermissions
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.CharacterOrScenarioCard
 import io.parchment.ai.model.ChatSession
@@ -90,7 +93,13 @@ data class SessionStreamRuntime(
     val isThinkingPhase: Boolean = false,
     val statusText: String = "",
     val interactionId: String = "",
-    val job: Job? = null
+    val job: Job? = null,
+    val toolApprovalBroker: io.parchment.ai.harness.ToolApprovalBroker? = null,
+    internal val identity: AgentRunIdentity? = null,
+    internal val phase: AgentRunPhase = AgentRunPhase.RUNNING,
+    internal val providerContext: RunProviderContext? = null,
+    val actualWireDialect: String = "",
+    internal val isPreparingHandoff: Boolean = false
 )
 
 data class SlashCommandSpec(
@@ -398,8 +407,7 @@ internal fun buildFreshSessionForAssistant(
         userName = cleanUser,
         activeCard = card,
         viewMode = appState.preferences.defaultViewMode,
-        workspacePath = assistant.workspacePath,
-        workspaceMode = assistant.workspaceMode,
+        permissionOverrides = AgentPermissionOverrides(),
         messages = initialMessages
     )
 }
@@ -501,6 +509,7 @@ internal fun mergeSessionMetadata(full: ChatSession, metadata: ChatSession): Cha
     modelOverride = metadata.modelOverride,
     workspacePath = metadata.workspacePath,
     workspaceMode = metadata.workspaceMode,
+    permissionOverrides = metadata.permissionOverrides,
     draftInput = metadata.draftInput,
     draftPrefill = metadata.draftPrefill,
     userName = metadata.userName,
@@ -684,20 +693,21 @@ internal fun decodeChatSessionsFromRawJson(rawJsonText: String): List<ChatSessio
     runCatching {
         val elem = compactStateJson.parseToJsonElement(trimmed)
         if (elem is JsonObject) {
-            if (elem.containsKey("messages") && elem.containsKey("title") && !elem.containsKey("profiles")) {
-                return listOf(compactStateJson.decodeFromJsonElement(ChatSession.serializer(), elem))
+            if (elem.containsKey("id") && elem.containsKey("title") && elem.containsKey("profileId") &&
+                !elem.containsKey("profiles") && !elem.containsKey("sessions")) {
+                return listOf(compactStateJson.decodeFromJsonElement(ChatSession.serializer(), elem).withImportedPermissions())
             }
             if (elem.containsKey("sessions")) {
                 val arr = elem["sessions"] as? JsonArray
                 if (arr != null) {
                     return arr.mapNotNull { item ->
-                        runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item) }.getOrNull()
+                        runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item).withImportedPermissions() }.getOrNull()
                     }
                 }
             }
         } else if (elem is JsonArray) {
             return elem.mapNotNull { item ->
-                runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item) }.getOrNull()
+                runCatching { compactStateJson.decodeFromJsonElement(ChatSession.serializer(), item).withImportedPermissions() }.getOrNull()
             }
         }
     }
@@ -717,6 +727,13 @@ internal fun buildExportFileNameForChat(session: ChatSession): String {
 
 internal fun buildExportZipFileNameForChat(session: ChatSession): String =
     buildExportFileNameForChat(session).removeSuffix(".json") + ".zip"
+
+internal fun encodeChatSessionJsonForExport(session: ChatSession): ByteArray {
+    val full = hydrateSessionFromDiskIfNeeded(session)
+    check(!full.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
+    return io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
+        .encodeToString(ChatSession.serializer(), full).encodeToByteArray()
+}
 
 /**
  * Bundles one or more `ChatSession`s into a self-contained `.zip` archive where each chat has its own
@@ -916,12 +933,15 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
 
 internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
     val defaultFallback = createDefaultAppState()
-    val safeProfiles = if (loaded.profiles.isNotEmpty()) loaded.profiles else defaultFallback.profiles
+    val safeProfiles = (if (loaded.profiles.isNotEmpty()) loaded.profiles else defaultFallback.profiles)
+        .map { if (it.allowShellExecution) it.copy(allowShellExecution = false) else it }
     val safeActiveProfileId = safeProfiles.find { it.id == loaded.activeProfileId }?.id ?: safeProfiles.first().id
     val safeActiveProfile = safeProfiles.first { it.id == safeActiveProfileId }
 
     val safeAssistants = if (loaded.assistants.isNotEmpty()) {
-        loaded.assistants
+        loaded.assistants.map { assistant ->
+            if (assistant.permissionDefaults == null) assistant.copy(permissionDefaults = AgentPermissionResolver.defaults(assistant)) else assistant
+        }
     } else {
         defaultFallback.assistants
     }
@@ -932,6 +952,9 @@ internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot 
         loaded.sessions.map { sess ->
             sess.copy(
                 assistantId = sess.assistantId.ifBlank { safeActiveAssistantId },
+                permissionOverrides = sess.permissionOverrides ?: AgentPermissionResolver.legacyOverrides(
+                    sess, safeProfiles.find { it.id == sess.profileId }
+                ),
                 messages = sess.messages.map { node ->
                     node.copy(
                         variants = node.variants.map { v ->

@@ -34,6 +34,9 @@ import javax.swing.ImageIcon
 import javax.swing.JFileChooser
 
 actual object PlatformBridge {
+    actual fun createRunId(): String = java.util.UUID.randomUUID().toString()
+    private val backgroundNoticeState = kotlinx.coroutines.flow.MutableStateFlow("")
+    actual val backgroundExecutionNotice: kotlinx.coroutines.flow.StateFlow<String> = backgroundNoticeState
     actual val platformName: String =
         "${System.getProperty("os.name") ?: "Desktop"} (${System.getProperty("os.arch") ?: "universal"})"
     actual val isAndroid: Boolean = false
@@ -68,6 +71,7 @@ actual object PlatformBridge {
     }
 
     actual fun currentTimeMillis(): Long = System.currentTimeMillis()
+    actual fun monotonicTimeMillis(): Long = System.nanoTime() / 1_000_000L
 
     private fun resolveStorageDir(): File {
         cachedStorageDir?.let { if (it.exists()) return it }
@@ -437,19 +441,8 @@ actual object PlatformBridge {
     // ========================================================================================
     // Sandboxed Local File System Agent Harness Operations
     // ========================================================================================
-    private fun resolveSandboxedPath(workspaceRoot: String, relativePath: String): Path {
-        val root = File(workspaceRoot).canonicalFile.toPath().normalize()
-        val cleanedRel = relativePath.trim().removePrefix("/").removePrefix("\\")
-        val resolved = if (cleanedRel.isEmpty() || cleanedRel == ".") {
-            root
-        } else {
-            root.resolve(cleanedRel).normalize()
-        }
-        require(resolved.startsWith(root)) {
-            "Access denied: Path '$relativePath' escapes the mounted workspace root '$workspaceRoot'."
-        }
-        return resolved
-    }
+    private fun resolveSandboxedPath(workspaceRoot: String, relativePath: String): Path =
+        WorkspacePathGuard.resolve(workspaceRoot, relativePath)
 
     private fun isIgnoredWorkspaceDir(name: String): Boolean {
         val low = name.lowercase()
@@ -488,9 +481,9 @@ actual object PlatformBridge {
         }
         val rootPath = rootFile.toPath().normalize()
         val built = rootFile.walkTopDown()
-            .onEnter { d -> d == rootFile || !isIgnoredWorkspaceDir(d.name) }
+            .onEnter { d -> (d == rootFile || !isIgnoredWorkspaceDir(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
             .maxDepth(24)
-            .filter { it != rootFile && !isIgnoredWorkspaceDir(it.name) }
+            .filter { it != rootFile && !isIgnoredWorkspaceDir(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
             .map { f ->
                 val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
                 val isDir = f.isDirectory
@@ -509,7 +502,7 @@ actual object PlatformBridge {
 
     actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath)
-        val rootFile = File(workspaceRoot).canonicalFile
+        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
         val rootPath = rootFile.toPath().normalize()
         val dirFile = target.toFile()
         require(dirFile.exists()) { "Directory does not exist: $relativePath" }
@@ -523,9 +516,9 @@ actual object PlatformBridge {
                 }
         } else if (recursive) {
             dirFile.walkTopDown()
-                .onEnter { d -> d == dirFile || !isIgnoredWorkspaceDir(d.name) }
+                .onEnter { d -> (d == dirFile || !isIgnoredWorkspaceDir(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
                 .maxDepth(24)
-                .filter { it != dirFile && !isIgnoredWorkspaceDir(it.name) }
+                .filter { it != dirFile && !isIgnoredWorkspaceDir(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
                 .take(400)
                 .map { f ->
                     val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
@@ -533,7 +526,7 @@ actual object PlatformBridge {
                 }
                 .toList()
         } else {
-            (dirFile.listFiles()?.toList() ?: emptyList())
+            (dirFile.listFiles()?.toList() ?: emptyList()).filter { WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
                 .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
                 .take(300)
                 .map { f ->
@@ -546,7 +539,7 @@ actual object PlatformBridge {
     }
 
     actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> = runCatching {
-        val rootFile = File(workspaceRoot).canonicalFile
+        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
         require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val cleanPat = pattern.trim().replace('\\', '/').removePrefix("./")
         require(cleanPat.isNotEmpty()) { "Glob pattern must not be empty." }
@@ -709,6 +702,9 @@ actual object PlatformBridge {
     actual fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String> = runCatching {
         val srcFile = resolveSandboxedPath(workspaceRoot, sourceRelativePath).toFile()
         val dstFile = resolveSandboxedPath(workspaceRoot, destRelativePath).toFile()
+        val guardedRoot = WorkspacePathGuard.root(workspaceRoot)
+        require(srcFile.toPath() != guardedRoot && dstFile.toPath() != guardedRoot) { "Cannot move or replace the workspace root." }
+        WorkspacePathGuard.requireUnlinkedTree(guardedRoot, srcFile)
         require(srcFile.exists()) { "Source path does not exist: $sourceRelativePath" }
         dstFile.parentFile?.mkdirs()
         java.nio.file.Files.move(
@@ -722,9 +718,10 @@ actual object PlatformBridge {
 
     actual fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String> = runCatching {
         val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        val rootCanon = File(workspaceRoot).canonicalFile
+        val rootCanon = WorkspacePathGuard.root(workspaceRoot).toFile()
         require(target.canonicalFile != rootCanon) { "Cannot delete workspace root directory." }
         require(target.exists()) { "Path does not exist: $relativePath" }
+        WorkspacePathGuard.requireUnlinkedTree(rootCanon.toPath(), target)
         val deleted = if (target.isDirectory) target.deleteRecursively() else target.delete()
         require(deleted) { "Failed to delete '$relativePath'." }
         invalidateWorkspaceTreeCache()
@@ -734,9 +731,10 @@ actual object PlatformBridge {
         workspaceRoot: String,
         command: String,
         timeoutSeconds: Int,
-        onOutputDelta: ((String) -> Unit)?
+        onOutputDelta: ((String) -> Unit)?,
+        isCancelled: (() -> Boolean)?
     ): Result<String> = runCatching {
-        val rootDir = File(workspaceRoot).canonicalFile
+        val rootDir = WorkspacePathGuard.root(workspaceRoot).toFile()
         require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
         val pb = if (isWin) {
@@ -749,6 +747,7 @@ actual object PlatformBridge {
         }
         pb.directory(rootDir)
         pb.redirectErrorStream(true)
+        require(isCancelled?.invoke() != true) { "The owning run was cancelled before shell startup." }
         val proc = pb.start()
         activeShellProcesses.add(proc)
         // Close stdin immediately so child CLI processes checking piped stdin never hang waiting for EOF
@@ -793,11 +792,11 @@ actual object PlatformBridge {
             val startMs = System.currentTimeMillis()
             var finished = false
             while (System.currentTimeMillis() - startMs < maxWaitMs) {
-                if (!activeShellProcesses.contains(proc)) {
+                if (isCancelled?.invoke() == true || !activeShellProcesses.contains(proc)) {
                     // Killed by user pressing Stop
-                    runCatching { proc.descendants().forEach { it.destroyForcibly() } }
+                    runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
                     proc.destroyForcibly()
-                    error("Shell command terminated by user.")
+                    error("Shell command terminated because its owning run stopped or permission was revoked.")
                 }
                 if (proc.waitFor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                     finished = true
@@ -805,7 +804,7 @@ actual object PlatformBridge {
                 }
             }
             if (!finished) {
-                runCatching { proc.descendants().forEach { it.destroyForcibly() } }
+                runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
                 proc.destroyForcibly()
                 runCatching { proc.inputStream.close() }
                 runCatching { readerThread.join(1500L) }
@@ -820,6 +819,13 @@ actual object PlatformBridge {
             }
             "Exit Code: ${proc.exitValue()}\n${output.take(8000)}"
         } finally {
+            if (proc.isAlive) {
+                runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
+                runCatching { proc.destroyForcibly() }
+            }
+            runCatching { proc.inputStream.close() }
+            runCatching { proc.errorStream.close() }
+            runCatching { readerThread.join(1500L) }
             activeShellProcesses.remove(proc)
             invalidateWorkspaceTreeCache()
         }
@@ -839,7 +845,8 @@ actual object PlatformBridge {
     }
 
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
-        val rootFile = File(workspaceRoot).canonicalFile
+        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
+        val rootPath = rootFile.toPath()
         require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
         require(query.isNotBlank()) { "Search query must not be blank." }
 
@@ -857,6 +864,7 @@ actual object PlatformBridge {
                 if (hitCount.get() >= 150) return@map null
                 val fileHits = mutableListOf<String>()
                 runCatching {
+                    require(WorkspacePathGuard.canTraverse(rootPath, entry.file.toPath())) { "Workspace path changed during search." }
                     entry.file.useLines(Charsets.UTF_8) { seq ->
                         seq.forEachIndexed { idx, line ->
                             if (hitCount.get() < 150) {
@@ -880,43 +888,9 @@ actual object PlatformBridge {
         if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
     }
 
-    actual fun fetchUrlText(url: String, maxChars: Int): Result<String> = runCatching {
-        val trimmed = url.trim()
-        require(trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
-            "URL must start with http:// or https://"
-        }
-        val conn = (URI(trimmed).toURL().openConnection() as java.net.HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 15_000
-            readTimeout = 20_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Mozilla/5.0 (compatible; ParchmentAI/2.0)")
-            setRequestProperty("Accept", "text/markdown, text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.8")
-        }
-        try {
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
-            val maxRawChars = (maxChars.coerceIn(500, 100_000) * 4).coerceIn(32_000, 400_000)
-            val body = stream.bufferedReader(Charsets.UTF_8).use { reader ->
-                val sb = StringBuilder(maxRawChars.coerceAtMost(32_768))
-                val buf = CharArray(4096)
-                while (sb.length < maxRawChars) {
-                    val n = reader.read(buf, 0, minOf(buf.size, maxRawChars - sb.length))
-                    if (n < 0) break
-                    sb.append(buf, 0, n)
-                }
-                sb.toString()
-            }
-            if (code !in 200..299) {
-                error("HTTP $code from $trimmed: ${body.take(400)}")
-            }
-            val contentType = conn.contentType.orEmpty().lowercase()
-            val cleaned = io.parchment.ai.harness.WorkspaceHarness.convertHtmlToReadableText(body, contentType)
-            cleaned.take(maxChars.coerceIn(500, 100_000))
-        } finally {
-            conn.disconnect()
-        }
-    }
+    actual fun fetchUrlText(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> =
+        PublicWebTransport.fetch(url, maxChars, isCancelled)
+
     private val windowsPowerLease by lazy { WindowsPowerLease() }
     private val isWindows: Boolean
         get() = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
@@ -926,13 +900,14 @@ actual object PlatformBridge {
 
     private fun reportDecodeWindowStatus(text: String) {
         val unavailable = isWindows && windowsPowerLease.snapshot.status == WindowsPowerLeaseStatus.UNAVAILABLE
+        backgroundNoticeState.value = if (unavailable) "Keep-awake unavailable: ${windowsPowerLease.snapshot.error}" else ""
         windowStatusCallback?.invoke(text + if (unavailable) " — Keep-awake unavailable" else "")
     }
 
-    actual fun notifyLongDecodeStart(modelName: String) {
-        lastReportedDecodeSec = -1
-        if (isWindows) windowsPowerLease.acquire()
-        reportDecodeWindowStatus("Parchment — Decoding (" + modelName + ")…")
+    actual fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String) {
+        if (isWindows) windowsPowerLease.reconcile(runnable)
+        if (owners == 0) lastReportedDecodeSec = -1
+        reportDecodeWindowStatus(status)
     }
 
     actual fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int) {
@@ -940,16 +915,6 @@ actual object PlatformBridge {
         lastReportedDecodeSec = elapsedSeconds
         if (isWindows) windowsPowerLease.refresh()
         reportDecodeWindowStatus("Parchment — " + modelName + " (+" + outputTokens + " tok • " + elapsedSeconds + "s)")
-    }
-
-    actual fun notifyLongDecodeComplete() {
-        lastReportedDecodeSec = -1
-        if (isWindows) windowsPowerLease.release()
-        val remaining = if (isWindows) windowsPowerLease.snapshot.owners else 0
-        reportDecodeWindowStatus(
-            if (remaining > 0) "Parchment — " + remaining + " active generations"
-            else "Parchment — Literary & Bleeding-Edge AI Studio"
-        )
     }
 
     actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {

@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -77,10 +77,20 @@
             android:exported="false"
             android:grantUriPermissions="true" />
 
+        <!--
+            specialUse, not dataSync. Android 15+ caps dataSync at 6 hours of runtime per 24 hours and
+            then throws RemoteServiceException unless onTimeout() calls stopSelf(). Long-horizon agent
+            turns can exceed that quota. specialUse describes this user-initiated agent workload;
+            other operating-system background and battery restrictions still apply.
+        -->
         <service
             android:name=".LongDecodeForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuous AI agent inference and tool execution that must survive screen-off and app switching for the duration of a user-initiated turn." />
+        </service>
 
         <receiver
             android:name=".OtaInstallReceiver"

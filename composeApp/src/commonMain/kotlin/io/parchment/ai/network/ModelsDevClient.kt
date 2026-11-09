@@ -4,6 +4,10 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.parchment.ai.model.ModelPricingSpec
+import io.parchment.ai.model.TokenPricing
+import io.parchment.ai.model.ContextPricingTier
+import io.parchment.ai.model.ChargePricing
+import io.parchment.ai.model.legacyTokenPricing
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -57,6 +61,8 @@ object ModelsDevClient {
     private var lastFetchEpochMs: Long = 0L
 
     private const val CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
+    private val CONTEXT_TIER_PATTERN = Regex("context_over_([0-9]+)([km]?)")
+    private val LITELLM_CONTEXT_TIER_PATTERN = Regex("(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost|cache_creation_input_token_cost_above_(?:1|12)hr)_above_([0-9]+)([km]?)_tokens")
 
     private val TRAILING_SNAPSHOT_REGEX = Regex(
         "-(?:20\\d{6}|\\d{6}|20\\d{2}-\\d{2}-\\d{2}|00\\d|latest|preview)$"
@@ -152,14 +158,23 @@ object ModelsDevClient {
             else -> incoming.providerName
         }
 
+        val mergedPricing = if (existing.knownPricing != null || incoming.knownPricing != null) {
+            (existing.knownPricing ?: legacyTokenPricing(existing.inputPricePerM, existing.outputPricePerM, existing.cacheReadPricePerM,
+                existing.cacheWritePricePerM, existing.reasoningPricePerM)).withMissingFrom(incoming.knownPricing
+                ?: legacyTokenPricing(incoming.inputPricePerM, incoming.outputPricePerM, incoming.cacheReadPricePerM,
+                    incoming.cacheWritePricePerM, incoming.reasoningPricePerM))
+        } else null
         return existing.copy(
             displayName = existing.displayName.ifBlank { incoming.displayName },
             providerName = bestProviderName,
-            inputPricePerM = if (existing.inputPricePerM > 0.0) existing.inputPricePerM else incoming.inputPricePerM,
-            outputPricePerM = if (existing.outputPricePerM > 0.0) existing.outputPricePerM else incoming.outputPricePerM,
-            cacheReadPricePerM = if (existing.cacheReadPricePerM > 0.0) existing.cacheReadPricePerM else incoming.cacheReadPricePerM,
-            cacheWritePricePerM = if (existing.cacheWritePricePerM > 0.0) existing.cacheWritePricePerM else incoming.cacheWritePricePerM,
-            reasoningPricePerM = if (existing.reasoningPricePerM > 0.0) existing.reasoningPricePerM else incoming.reasoningPricePerM,
+            inputPricePerM = mergedPricing?.inputPerM ?: if (existing.inputPricePerM > 0.0) existing.inputPricePerM else incoming.inputPricePerM,
+            outputPricePerM = mergedPricing?.outputPerM ?: if (existing.outputPricePerM > 0.0) existing.outputPricePerM else incoming.outputPricePerM,
+            cacheReadPricePerM = mergedPricing?.cacheReadPerM ?: if (existing.cacheReadPricePerM > 0.0) existing.cacheReadPricePerM else incoming.cacheReadPricePerM,
+            cacheWritePricePerM = mergedPricing?.cacheWritePerM ?: if (existing.cacheWritePricePerM > 0.0) existing.cacheWritePricePerM else incoming.cacheWritePricePerM,
+            reasoningPricePerM = mergedPricing?.reasoningPerM ?: if (existing.reasoningPricePerM > 0.0) existing.reasoningPricePerM else incoming.reasoningPricePerM,
+            knownPricing = mergedPricing,
+            contextPricingTiers = (existing.contextPricingTiers + incoming.contextPricingTiers).distinctBy { it.inputTokensAbove },
+            chargePricing = existing.chargePricing.withMissingFrom(incoming.chargePricing),
             contextWindowTokens = bestContextWindow,
             maxOutputTokens = bestMaxOutput,
             outputModalities = mergedOutputs,
@@ -217,16 +232,15 @@ object ModelsDevClient {
         catalog[canonical]?.let { return it }
         catalog[dotCanonical]?.let { return it }
 
-        // Controlled prefix/substring fallback for versioned snapshots
-        return catalog.entries.firstOrNull { (k, _) ->
-            k.length >= 4 && (
-                k == withoutSlash ||
-                    k == canonical ||
-                    (withoutSlash.length >= 6 && k.startsWith(withoutSlash)) ||
-                    (canonical.length >= 6 && k.startsWith(canonical)) ||
-                    (k.length >= 6 && withoutSlash.startsWith(k))
-                )
-        }?.value
+        // A shortened identifier may resolve only to one model at a delimiter boundary.
+        // Never let an unknown longer name inherit metadata from a shorter catalog key.
+        val candidates = catalog.entries.filter { (key, _) ->
+            listOf(withoutSlash, canonical).any { target ->
+                target.length >= 6 && key.startsWith(target) &&
+                    key.getOrNull(target.length) in listOf('-', '_', '.')
+            }
+        }.map { it.value }.distinctBy { normalizeCanonicalModelSlug(it.modelId) }
+        return candidates.singleOrNull()
     }
 
     /**
@@ -236,6 +250,8 @@ object ModelsDevClient {
     fun getCachedOutputModalities(modelId: String): List<String> {
         return lookupSpecInCatalog(cachedCatalog, modelId)?.outputModalities.orEmpty()
     }
+
+    internal fun getCachedSpec(modelId: String): ModelPricingSpec? = lookupSpecInCatalog(cachedCatalog, modelId)
 
     /**
      * Returns the cached `inputModalities` for [modelId] if already loaded.
@@ -426,6 +442,15 @@ object ModelsDevClient {
                 cacheReadPricePerM = cacheReadPerM,
                 cacheWritePricePerM = cacheWritePerM,
                 reasoningPricePerM = reasoningPerM,
+                knownPricing = pricing(pricingObj, "prompt", "completion", "input_cache_read", "input_cache_write", "internal_reasoning", 1_000_000.0),
+                chargePricing = ChargePricing(buildMap {
+                    readRate(pricingObj?.get("web_search"))?.let { put("web_search", it) }
+                    readRate(pricingObj?.get("request"))?.let { put("request", it) }
+                    readRate(pricingObj?.get("audio"))?.let { put("input_audio", it) }
+                    readRate(pricingObj?.get("audio_output"))?.let { put("output_audio", it) }
+                    readRate(pricingObj?.get("input_audio_cache"))?.let { put("cached_input_audio", it) }
+                    readRate(pricingObj?.get("image"))?.let { put("input_image_count", it) }
+                }),
                 contextWindowTokens = contextLen,
                 maxOutputTokens = maxCompletion,
                 outputModalities = outMods,
@@ -478,6 +503,7 @@ object ModelsDevClient {
                 outputPricePerM = outputPricePerM,
                 cacheReadPricePerM = cacheReadPerM,
                 cacheWritePricePerM = cacheWritePerM,
+                knownPricing = pricing(pricingObj, "input", "output", "input_cache_read", "input_cache_write", multiplier = 1_000_000.0),
                 contextWindowTokens = contextWin,
                 maxOutputTokens = maxTokens,
                 outputModalities = outMods,
@@ -578,6 +604,8 @@ object ModelsDevClient {
                 outputPricePerM = outputCostPerM,
                 cacheReadPricePerM = cacheReadPerM,
                 cacheWritePricePerM = cacheWritePerM,
+                knownPricing = pricing(obj, "input_cost_per_token", "output_cost_per_token", "cache_read_input_token_cost", "cache_creation_input_token_cost", multiplier = 1_000_000.0),
+                contextPricingTiers = liteLlmContextTiers(obj),
                 contextWindowTokens = maxInput,
                 maxOutputTokens = maxOutput,
                 outputModalities = outMods,
@@ -605,11 +633,11 @@ object ModelsDevClient {
                 val name = mObj["name"]?.jsonPrimitive?.contentOrNull ?: id
 
                 val costObj = mObj["cost"] as? JsonObject
-                val inputCost = costObj?.get("input")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                val outputCost = costObj?.get("output")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                val cacheReadCost = costObj?.get("cache_read")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                val cacheWriteCost = costObj?.get("cache_write")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                val reasoningCost = costObj?.get("reasoning")?.jsonPrimitive?.doubleOrNull ?: 0.0
+                val inputCost = readRate(costObj?.get("input")) ?: 0.0
+                val outputCost = readRate(costObj?.get("output")) ?: 0.0
+                val cacheReadCost = readRate(costObj?.get("cache_read")) ?: 0.0
+                val cacheWriteCost = readRate(costObj?.get("cache_write")) ?: 0.0
+                val reasoningCost = readRate(costObj?.get("reasoning")) ?: 0.0
 
                 val limitObj = mObj["limit"] as? JsonObject
                 val contextWindow = limitObj?.get("context")?.jsonPrimitive?.intOrNull ?: 0
@@ -628,6 +656,12 @@ object ModelsDevClient {
                     cacheReadPricePerM = cacheReadCost,
                     cacheWritePricePerM = cacheWriteCost,
                     reasoningPricePerM = reasoningCost,
+                    knownPricing = pricing(costObj, "input", "output", "cache_read", "cache_write"),
+                    chargePricing = ChargePricing(buildMap {
+                        readRate(costObj?.get("input_audio"), 0.000001)?.let { put("input_audio", it) }
+                        readRate(costObj?.get("output_audio"), 0.000001)?.let { put("output_audio", it) }
+                    }),
+                    contextPricingTiers = contextTiers(costObj),
                     contextWindowTokens = contextWindow,
                     maxOutputTokens = maxOutput,
                     outputModalities = outModalities,
@@ -645,13 +679,41 @@ object ModelsDevClient {
             .distinct()
     }
 
-    private fun parsePerTokenToPerMillion(element: JsonElement?): Double {
-        val raw = element?.jsonPrimitive?.doubleOrNull
-            ?: element?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-            ?: return 0.0
-        if (raw <= 0.0) return 0.0
-        // Values < 0.05 in OpenRouter/Vercel/LiteLLM are per-1-token; convert to per-1M-tokens
-        val perM = if (raw < 0.05) raw * 1_000_000.0 else raw
-        return (kotlin.math.round(perM * 10000.0) / 10000.0)
+    private fun readRate(element: JsonElement?, multiplier: Double = 1.0): Double? {
+        val primitive = element as? kotlinx.serialization.json.JsonPrimitive ?: return null
+        val raw = primitive.doubleOrNull ?: primitive.contentOrNull?.toDoubleOrNull() ?: return null
+        return (raw * multiplier).takeIf { raw >= 0 && it.isFinite() && it >= 0 }
+    }
+
+    private fun parsePerTokenToPerMillion(element: JsonElement?): Double = readRate(element, 1_000_000.0) ?: 0.0
+
+    private fun pricing(source: JsonObject?, input: String, output: String, cached: String, write: String,
+        reasoning: String = "reasoning", multiplier: Double = 1.0): TokenPricing? = TokenPricing(
+        readRate(source?.get(input), multiplier), readRate(source?.get(output), multiplier),
+        readRate(source?.get(cached), multiplier), readRate(source?.get(write), multiplier),
+        readRate(source?.get(reasoning), multiplier),
+        readRate(source?.get("cache_creation_input_token_cost_above_12hr") ?: source?.get("cache_creation_input_token_cost_above_1hr"), multiplier)
+    ).takeIf { it.hasAnyRate }
+
+    private fun contextTiers(cost: JsonObject?): List<ContextPricingTier> = cost?.mapNotNull { (key, value) ->
+        val match = CONTEXT_TIER_PATTERN.matchEntire(key) ?: return@mapNotNull null
+        val scalar = when (match.groupValues[2]) { "k" -> 1000L; "m" -> 1_000_000L; else -> 1L }
+        val count = match.groupValues[1].toLongOrNull()?.takeIf { it <= Long.MAX_VALUE / scalar } ?: return@mapNotNull null
+        val rates = pricing(value as? JsonObject, "input", "output", "cache_read", "cache_write") ?: return@mapNotNull null
+        ContextPricingTier(count * scalar, rates)
+    }.orEmpty()
+
+    private fun liteLlmContextTiers(source: JsonObject): List<ContextPricingTier> {
+        val groups = mutableMapOf<Long, MutableMap<String, JsonElement>>()
+        source.forEach { (key, value) ->
+            val match = LITELLM_CONTEXT_TIER_PATTERN.matchEntire(key) ?: return@forEach
+            val scalar = when (match.groupValues[3]) { "k" -> 1000L; "m" -> 1_000_000L; else -> 1L }
+            val count = match.groupValues[2].toLongOrNull()?.takeIf { it <= Long.MAX_VALUE / scalar } ?: return@forEach
+            groups.getOrPut(count * scalar) { mutableMapOf() }[match.groupValues[1]] = value
+        }
+        return groups.mapNotNull { (threshold, values) ->
+            pricing(JsonObject(values), "input_cost_per_token", "output_cost_per_token", "cache_read_input_token_cost",
+                "cache_creation_input_token_cost", multiplier = 1_000_000.0)?.let { ContextPricingTier(threshold, it) }
+        }
     }
 }

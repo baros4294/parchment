@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -43,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,6 +71,10 @@ import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WorkspaceMode
+import io.parchment.ai.model.AgentPermissionResolver
+import io.parchment.ai.model.AgentPermissionOverrides
+import io.parchment.ai.model.AgentPermissionPolicy
+import io.parchment.ai.model.asOverrides
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
 import io.parchment.ai.network.OtaReleaseInfo
@@ -344,7 +351,7 @@ fun ParchmentSettingsScreen(
                     val curModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { "Not selected" }
                     "Global, topic title, summary & translation ($curModel)"
                 }
-                SettingsCategory.WORKSPACE -> "Sandboxed local file agent (${activeSession.workspaceMode.label}) & shell_exec"
+                SettingsCategory.WORKSPACE -> "Agent approvals, file access, web and shell controls"
                 SettingsCategory.WORLD_BOOK -> "Character cards (PNG/JSON) & ${appState.globalWorldBook.size + activeSession.fragments.size} lore fragment(s)"
                 SettingsCategory.BACKUP_OTA -> "Storage manager, v${OtaUpdateEngine.currentAppVersion} OTA & JSON backups"
             }
@@ -701,7 +708,31 @@ private fun SettingsSubpageContent(
 // SUBPAGE 1: PREFERENCES
 // ============================================================================================
 @Composable
-private fun PreferencesSubpage(
+private fun ThemePresetChoices(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit) {
+    val p = LocalParchmentPalette.current
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        BasicText("Color Mode & Preset", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
+        Column(Modifier.fillMaxWidth().selectableGroup()) {
+            ThemeConfig.PRESETS.forEach { preset ->
+                val selected = theme.name == preset.name
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .selectable(selected, role = Role.RadioButton, onClick = { onUpdateTheme(preset) })
+                        .padding(horizontal = 6.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    BasicText(preset.name.substringBefore(" ("), modifier = Modifier.weight(1f), style = p.uiBodyStyle)
+                    KissVectorIcon(if (selected) KissIcon.CIRCLE_DOT else KissIcon.CIRCLE_EMPTY,
+                        tint = if (selected) p.accent else p.mutedInk, size = 20.dp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun PreferencesSubpage(
     prefs: PreferencesConfig,
     theme: ThemeConfig,
     activeSession: ChatSession,
@@ -735,21 +766,7 @@ private fun PreferencesSubpage(
         if (matchesSearch("color mode", "theme", "font", "sepia", "dark", "light", "opacity", "size")) {
             SepiaSectionCard(title = "Appearance & Fonts") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SepiaAdaptiveRow(label = "Color Mode & Preset") {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            ThemeConfig.PRESETS.forEach { preset ->
-                                SepiaChip(
-                                    label = preset.name.substringBefore(" ("),
-                                    selected = theme.name == preset.name,
-                                    onClick = { onUpdateTheme(preset) }
-                                )
-                            }
-                        }
-                    }
+                    ThemePresetChoices(theme, onUpdateTheme)
 
                     SepiaDivider()
 
@@ -893,73 +910,38 @@ private fun PreferencesSubpage(
                     var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                     var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
 
-                    if (win.isCompact) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SepiaTextField(
-                                value = proseSizeText,
-                                onValueChange = { v ->
-                                    proseSizeText = v
-                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
-                                },
-                                label = "Prose Font Size (sp)",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            SepiaTextField(
-                                value = codeSizeText,
-                                onValueChange = { v ->
-                                    codeSizeText = v
-                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
-                                },
-                                label = "Code Font Size (sp)",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         SepiaTextField(
-                            value = maxWidthText,
+                            value = proseSizeText,
                             onValueChange = { v ->
-                                maxWidthText = v
-                                v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
+                                proseSizeText = v
+                                v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
                             },
-                            label = "Max Reading Width (dp)",
+                            label = "Prose Font Size (sp)",
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
-                    } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SepiaTextField(
-                                value = proseSizeText,
-                                onValueChange = { v ->
-                                    proseSizeText = v
-                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
-                                },
-                                label = "Prose Font Size (sp)",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            SepiaTextField(
-                                value = codeSizeText,
-                                onValueChange = { v ->
-                                    codeSizeText = v
-                                    v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
-                                },
-                                label = "Code Font Size (sp)",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            SepiaTextField(
-                                value = maxWidthText,
-                                onValueChange = { v ->
-                                    maxWidthText = v
-                                    v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
-                                },
-                                label = "Max Reading Width (dp)",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                        SepiaTextField(
+                            value = codeSizeText,
+                            onValueChange = { v ->
+                                codeSizeText = v
+                                v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
+                            },
+                            label = "Code Font Size (sp)",
+                            monospace = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
+                    SepiaTextField(
+                        value = maxWidthText,
+                        onValueChange = { v ->
+                            maxWidthText = v
+                            v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
+                        },
+                        label = "Max Reading Width (dp)",
+                        monospace = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
@@ -2167,7 +2149,7 @@ private fun ProvidersSubpage(
  * Supports clearing any default value so it is stripped from outgoing API JSON (`null`), or setting `0 = Unlimited`.
  */
 @Composable
-private fun ProviderProtocolSubpage(
+internal fun ProviderProtocolSubpage(
     profile: ProviderProfile,
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
     onDeleteProfile: () -> Unit,
@@ -2278,8 +2260,7 @@ private fun ProviderProtocolSubpage(
             title = "Nullable Sampling & Token Parameters (Blank = Strip from API, 0 = ∞)"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                val win = LocalParchmentWindowSize.current
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SepiaTextField(
                         value = tempText,
                         onValueChange = { v ->
@@ -2294,7 +2275,7 @@ private fun ProviderProtocolSubpage(
                         label = "Temperature (blank = omit)",
                         placeholder = "Omitted",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                     SepiaTextField(
                         value = topPText,
@@ -2310,83 +2291,46 @@ private fun ProviderProtocolSubpage(
                         label = "Top-P (blank = omit)",
                         placeholder = "Omitted",
                         monospace = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
 
-                if (win.isCompact) {
-                    SepiaTextField(
-                        value = maxOutText,
-                        onValueChange = { v ->
-                            maxOutText = v
-                            val trimmed = v.trim()
-                            if (trimmed.isEmpty()) {
-                                onUpdateProfile { it.copy(maxOutputTokens = null) }
-                            } else {
-                                trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
-                            }
-                        },
-                        label = "Max Output Tokens (0 / blank = ∞)",
-                        placeholder = "Unlimited",
-                        monospace = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    SepiaTextField(
-                        value = budgetText,
-                        onValueChange = { v ->
-                            budgetText = v
-                            val trimmed = v.trim()
-                            if (trimmed.isEmpty()) {
-                                onUpdateProfile { it.copy(thinkingBudgetTokens = null) }
-                            } else {
-                                trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
-                            }
-                        },
-                        label = "Legacy Thinking Budget (pre-4.7 only — blank = adaptive)",
-                        placeholder = "Adaptive",
-                        monospace = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    BasicText(
-                        text = "Deprecated: Claude 4.7+ rejects budget_tokens with HTTP 400. Leave blank to use adaptive thinking steered by effort.",
-                        style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
-                    )
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = maxOutText,
-                            onValueChange = { v ->
-                                maxOutText = v
-                                val trimmed = v.trim()
-                                if (trimmed.isEmpty()) {
-                                    onUpdateProfile { it.copy(maxOutputTokens = null) }
-                                } else {
-                                    trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
-                                }
-                            },
-                            label = "Max Output Tokens (Blank or 0 = Unlimited / Strip)",
-                            placeholder = "Omitted / Unlimited",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = budgetText,
-                            onValueChange = { v ->
-                                budgetText = v
-                                val trimmed = v.trim()
-                                if (trimmed.isEmpty()) {
-                                    onUpdateProfile { it.copy(thinkingBudgetTokens = null) }
-                                } else {
-                                    trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
-                                }
-                            },
-                            label = "Legacy Thinking Budget (pre-4.7 only)",
-                            placeholder = "Omitted / Adaptive",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
+                SepiaTextField(
+                    value = maxOutText,
+                    onValueChange = { v ->
+                        maxOutText = v
+                        val trimmed = v.trim()
+                        if (trimmed.isEmpty()) {
+                            onUpdateProfile { it.copy(maxOutputTokens = null) }
+                        } else {
+                            trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
+                        }
+                    },
+                    label = "Max Output Tokens (0 / blank = ∞)",
+                    placeholder = "Unlimited",
+                    monospace = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                SepiaTextField(
+                    value = budgetText,
+                    onValueChange = { v ->
+                        budgetText = v
+                        val trimmed = v.trim()
+                        if (trimmed.isEmpty()) {
+                            onUpdateProfile { it.copy(thinkingBudgetTokens = null) }
+                        } else {
+                            trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
+                        }
+                    },
+                    label = "Legacy Thinking Budget (pre-4.7 only — blank = adaptive)",
+                    placeholder = "Adaptive",
+                    monospace = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                BasicText(
+                    text = "Deprecated: Claude 4.7+ rejects budget_tokens with HTTP 400. Leave blank to use adaptive thinking steered by effort.",
+                    style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
+                )
 
                 if (profile.protocol == ProviderProtocol.ANTHROPIC_MESSAGES && (profile.maxOutputTokens == null || profile.maxOutputTokens <= 0)) {
                     Row(
@@ -2441,6 +2385,7 @@ private fun ModelConfigSubpage(
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     val existingSpec = profile.customModelSpecs[modelId]
+    val initialPricing = profile.tokenPricing(modelId)
 
     var ctxText by remember(modelId, existingSpec) {
         mutableStateOf((existingSpec?.contextWindowTokens ?: profile.contextWindowTokens).toString())
@@ -2449,25 +2394,34 @@ private fun ModelConfigSubpage(
         mutableStateOf(existingSpec?.maxOutputTokens?.toString() ?: profile.maxOutputTokens?.toString() ?: "")
     }
     var inPriceText by remember(modelId, existingSpec) {
-        mutableStateOf((existingSpec?.inputPricePerM ?: profile.inputPricePerM).toString())
+        mutableStateOf(initialPricing.inputPerM?.toString() ?: "")
     }
     var outPriceText by remember(modelId, existingSpec) {
-        mutableStateOf((existingSpec?.outputPricePerM ?: profile.outputPricePerM).toString())
+        mutableStateOf(initialPricing.outputPerM?.toString() ?: "")
     }
     var cachePriceText by remember(modelId, existingSpec) {
-        mutableStateOf((existingSpec?.cacheReadPricePerM ?: profile.cacheReadPricePerM).toString())
+        mutableStateOf(initialPricing.cacheReadPerM?.toString() ?: "")
     }
     var thinkPriceText by remember(modelId, existingSpec) {
-        mutableStateOf((existingSpec?.reasoningPricePerM ?: profile.reasoningPricePerM).toString())
+        mutableStateOf(initialPricing.reasoningPerM?.toString() ?: "")
     }
+
+    var writePriceText by remember(modelId, existingSpec) { mutableStateOf(initialPricing.cacheWritePerM?.toString() ?: "") }
+    var longWritePriceText by remember(modelId, existingSpec) { mutableStateOf(initialPricing.longCacheWritePerM?.toString() ?: "") }
 
     fun saveSpec(syncedSpec: ModelPricingSpec? = null) {
         val ctx = ctxText.trim().toIntOrNull() ?: 0 // 0 = Unlimited!
         val maxOut = maxOutText.trim().toIntOrNull() // null = Stripped!
-        val inP = inPriceText.trim().toDoubleOrNull() ?: 0.0
-        val outP = outPriceText.trim().toDoubleOrNull() ?: 0.0
-        val cacheP = cachePriceText.trim().toDoubleOrNull() ?: 0.0
-        val thinkP = thinkPriceText.trim().toDoubleOrNull() ?: 0.0
+        val pricing = io.parchment.ai.model.TokenPricing(
+            io.parchment.ai.model.parsePriceText(inPriceText), io.parchment.ai.model.parsePriceText(outPriceText),
+            io.parchment.ai.model.parsePriceText(cachePriceText), io.parchment.ai.model.parsePriceText(writePriceText),
+            io.parchment.ai.model.parsePriceText(thinkPriceText), io.parchment.ai.model.parsePriceText(longWritePriceText))
+        val inP = pricing.inputPerM ?: 0.0
+        val outP = pricing.outputPerM ?: 0.0
+        val cacheP = pricing.cacheReadPerM ?: 0.0
+        val thinkP = pricing.reasoningPerM ?: 0.0
+        val priceChanged = pricing != initialPricing
+
 
         val spec = ModelPricingSpec(
             modelId = modelId,
@@ -2476,6 +2430,9 @@ private fun ModelConfigSubpage(
             inputPricePerM = inP,
             outputPricePerM = outP,
             cacheReadPricePerM = cacheP,
+            cacheWritePricePerM = pricing.cacheWritePerM ?: 0.0,
+            knownPricing = pricing,
+            contextPricingTiers = syncedSpec?.contextPricingTiers ?: if (priceChanged) emptyList() else existingSpec?.contextPricingTiers.orEmpty(),
             reasoningPricePerM = thinkP,
             contextWindowTokens = ctx,
             maxOutputTokens = maxOut,
@@ -2493,6 +2450,9 @@ private fun ModelConfigSubpage(
                 inputPricePerM = if (prof.defaultModel == modelId) inP else prof.inputPricePerM,
                 outputPricePerM = if (prof.defaultModel == modelId) outP else prof.outputPricePerM,
                 cacheReadPricePerM = if (prof.defaultModel == modelId) cacheP else prof.cacheReadPricePerM,
+                cacheWritePricePerM = if (prof.defaultModel == modelId) (pricing.cacheWritePerM ?: 0.0) else prof.cacheWritePricePerM,
+                knownPricing = if (prof.defaultModel == modelId) pricing else prof.knownPricing,
+                pricingModelId = if (prof.defaultModel == modelId) modelId else prof.pricingModelId,
                 reasoningPricePerM = if (prof.defaultModel == modelId) thinkP else prof.reasoningPricePerM,
                 customModelSpecs = prof.customModelSpecs + (modelId to spec)
             )
@@ -2535,10 +2495,13 @@ private fun ModelConfigSubpage(
                                 onSuccess = { spec ->
                                     ctxText = spec.contextWindowTokens.toString()
                                     maxOutText = spec.maxOutputTokens?.toString() ?: ""
-                                    inPriceText = spec.inputPricePerM.toString()
-                                    outPriceText = spec.outputPricePerM.toString()
-                                    cachePriceText = spec.cacheReadPricePerM.toString()
-                                    thinkPriceText = spec.reasoningPricePerM.toString()
+                                    val syncedPricing = spec.knownPricing ?: io.parchment.ai.model.legacyTokenPricing(spec.inputPricePerM, spec.outputPricePerM, spec.cacheReadPricePerM, spec.cacheWritePricePerM, spec.reasoningPricePerM)
+                                    inPriceText = syncedPricing.inputPerM?.toString() ?: ""
+                                    outPriceText = syncedPricing.outputPerM?.toString() ?: ""
+                                    cachePriceText = syncedPricing.cacheReadPerM?.toString() ?: ""
+                                    thinkPriceText = syncedPricing.reasoningPerM?.toString() ?: ""
+                                    writePriceText = syncedPricing.cacheWritePerM?.toString() ?: ""
+                                    longWritePriceText = syncedPricing.longCacheWritePerM?.toString() ?: ""
                                     saveSpec(spec)
                                     onNotify("Synced $modelId specs from unified model registry.")
                                 },
@@ -2549,108 +2512,24 @@ private fun ModelConfigSubpage(
                 )
             }
         ) {
-            val win = LocalParchmentWindowSize.current
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (win.isCompact) {
-                    SepiaTextField(
-                        value = ctxText,
-                        onValueChange = { ctxText = it; saveSpec() },
-                        label = "Context Window Tokens (0 = Unlimited ∞)",
-                        placeholder = "0 = Unlimited",
-                        monospace = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    SepiaTextField(
-                        value = maxOutText,
-                        onValueChange = { maxOutText = it; saveSpec() },
-                        label = "Max Output Tokens (Blank = Strip from API)",
-                        placeholder = "Omitted from API request",
-                        monospace = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = inPriceText,
-                            onValueChange = { inPriceText = it; saveSpec() },
-                            label = "Input $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = cachePriceText,
-                            onValueChange = { cachePriceText = it; saveSpec() },
-                            label = "Cached $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = thinkPriceText,
-                            onValueChange = { thinkPriceText = it; saveSpec() },
-                            label = "Reasoning $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = outPriceText,
-                            onValueChange = { outPriceText = it; saveSpec() },
-                            label = "Output $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = ctxText,
-                            onValueChange = { ctxText = it; saveSpec() },
-                            label = "Context Window Tokens (0 = Unlimited ∞)",
-                            placeholder = "0 = Unlimited",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = maxOutText,
-                            onValueChange = { maxOutText = it; saveSpec() },
-                            label = "Max Output Tokens (Blank = Strip from API)",
-                            placeholder = "Omitted from API request",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SepiaTextField(
-                            value = inPriceText,
-                            onValueChange = { inPriceText = it; saveSpec() },
-                            label = "Input $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = cachePriceText,
-                            onValueChange = { cachePriceText = it; saveSpec() },
-                            label = "Cached $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = thinkPriceText,
-                            onValueChange = { thinkPriceText = it; saveSpec() },
-                            label = "Reasoning $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SepiaTextField(
-                            value = outPriceText,
-                            onValueChange = { outPriceText = it; saveSpec() },
-                            label = "Output $/1M tok",
-                            monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
+                SepiaTextField(value = ctxText, onValueChange = { ctxText = it; saveSpec() },
+                    label = "Context window tokens (0 = unlimited)", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = maxOutText, onValueChange = { maxOutText = it; saveSpec() },
+                    label = "Max output tokens (blank = omit)", monospace = true, modifier = Modifier.fillMaxWidth())
+                BasicText("Prices are USD per million tokens. Blank means unknown; 0 means free.", style = p.uiLabelStyle)
+                SepiaTextField(value = inPriceText, onValueChange = { inPriceText = it; saveSpec() },
+                    label = "Input", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = outPriceText, onValueChange = { outPriceText = it; saveSpec() },
+                    label = "Output", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = cachePriceText, onValueChange = { cachePriceText = it; saveSpec() },
+                    label = "Cache read", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = writePriceText, onValueChange = { writePriceText = it; saveSpec() },
+                    label = "Cache write", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = longWritePriceText, onValueChange = { longWritePriceText = it; saveSpec() },
+                    label = "Long-lived cache write", monospace = true, modifier = Modifier.fillMaxWidth())
+                SepiaTextField(value = thinkPriceText, onValueChange = { thinkPriceText = it; saveSpec() },
+                    label = "Reasoning", monospace = true, modifier = Modifier.fillMaxWidth())
             }
         }
     }
@@ -2660,7 +2539,7 @@ private fun ModelConfigSubpage(
 // SUBPAGE 3: ASSISTANTS (Assistant Cards + Editor Subpage)
 // ============================================================================================
 @Composable
-private fun AssistantsSubpage(
+internal fun AssistantsSubpage(
     appState: AppStateSnapshot,
     onUpdateAssistants: (List<AssistantAgent>, String) -> Unit,
     onNotify: (String) -> Unit
@@ -2848,45 +2727,16 @@ private fun AssistantsSubpage(
                         }
                     }
                     SepiaDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicText(
-                            text = if (editingAssistant.workspacePath.isBlank()) "Workspace: None" else "Workspace: ${editingAssistant.workspacePath}",
-                            style = p.monoStyle.copy(fontSize = 11.5.sp),
-                            modifier = Modifier.weight(1f).padding(end = 8.dp)
-                        )
-                        SepiaButton(
-                            text = "📂 Mount Folder…",
-                            compact = true,
-                            style = SepiaButtonStyle.OUTLINE,
-                            onClick = {
-                                scope.launch {
-                                    val picked = PlatformBridge.pickWorkspaceDirectory(editingAssistant.workspacePath)
-                                    if (!picked.isNullOrBlank()) {
-                                        updateCurrent {
-                                            it.copy(
-                                                workspacePath = picked,
-                                                workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                    }
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        WorkspaceMode.entries.forEach { mode ->
-                            SepiaChip(
-                                label = mode.label,
-                                selected = editingAssistant.workspaceMode == mode,
-                                onClick = { updateCurrent { it.copy(workspaceMode = mode) } }
-                            )
-                        }
-                    }
+                    val defaults = AgentPermissionResolver.defaults(editingAssistant)
+                    AgentPermissionEditor(
+                        defaults = AgentPermissionPolicy(), overrides = defaults.asOverrides(),
+                        onChange = { value -> updateCurrent { it.copy(permissionDefaults = value.applyTo(AgentPermissionPolicy())) } }
+                    )
+                    SepiaDivider()
+                    AgentToolRegistry(
+                        policy = defaults, overrides = defaults.asOverrides(),
+                        onChange = { value -> updateCurrent { it.copy(permissionDefaults = value.applyTo(AgentPermissionPolicy())) } }
+                    )
                 }
             }
 
@@ -2894,7 +2744,7 @@ private fun AssistantsSubpage(
                 title = "Assistant Sampling & Context Overrides (Blank = Follow Profile, 0 = ∞)"
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         SepiaTextField(
                             value = tempText,
                             onValueChange = { v ->
@@ -2905,7 +2755,7 @@ private fun AssistantsSubpage(
                             label = "Temperature (blank = omit)",
                             placeholder = "Omitted",
                             monospace = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         )
                         SepiaTextField(
                             value = topPText,
@@ -2917,62 +2767,33 @@ private fun AssistantsSubpage(
                             label = "Top-P (blank = omit)",
                             placeholder = "Omitted",
                             monospace = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    if (win.isCompact) {
-                        SepiaTextField(
-                            value = maxOutText,
-                            onValueChange = { v ->
-                                maxOutText = v
-                                val t = v.trim()
-                                updateCurrent { it.copy(maxOutputTokens = if (t.isEmpty()) null else t.toIntOrNull()) }
-                            },
-                            label = "Max Output Tokens (Blank/0 = Unlimited)",
-                            placeholder = "Unlimited",
-                            monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        SepiaTextField(
-                            value = ctxMsgLimitText,
-                            onValueChange = { v ->
-                                ctxMsgLimitText = v
-                                val n = v.trim().toIntOrNull() ?: 0
-                                updateCurrent { it.copy(contextMessageLimit = n.coerceAtLeast(0)) }
-                            },
-                            label = "History Message Limit (0 = Unlimited)",
-                            placeholder = "0 = Unlimited",
-                            monospace = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SepiaTextField(
-                                value = maxOutText,
-                                onValueChange = { v ->
-                                    maxOutText = v
-                                    val t = v.trim()
-                                    updateCurrent { it.copy(maxOutputTokens = if (t.isEmpty()) null else t.toIntOrNull()) }
-                                },
-                                label = "Max Output Tokens (Blank/0 = Unlimited)",
-                                placeholder = "Unlimited",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            SepiaTextField(
-                                value = ctxMsgLimitText,
-                                onValueChange = { v ->
-                                    ctxMsgLimitText = v
-                                    val n = v.trim().toIntOrNull() ?: 0
-                                    updateCurrent { it.copy(contextMessageLimit = n.coerceAtLeast(0)) }
-                                },
-                                label = "History Message Limit (0 = Unlimited)",
-                                placeholder = "0 = Unlimited",
-                                monospace = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
                     }
+                    SepiaTextField(
+                        value = maxOutText,
+                        onValueChange = { v ->
+                            maxOutText = v
+                            val t = v.trim()
+                            updateCurrent { it.copy(maxOutputTokens = if (t.isEmpty()) null else t.toIntOrNull()) }
+                        },
+                        label = "Max Output Tokens (Blank/0 = Unlimited)",
+                        placeholder = "Unlimited",
+                        monospace = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    SepiaTextField(
+                        value = ctxMsgLimitText,
+                        onValueChange = { v ->
+                            ctxMsgLimitText = v
+                            val n = v.trim().toIntOrNull() ?: 0
+                            updateCurrent { it.copy(contextMessageLimit = n.coerceAtLeast(0)) }
+                        },
+                        label = "History Message Limit (0 = Unlimited)",
+                        placeholder = "0 = Unlimited",
+                        monospace = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
             return@Column
@@ -3256,32 +3077,11 @@ private fun WorkspaceSubpage(
     val activeAssistant = appState.assistants.find { it.id == activeSession.assistantId }
         ?: appState.assistants.find { it.id == appState.activeAssistantId }
         ?: appState.assistants.firstOrNull()
-    val effectiveWsPath = activeSession.workspacePath.ifBlank { activeAssistant?.workspacePath.orEmpty() }
-    val effectiveWsMode = if (activeSession.workspaceMode != WorkspaceMode.OFF) {
-        activeSession.workspaceMode
-    } else if (activeSession.workspacePath.isBlank() && activeAssistant != null) {
-        activeAssistant.workspaceMode
-    } else {
-        WorkspaceMode.OFF
-    }
-
-    val allTools = remember { WorkspaceHarness.allTools() }
-    val activeToolNames = remember(
-        effectiveWsMode,
-        effectiveWsPath,
-        activeProfile.allowShellExecution,
-        activeProfile.enableWebSearch,
-        activeProfile.enableUrlContext
-    ) {
-        WorkspaceHarness.activeToolsForMode(
-            mode = effectiveWsMode,
-            workspacePath = effectiveWsPath,
-            allowShell = activeProfile.allowShellExecution,
-            goalModeActive = true,
-            enableWebTools = activeProfile.enableWebSearch || activeProfile.enableUrlContext,
-            includeLocalWebSearchTool = true
-        ).map { it.name }.toSet()
-    }
+    val permissionDefaults = AgentPermissionResolver.defaults(activeAssistant)
+    val permissionOverrides = activeSession.permissionOverrides ?: AgentPermissionResolver.legacyOverrides(activeSession, activeProfile)
+    val toolPolicy = permissionOverrides.applyTo(permissionDefaults)
+    val effectiveWsPath = toolPolicy.workspacePath
+    val effectiveWsMode = toolPolicy.workspaceMode
 
     val discoveredFiles = remember(effectiveWsPath) {
         WorkspaceHarness.listDiscoveredContextFileNames(effectiveWsPath)
@@ -3297,125 +3097,21 @@ private fun WorkspaceSubpage(
         BasicText(text = "Workspace & Local Agent Harness", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Sandboxed Local File System & Autonomous Agent Harness"
+            title = "Workspace and agent permissions"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        BasicText(
-                            text = if (effectiveWsPath.isBlank()) "Mounted Folder: None" else "Mounted: $effectiveWsPath",
-                            style = p.uiBodyStyle.copy(fontFamily = p.codeFontFamily, fontWeight = FontWeight.SemiBold)
-                        )
-                        BasicText(
-                            text = if (effectiveWsPath.isBlank()) {
-                                "Mount a local project or manuscript folder to unlock fs_list, fs_glob, fs_read, fs_search, fs_write, fs_edit, fs_multi_edit, and shell_exec."
-                            } else {
-                                "Sandboxed to this directory (depth 24, auto-ignores .git, build, .gradle, node_modules)."
-                            },
-                            style = p.uiLabelStyle.copy(color = p.mutedInk)
-                        )
-                    }
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        SepiaButton(
-                            text = if (effectiveWsPath.isBlank()) "📂 Mount Folder…" else "📂 Change Folder…",
-                            style = SepiaButtonStyle.PRIMARY,
-                            onClick = {
-                                scope.launch {
-                                    val picked = PlatformBridge.pickWorkspaceDirectory(effectiveWsPath)
-                                    if (!picked.isNullOrBlank()) {
-                                        onUpdateSession {
-                                            it.copy(
-                                                workspacePath = picked,
-                                                workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
-                                            )
-                                        }
-                                        onNotify("Mounted workspace: $picked")
-                                    }
-                                }
-                            }
-                        )
-                        if (effectiveWsPath.isNotBlank()) {
-                            SepiaButton(
-                                text = "📂 Open in OS",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = { PlatformBridge.openOrPlayMedia(effectiveWsPath) }
-                            )
-                            SepiaButton(
-                                text = "× Unmount",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = {
-                                    onUpdateSession { it.copy(workspacePath = "", workspaceMode = WorkspaceMode.OFF) }
-                                    onNotify("Unmounted workspace folder.")
-                                }
-                            )
-                        }
-                    }
-                }
-
-                SepiaDivider()
-
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    WorkspaceMode.entries.forEach { mode ->
-                        SepiaChip(
-                            label = mode.label,
-                            selected = effectiveWsMode == mode,
-                            onClick = {
-                                if (mode != WorkspaceMode.OFF && effectiveWsPath.isBlank()) {
-                                    scope.launch {
-                                        val picked = PlatformBridge.pickWorkspaceDirectory("")
-                                        if (!picked.isNullOrBlank()) {
-                                            onUpdateSession { it.copy(workspacePath = picked, workspaceMode = mode) }
-                                            onNotify("Mounted '$picked' in ${mode.label}")
-                                        } else {
-                                            onUpdateSession { it.copy(workspaceMode = mode) }
-                                        }
-                                    }
-                                } else {
-                                    onUpdateSession { it.copy(workspaceMode = mode) }
-                                }
-                            }
-                        )
-                    }
-                }
-
-                SepiaToggleRow(
-                    title = "Allow Sandboxed Shell Execution (shell_exec)",
-                    checked = activeProfile.allowShellExecution,
-                    onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
+                AgentPermissionEditor(
+                    defaults = permissionDefaults, overrides = permissionOverrides,
+                    onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } },
+                    onReset = { onUpdateSession { it.copy(permissionOverrides = AgentPermissionOverrides()) } }
                 )
-
-                SepiaToggleRow(
-                    title = "Enable Web Search & URL Fetching (web_search, web_fetch)",
-                    checked = activeProfile.enableWebSearch,
-                    onCheckedChange = { ws -> onUpdateProfile { it.copy(enableWebSearch = ws) } }
-                )
-
                 if (effectiveWsPath.isNotBlank()) {
                     SepiaDivider()
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Column {
                             BasicText(
                                 text = "Auto-Loaded Project Memory & Context Files",
                                 style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
@@ -3431,8 +3127,9 @@ private fun WorkspaceSubpage(
                         }
                         if ("PARCHMENT_MEMORY.md" !in discoveredFiles) {
                             SepiaButton(
-                                text = "+ Init PARCHMENT_MEMORY.md",
-                                compact = true,
+                                text = "Create project memory file",
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
+                                enabled = effectiveWsMode == WorkspaceMode.READ_WRITE,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
                                     PlatformBridge.workspaceWrite(
@@ -3450,148 +3147,11 @@ private fun WorkspaceSubpage(
             }
         }
 
-        // Complete 17-Tool Interactive Registry
-        SepiaSectionCard(
-            title = "Complete Agent Harness Tool Registry (${activeToolNames.size} / ${allTools.size} Active)"
-        ) {
-            val readTools = remember(allTools) {
-                allTools.filter { it.requiresWorkspaceFolder && !it.requiresWritePermission }
-            }
-            val writeTools = remember(allTools) {
-                allTools.filter { (it.requiresWorkspaceFolder && it.requiresWritePermission && !it.requiresShellPermission) || it.name == "agent_memory" }
-            }
-            val shellTools = remember(allTools) {
-                allTools.filter { it.requiresShellPermission }
-            }
-            val standaloneTools = remember(allTools) {
-                allTools.filter { !it.requiresWorkspaceFolder && it.name != "agent_memory" }
-            }
-
-            val categories = listOf(
-                Triple("1. Workspace Read & Search Tools (Read-Only or Agent R/W)", "Requires a mounted folder + Read-Only or Agent R/W mode", readTools),
-                Triple("2. Workspace Write, Atomic Edit & Memory Tools (Agent R/W)", "Requires a mounted folder + Agent R/W mode", writeTools),
-                Triple("3. Sandboxed Terminal Execution (Agent R/W + Shell)", "Requires a mounted folder + Agent R/W mode + Allow Shell Execution", shellTools),
-                Triple("4. Autonomous Goal, Web Search & Utility Tools (Always Available)", "Works with or without a mounted workspace folder", standaloneTools)
+        SepiaSectionCard(title = "Agent tools") {
+            AgentToolRegistry(
+                policy = toolPolicy, overrides = permissionOverrides,
+                onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } }
             )
-
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                categories.forEachIndexed { catIdx, (catTitle, catSub, toolsInGroup) ->
-                    if (catIdx > 0) SepiaDivider()
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        BasicText(
-                            text = catTitle,
-                            style = p.uiHeaderStyle.copy(fontSize = 14.sp, color = p.accent)
-                        )
-                        BasicText(
-                            text = catSub,
-                            style = p.uiLabelStyle.copy(color = p.mutedInk)
-                        )
-                        toolsInGroup.forEach { tool ->
-                            val isActive = tool.name in activeToolNames
-                            val signature = remember(tool.name) { WorkspaceHarness.extractParameterSignature(tool) }
-                            val toolIcon = remember(tool.name) { resolveToolKissIcon(tool.name) }
-                            val statusText = when {
-                                isActive -> "✓ Active"
-                                tool.requiresShellPermission -> "Enable R/W + Shell"
-                                tool.requiresWritePermission -> "Enable Agent R/W"
-                                tool.requiresWorkspaceFolder -> if (effectiveWsPath.isBlank()) "Mount Folder" else "Enable Read-Only"
-                                else -> "✓ Ready"
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isActive) p.elevatedBg.copy(alpha = 0.55f) else p.sheetBg.copy(alpha = 0.4f))
-                                    .border(
-                                        width = 0.8.dp,
-                                        color = if (isActive) p.accent.copy(alpha = 0.55f) else p.border.copy(alpha = 0.6f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .padding(10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(
-                                    modifier = Modifier.weight(1f).padding(end = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        KissVectorIcon(
-                                            icon = toolIcon,
-                                            tint = if (isActive) p.accent else p.mutedInk,
-                                            size = 13.5.dp
-                                        )
-                                        BasicText(
-                                            text = signature,
-                                            style = p.monoStyle.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp,
-                                                color = if (isActive) p.primaryInk else p.narrationInk
-                                            )
-                                        )
-                                    }
-                                    BasicText(
-                                        text = tool.description,
-                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.5.sp)
-                                    )
-                                }
-
-                                SepiaChip(
-                                    label = statusText,
-                                    selected = isActive,
-                                    onClick = {
-                                        scope.launch {
-                                            var targetPath = effectiveWsPath
-                                            if (tool.requiresWorkspaceFolder && targetPath.isBlank()) {
-                                                targetPath = PlatformBridge.pickWorkspaceDirectory("").orEmpty()
-                                            }
-                                            when {
-                                                tool.requiresShellPermission -> {
-                                                    onUpdateProfile { it.copy(allowShellExecution = true) }
-                                                    onUpdateSession {
-                                                        it.copy(
-                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
-                                                            workspaceMode = WorkspaceMode.READ_WRITE
-                                                        )
-                                                    }
-                                                    onNotify("Enabled Agent R/W + Shell Execution for ${tool.name}.")
-                                                }
-                                                tool.requiresWritePermission -> {
-                                                    onUpdateSession {
-                                                        it.copy(
-                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
-                                                            workspaceMode = WorkspaceMode.READ_WRITE
-                                                        )
-                                                    }
-                                                    onNotify("Switched Workspace to Agent R/W for ${tool.name}.")
-                                                }
-                                                tool.requiresWorkspaceFolder -> {
-                                                    val nextMode = if (effectiveWsMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else effectiveWsMode
-                                                    onUpdateSession {
-                                                        it.copy(
-                                                            workspacePath = targetPath.ifBlank { it.workspacePath },
-                                                            workspaceMode = nextMode
-                                                        )
-                                                    }
-                                                    onNotify("Enabled Workspace Read-Only for ${tool.name}.")
-                                                }
-                                                tool.name == "web_search" || tool.name == "web_fetch" -> {
-                                                    onUpdateProfile { it.copy(enableWebSearch = true) }
-                                                    onNotify("Enabled Web Search for ${tool.name}.")
-                                                }
-                                            }
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -4478,7 +4038,14 @@ private fun BackupAndOtaSubpage(
                         onClick = {
                             scope.launch {
                                 val fileName = buildExportFileNameForChat(activeSession)
-                                val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
+                                val bytes = runCatching {
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        encodeChatSessionJsonForExport(activeSession)
+                                    }
+                                }.getOrElse { error ->
+                                    onNotify("Chat export failed: ${error.message}")
+                                    return@launch
+                                }
                                 val saved = PlatformBridge.saveFileForExport(fileName, bytes)
                                 if (saved != null) onNotify("Exported chat JSON to $saved")
                             }
@@ -4668,8 +4235,8 @@ private fun countCategorySearchMatches(
         }
         SettingsCategory.WORKSPACE -> {
             listOf(
-                hit("Sandboxed Local File System Agent", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write"),
-                hit("Allow Sandboxed Shell Execution", "shell_exec", "terminal", "powershell", "bash", "Workspace")
+                hit("Agent approvals and file access", "Agent permissions", "assistant defaults", "inherit", "web access", "network", "sandbox", "power", "keep awake", "tools", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write"),
+                hit("Shell full process access", "shell_exec", "terminal", "powershell", "bash", "Workspace")
             ).count { it }
         }
         SettingsCategory.WORLD_BOOK -> {
@@ -4798,8 +4365,8 @@ private fun GlobalSettingsSearchResultsSubpage(
     val anyProviderMatch = hitApiKey || hitBaseUrl || hitStateful || hitLongDecode || hitLegacyFallback || hitSampling || hitCapabilities || matchingModels.isNotEmpty()
 
     // 3. WORKSPACE MATCHES
-    val hitWorkspaceMode = hit("Sandboxed Local File System Agent", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write", "folder", "workspace")
-    val hitShellExec = hit("Allow Sandboxed Shell Execution", "shell_exec", "terminal", "powershell", "bash", "command", "workspace")
+    val hitWorkspaceMode = hit("Agent approvals and file access", "Agent permissions", "assistant defaults", "inherit", "web access", "network", "sandbox", "power", "keep awake", "tools", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write", "folder", "workspace")
+    val hitShellExec = hit("Shell full process access", "shell_exec", "terminal", "powershell", "bash", "command", "workspace")
     val anyWorkspaceMatch = hitWorkspaceMode || hitShellExec
 
     // 4. DEFAULT MODELS MATCHES
@@ -4873,18 +4440,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (hitColorMode) {
-                        SepiaAdaptiveRow(label = "Color Mode & Preset") {
-                            @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                ThemeConfig.PRESETS.forEach { preset ->
-                                    SepiaChip(
-                                        label = preset.name.substringBefore(" ("),
-                                        selected = theme.name == preset.name,
-                                        onClick = { onUpdateTheme(preset) }
-                                    )
-                                }
-                            }
-                        }
+                        ThemePresetChoices(theme, onUpdateTheme)
                     }
                     if (hitAccentColor) {
                         SepiaAdaptiveRow(label = "Accent Color") {
@@ -4924,7 +4480,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                         var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }
                         var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                         var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             SepiaTextField(
                                 value = proseSizeText,
                                 onValueChange = { v ->
@@ -4933,7 +4489,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 },
                                 label = "Prose Font Size (sp)",
                                 monospace = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth()
                             )
                             SepiaTextField(
                                 value = codeSizeText,
@@ -4943,7 +4499,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 },
                                 label = "Code Font Size (sp)",
                                 monospace = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth()
                             )
                             SepiaTextField(
                                 value = maxWidthText,
@@ -4953,7 +4509,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 },
                                 label = "Max Reading Width (dp)",
                                 monospace = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -5341,7 +4897,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitSampling) {
                         var tempStr by remember(activeProfile.temperature) { mutableStateOf(activeProfile.temperature?.toString().orEmpty()) }
                         var topPStr by remember(activeProfile.topP) { mutableStateOf(activeProfile.topP?.toString().orEmpty()) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             SepiaTextField(
                                 value = tempStr,
                                 onValueChange = { v ->
@@ -5351,7 +4907,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 },
                                 label = "Temperature (blank = omit)",
                                 monospace = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth()
                             )
                             SepiaTextField(
                                 value = topPStr,
@@ -5362,7 +4918,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                                 },
                                 label = "Top-P (blank = omit)",
                                 monospace = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -5443,7 +4999,7 @@ private fun GlobalSettingsSearchResultsSubpage(
         if (anyWorkspaceMatch) {
             SepiaSectionCard(
                 title = "Workspace & Local Agent Harness",
-                subtitle = "Local file system tools and sandboxed shell execution",
+                subtitle = "Approvals and local tool access",
                 headerAction = {
                     SepiaButton(
                         text = "Open Workspace →",
@@ -5454,25 +5010,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (hitWorkspaceMode) {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            WorkspaceMode.entries.forEach { mode ->
-                                SepiaChip(
-                                    label = mode.label,
-                                    selected = activeSession.workspaceMode == mode,
-                                    onClick = { onUpdateSession { it.copy(workspaceMode = mode) } }
-                                )
-                            }
-                        }
-                    }
-                    if (hitShellExec) {
-                        SepiaToggleRow(
-                            title = "Allow Sandboxed Shell Execution (shell_exec)",
-                            checked = activeProfile.allowShellExecution,
-                            onCheckedChange = { sh -> onUpdateProfile { it.copy(allowShellExecution = sh) } }
-                        )
-                    }
+                    BasicText("Approval, file access, web access and shell permissions are controlled per assistant and chat.", style = p.uiLabelStyle)
                 }
             }
         }

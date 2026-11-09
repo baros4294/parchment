@@ -56,6 +56,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.derivedStateOf
@@ -70,6 +71,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -97,6 +103,15 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.QueuedPromptItem
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.harness.AgentToolRunContext
+import io.parchment.ai.runtime.appRunLeases
+import io.parchment.ai.harness.ToolApprovalBroker
+import io.parchment.ai.harness.ToolAccessScope
+import io.parchment.ai.model.AgentPermissionResolver
+import io.parchment.ai.model.AgentPermissionOverrides
+import io.parchment.ai.model.asOverrides
+import io.parchment.ai.model.withImportedPermissions
+import io.parchment.ai.model.withLegacyWorkspaceChangeFrom
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WorkspaceMode
@@ -106,6 +121,8 @@ import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
+import io.parchment.ai.model.ApiUsageRecord
+import io.parchment.ai.network.aggregateApiUsageRecords
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
@@ -114,6 +131,7 @@ import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -131,9 +149,9 @@ fun ParchmentApp(
 ) {
     val uiScope = rememberCoroutineScope()
 
-    val initialFastPair = remember { loadFastInitialAppState() }
-    var appState by remember { mutableStateOf(initialFastPair.first) }
-    var needsBackgroundChatHydration by remember { mutableStateOf(initialFastPair.second) }
+    val processState = parchmentProcessState
+    var appState by processState.snapshot
+    var needsBackgroundChatHydration by processState.needsBackgroundHydration
     var isSettingsOpen by remember { mutableStateOf(false) }
     var activeSettingsCategory by remember { mutableStateOf(SettingsCategory.PREFERENCES) }
     var startMobileSettingsAtRoot by remember { mutableStateOf(true) }
@@ -142,16 +160,22 @@ fun ParchmentApp(
     var showSessionInspector by remember { mutableStateOf(false) }
     var showRightFilesSidebar by remember { mutableStateOf(false) }
     var showQuickModelPopover by remember { mutableStateOf(false) }
+    var showComposerToolsDrawer by remember(appState.activeSessionId) { mutableStateOf(false) }
     var showMobileTabSwitcher by remember { mutableStateOf(false) }
-    var bannerNotification by remember { mutableStateOf("") }
+    var bannerNotification by processState.notice
 
     // OTA Update state
     var otaState by remember { mutableStateOf<OtaUpdateState>(OtaUpdateState.Idle) }
     var dismissOtaBanner by remember { mutableStateOf(false) }
 
     // Concurrent Per-Session Multi-Tasking Stream & Queue State (allows multiple tabs to run simultaneously!)
-    var activeStreamsBySession by remember { mutableStateOf<Map<String, SessionStreamRuntime>>(emptyMap()) }
-    var queuedPromptsBySession by remember { mutableStateOf<Map<String, List<QueuedPromptItem>>>(emptyMap()) }
+    var activeStreamsBySession by processState.runs.streams
+    var queuedPromptsBySession by processState.queuedPrompts
+    DisposableEffect(uiScope) {
+        val clock = uiScope.coroutineContext[MonotonicFrameClock]
+        processState.attachClock(clock)
+        onDispose { processState.detachClock(clock) }
+    }
 
     val activeProfile = remember(appState.profiles, appState.activeProfileId) {
         appState.profiles.find { it.id == appState.activeProfileId }
@@ -175,13 +199,13 @@ fun ParchmentApp(
             O200kTokenizer.warmUp()
         }
         if (needsBackgroundChatHydration) {
-            needsBackgroundChatHydration = false
             val beforeLoad = appState
             val keepHydrated = activeStreamsBySession.keys
             val hydrated = withContext(Dispatchers.Default) {
                 loadRemainingHistoricalSessionsDehydrated(beforeLoad, keepHydrated)
             }
             appState = mergeLoadedSessions(appState, beforeLoad, hydrated)
+            needsBackgroundChatHydration = false
         }
     }
 
@@ -229,7 +253,7 @@ fun ParchmentApp(
     var isGoalModeEnabled by remember { mutableStateOf(false) }
     var isLiveVoiceMode by remember { mutableStateOf(false) }
     var isVoiceListening by remember { mutableStateOf(false) }
-    var pendingAttachmentsBySession by remember { mutableStateOf<Map<String, List<PromptAttachment>>>(emptyMap()) }
+    var pendingAttachmentsBySession by processState.pendingAttachments
     val pendingAttachments = pendingAttachmentsBySession[activeSession.id].orEmpty()
     var pendingDeleteConfirmation by remember { mutableStateOf<DeleteConfirmRequest?>(null) }
     var pendingRegenerateConfirm by remember { mutableStateOf<RegenerateConfirmRequest?>(null) }
@@ -414,10 +438,21 @@ fun ParchmentApp(
 
     fun persist(updated: AppStateSnapshot, immediateFlush: Boolean = false) {
         val previous = appState
+        activeStreamsBySession.values.forEach { runtime ->
+            val old = previous.sessions.find { it.id == runtime.sessionId }
+            val next = updated.sessions.find { it.id == runtime.sessionId }
+            fun policy(snapshot: AppStateSnapshot, session: ChatSession?) = session?.let {
+                AgentPermissionResolver.resolve(it, snapshot.assistants.find { a -> a.id == it.assistantId }, snapshot.profiles.find { p -> p.id == it.profileId })
+            }
+            if (policy(previous, old) != policy(updated, next)) runtime.toolApprovalBroker?.invalidate()
+        }
         val previousSessionsById = previous.sessions.associateBy { it.id }
         val changedSessions = updated.sessions.filter { previousSessionsById[it.id] != it }
         val removedIds = previousSessionsById.keys - updated.sessions.map { it.id }.toSet()
         appState = updated
+        activeStreamsBySession.values.forEach { runtime ->
+            runtime.toolApprovalBroker?.let { broker -> appProcessScope.launch { broker.refreshPolicy() } }
+        }
         appDiskWriter.enqueue(
             settings = updated,
             sessions = changedSessions,
@@ -450,12 +485,16 @@ fun ParchmentApp(
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == targetId) {
-                val mod = transform(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val mod = transform(complete).withLegacyWorkspaceChangeFrom(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                if (mod.permissionOverrides != complete.permissionOverrides) activeStreamsBySession[targetId]?.toolApprovalBroker?.invalidate()
                 modifiedSession = mod
                 mod
             } else it
         }
         appState = currentSnap.copy(sessions = newSessions)
+        if (modifiedSession?.permissionOverrides != complete.permissionOverrides) {
+            activeStreamsBySession[targetId]?.toolApprovalBroker?.let { broker -> appProcessScope.launch { broker.refreshPolicy() } }
+        }
         modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
 
@@ -466,7 +505,8 @@ fun ParchmentApp(
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == sessionId) {
-                val mod = transform(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val mod = transform(complete).withLegacyWorkspaceChangeFrom(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                if (mod.permissionOverrides != complete.permissionOverrides) activeStreamsBySession[sessionId]?.toolApprovalBroker?.invalidate()
                 modifiedSession = mod
                 if (target.isCompactStub && sessionId != currentSnap.activeSessionId && sessionId !in activeStreamsBySession &&
                     mod.messages.none { node -> node.activeVariant.isStreaming }) {
@@ -475,6 +515,9 @@ fun ParchmentApp(
             } else it
         }
         appState = currentSnap.copy(sessions = newSessions)
+        if (modifiedSession?.permissionOverrides != complete.permissionOverrides) {
+            activeStreamsBySession[sessionId]?.toolApprovalBroker?.let { broker -> appProcessScope.launch { broker.refreshPolicy() } }
+        }
         modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
 
@@ -633,6 +676,20 @@ fun ParchmentApp(
      * Parchment Automatic & Manual AI Title Generation.
      * Respects `session.isTitleManuallySet` unless `forceRegenerate = true` (when clicking `✦`).
      */
+    fun recordUtilityUsage(sessionId: String, record: ApiUsageRecord) {
+        updateSessionById(sessionId) { current ->
+            current.withUtilityUsage(record)
+        }
+    }
+
+    suspend fun generateTrackedUtility(sessionId: String, purpose: String, profile: ProviderProfile,
+        model: String, prompt: String, maxOutputTokens: Int? = null): Result<String> {
+        val runId = kotlinx.coroutines.currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformBridge.createRunId()
+        return AiProviderEngine.generateUtilityText(profile, model, prompt, maxOutputTokens,
+            ownerSessionId = sessionId, ownerRunId = runId, purpose = purpose,
+            onUsage = { record, _ -> withContext(Dispatchers.Main.immediate) { recordUtilityUsage(sessionId, record) } })
+    }
+
     fun generateTopicTitle(sessionId: String, forceRegenerate: Boolean = false) {
         val targetSess = appState.sessions.find { it.id == sessionId } ?: return
         if (!forceRegenerate && targetSess.isTitleManuallySet) return
@@ -665,7 +722,7 @@ fun ParchmentApp(
             }
             val prompt = "${dm.titlePromptTemplate}\n\nConversation:\n$transcriptSnippet"
 
-            AiProviderEngine.generateUtilityText(resolvedProf, resolvedModel, prompt, maxOutputTokens = 256).fold(
+            generateTrackedUtility(sessionId, "title", resolvedProf, resolvedModel, prompt, maxOutputTokens = 256).fold(
                 onSuccess = { genTitle ->
                     val cleaned = genTitle.lines().firstOrNull()?.trim()?.removeSurrounding("\"")?.take(60).orEmpty()
                     if (cleaned.isNotBlank()) {
@@ -701,9 +758,10 @@ fun ParchmentApp(
         } else {
             activeStreamsBySession + (sessionId to next)
         }
+        if (next != null) processState.runs.track(next)
     }
 
-    fun triggerGeneration(
+    fun beginGeneration(
         sessionId: String,
         historyForCall: List<MessageNode>,
         targetAssistantNodeId: String,
@@ -716,8 +774,10 @@ fun ParchmentApp(
             bannerNotification = "Chat history is still loading. Try again when it is ready."
             return
         }
-        // Cancel only any prior job on THIS sessionId — never interrupt other running tabs!
-        activeStreamsBySession[sessionId]?.job?.cancel()
+        if (sessionSnap.messages.none { node -> node.id == targetAssistantNodeId && node.variants.any { it.id == targetVariantId } }) {
+            bannerNotification = "The requested turn is no longer available."
+            return
+        }
         val assistantSnap = appState.assistants.find { it.id == sessionSnap.assistantId } ?: activeAssistant
         val profileSnap = appState.profiles.find { it.id == sessionSnap.profileId } ?: activeProfile
 
@@ -732,22 +792,16 @@ fun ParchmentApp(
             }
         }.trim()
 
-        val resolvedWorkspacePath = sessionSnap.workspacePath.ifBlank { assistantSnap.workspacePath }
-        val resolvedWorkspaceMode = if (sessionSnap.workspaceMode != WorkspaceMode.OFF) {
-            sessionSnap.workspaceMode
-        } else if (sessionSnap.workspacePath.isBlank()) {
-            assistantSnap.workspaceMode
-        } else {
-            WorkspaceMode.OFF
-        }
+        val toolPolicy = AgentPermissionResolver.resolve(sessionSnap, assistantSnap, profileSnap)
 
         val mergedSessionForApi = sessionSnap.copy(
             systemPrompt = mergedSystemPrompt,
             authorsNote = sessionSnap.authorsNote.ifBlank { assistantSnap.authorsNote },
             activeCard = sessionSnap.activeCard ?: assistantSnap.activeCard,
             fragments = (appState.globalWorldBook + assistantSnap.fragments + sessionSnap.fragments).distinctBy { it.id },
-            workspacePath = resolvedWorkspacePath,
-            workspaceMode = resolvedWorkspaceMode
+            workspacePath = toolPolicy.workspacePath,
+            workspaceMode = toolPolicy.workspaceMode,
+            permissionOverrides = toolPolicy.asOverrides()
         )
 
         val effectiveHistory = if (assistantSnap.contextMessageLimit > 0 && historyForCall.size > assistantSnap.contextMessageLimit) {
@@ -761,7 +815,9 @@ fun ParchmentApp(
             topP = assistantSnap.topP ?: profileSnap.topP,
             maxOutputTokens = assistantSnap.maxOutputTokens ?: profileSnap.maxOutputTokens,
             thinkingEffort = assistantSnap.thinkingEffort.ifBlank { profileSnap.thinkingEffort },
-            enableWebSearch = profileSnap.enableWebSearch || assistantSnap.enableWebSearch
+            enableWebSearch = toolPolicy.toolsEnabled && toolPolicy.webAccess && toolPolicy.allowsTool("web_search"),
+            enableUrlContext = toolPolicy.toolsEnabled && toolPolicy.webAccess && toolPolicy.allowsTool("web_fetch") && profileSnap.enableUrlContext,
+            allowShellExecution = false
         )
 
         val modelName = mergedSessionForApi.modelOverride.ifBlank {
@@ -782,8 +838,43 @@ fun ParchmentApp(
         val initialMedia = existingTargetVariant?.mediaItems.orEmpty()
         val initialWebSources = existingTargetVariant?.webSources.orEmpty()
         val initialDurationMs = existingTargetVariant?.thinkingDurationMs ?: 0L
+        val identity = AgentRunIdentity(
+            PlatformBridge.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
+            effectiveProfileForApi.id, modelName,
+            if (effectiveProfileForApi.protocol == ProviderProtocol.CUSTOM) effectiveProfileForApi.customDialect
+            else io.parchment.ai.model.mapProtocolToDialect(effectiveProfileForApi.protocol.name)
+        )
 
-        val newJob = appProcessScope.launch {
+        var owningJob: kotlinx.coroutines.Job? = null
+        val runStartedWithGoal = existingTargetVariant?.goalTracker != null || historyForCall.any { it.activeVariant.content.startsWith("/goal", true) }
+        val approvalBroker = ToolApprovalBroker(
+            runId = identity.runId,
+            chatId = sessionId,
+            policySource = {
+                val current = appState.sessions.find { it.id == sessionId }
+                if (current == null || owningJob?.isActive == false) null else ToolAccessScope(
+                    AgentPermissionResolver.resolve(current, appState.assistants.find { it.id == current.assistantId }, appState.profiles.find { it.id == current.profileId }),
+                    goalModeActive = isGoalModeEnabled || runStartedWithGoal
+                )
+            },
+            onStop = { processState.runs.requestStop(identity); owningJob?.cancel() }
+        )
+        fun updateOwnedStream(updater: (SessionStreamRuntime?) -> SessionStreamRuntime?) {
+            processState.runs.update(identity) { current -> updater(current) ?: current }
+        }
+        val newJob = appRunLeases.launch(appProcessScope, modelName, AgentToolRunContext(approvalBroker),
+            start = kotlinx.coroutines.CoroutineStart.LAZY) { activity ->
+            var terminalPhase = AgentRunPhase.INTERRUPTED
+            updateOwnedStream { it?.copy(phase = AgentRunPhase.RUNNING) }
+            val approvalObserver = launch {
+                activity.waitingForApproval.collect { waiting ->
+                    updateOwnedStream { current -> current?.copy(phase = when {
+                        waiting -> AgentRunPhase.WAITING_APPROVAL
+                        current.phase == AgentRunPhase.WAITING_APPROVAL -> AgentRunPhase.RUNNING
+                        else -> current.phase
+                    }) }
+                }
+            }
             val networkContentTarget = StringBuilder(cleanContinuePrefix)
             val networkThinkingTarget = StringBuilder(initialThinking)
             val currentStepThinkingTarget = StringBuilder(initialTrailingThinking)
@@ -793,28 +884,28 @@ fun ParchmentApp(
             var displayedStepThinkingLen = initialTrailingThinking.length
             val accumulatedTools = initialTools.toMutableList()
             var latestGoalTracker: GoalTrackerState? = existingTargetVariant?.goalTracker
+            var accumulatedUsageRecords = existingTargetVariant?.apiUsageRecords.orEmpty()
+            var latestTokenMetrics = existingTargetVariant?.tokenMetrics ?: io.parchment.ai.model.TokenMetrics()
             val accumulatedMedia = initialMedia.toMutableList()
             var accumulatedWebSources = initialWebSources
             var localInteractionId = existingTargetVariant?.providerInteractionId.orEmpty()
             var rawReq = ""
             var rawResp = ""
             var networkDone = false
-            val turnRequestStartMs = PlatformBridge.currentTimeMillis()
-            var activeThinkingPhaseStartMs = 0L
+            val turnRequestStartMs = activity.elapsedMs
+            var activeThinkingPhaseStartMs = -1L
             var accumulatedThinkingMs = initialDurationMs
             var thinkingDurationMs = initialDurationMs
-            var firstLiveTokenMs = 0L
-            var actualToolWallMs = 0L
-            var activeToolBatchStartMs = 0L
+            var firstLiveTokenMs = -1L
             var liveTokensPerSec = 0.0
             var lastStopwatchTickMs = 0L
             var lastDiskCheckpointMs = turnRequestStartMs
             fun pauseActiveThinkingStopwatch() {
-                if (activeThinkingPhaseStartMs > 0L) {
-                    val now = PlatformBridge.currentTimeMillis()
+                if (activeThinkingPhaseStartMs >= 0L) {
+                    val now = activity.elapsedMs
                     accumulatedThinkingMs += (now - activeThinkingPhaseStartMs).coerceAtLeast(0L)
                     thinkingDurationMs = accumulatedThinkingMs.coerceAtLeast(100L)
-                    activeThinkingPhaseStartMs = 0L
+                    activeThinkingPhaseStartMs = -1L
                 }
             }
             fun patchVariantMemory(updater: (MessageVariant) -> MessageVariant) {
@@ -876,7 +967,7 @@ fun ParchmentApp(
                 updateSessionById(sessionId, immediate = true) { sess ->
                     sess.copy(
                         messages = sess.messages.map { node ->
-                            val shouldAutoMute = isFinal && node.id in autoMuteNodeIdsOnFinish
+                            val shouldAutoMute = isFinal && terminalPhase == AgentRunPhase.COMPLETED && node.id in autoMuteNodeIdsOnFinish
                             if (node.id != targetAssistantNodeId) {
                                 if (shouldAutoMute) node.copy(includedInContext = false) else node
                             } else {
@@ -910,7 +1001,6 @@ fun ParchmentApp(
 
             // Hardware VSync Letter-by-Letter Character Pacer (locks to 60Hz / 120Hz / 144Hz / 240Hz display clock via uiScope's MonotonicFrameClock,
             // using sub-pixel fractional accumulators so prose & thoughts glide onto the page letter-by-letter instead of jumping in word chunks!)
-            val uiFrameClock = uiScope.coroutineContext[MonotonicFrameClock]
             val pacerJob = launch {
                 var lastFrameNanos = 0L
                 var thinkCarry = 0f
@@ -919,6 +1009,7 @@ fun ParchmentApp(
 
                 fun computeLetterStep(diff: Int, dtMs: Long, carry: Float, done: Boolean): Pair<Int, Float> {
                     if (diff <= 0) return 0 to 0f
+                    if (processState.frameClock.value == null) return diff to 0f
                     val dtSec = (dtMs.coerceIn(2L, 32L)) / 1000f
                     // Base letter-by-letter speed (~92 chars/sec -> ~0.76 chars per 120Hz frame, ~1.4 chars per 60Hz frame)
                     // plus a gentle elastic catch-up only when buffer backlog grows beyond 28 chars
@@ -958,28 +1049,21 @@ fun ParchmentApp(
                 var lastThinkCharWasSpace = true
 
                 while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
-                    val frameNanos = if (uiFrameClock != null) {
-                        runCatching {
-                            withTimeoutOrNull(28L) {
-                                uiFrameClock.withFrameNanos { it }
-                            }
-                        }.getOrNull()
-                    } else null
+                    val frameNanos = processState.nextFrameNanos()
 
                     val dtMs = if (frameNanos != null) {
                         val delta = if (lastFrameNanos > 0L) ((frameNanos - lastFrameNanos) / 1_000_000L).coerceIn(2L, 32L) else 8L
                         lastFrameNanos = frameNanos
                         delta
                     } else {
-                        delay(8L)
+                        delay(if (processState.frameClock.value == null && !networkDone) 100L else 8L)
                         lastFrameNanos = 0L
                         8L
                     }
                     var changed = false
-                    val now = PlatformBridge.currentTimeMillis()
-                    if (firstLiveTokenMs > 0L && now - lastStopwatchTickMs >= 100L) {
-                        val inFlightToolWait = if (activeToolBatchStartMs > 0L) (now - activeToolBatchStartMs).coerceAtLeast(0L) else 0L
-                        val netGenerationMs = ((now - turnRequestStartMs) - actualToolWallMs - inFlightToolWait).coerceAtLeast(500L)
+                    val now = activity.elapsedMs
+                    if (firstLiveTokenMs >= 0L && now - lastStopwatchTickMs >= 100L) {
+                        val netGenerationMs = ((now - turnRequestStartMs) - activity.toolMs).coerceAtLeast(500L)
                         val approxToolChars = accumulatedTools.sumOf { it.name.length + it.argumentsJson.length }
                         val approxGeneratedTok = ((networkContentTarget.length + networkThinkingTarget.length + approxToolChars) / 4).coerceAtLeast(1)
                         val rawLiveRate = (approxGeneratedTok * 1000.0) / netGenerationMs.toDouble()
@@ -989,7 +1073,7 @@ fun ParchmentApp(
                             changed = true
                         }
                     }
-                    if (activeThinkingPhaseStartMs > 0L && now - lastStopwatchTickMs >= 100L) {
+                    if (activeThinkingPhaseStartMs >= 0L && now - lastStopwatchTickMs >= 100L) {
                         lastStopwatchTickMs = now
                         thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                         changed = true
@@ -1010,7 +1094,7 @@ fun ParchmentApp(
                             }
                             val thinkWords = cachedThinkWords
                             val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
-                            updateSessionStreamState(sessionId) { cur ->
+                            updateOwnedStream { cur ->
                                 if (cur != null && cur.isThinkingPhase && !cur.statusText.startsWith("Auto-retrying") && !cur.statusText.startsWith("Context ")) {
                                     cur.copy(
                                         statusText = "Reasoning ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
@@ -1113,7 +1197,7 @@ fun ParchmentApp(
                     ?: effectiveProfileForApi.contextWindowTokens)
                 val autoCompactThresholdTokens = (effectiveCtxLimit * 85) / 100
                 var minTokensForNextAutoCompact = autoCompactThresholdTokens
-                var lastMidStreamCompactCheckMs = PlatformBridge.currentTimeMillis()
+                var lastMidStreamCompactCheckMs = activity.elapsedMs
 
                 class MidStreamAutoCompactSignal(val usagePct: Long) : Exception("Auto-compact triggered at $usagePct%")
 
@@ -1166,8 +1250,8 @@ fun ParchmentApp(
                     } else {
                         "Context at $usagePct% (≥85%) — auto-compacting older turns & tool outputs into Continuity Memory…"
                     }
-                    updateSessionStreamState(sessionId) { cur ->
-                        cur?.copy(isThinkingPhase = false, statusText = statusPrefix)
+                    updateOwnedStream { cur ->
+                        cur?.copy(isThinkingPhase = false, statusText = statusPrefix, phase = AgentRunPhase.COMPACTING)
                     }
 
                     val dm = appState.defaultModels
@@ -1180,7 +1264,7 @@ fun ParchmentApp(
 
                     val sumPrompt = "Update the comprehensive bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below. Do not truncate or omit important details:\n\n${plan.transcriptToSummarize}"
                     val generatedSummary = withTimeoutOrNull(180_000L) {
-                        AiProviderEngine.generateUtilityText(sumProf, sumModel, sumPrompt, maxOutputTokens = null).getOrNull()
+                        generateTrackedUtility(sessionId, "compaction", sumProf, sumModel, sumPrompt, maxOutputTokens = null).getOrNull()
                     }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { finalSessionForCall.storySummary }
 
                     finalSessionForCall = finalSessionForCall.copy(storySummary = generatedSummary)
@@ -1231,10 +1315,11 @@ fun ParchmentApp(
                         autoCompactThresholdTokens,
                         newTokens + maxOf(1000, effectiveCtxLimit / 15)
                     )
-                    updateSessionStreamState(sessionId) { cur ->
+                    updateOwnedStream { cur ->
                         cur?.copy(
                             statusText = "Context compacted ($usagePct% → $newPct%) — auto-resuming agent ($modelName)…",
-                            interactionId = ""
+                            interactionId = "",
+                            phase = AgentRunPhase.RUNNING
                         )
                     }
                     return true
@@ -1253,7 +1338,6 @@ fun ParchmentApp(
                         )
                     ) {
                         val usagePct = ((liveTokens.toLong() * 100L) / effectiveCtxLimit.toLong()).coerceAtMost(999L)
-                        PlatformBridge.killActiveShellProcesses()
                         throw MidStreamAutoCompactSignal(usagePct)
                     }
                 }
@@ -1288,7 +1372,9 @@ fun ParchmentApp(
                             initialMediaItems = accumulatedMedia.toList(),
                             initialWebSources = accumulatedWebSources,
                             initialGoalTracker = latestGoalTracker,
-                            initialElapsedMs = (PlatformBridge.currentTimeMillis() - turnRequestStartMs).coerceAtLeast(0L)
+                            initialElapsedMs = (activity.elapsedMs - turnRequestStartMs).coerceAtLeast(0L),
+                            initialApiUsageRecords = accumulatedUsageRecords,
+                            initialTokenMetrics = latestTokenMetrics
                         ).collect { update ->
                             when (update) {
                                 is StreamUpdate.Status -> {
@@ -1296,21 +1382,21 @@ fun ParchmentApp(
                                         localInteractionId = update.interactionId
                                         flushCheckpointToDisk(isFinal = false)
                                     }
-                                    updateSessionStreamState(sessionId) { cur ->
+                                    updateOwnedStream { cur ->
                                         cur?.copy(statusText = update.message, interactionId = localInteractionId)
                                     }
                                 }
                                 is StreamUpdate.ThinkingDelta -> {
-                                    val now = PlatformBridge.currentTimeMillis()
-                                    if (firstLiveTokenMs == 0L) firstLiveTokenMs = now
-                                    if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
+                                    val now = activity.elapsedMs
+                                    if (firstLiveTokenMs < 0L) firstLiveTokenMs = now
+                                    if (activeThinkingPhaseStartMs < 0L) activeThinkingPhaseStartMs = now
                                     thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     networkThinkingTarget.append(update.delta)
                                     currentStepThinkingTarget.append(update.delta)
                                     AiProviderEngine.appendSignatureChunkSafe(signatureSb, update.signatureDelta)
                                     val thinkWords = countWordsFast(networkThinkingTarget)
                                     val toolSuffix = if (accumulatedTools.isNotEmpty()) " • ${accumulatedTools.size} tools" else ""
-                                    updateSessionStreamState(sessionId) { cur ->
+                                    updateOwnedStream { cur ->
                                         cur?.copy(
                                             isThinkingPhase = true,
                                             statusText = "Reasoning ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
@@ -1322,12 +1408,12 @@ fun ParchmentApp(
                                     }
                                 }
                                 is StreamUpdate.ContentDelta -> {
-                                    val now = PlatformBridge.currentTimeMillis()
-                                    if (firstLiveTokenMs == 0L) firstLiveTokenMs = now
+                                    val now = activity.elapsedMs
+                                    if (firstLiveTokenMs < 0L) firstLiveTokenMs = now
                                     pauseActiveThinkingStopwatch()
                                     networkContentTarget.append(update.delta)
                                     val wordCount = countWordsFast(networkContentTarget)
-                                    updateSessionStreamState(sessionId) { cur ->
+                                    updateOwnedStream { cur ->
                                         cur?.copy(
                                             isThinkingPhase = false,
                                             statusText = "Writing ($modelName • +$wordCount words)…"
@@ -1339,12 +1425,9 @@ fun ParchmentApp(
                                     }
                                 }
                                 is StreamUpdate.ToolCallEvent -> {
-                                    val now = PlatformBridge.currentTimeMillis()
-                                    if (update.toolCall.isRunning && activeToolBatchStartMs == 0L) {
-                                        activeToolBatchStartMs = now
-                                    }
+                                    val now = activity.elapsedMs
                                     // Keep the Reasoning + Tool stopwatch ticking continuously across tool calls!
-                                    if (activeThinkingPhaseStartMs == 0L) activeThinkingPhaseStartMs = now
+                                    if (activeThinkingPhaseStartMs < 0L) activeThinkingPhaseStartMs = now
                                     thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                     val stepThinkFallback = currentStepThinkingTarget.toString().trim()
                                     val stepSigFallback = signatureSb.toString().trim()
@@ -1375,10 +1458,6 @@ fun ParchmentApp(
                                     } else {
                                         accumulatedTools.add(enrichedTool)
                                     }
-                                    if (!enrichedTool.isRunning && activeToolBatchStartMs > 0L && accumulatedTools.none { it.isRunning }) {
-                                        actualToolWallMs += (now - activeToolBatchStartMs).coerceAtLeast(0L)
-                                        activeToolBatchStartMs = 0L
-                                    }
                                     val toolsSnap = accumulatedTools.toList()
                                     patchVariantMemory { v ->
                                         v.copy(
@@ -1388,7 +1467,7 @@ fun ParchmentApp(
                                         )
                                     }
                                     if (!enrichedTool.isRunning) {
-                                        updateSessionStreamState(sessionId) { cur ->
+                                        updateOwnedStream { cur ->
                                             cur?.copy(
                                                 isThinkingPhase = true,
                                                 statusText = "Executed tool: ${enrichedTool.name} (${formatDurationFromMs(thinkingDurationMs)})…"
@@ -1397,7 +1476,7 @@ fun ParchmentApp(
                                         flushCheckpointToDisk(isFinal = false)
                                         checkMidStreamAutoCompactAndThrowIfNeeded()
                                     } else {
-                                        updateSessionStreamState(sessionId) { cur ->
+                                        updateOwnedStream { cur ->
                                             cur?.copy(isThinkingPhase = true)
                                         }
                                     }
@@ -1411,7 +1490,7 @@ fun ParchmentApp(
                                     } else {
                                         "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
                                     }
-                                    updateSessionStreamState(sessionId) { cur -> cur?.copy(statusText = goalMsg) }
+                                    updateOwnedStream { cur -> cur?.copy(statusText = goalMsg) }
                                     patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
                                     flushCheckpointToDisk(isFinal = false)
                                 }
@@ -1422,7 +1501,7 @@ fun ParchmentApp(
                                     accumulatedMedia.add(relocatedItem)
                                     val mediaSnap = accumulatedMedia.toList()
                                     patchVariantMemory { v -> v.copy(mediaItems = mediaSnap) }
-                                    updateSessionStreamState(sessionId) { cur ->
+                                    updateOwnedStream { cur ->
                                         cur?.copy(statusText = "Generated ${relocatedItem.kind.name.lowercase()} (${accumulatedMedia.size})")
                                     }
                                 }
@@ -1434,7 +1513,22 @@ fun ParchmentApp(
                                     if (update.requestJson.isNotEmpty()) rawReq = update.requestJson.take(4096)
                                     if (update.latestResponseChunk.isNotEmpty()) rawResp = update.latestResponseChunk.take(4096)
                                 }
+                                is StreamUpdate.UsageUpdated -> {
+                                    updateOwnedStream { it?.copy(actualWireDialect = update.record.wireDialect) }
+                                    val index = accumulatedUsageRecords.indexOfFirst { it.requestId == update.record.requestId }
+                                    accumulatedUsageRecords = if (index < 0) accumulatedUsageRecords + update.record else {
+                                        accumulatedUsageRecords.toMutableList().also { it[index] = update.record }
+                                    }
+                                    latestTokenMetrics = update.metrics.copy(durationMs = latestTokenMetrics.durationMs,
+                                        ttftMs = latestTokenMetrics.ttftMs, tokensPerSec = latestTokenMetrics.tokensPerSec)
+                                    patchVariantMemory { v -> v.copy(apiUsageRecords = accumulatedUsageRecords, tokenMetrics = latestTokenMetrics) }
+                                }
                                 is StreamUpdate.Completed -> {
+                                    terminalPhase = if ((update.goalTracker ?: latestGoalTracker)?.let {
+                                        it.goalObjective.isNotBlank() && !it.isCompleted
+                                    } == true) AgentRunPhase.INTERRUPTED else AgentRunPhase.COMPLETED
+                                    accumulatedUsageRecords = update.apiUsageRecords
+                                    latestTokenMetrics = update.metrics
                                     if (update.fullContent.length > networkContentTarget.length) {
                                         networkContentTarget.clear()
                                         networkContentTarget.append(update.fullContent)
@@ -1465,6 +1559,7 @@ fun ParchmentApp(
                                             providerProtocol = effectiveProfileForApi.protocol,
                                             modelUsed = modelName,
                                             tokenMetrics = update.metrics,
+                                            apiUsageRecords = update.apiUsageRecords,
                                             rawRequestPreview = update.rawRequest.take(4096),
                                             rawResponsePreview = update.rawResponse.take(4096)
                                         )
@@ -1523,12 +1618,13 @@ fun ParchmentApp(
                     }
                 }
             } catch (c: kotlinx.coroutines.CancellationException) {
+                terminalPhase = if (activeStreamsBySession[sessionId]?.phase == AgentRunPhase.STOPPED) AgentRunPhase.STOPPED else AgentRunPhase.INTERRUPTED
                 networkDone = true
-                PlatformBridge.killActiveShellProcesses()
                 pacerJob.cancel()
                 flushCheckpointToDisk(isFinal = true)
                 throw c
             } catch (t: Throwable) {
+                terminalPhase = AgentRunPhase.INTERRUPTED
                 networkDone = true
                 pacerJob.cancel()
                 val partialProse = networkContentTarget.toString()
@@ -1554,18 +1650,21 @@ fun ParchmentApp(
                     )
                 }
             } finally {
+                approvalObserver.cancel()
                 networkDone = true
-                updateSessionStreamState(sessionId) { null }
+                if (activeStreamsBySession[sessionId]?.phase == AgentRunPhase.STOPPED) terminalPhase = AgentRunPhase.STOPPED
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { approvalBroker.close() }
+                val finishedOwnRun = processState.runs.finish(identity, terminalPhase)
 
                 // Auto-generate Topic Title after the first assistant turn completes with non-empty content
                 val updatedSess = appState.sessions.find { it.id == sessionId }
-                if (networkContentTarget.isNotBlank() && updatedSess != null && !updatedSess.isTitleManuallySet && updatedSess.title == "New Chat" && updatedSess.messages.size in 2..3) {
+                if (finishedOwnRun && terminalPhase == AgentRunPhase.COMPLETED && networkContentTarget.isNotBlank() && updatedSess != null && !updatedSess.isTitleManuallySet && updatedSess.title == "New Chat" && updatedSess.messages.size in 2..3) {
                     generateTopicTitle(sessionId, forceRegenerate = false)
                 }
 
                 // If there are queued prompts for this session (`⏳ Queue` mode), automatically dispatch the next one!
                 val sessQueue = queuedPromptsBySession[sessionId].orEmpty()
-                if (sessQueue.isNotEmpty()) {
+                if (finishedOwnRun && terminalPhase == AgentRunPhase.COMPLETED && sessQueue.isNotEmpty()) {
                     val nextItem = sessQueue.first()
                     queuedPromptsBySession = queuedPromptsBySession + (sessionId to sessQueue.drop(1))
                     dispatchNextQueuedItem?.invoke(sessionId, nextItem)
@@ -1573,15 +1672,60 @@ fun ParchmentApp(
             }
         }
 
-        updateSessionStreamState(sessionId) {
+        processState.runs.attach(identity,
             SessionStreamRuntime(
                 sessionId = sessionId,
                 targetNodeId = targetAssistantNodeId,
                 isThinkingPhase = false,
                 statusText = "Connecting to ${effectiveProfileForApi.name} ($modelName)…",
                 interactionId = "",
-                job = newJob
-            )
+                job = newJob,
+                toolApprovalBroker = approvalBroker,
+                phase = AgentRunPhase.PREPARING,
+                providerContext = RunProviderContext(effectiveProfileForApi),
+                actualWireDialect = identity.declaredWireDialect
+            ),
+            cancelPrevious = false
+        )
+        owningJob = newJob
+        newJob.start()
+    }
+
+    fun triggerGeneration(
+        sessionId: String,
+        historyForCall: List<MessageNode>,
+        targetAssistantNodeId: String,
+        targetVariantId: String,
+        continuePrefix: String = "",
+        autoMuteNodeIdsOnFinish: Set<String> = emptySet()
+    ) {
+        val requestedSession = appState.sessions.find { it.id == sessionId }?.let(::completeSessionForAction) ?: return
+        if (requestedSession.messages.none { it.id == targetAssistantNodeId && it.variants.any { v -> v.id == targetVariantId } }) {
+            bannerNotification = "The requested turn is no longer available."
+            return
+        }
+        val profile = appState.profiles.find { it.id == requestedSession.profileId } ?: activeProfile
+        val model = requestedSession.modelOverride.ifBlank { profile.defaultModel }
+        val identity = AgentRunIdentity(PlatformBridge.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
+            profile.id, model, if (profile.protocol == ProviderProtocol.CUSTOM) profile.customDialect
+            else io.parchment.ai.model.mapProtocolToDialect(profile.protocol.name))
+        val persistedIds = requestedSession.messages.map { it.id }.toSet()
+        processState.runs.prepare(identity, SessionStreamRuntime(sessionId,
+            targetNodeId = targetAssistantNodeId, statusText = "Preparing generation…", providerContext = RunProviderContext(profile)), appProcessScope) { previous ->
+            previous.forEach { old ->
+                val producer = old.providerContext?.profile ?: profile
+                if (old.interactionId.isNotBlank() && producer.useBackgroundLongDecode) {
+                    runCatching { AiProviderEngine.cancelBackgroundInteraction(producer, old.interactionId) }
+                }
+            }
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val current = appState.sessions.find { it.id == sessionId }?.let(::completeSessionForAction) ?: return@prepare
+            val target = current.messages.find { it.id == targetAssistantNodeId }?.variants?.find { it.id == targetVariantId }
+                ?: return@prepare
+            val continuingSameVariant = previous.any { it.identity?.let { old -> old.nodeId == targetAssistantNodeId && old.variantId == targetVariantId } == true }
+            beginGeneration(sessionId, refreshGenerationHistory(historyForCall, persistedIds, current), targetAssistantNodeId,
+                targetVariantId, if (continuingSameVariant) AiProviderEngine.stripInlineErrorNotices(target.content) else continuePrefix,
+                autoMuteNodeIdsOnFinish)
         }
     }
 
@@ -1736,15 +1880,14 @@ fun ParchmentApp(
                 "Summarizing story continuity into memory ($summaryModel)…"
         }
 
-        val sumJob = appProcessScope.launch {
+        val sumJob = appRunLeases.launch(appProcessScope, summaryModel) {
             var shouldResumeTurnIndex = -1
             try {
                 if (prevStream != null) {
-                    PlatformBridge.killActiveShellProcesses()
                     prevStream.job?.cancel()
-                    if (prevStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+                    if (prevStream.interactionId.isNotBlank() && (prevStream.providerContext?.profile ?: activeProfile).useBackgroundLongDecode) {
                         runCatching {
-                            AiProviderEngine.cancelBackgroundInteraction(activeProfile, prevStream.interactionId)
+                            AiProviderEngine.cancelBackgroundInteraction(prevStream.providerContext?.profile ?: activeProfile, prevStream.interactionId)
                         }
                     }
                     prevStream.job?.join()
@@ -1779,7 +1922,7 @@ fun ParchmentApp(
                 }
                 val sumPrompt = "Update the comprehensive bulleted continuity summary with all key events, facts, files/tools inspected, decisions, and character/project states from the context below. Do not truncate or omit important details:\n\n$transcriptForPrompt"
                 val generatedSummary = withTimeoutOrNull(180_000L) {
-                    AiProviderEngine.generateUtilityText(summaryProf, summaryModel, sumPrompt, maxOutputTokens = null).getOrNull()
+                    generateTrackedUtility(targetSessId, if (autoMuteOlderTurns) "compaction" else "summary", summaryProf, summaryModel, sumPrompt, maxOutputTokens = null).getOrNull()
                 }?.takeIf { it.isNotBlank() } ?: plan.fallbackSummary.ifBlank { sessSnap.storySummary }
 
                 updateSessionById(targetSessId, immediate = true) { sess ->
@@ -1817,11 +1960,11 @@ fun ParchmentApp(
                     bannerNotification = "Compaction error: ${e.message}"
                 }
             } finally {
-                if (shouldResumeTurnIndex >= 0) {
-                    uiScope.launch {
+                if (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && shouldResumeTurnIndex >= 0) {
+                    appProcessScope.launch {
                         continueAssistantNodeAt(shouldResumeTurnIndex)
                     }
-                } else {
+                } else if (activeStreamsBySession[targetSessId]?.job === coroutineContext[kotlinx.coroutines.Job]) {
                     updateSessionStreamState(targetSessId) { null }
                 }
             }
@@ -1834,12 +1977,12 @@ fun ParchmentApp(
     }
 
     fun clearCurrentChatMessages(targetSessionId: String = activeSession.id) {
-        PlatformBridge.killActiveShellProcesses()
         val curStream = activeStreamsBySession[targetSessionId]
+        curStream?.identity?.let { processState.runs.requestStop(it) }
         curStream?.job?.cancel()
-        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+        if (curStream != null && curStream.interactionId.isNotBlank() && (curStream.providerContext?.profile ?: activeProfile).useBackgroundLongDecode) {
             appProcessScope.launch {
-                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
+                AiProviderEngine.cancelBackgroundInteraction(curStream.providerContext?.profile ?: activeProfile, curStream.interactionId)
             }
         }
         updateSessionStreamState(targetSessionId) { null }
@@ -2019,7 +2162,6 @@ fun ParchmentApp(
         assistantPrefillInput = ""
         pendingAttachmentsBySession = pendingAttachmentsBySession - targetSessId
         uiScope.launch {
-            PlatformBridge.killActiveShellProcesses()
             val runningJob = activeStreamsBySession[targetSessId]?.job
             runningJob?.cancel()
             runningJob?.join()
@@ -2062,6 +2204,10 @@ fun ParchmentApp(
         val targetSessId = activeSession.id
         if (activeStreamsBySession.containsKey(targetSessId)) return
         val now = PlatformBridge.currentTimeMillis()
+        val draftProfile = (appState.profiles.find { it.id == complete.profileId } ?: activeProfile).copy(
+            enableWebSearch = false, enableUrlContext = false, enableCodeExecution = false,
+            enableImageGeneration = false, enableVideoGeneration = false, useBackgroundLongDecode = false)
+        val draftRunId = PlatformBridge.createRunId()
         val seedHint = userPromptInput.trim()
         val instruction = if (seedHint.isNotEmpty()) {
             "[Write the next turn from ${activeSession.userName}'s perspective incorporating this idea: \"$seedHint\". Write only ${activeSession.userName}'s dialogue and actions.]"
@@ -2081,9 +2227,12 @@ fun ParchmentApp(
             val buf = StringBuilder()
             try {
                 AiProviderEngine.streamGeneration(
-                    profile = activeProfile,
-                    session = complete,
-                    historyNodes = historyForCall
+                    profile = draftProfile,
+                    session = complete.copy(permissionOverrides = AgentPermissionOverrides(toolsEnabled = false)),
+                    historyNodes = historyForCall,
+                    usageOwnerSessionId = targetSessId,
+                    usageOwnerRunId = draftRunId,
+                    usagePurpose = "draft"
                 ).collect { update ->
                     when (update) {
                         is StreamUpdate.ContentDelta -> {
@@ -2102,15 +2251,17 @@ fun ParchmentApp(
                         is StreamUpdate.Error -> {
                             bannerNotification = "Draft error: ${update.message}"
                         }
+                        is StreamUpdate.UsageUpdated -> recordUtilityUsage(targetSessId, update.record)
                         else -> {}
                     }
                 }
             } finally {
-                updateSessionStreamState(targetSessId) { null }
+                if (activeStreamsBySession[targetSessId]?.job === coroutineContext[kotlinx.coroutines.Job]) updateSessionStreamState(targetSessId) { null }
             }
         }
         updateSessionStreamState(targetSessId) {
-            SessionStreamRuntime(sessionId = targetSessId, statusText = "Drafting ${activeSession.userName}'s turn…", job = impJob)
+            SessionStreamRuntime(sessionId = targetSessId, statusText = "Drafting ${activeSession.userName}'s turn…", job = impJob,
+                providerContext = RunProviderContext(draftProfile))
         }
     }
 
@@ -2241,7 +2392,7 @@ fun ParchmentApp(
         bannerNotification = "Translating turn #${nodeIndex + 1} to $targetLang ($transModel)…"
         appProcessScope.launch {
             val prompt = "Translate the following passage accurately and naturally into $targetLang. Preserve all Markdown formatting, code blocks, and tone. Return ONLY the translated text without introductory commentary:\n\n$sourceText"
-            AiProviderEngine.generateUtilityText(transProf, transModel, prompt).fold(
+            generateTrackedUtility(sess.id, "translation", transProf, transModel, prompt).fold(
                 onSuccess = { translated ->
                     if (translated.isNotBlank()) {
                         val now = PlatformBridge.currentTimeMillis()
@@ -2255,6 +2406,8 @@ fun ParchmentApp(
                                             content = translated,
                                             modelUsed = "${n.activeVariant.modelUsed.ifBlank { transModel }} ($targetLang)",
                                             providerInteractionId = "",
+                                            tokenMetrics = io.parchment.ai.model.TokenMetrics(),
+                                            apiUsageRecords = emptyList(),
                                             createdAt = now
                                         )
                                         val updatedVars = n.variants + newVar
@@ -2514,6 +2667,7 @@ fun ParchmentApp(
                 showQuickModelPopover,
                 showRightFilesSidebar,
                 showSessionInspector,
+                showComposerToolsDrawer,
                 showSidebar,
                 isSettingsOpen,
                 isCompactScreen
@@ -2548,6 +2702,10 @@ fun ParchmentApp(
                             showSessionInspector = false
                             true
                         }
+                        !isSettingsOpen && showComposerToolsDrawer -> {
+                            showComposerToolsDrawer = false
+                            true
+                        }
                         isCompactScreen && showSidebar && !isSettingsOpen -> {
                             showSidebar = false
                             true
@@ -2571,6 +2729,9 @@ fun ParchmentApp(
                         .statusBarsPadding()
                         .navigationBarsPadding()
                         .imePadding()
+                        .onPreviewKeyEvent { event ->
+                            event.type == KeyEventType.KeyDown && event.key == Key.Escape && PlatformBridge.handleSystemBackPressed()
+                        }
                         .background(p.canvasBg)
                         .then(
                             if (isCompactScreen && !isSettingsOpen) {
@@ -2849,37 +3010,6 @@ fun ParchmentApp(
                         }
                     }
 
-                    AnimatedVisibility(
-                        visible = bannerNotification.isNotBlank(),
-                        enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
-                        exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(140))
-                    ) {
-                        Column {
-                            @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(p.elevatedBg)
-                                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                BasicText(
-                                    text = bannerNotification,
-                                    style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.Medium),
-                                    modifier = Modifier.padding(top = 4.dp, end = 8.dp)
-                                )
-                                SepiaButton(
-                                    text = "×",
-                                    compact = true,
-                                    style = SepiaButtonStyle.GHOST,
-                                    onClick = { bannerNotification = "" }
-                                )
-                            }
-                            SepiaDivider()
-                        }
-                    }
-
                     // 2. Main Content Area:
                     // - On Desktop: Side-by-side Sidebar + Chat/Settings
                     // - On Mobile: Chat/Settings underneath + 86%-width Slide-Over Drawer with Scrim!
@@ -3002,6 +3132,9 @@ fun ParchmentApp(
                                 animationSpec = tween(180),
                                 modifier = Modifier.weight(1f).fillMaxHeight()
                             ) { settingsMode ->
+                            Column(Modifier.fillMaxSize()) {
+                                ToolApprovalPanel(currentTabStream?.toolApprovalBroker, activeSession.title)
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
                             if (settingsMode) {
                                 ParchmentSettingsScreen(
                                     appState = appState,
@@ -3074,7 +3207,8 @@ fun ParchmentApp(
                                     },
                                     onCheckOtaNow = ::triggerOtaCheckManual,
                                     onInstallOtaRelease = ::triggerOtaDownloadAndInstall,
-                                    onRestoreFullBackup = { restored ->
+                                    onRestoreFullBackup = { importedSnapshot ->
+                                        val restored = importedSnapshot.withImportedPermissions()
                                         activeStreamsBySession.values.forEach { it.job?.cancel() }
                                         activeStreamsBySession = emptyMap()
                                         queuedPromptsBySession = emptyMap()
@@ -3104,7 +3238,8 @@ fun ParchmentApp(
                                         val defaultAsstId = appState.activeAssistantId.ifBlank { appState.assistants.first().id }
                                         var addedOrUpdated = 0
                                         var firstImportedId = ""
-                                        for (rawChat in importedList) {
+                                        for (incomingChat in importedList) {
+                                            val rawChat = incomingChat.withImportedPermissions()
                                             val safeId = rawChat.id.ifBlank { "sess-imp-${PlatformBridge.currentTimeMillis()}-$addedOrUpdated" }
                                             val validProfId = appState.profiles.find { it.id == rawChat.profileId }?.id ?: defaultProfId
                                             val validAsstId = appState.assistants.find { it.id == rawChat.assistantId }?.id ?: defaultAsstId
@@ -3200,6 +3335,8 @@ fun ParchmentApp(
                                     },
                                     showPrefillBox = showPrefillBox,
                                     onTogglePrefillBox = { showPrefillBox = !showPrefillBox },
+                                    showComposerToolsDrawer = showComposerToolsDrawer,
+                                    onComposerToolsDrawerChange = { showComposerToolsDrawer = it },
                                     isGoalModeEnabled = isGoalModeEnabled,
                                     onToggleGoalMode = { isGoalModeEnabled = !isGoalModeEnabled },
                                     isLiveVoiceMode = isLiveVoiceMode,
@@ -3219,7 +3356,7 @@ fun ParchmentApp(
                                         }
                                     },
                                     onAttachWorkspaceFile = { relPath ->
-                                        val wsRoot = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
+                                        val wsRoot = AgentPermissionResolver.resolve(activeSession, activeAssistant, activeProfile).workspacePath
                                         if (wsRoot.isNotBlank()) {
                                             PlatformBridge.workspaceRead(wsRoot, relPath, 1, 1500).onSuccess { rawRead ->
                                                 val cleanLines = rawRead.lines().drop(1).joinToString("\n") {
@@ -3394,12 +3531,13 @@ fun ParchmentApp(
                                     onForkSessionFromNode = { nodeIndex ->
                                         val now = PlatformBridge.currentTimeMillis()
                                         val keepVersions = appState.preferences.keepMessageVersionsWhenForking
-                                        val slicedMessages = activeSession.messages
+                                        val sourceSession = activeSession.withSpendProvenance()
+                                        val slicedMessages = sourceSession.messages
                                             .subList(0, (nodeIndex + 1).coerceAtMost(activeSession.messages.size))
                                             .map { n ->
                                                 if (keepVersions) n else n.copy(variants = listOf(n.activeVariant), activeVariantIndex = 0)
                                             }
-                                        val forkedSession = activeSession.copy(
+                                        val forkedSession = sourceSession.copy(
                                             id = "sess-fork-$now",
                                             title = "${activeSession.title} (Fork #${nodeIndex + 1})",
                                             isTitleManuallySet = true,
@@ -3419,12 +3557,12 @@ fun ParchmentApp(
                                     },
                                     onStopStream = {
                                         val targetSessId = activeSession.id
-                                        PlatformBridge.killActiveShellProcesses()
                                         val curStream = activeStreamsBySession[targetSessId]
+                                        curStream?.identity?.let { processState.runs.requestStop(it) }
                                         curStream?.job?.cancel()
-                                        if (curStream != null && curStream.interactionId.isNotBlank() && activeProfile.useBackgroundLongDecode) {
+                                        if (curStream != null && curStream.interactionId.isNotBlank() && (curStream.providerContext?.profile ?: activeProfile).useBackgroundLongDecode) {
                                             appProcessScope.launch {
-                                                AiProviderEngine.cancelBackgroundInteraction(activeProfile, curStream.interactionId)
+                                                AiProviderEngine.cancelBackgroundInteraction(curStream.providerContext?.profile ?: activeProfile, curStream.interactionId)
                                             }
                                         }
                                         updateSessionStreamState(targetSessId) { null }
@@ -3443,6 +3581,8 @@ fun ParchmentApp(
                                     },
                                     onContinueAssistantNode = ::continueAssistantNodeAt
                                 )
+                                }
+                            }
                             }
                         }
 
@@ -3801,6 +3941,11 @@ fun ParchmentApp(
                                 onCloseModal = { showMobileTabSwitcher = false }
                             )
                         }
+                        FloatingNotification(
+                            message = bannerNotification,
+                            onDismiss = { bannerNotification = "" },
+                            modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 12.dp, vertical = 12.dp)
+                        )
                     }
                 }
             }
@@ -3850,6 +3995,8 @@ private fun ManuscriptViewport(
     onAssistantPrefillChange: (String) -> Unit,
     showPrefillBox: Boolean,
     onTogglePrefillBox: () -> Unit,
+    showComposerToolsDrawer: Boolean,
+    onComposerToolsDrawerChange: (Boolean) -> Unit,
     isGoalModeEnabled: Boolean,
     onToggleGoalMode: () -> Unit,
     isLiveVoiceMode: Boolean,
@@ -3961,18 +4108,14 @@ private fun ManuscriptViewport(
     } else {
         lastMsgContentLen
     }
-    val sessionTotalCostUsd = remember(activeSession.id, activeSession.messages.size, throttledBreakdownTrigger, isStreaming, activeProfile) {
-        activeSession.messages.sumOf { node ->
-            val v = node.activeVariant
-            if (node.role == MessageRole.USER) {
-                val uTok = O200kTokenizer.countMessageVariantTokens(MessageRole.USER, v)
-                (uTok / 1_000_000.0) * activeProfile.inputPricePerM
-            } else {
-                val m = v.tokenMetrics
-                if (m.estimatedCostUsd > 0.0) m.estimatedCostUsd else activeProfile.calculateTurnCostUsd(m)
-            }
-        }
+    val ownedUtilityRecords = remember(activeSession.id, activeSession.utilityUsageRecords) {
+        activeSession.utilityUsageRecords.filter { it.ownerSessionId.isBlank() || it.ownerSessionId == activeSession.id }
     }
+    val sessionSpend = remember(activeSession.id, activeSession.messages.size, activeSession.messages.sumOf { it.variants.size },
+        throttledBreakdownTrigger, isStreaming, activeProfile, ownedUtilityRecords) {
+        sessionSpendSummary(activeSession, activeProfile)
+    }
+    val sessionTotalCostUsd = sessionSpend.estimateUsd
     val baseContextBreakdown = remember(
         activeSession.id,
         activeSession.storySummary,
@@ -4308,6 +4451,8 @@ private fun ManuscriptViewport(
                                                 id = "var-$now-branch",
                                                 content = newText,
                                                 providerInteractionId = "",
+                                                tokenMetrics = io.parchment.ai.model.TokenMetrics(),
+                                                apiUsageRecords = emptyList(),
                                                 createdAt = now
                                             )
                                             val updatedList = n.variants + branched
@@ -4834,7 +4979,6 @@ private fun ManuscriptViewport(
         // ========================================================================================
         // ZEN-BY-DEFAULT FLOATING COMPOSER WITH DESKTOP ENTER-TO-SEND & STEER / QUEUE
         // ========================================================================================
-        var showComposerToolsDrawer by remember { mutableStateOf(false) }
         var customOverrideTarget by remember { mutableStateOf<String?>(null) }
         var customOverrideDraft by remember { mutableStateOf("") }
         val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
@@ -4987,30 +5131,17 @@ private fun ManuscriptViewport(
 
                 // 3. Collapsible Capabilities, Workspace Mount & 16-Tool Harness Tray (`⚙ Tools`)
                 var showAllHarnessToolsInComposer by remember { mutableStateOf(false) }
-                val effectiveComposerWsPath = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
-                val effectiveComposerWsMode = if (activeSession.workspaceMode != WorkspaceMode.OFF) {
-                    activeSession.workspaceMode
-                } else if (activeSession.workspacePath.isBlank()) {
-                    activeAssistant.workspaceMode
-                } else {
-                    WorkspaceMode.OFF
-                }
+                val composerPermissionDefaults = AgentPermissionResolver.defaults(activeAssistant)
+                val composerPermissionOverrides = activeSession.permissionOverrides ?: AgentPermissionResolver.legacyOverrides(activeSession, activeProfile)
+                val composerToolPolicy = composerPermissionOverrides.applyTo(composerPermissionDefaults)
+                val effectiveComposerWsPath = composerToolPolicy.workspacePath
+                val effectiveComposerWsMode = composerToolPolicy.workspaceMode
                 val allHarnessTools = remember { WorkspaceHarness.allTools() }
-                val activeHarnessToolNames = remember(
-                    effectiveComposerWsMode,
-                    effectiveComposerWsPath,
-                    activeProfile.allowShellExecution,
-                    isGoalModeEnabled,
-                    activeProfile.enableWebSearch,
-                    activeProfile.enableUrlContext
-                ) {
+                val activeHarnessToolNames = remember(composerToolPolicy, isGoalModeEnabled) {
                     WorkspaceHarness.activeToolsForMode(
-                        mode = effectiveComposerWsMode,
-                        workspacePath = effectiveComposerWsPath,
-                        allowShell = activeProfile.allowShellExecution,
-                        goalModeActive = isGoalModeEnabled,
-                        enableWebTools = activeProfile.enableWebSearch || activeProfile.enableUrlContext,
-                        includeLocalWebSearchTool = activeProfile.enableWebSearch
+                        effectiveComposerWsMode, effectiveComposerWsPath, composerToolPolicy.allowShell,
+                        goalModeActive = isGoalModeEnabled, enableWebTools = composerToolPolicy.webAccess,
+                        policy = composerToolPolicy
                     ).map { it.name }.toSet()
                 }
 
@@ -5019,314 +5150,198 @@ private fun ManuscriptViewport(
                     enter = expandVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeIn(tween(110)),
                     exit = shrinkVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeOut(tween(95))
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(p.sheetBg.copy(alpha = 0.65f))
-                            .border(0.8.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(9.dp))
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // 0. Manual Override Bar: type a raw value for any parameter instead of cycling presets.
-                        val drawerModelId = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-                        val drawerModalityProfile = remember(
-                            drawerModelId,
-                            activeProfile.endpointPathOverride,
-                            activeProfile.customModelSpecs
+                    BoxWithConstraints {
+                        val drawerMaxHeight = (maxHeight * 0.5f).coerceAtMost(420.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = drawerMaxHeight)
+                                .verticalScroll(rememberScrollState())
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(p.sheetBg.copy(alpha = 0.65f))
+                                .border(0.8.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(9.dp))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            AiProviderEngine.resolveModelModalityProfile(activeProfile, drawerModelId)
-                        }
-                        val overrideTargets = buildList {
-                            if (!drawerModalityProfile.isDedicatedImage &&
-                                !drawerModalityProfile.isDedicatedVideo &&
-                                !drawerModalityProfile.isDedicatedAudioTts
+                            BasicText("Manual override", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
+                            val drawerModelId = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
+                            val drawerModalityProfile = remember(
+                                drawerModelId,
+                                activeProfile.endpointPathOverride,
+                                activeProfile.customModelSpecs
                             ) {
-                                add("reasoning" to "🧠 Reasoning")
+                                AiProviderEngine.resolveModelModalityProfile(activeProfile, drawerModelId)
                             }
-                            if (drawerModalityProfile.isAnyImageModel || drawerModalityProfile.isAnyVideoModel) {
-                                add("aspect" to "🖼 Aspect Ratio")
-                                add("resolution" to "🖼 Resolution")
-                            }
-                            if (drawerModalityProfile.isAnyVideoModel) {
-                                add("duration" to "🎬 Duration")
-                            }
-                            if (drawerModalityProfile.isAnyAudioModel) {
-                                add("voice" to "🎵 Voice")
-                                if (drawerModalityProfile.isDedicatedAudioTts) {
-                                    add("speed" to "🎵 Speed")
+                            val overrideTargets = buildList {
+                                if (!drawerModalityProfile.isDedicatedImage &&
+                                    !drawerModalityProfile.isDedicatedVideo &&
+                                    !drawerModalityProfile.isDedicatedAudioTts
+                                ) {
+                                    add("reasoning" to "🧠 Reasoning")
+                                }
+                                if (drawerModalityProfile.isAnyImageModel || drawerModalityProfile.isAnyVideoModel) {
+                                    add("aspect" to "🖼 Aspect Ratio")
+                                    add("resolution" to "🖼 Resolution")
+                                }
+                                if (drawerModalityProfile.isAnyVideoModel) {
+                                    add("duration" to "🎬 Duration")
+                                }
+                                if (drawerModalityProfile.isAnyAudioModel) {
+                                    add("voice" to "🎵 Voice")
+                                    if (drawerModalityProfile.isDedicatedAudioTts) {
+                                        add("speed" to "🎵 Speed")
+                                    }
                                 }
                             }
-                        }
-                        val overrideTarget = customOverrideTarget
-                            ?.takeIf { key -> overrideTargets.any { it.first == key } }
-                            ?: overrideTargets.firstOrNull()?.first
-                        if (overrideTarget != null) {
-                            val overrideCurrentValue = when (overrideTarget) {
-                                "aspect" -> activeProfile.mediaAspectRatio
-                                "resolution" -> activeProfile.mediaResolution
-                                "duration" -> activeProfile.videoDurationSeconds.toString()
-                                "voice" -> activeProfile.audioVoice
-                                "speed" -> activeProfile.audioSpeed.toString()
-                                else -> activeProfile.thinkingEffort
+                            val overrideTarget = customOverrideTarget
+                                ?.takeIf { key -> overrideTargets.any { it.first == key } }
+                                ?: overrideTargets.firstOrNull()?.first
+                            if (overrideTarget != null) {
+                                val overrideCurrentValue = when (overrideTarget) {
+                                    "aspect" -> activeProfile.mediaAspectRatio
+                                    "resolution" -> activeProfile.mediaResolution
+                                    "duration" -> activeProfile.videoDurationSeconds.toString()
+                                    "voice" -> activeProfile.audioVoice
+                                    "speed" -> activeProfile.audioSpeed.toString()
+                                    else -> activeProfile.thinkingEffort
+                                }
+                                LaunchedEffect(overrideTarget) {
+                                    customOverrideDraft = overrideCurrentValue
+                                }
+                                val overridePlaceholder = when (overrideTarget) {
+                                    "aspect" -> "Aspect ratio (e.g. 21:9, 4:5)"
+                                    "duration" -> "Duration in seconds (4–15)"
+                                    "voice" -> "Voice id (e.g. alloy, nova, Puck)"
+                                    "speed" -> "Speed multiplier (0.25–4.0)"
+                                    "resolution" -> "Resolution (512, 1K, 2K, 4K)"
+                                    else -> "Reasoning effort (e.g. high, xhigh, adaptive)"
+                                }
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    overrideTargets.forEach { (key, label) ->
+                                        SepiaChip(
+                                            label = label,
+                                            selected = overrideTarget == key,
+                                            onClick = { customOverrideTarget = key }
+                                        )
+                                    }
+                                }
+                                SepiaTextField(
+                                    value = customOverrideDraft,
+                                    onValueChange = { raw ->
+                                        customOverrideDraft = raw
+                                        val typed = raw.trim()
+                                        when (overrideTarget) {
+                                            "aspect" -> onUpdateProfile { it.copy(mediaAspectRatio = typed) }
+                                            "resolution" -> onUpdateProfile { it.copy(mediaResolution = typed) }
+                                            "duration" -> typed.toIntOrNull()?.let { secs ->
+                                                onUpdateProfile { it.copy(videoDurationSeconds = secs.coerceIn(4, 15)) }
+                                            }
+                                            "voice" -> onUpdateProfile { it.copy(audioVoice = typed) }
+                                            "speed" -> typed.toDoubleOrNull()?.let { rate ->
+                                                onUpdateProfile { it.copy(audioSpeed = rate.coerceIn(0.25, 4.0)) }
+                                            }
+                                            else -> onUpdateProfile { it.copy(thinkingEffort = typed) }
+                                        }
+                                    },
+                                    placeholder = overridePlaceholder,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                                SepiaDivider()
                             }
-                            LaunchedEffect(overrideTarget) {
-                                customOverrideDraft = overrideCurrentValue
-                            }
-                            val overridePlaceholder = when (overrideTarget) {
-                                "aspect" -> "Aspect ratio (e.g. 21:9, 4:5)"
-                                "duration" -> "Duration in seconds (4–15)"
-                                "voice" -> "Voice id (e.g. alloy, nova, Puck)"
-                                "speed" -> "Speed multiplier (0.25–4.0)"
-                                "resolution" -> "Resolution (512, 1K, 2K, 4K)"
-                                else -> "Reasoning effort (e.g. high, xhigh, adaptive)"
-                            }
+                            AgentPermissionEditor(
+                                defaults = composerPermissionDefaults, overrides = composerPermissionOverrides,
+                                onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } },
+                                onReset = { onUpdateSession { it.copy(permissionOverrides = AgentPermissionOverrides()) } }
+                            )
+                            SepiaDivider()
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                overrideTargets.forEach { (key, label) ->
+                                SepiaChip(
+                                    label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
+                                    selected = isGoalModeEnabled,
+                                    onClick = onToggleGoalMode
+                                )
+                                SepiaChip(
+                                    label = if (isLiveVoiceMode) "🔊 Live Voice: ON" else "🎙 Live Voice",
+                                    selected = isLiveVoiceMode,
+                                    onClick = onToggleLiveVoiceMode
+                                )
+                                if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                     SepiaChip(
-                                        label = label,
-                                        selected = overrideTarget == key,
-                                        onClick = { customOverrideTarget = key }
+                                        label = "💻 Code Exec",
+                                        selected = activeProfile.enableCodeExecution,
+                                        onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
+                                    )
+                                    SepiaChip(
+                                        label = "🔗 URL Context",
+                                        selected = activeProfile.enableUrlContext,
+                                        onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                                     )
                                 }
-                            }
-                            SepiaTextField(
-                                value = customOverrideDraft,
-                                onValueChange = { raw ->
-                                    customOverrideDraft = raw
-                                    val typed = raw.trim()
-                                    when (overrideTarget) {
-                                        "aspect" -> onUpdateProfile { it.copy(mediaAspectRatio = typed) }
-                                        "resolution" -> onUpdateProfile { it.copy(mediaResolution = typed) }
-                                        "duration" -> typed.toIntOrNull()?.let { secs ->
-                                            onUpdateProfile { it.copy(videoDurationSeconds = secs.coerceIn(4, 15)) }
-                                        }
-                                        "voice" -> onUpdateProfile { it.copy(audioVoice = typed) }
-                                        "speed" -> typed.toDoubleOrNull()?.let { rate ->
-                                            onUpdateProfile { it.copy(audioSpeed = rate.coerceIn(0.25, 4.0)) }
-                                        }
-                                        else -> onUpdateProfile { it.copy(thinkingEffort = typed) }
-                                    }
-                                },
-                                placeholder = overridePlaceholder,
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                            SepiaDivider()
-                        }
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            SepiaChip(
-                                label = "🌐 Web Search",
-                                selected = activeProfile.enableWebSearch,
-                                onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
-                            )
-                            SepiaChip(
-                                label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
-                                selected = isGoalModeEnabled,
-                                onClick = onToggleGoalMode
-                            )
-                            SepiaChip(
-                                label = if (isLiveVoiceMode) "🔊 Live Voice: ON" else "🎙 Live Voice",
-                                selected = isLiveVoiceMode,
-                                onClick = onToggleLiveVoiceMode
-                            )
-                            if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                 SepiaChip(
-                                    label = "💻 Code Exec",
-                                    selected = activeProfile.enableCodeExecution,
-                                    onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
-                                )
-                                SepiaChip(
-                                    label = "🔗 URL Context",
-                                    selected = activeProfile.enableUrlContext,
-                                    onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
-                                )
-                            }
-                            val folderShort = effectiveComposerWsPath.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
-                            SepiaChip(
-                                label = if (folderShort.isNotEmpty()) "📂 $folderShort" else "📂 Mount Folder…",
-                                selected = effectiveComposerWsPath.isNotBlank(),
-                                onClick = {
-                                    scope.launch {
-                                        val picked = PlatformBridge.pickWorkspaceDirectory(effectiveComposerWsPath)
-                                        if (!picked.isNullOrBlank()) {
-                                            onUpdateSession {
-                                                it.copy(
-                                                    workspacePath = picked,
-                                                    workspaceMode = if (it.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else it.workspaceMode
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            )
-                            if (effectiveComposerWsPath.isNotBlank()) {
-                                SepiaChip(
-                                    label = "×",
-                                    selected = false,
-                                    onClick = {
-                                        onUpdateSession { it.copy(workspacePath = "", workspaceMode = WorkspaceMode.OFF) }
-                                    }
-                                )
-                            }
-                            SepiaChip(
-                                label = effectiveComposerWsMode.label,
-                                selected = effectiveComposerWsMode != WorkspaceMode.OFF,
-                                onClick = {
-                                    val next = when (effectiveComposerWsMode) {
-                                        WorkspaceMode.OFF -> WorkspaceMode.READ_ONLY
-                                        WorkspaceMode.READ_ONLY -> WorkspaceMode.READ_WRITE
-                                        WorkspaceMode.READ_WRITE -> WorkspaceMode.OFF
-                                    }
-                                    if (next != WorkspaceMode.OFF && effectiveComposerWsPath.isBlank()) {
-                                        scope.launch {
-                                            val picked = PlatformBridge.pickWorkspaceDirectory("")
-                                            if (!picked.isNullOrBlank()) {
-                                                onUpdateSession { it.copy(workspacePath = picked, workspaceMode = next) }
-                                            } else {
-                                                onUpdateSession { it.copy(workspaceMode = next) }
-                                            }
-                                        }
+                                    label = if (showAllHarnessToolsInComposer) {
+                                        "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▴"
                                     } else {
-                                        onUpdateSession { it.copy(workspaceMode = next) }
-                                    }
-                                }
-                            )
-                            if (effectiveComposerWsMode == WorkspaceMode.READ_WRITE) {
+                                        "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▾"
+                                    },
+                                    selected = showAllHarnessToolsInComposer || activeHarnessToolNames.isNotEmpty(),
+                                    onClick = { showAllHarnessToolsInComposer = !showAllHarnessToolsInComposer }
+                                )
                                 SepiaChip(
-                                    label = if (activeProfile.allowShellExecution) "🐚 Shell: ON" else "🐚 Shell",
-                                    selected = activeProfile.allowShellExecution,
-                                    onClick = { onUpdateProfile { it.copy(allowShellExecution = !it.allowShellExecution) } }
+                                    label = if (showPrefillBox) "▾ Prefill Reply: ON" else "▸ Prefill Reply…",
+                                    selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
+                                    onClick = onTogglePrefillBox
                                 )
                             }
-                            SepiaChip(
-                                label = if (showAllHarnessToolsInComposer) {
-                                    "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▴"
-                                } else {
-                                    "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▾"
-                                },
-                                selected = showAllHarnessToolsInComposer || activeHarnessToolNames.isNotEmpty(),
-                                onClick = { showAllHarnessToolsInComposer = !showAllHarnessToolsInComposer }
-                            )
-                            SepiaChip(
-                                label = if (showPrefillBox) "▾ Prefill Reply: ON" else "▸ Prefill Reply…",
-                                selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
-                                onClick = onTogglePrefillBox
-                            )
-                        }
-                        AnimatedVisibility(visible = showAllHarnessToolsInComposer) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(p.cardBg.copy(alpha = 0.85f))
-                                    .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                                    .padding(8.dp),
+                            AnimatedVisibility(visible = showAllHarnessToolsInComposer) {
+                                AgentToolRegistry(
+                                    policy = composerToolPolicy, overrides = composerPermissionOverrides,
+                                    onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } },
+                                    goalModeActive = isGoalModeEnabled
+                                )
+                            }
+                            SepiaDivider()
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 BasicText(
-                                    text = "All ${allHarnessTools.size} Agent Harness Tools (Tap any locked tool to activate):",
-                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                    text = "Co-Writing Helpers:",
+                                    style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.padding(top = 5.dp, end = 4.dp)
                                 )
-                                @OptIn(ExperimentalLayoutApi::class)
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    allHarnessTools.forEach { t ->
-                                        val isToolActive = t.name in activeHarnessToolNames
-                                        SepiaChip(
-                                            label = if (isToolActive) "✓ ${t.name}" else t.name,
-                                            selected = isToolActive,
-                                            onClick = {
-                                                scope.launch {
-                                                    var wsTarget = effectiveComposerWsPath
-                                                    if (t.requiresWorkspaceFolder && wsTarget.isBlank()) {
-                                                        wsTarget = PlatformBridge.pickWorkspaceDirectory("").orEmpty()
-                                                    }
-                                                    when {
-                                                        t.requiresShellPermission -> {
-                                                            onUpdateProfile { it.copy(allowShellExecution = true) }
-                                                            onUpdateSession {
-                                                                it.copy(
-                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
-                                                                    workspaceMode = WorkspaceMode.READ_WRITE
-                                                                )
-                                                            }
-                                                        }
-                                                        t.requiresWritePermission -> {
-                                                            onUpdateSession {
-                                                                it.copy(
-                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
-                                                                    workspaceMode = WorkspaceMode.READ_WRITE
-                                                                )
-                                                            }
-                                                        }
-                                                        t.requiresWorkspaceFolder -> {
-                                                            val nextM = if (effectiveComposerWsMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else effectiveComposerWsMode
-                                                            onUpdateSession {
-                                                                it.copy(
-                                                                    workspacePath = wsTarget.ifBlank { it.workspacePath },
-                                                                    workspaceMode = nextM
-                                                                )
-                                                            }
-                                                        }
-                                                        t.name == "web_search" || t.name == "web_fetch" -> {
-                                                            onUpdateProfile { it.copy(enableWebSearch = true) }
-                                                        }
-                                                        else -> {
-                                                            if (!isGoalModeEnabled) onToggleGoalMode()
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        )
+                                SepiaButton(
+                                    text = "✍ Draft My Reply",
+                                    compact = true,
+                                    style = SepiaButtonStyle.OUTLINE,
+                                    onClick = {
+                                        onComposerToolsDrawerChange(false)
+                                        onImpersonateDraft()
                                     }
-                                }
+                                )
+                                SepiaButton(
+                                    text = "🧭 Guide Next Reply",
+                                    compact = true,
+                                    enabled = hasTypedInput,
+                                    style = SepiaButtonStyle.SECONDARY,
+                                    onClick = {
+                                        onComposerToolsDrawerChange(false)
+                                        onSendGuidedDirection()
+                                    }
+                                )
                             }
-                        }
-                        SepiaDivider()
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            BasicText(
-                                text = "Co-Writing Helpers:",
-                                style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.padding(top = 5.dp, end = 4.dp)
-                            )
-                            SepiaButton(
-                                text = "✍ Draft My Reply",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = {
-                                    showComposerToolsDrawer = false
-                                    onImpersonateDraft()
-                                }
-                            )
-                            SepiaButton(
-                                text = "🧭 Guide Next Reply",
-                                compact = true,
-                                enabled = hasTypedInput,
-                                style = SepiaButtonStyle.SECONDARY,
-                                onClick = {
-                                    showComposerToolsDrawer = false
-                                    onSendGuidedDirection()
-                                }
-                            )
                         }
                     }
                 }
@@ -5590,7 +5605,7 @@ private fun ManuscriptViewport(
                         if (afterAt.contains(' ') || afterAt.contains('\n')) null else afterAt
                     }
                 }
-                val effectiveWorkspacePath = activeSession.workspacePath.ifBlank { activeAssistant.workspacePath }
+                val effectiveWorkspacePath = AgentPermissionResolver.resolve(activeSession, activeAssistant, activeProfile).workspacePath
                 var workspaceFiles by remember(effectiveWorkspacePath) { mutableStateOf<List<String>>(emptyList()) }
                 LaunchedEffect(effectiveWorkspacePath, activeAtQuery != null) {
                     if (activeAtQuery != null && effectiveWorkspacePath.isNotBlank() && workspaceFiles.isEmpty()) {
@@ -5870,6 +5885,8 @@ private fun ManuscriptViewport(
                     ContextWindowBreakdownPopover(
                         breakdown = contextBreakdown,
                         sessionTotalCostUsd = sessionTotalCostUsd,
+                        utilityUsageRecords = ownedUtilityRecords,
+                        sessionCostLabel = sessionSpend.label,
                         isStreaming = isStreaming,
                         canCompact = canCompactNow,
                         canSummarize = activeSession.messages.isNotEmpty(),
@@ -6039,7 +6056,7 @@ private fun ManuscriptViewport(
                         SepiaChip(
                             label = toolsChipLabel,
                             selected = showComposerToolsDrawer || hasActiveTools,
-                            onClick = { showComposerToolsDrawer = !showComposerToolsDrawer }
+                            onClick = { onComposerToolsDrawerChange(!showComposerToolsDrawer) }
                         )
                     }
                 }
@@ -6062,6 +6079,7 @@ private fun ManuscriptViewport(
                                     usedTokens = liveContextTokens,
                                     contextLimitTokens = contextBreakdown.contextLimitTokens,
                                     sessionCostUsd = sessionTotalCostUsd,
+                                    sessionCostLabel = sessionSpend.label,
                                     onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
                                 )
                             }
@@ -6118,6 +6136,7 @@ private fun ManuscriptViewport(
                                     usedTokens = liveContextTokens,
                                     contextLimitTokens = contextBreakdown.contextLimitTokens,
                                     sessionCostUsd = sessionTotalCostUsd,
+                                    sessionCostLabel = sessionSpend.label,
                                     onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
                                 )
                             }
@@ -7550,7 +7569,7 @@ private fun MessageTurnItem(
                             variant = activeVar,
                             includeReasoningAndTools = false
                         )
-                        if (activeVar.content.isNotBlank()) counted else m.outputTokens
+                        if (activeVar.content.isNotBlank()) counted.toLong() else m.outputTokens
                     }
                     val toolPayloadTok = remember(activeVar.toolCalls, activeVar.isStreaming) {
                         activeVar.toolCalls.sumOf { tc ->
@@ -7564,20 +7583,18 @@ private fun MessageTurnItem(
                     val thinkTok = remember(thinkTokenKey, activeVar.isStreaming, m.reasoningTokens) {
                         if (activeVar.thinkingSummary.isNotBlank()) {
                             if (activeVar.isStreaming) {
-                                O200kTokenizer.estimateTokensFast(activeVar.thinkingSummary)
+                                O200kTokenizer.estimateTokensFast(activeVar.thinkingSummary).toLong()
                             } else {
-                                O200kTokenizer.countTokens(activeVar.thinkingSummary)
+                                O200kTokenizer.countTokens(activeVar.thinkingSummary).toLong()
                             }
                         } else {
                             m.reasoningTokens
                         }
                     }
-                    val costVal = if (m.estimatedCostUsd > 0.0) {
+                    val costVal = if (m.reportedRequests > 0 || m.estimatedCostUsd > 0.0) {
                         m.estimatedCostUsd
                     } else {
-                        val outCost = ((outProseTok + thinkTok) / 1_000_000.0) * outputPricePerM
-                        val toolInCost = (toolPayloadTok / 1_000_000.0) * inputPricePerM
-                        outCost + toolInCost
+                        0.0
                     }
 
                     @OptIn(ExperimentalLayoutApi::class)
@@ -7599,7 +7616,7 @@ private fun MessageTurnItem(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 BasicText(
-                                    text = "${formatCompactTokens(outProseTok)} tok",
+                                    text = "~${formatCompactTokens(outProseTok)} tok",
                                     style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                                 if (thinkTok > 0) {
@@ -7678,7 +7695,7 @@ private fun MessageTurnItem(
                         }
 
                         // Pill 3: Cost Badge
-                        if (costVal > 0.0) {
+                        if (costVal > 0.0 || m.reportedRequests > 0) {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(5.dp))
@@ -7687,14 +7704,13 @@ private fun MessageTurnItem(
                                     .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
                                 BasicText(
-                                    text = formatUsdCost(costVal),
+                                    text = if (m.reportedRequests > 0) SessionSpendSummary(m, 0.0, 0).label else "~" + formatUsdCost(costVal),
                                     style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
                                 )
                             }
                         }
 
-                        // Optional Expanded Wire Input/Cache Pill when `⋯` More is open
-                        if ((showMoreActions || preferences.showTokensForEntireTurn) && m.inputTokens > 0) {
+                        if ((showMoreActions || preferences.showTokensForEntireTurn) && (m.inputTokens > 0 || m.reportedRequests > 0)) {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(5.dp))
@@ -7702,38 +7718,34 @@ private fun MessageTurnItem(
                                     .border(0.65.dp, p.border.copy(alpha = 0.5f), RoundedCornerShape(5.dp))
                                     .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp)
-                                ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     BasicText(
-                                        text = "Wire",
+                                        text = "${formatCompactTokens(m.inputTokens)} input • ${formatCompactTokens(m.outputTokens)} output",
                                         style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
                                     )
-                                    KissVectorIcon(
-                                        icon = KissIcon.ARROW_UP,
-                                        tint = p.mutedInk,
-                                        size = 9.5.dp
-                                    )
-                                    BasicText(
-                                        text = formatCompactTokens(m.inputTokens),
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
-                                    )
-                                    if (m.cachedInputTokens > 0) {
+                                    if (m.cachedInputTokens > 0 || m.cacheCreationInputTokens > 0) {
                                         BasicText(
-                                            text = "(",
-                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
-                                        )
-                                        KissVectorIcon(
-                                            icon = KissIcon.ZAP,
-                                            tint = p.accentSecondary,
-                                            size = 9.5.dp
-                                        )
-                                        BasicText(
-                                            text = "${formatCompactTokens(m.cachedInputTokens)} cached)",
+                                            text = "${formatCompactTokens(m.cachedInputTokens)} cache read • ${formatCompactTokens(m.cacheCreationInputTokens)} cache write",
                                             style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
                                         )
                                     }
+                                    if (m.reportedRequests > 0) {
+                                        BasicText(
+                                            text = "${m.reportedRequests} request${if (m.reportedRequests == 1) "" else "s"}" +
+                                                if (!m.usageIsComplete || !m.costIsAvailable) " • partial" else if (m.reportedCostRequests == m.reportedRequests) " • reported cost" else " • estimate",
+                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        )
+                                    }
+                                    if (m.outputIncludesUnreportedReasoning) BasicText(
+                                        text = "Reasoning included in output", style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    if (m.reportedRequests > 0 && !m.costIsAvailable && costVal == 0.0) BasicText(
+                                        text = "Cost unavailable", style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
+                                    if (m.unpricedCostComponents.isNotEmpty()) BasicText(
+                                        text = "Unpriced: ${m.unpricedCostComponents.sorted().joinToString(", ")}",
+                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    )
                                 }
                             }
                         }

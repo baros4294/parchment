@@ -1,6 +1,9 @@
 package io.parchment.ai.harness
 
 import io.parchment.ai.model.GoalTrackerState
+import io.parchment.ai.model.AgentPermissionPolicy
+import io.parchment.ai.model.ShellAccess
+import io.parchment.ai.model.ToolApprovalMode
 import io.parchment.ai.model.TodoItem
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
@@ -535,11 +538,14 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
     ): List<ToolDefinition> {
         val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
         if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool) return emptyList()
         return ALL_TOOLS.filter { tool ->
+            if (policy != null && !policy.allowsTool(tool.name)) return@filter false
+            if (tool.name in setOf("web_search", "web_fetch") && !enableWebTools) return@filter false
             if (tool.name == "web_search" && !includeLocalWebSearchTool) {
                 return@filter false
             }
@@ -577,9 +583,10 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool, policy)) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", tool.name)
@@ -595,8 +602,9 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
-    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool, policy)
 
     fun buildOpenAiResponsesTools(
         mode: WorkspaceMode,
@@ -604,8 +612,9 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
-    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
+    ): JsonArray = buildFlatFunctionTools(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool, policy)
 
     /**
      * Formats active workspace & utility tools for OpenAI `/v1/chat/completions`.
@@ -616,9 +625,10 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool, policy)) {
             add(buildJsonObject {
                 put("type", "function")
                 putJsonObject("function") {
@@ -639,9 +649,10 @@ object WorkspaceHarness {
         allowShell: Boolean = false,
         goalModeActive: Boolean = false,
         enableWebTools: Boolean = false,
-        includeLocalWebSearchTool: Boolean = enableWebTools
+        includeLocalWebSearchTool: Boolean = enableWebTools,
+        policy: AgentPermissionPolicy? = null
     ): JsonArray = buildJsonArray {
-        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool)) {
+        for (tool in activeToolsForMode(mode, workspacePath, allowShell, goalModeActive, enableWebTools, includeLocalWebSearchTool, policy)) {
             add(buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
@@ -703,21 +714,33 @@ object WorkspaceHarness {
         toolName: String,
         argumentsJson: String,
         onOutputDelta: ((String) -> Unit)? = null,
-        allowShell: Boolean = false
+        allowShell: Boolean = false,
+        enableWebTools: Boolean = false,
+        goalModeActive: Boolean = false,
+        accessScope: ToolAccessScope? = null,
+        permit: ToolExecutionPermit? = null,
+        isCancelled: () -> Boolean = { false }
     ): ToolCallRecord {
-        val toolStartMs = PlatformBridge.currentTimeMillis()
-        val isFolderFreeTool = toolName == "todo_write" ||
-            toolName == "goal_complete" ||
-            toolName == "dice_roll" ||
-            toolName == "calc_eval" ||
-            toolName == "web_search" ||
-            toolName == "web_fetch"
-        if (!isFolderFreeTool && (mode == WorkspaceMode.OFF || workspaceRoot.isBlank())) {
+        val toolStartMs = PlatformBridge.monotonicTimeMillis()
+        val scope = accessScope ?: ToolAccessScope(AgentPermissionPolicy(
+            workspacePath = workspaceRoot, workspaceMode = mode,
+            shellAccess = if (allowShell) ShellAccess.FULL_ACCESS else ShellAccess.DISABLED,
+            webAccess = enableWebTools, approvalMode = ToolApprovalMode.NEVER
+        ), goalModeActive)
+        val denial = when {
+            isCancelled() -> "The owning run was cancelled before tool execution."
+            scope.policy.workspacePath != workspaceRoot || scope.policy.workspaceMode != mode || scope.policy.allowShell != allowShell -> "Tool dispatch does not match the current permission scope."
+            else -> AgentPermissionGate.denial(scope, toolName, argumentsJson)
+                ?: if (permit != null) permit.claim(scope, toolName, argumentsJson)
+                else if (AgentPermissionGate.effect(scope, toolName, argumentsJson).requiresApproval) "Tool approval is required before execution."
+                else null
+        }
+        if (denial != null) {
             return ToolCallRecord(
                 id = callId,
                 name = toolName,
                 argumentsJson = argumentsJson,
-                resultText = "Error: Workspace harness is disabled or no workspace directory is mounted.",
+                resultText = "Error: $denial",
                 isError = true
             )
         }
@@ -756,7 +779,7 @@ object WorkspaceHarness {
                     }
                 }.trim()
                 if (mode == WorkspaceMode.READ_WRITE && workspaceRoot.isNotBlank()) {
-                    PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_TODO.md", mdSummary)
+                    PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_TODO.md", mdSummary).getOrThrow()
                 }
                 "Updated Todo Checklist ($done/${parsed.size} completed, $active in_progress, $pending pending).\n$mdSummary"
             }
@@ -842,12 +865,12 @@ object WorkspaceHarness {
             "web_search" -> {
                 val query = strArg("query")
                 val maxRes = (args["max_results"]?.jsonPrimitive?.intOrNull ?: 6).coerceIn(1, 15)
-                executeFreeWebSearch(query, maxRes)
+                executeFreeWebSearch(query, maxRes, isCancelled)
             }
             "web_fetch" -> {
                 val url = strArg("url")
                 val maxChars = args["max_chars"]?.jsonPrimitive?.intOrNull ?: 24000
-                PlatformBridge.fetchUrlText(url, maxChars)
+                PlatformBridge.fetchUrlText(url, maxChars, isCancelled)
             }
             "calc_eval" -> {
                 val expr = strArg("expression")
@@ -892,7 +915,7 @@ object WorkspaceHarness {
                 } else {
                     val cmd = strArg("command")
                     val timeout = args["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 30
-                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout, onOutputDelta)
+                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout, onOutputDelta, isCancelled)
                 }
             }
             else -> Result.failure(IllegalArgumentException("Unknown workspace tool '$toolName'."))
@@ -902,7 +925,7 @@ object WorkspaceHarness {
             invalidateWorkspaceCache(workspaceRoot)
         }
 
-        val elapsedToolMs = (PlatformBridge.currentTimeMillis() - toolStartMs).coerceAtLeast(1L)
+        val elapsedToolMs = (PlatformBridge.monotonicTimeMillis() - toolStartMs).coerceAtLeast(1L)
         return result.fold(
             onSuccess = { output ->
                 val shapedOutput = compressToolOutputWithSizeValve(toolName, output)
@@ -1358,7 +1381,7 @@ object WorkspaceHarness {
      * 2. Wikipedia OpenSearch / Query API (`https://en.wikipedia.org/w/api.php?...`)
      * 3. HackerNews Algolia Search API (`https://hn.algolia.com/api/v1/search?query=...`)
      */
-    fun executeFreeWebSearch(query: String, maxResults: Int = 6): Result<String> = runCatching {
+    fun executeFreeWebSearch(query: String, maxResults: Int = 6, isCancelled: (() -> Boolean)? = null): Result<String> = runCatching {
         val cleanQuery = query.trim()
         require(cleanQuery.isNotEmpty()) { "Search query must not be blank." }
         val encoded = urlEncodeQuery(cleanQuery)
@@ -1377,14 +1400,14 @@ object WorkspaceHarness {
 
         // 1. Primary: DuckDuckGo HTML search
         val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
-        PlatformBridge.fetchUrlText(ddgUrl, maxChars = 48_000).onSuccess { ddgMd ->
+        PlatformBridge.fetchUrlText(ddgUrl, maxChars = 48_000, isCancelled = isCancelled).onSuccess { ddgMd ->
             addUnique(parseDuckDuckGoMarkdownResults(ddgMd, maxResults))
         }
 
         // 2. Fallback / Supplement: Wikipedia Search API
         if (collected.size < maxResults) {
             val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=1&format=json&srlimit=${maxResults.coerceAtMost(5)}"
-            PlatformBridge.fetchUrlText(wikiUrl, maxChars = 32_000).onSuccess { wikiJson ->
+            PlatformBridge.fetchUrlText(wikiUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { wikiJson ->
                 addUnique(parseWikipediaSearchJson(wikiJson, maxResults - collected.size))
             }
         }
@@ -1392,7 +1415,7 @@ object WorkspaceHarness {
         // 3. Fallback / Supplement: HackerNews Algolia Search API
         if (collected.size < maxResults) {
             val hnUrl = "https://hn.algolia.com/api/v1/search?query=$encoded&tags=story&hitsPerPage=${maxResults.coerceAtMost(5)}"
-            PlatformBridge.fetchUrlText(hnUrl, maxChars = 32_000).onSuccess { hnJson ->
+            PlatformBridge.fetchUrlText(hnUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { hnJson ->
                 addUnique(parseHackerNewsAlgoliaJson(hnJson, maxResults - collected.size))
             }
         }

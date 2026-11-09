@@ -40,6 +40,17 @@ internal class WindowsPowerLease(
     fun acquire() = synchronized(lock) {
         check(!closed) { "Windows power lease is closed." }
         owners++
+        startOrRefreshLocked()
+    }
+
+    fun reconcile(activeOwners: Int) = synchronized(lock) {
+        check(!closed) { "Windows power lease is closed." }
+        require(activeOwners >= 0)
+        owners = activeOwners
+        if (owners == 0) stopLocked() else startOrRefreshLocked()
+    }
+
+    private fun startOrRefreshLocked() {
         if (monitor == null) {
             val generation = ++monitorGeneration
             monitor = Thread({ monitorLoop(generation) }, "parchment-power-monitor").apply {

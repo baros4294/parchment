@@ -7,6 +7,9 @@ on:
       - master
     tags:
       - "v*"
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
     branches:
       - main
@@ -14,7 +17,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-android-apk:
@@ -22,10 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK 21 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6.2.0
         with:
           distribution: "temurin"
           java-version: "21"
@@ -38,70 +47,117 @@ jobs:
             yes | "$SDKMGR" --licenses > /dev/null || true
           fi
 
-      - name: Build Signed Release APK (with OTA-consistent keystore)
+      - name: Stage Private Release Signer
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          APP_VER="2.0.${{ github.run_number }}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          python3 .github/scripts/test_stage_android_signing.py
+          python3 .github/scripts/stage_android_signing.py
+
+      - name: Build Android APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          APP_VER="2.0.$GITHUB_RUN_NUMBER"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             APP_VER="${GITHUB_REF#refs/tags/v}"
           fi
+          [[ "$APP_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release version"; exit 1; }
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            BUILD_VARIANT=debug
+            BUILD_TASK=:composeApp:assembleDebug
+          else
+            BUILD_VARIANT=release
+            BUILD_TASK=:composeApp:assembleRelease
+          fi
+          echo "ANDROID_BUILD_VARIANT=$BUILD_VARIANT" >> "$GITHUB_ENV"
           chmod +x ./gradlew
-          ./gradlew :composeApp:assembleRelease \
+          python3 .github/scripts/test_run_gradle.py
+          python3 .github/scripts/run_gradle.py -- "$BUILD_TASK" \
             -Dorg.gradle.jvmargs="-Xmx4g -XX:+UseG1GC -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
             -PappVersion="$APP_VER" \
-            -PappVersionCode="$((200 + ${{ github.run_number }}))" \
-            -PgithubRepo="${{ github.repository }}" \
-            --no-daemon
+            -PappVersionCode="$((200 + GITHUB_RUN_NUMBER))" \
+            -PgithubRepo="$GITHUB_REPOSITORY" \
+            --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Rename APK for Clean Download
         run: |
           mkdir -p dist
-          cp composeApp/build/outputs/apk/release/*.apk dist/Parchment-Android-Universal.apk
+          cp composeApp/build/outputs/apk/"$ANDROID_BUILD_VARIANT"/*.apk dist/Parchment-Android-Universal.apk
 
       - name: Upload Android APK Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: Parchment-Android-APK
           path: dist/Parchment-Android-Universal.apk
           if-no-files-found: error
+
+      - name: Remove Staged Private Signer
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          value = os.environ.get('ANDROID_KEYSTORE_PATH')
+          if value:
+              target = Path(value).resolve()
+              target.relative_to(Path(os.environ['RUNNER_TEMP']).resolve())
+              if not target.parent.name.startswith('parchment-signing-'):
+                  raise ValueError('Unexpected signer staging directory')
+              target.unlink(missing_ok=True)
+              target.parent.rmdir()
+          PY
 
   build-windows-exe:
     name: Build Windows .EXE Installer (Zero-Trace Uninstall & Silent OTA)
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK 21 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6.2.0
         with:
           distribution: "temurin"
           java-version: "21"
           cache: "gradle"
 
-      - name: Build Native Windows Distributable Runtime
+      - name: Verify Regressions and Build Windows Runtime
         shell: pwsh
         run: |
-          $appVer = "2.0.${{ github.run_number }}"
-          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
-            $appVer = "${{ github.ref }}".Substring(11)
+          $appVer = "2.0.$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
+            $appVer = $env:GITHUB_REF.Substring(11)
           }
-          .\gradlew.bat :composeApp:createDistributable `
-            -PappVersion="$appVer" `
-            -PappVersionCode="${{ github.run_number }}" `
-            -PgithubRepo="${{ github.repository }}" `
-            --no-daemon
+          if ($appVer -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version" }
+          $appCode = 200 + [int]$env:GITHUB_RUN_NUMBER
+          python .github/scripts/test_run_gradle.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/run_gradle.py -- :composeApp:desktopTest :composeApp:createDistributable `
+            "-PappVersion=$appVer" `
+            "-PappVersionCode=$appCode" `
+            "-PgithubRepo=$env:GITHUB_REPOSITORY" `
+            --no-daemon --max-workers=2 '-Pkotlin.compiler.execution.strategy=in-process'
+          exit $LASTEXITCODE
 
       - name: Package Minimal Zero-Trace .EXE Installer with Inno Setup
         shell: pwsh
         run: |
-          $appVer = "2.0.${{ github.run_number }}"
-          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
-            $appVer = "${{ github.ref }}".Substring(11)
+          $appVer = "2.0.$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
+            $appVer = $env:GITHUB_REF.Substring(11)
           }
           iscc.exe "/DMyAppVersion=$appVer" installer\windows-installer.iss
 
       - name: Upload Windows EXE Installer Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: Parchment-Windows-EXE-Installer
           path: build/installer/Parchment-Windows-x64-Setup.exe
@@ -112,34 +168,39 @@ jobs:
     needs: [build-android-apk, build-windows-exe]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Determine Release Tag
         id: rel
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v2.0.${{ github.run_number }}"
+            TAG="v2.0.$GITHUB_RUN_NUMBER"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Download Android APK Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           name: Parchment-Android-APK
           path: release-assets
 
       - name: Download Windows EXE Installer Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           name: Parchment-Windows-EXE-Installer
           path: release-assets
 
       - name: Create or Update GitHub Release for In-App OTA Updater
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: "Parchment ${{ steps.rel.outputs.tag }} — Horizon"
+          body: |
+            Android releases use a private signing identity. Legacy installations signed with the exposed repository key require an explicit backup/export and migration before installation.
+            See the [release-signing and migration guide](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE_SIGNING.md). Installs already using the private identity can update normally.
           files: |
             release-assets/Parchment-Android-Universal.apk
             release-assets/Parchment-Windows-x64-Setup.exe

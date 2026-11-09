@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.network
+package io.parchment.ai.network
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
@@ -19,9 +19,23 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readLine
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.harness.AgentPermissionGate
+import io.parchment.ai.harness.AgentToolRunContext
+import io.parchment.ai.harness.ToolAccessScope
+import io.parchment.ai.harness.ToolAuthorization
+import io.parchment.ai.harness.ToolExecutionPermit
+import io.parchment.ai.harness.ToolApprovalBroker
+import io.parchment.ai.model.AgentPermissionResolver
+import io.parchment.ai.model.ToolApprovalMode
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import io.parchment.ai.model.AuthHeaderMode
+import io.parchment.ai.model.ApiUsageRecord
+import io.parchment.ai.model.ProviderTokenUsage
+import io.parchment.ai.model.saturatingTokenSum
 import io.parchment.ai.model.CUSTOM_DIALECT_ANTHROPIC
 import io.parchment.ai.model.CUSTOM_DIALECT_GEMINI
+import io.parchment.ai.model.CUSTOM_DIALECT_OPENAI_CHAT
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.GoalTrackerState
@@ -35,10 +49,16 @@ import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.runtime.RunActivityContext
+import io.parchment.ai.runtime.runActivityFlow
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -82,6 +102,7 @@ sealed class StreamUpdate {
     data class ThinkingDelta(val delta: String, val signatureDelta: String = "") : StreamUpdate()
     data class ContentDelta(val delta: String) : StreamUpdate()
     data class ToolCallEvent(val toolCall: ToolCallRecord) : StreamUpdate()
+    data class UsageUpdated(val record: ApiUsageRecord, val metrics: TokenMetrics) : StreamUpdate()
     data class GoalProgress(val goalTracker: GoalTrackerState) : StreamUpdate()
     data class MediaGenerated(val item: GeneratedMediaItem) : StreamUpdate()
     data class WebSourcesUpdated(val sources: List<WebSourceCitation>) : StreamUpdate()
@@ -98,7 +119,8 @@ sealed class StreamUpdate {
         val providerInteractionId: String,
         val metrics: TokenMetrics,
         val rawRequest: String,
-        val rawResponse: String
+        val rawResponse: String,
+        val apiUsageRecords: List<ApiUsageRecord> = emptyList()
     ) : StreamUpdate()
     data class Error(val message: String, val rawDetails: String = "") : StreamUpdate()
 }
@@ -203,19 +225,58 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
     }
 
+    private suspend fun authorizeWorkspaceTool(
+        scope: ToolAccessScope, callId: String, name: String, arguments: String,
+        activityContext: RunActivityContext? = null
+    ): ToolAuthorization {
+        currentCoroutineContext().ensureActive()
+        AgentPermissionGate.denial(scope, name, arguments)?.let { return ToolAuthorization.Denied(it) }
+        val broker = currentCoroutineContext()[AgentToolRunContext]?.broker
+        if (broker == null && AgentPermissionGate.effect(scope, name, arguments).requiresApproval) {
+            return ToolAuthorization.Denied("Tool approval is required, but this run has no approval interface.")
+        }
+        val activeScope = broker?.currentScope()
+        if (broker != null && (activeScope == null || activeScope.policy.workspacePath != scope.policy.workspacePath)) {
+            return ToolAuthorization.Denied("The workspace changed. Resume with the current workspace before using tools.")
+        }
+        val activity = activityContext ?: currentCoroutineContext()[RunActivityContext]
+        return withContext(activity ?: EmptyCoroutineContext) {
+            (broker ?: ToolApprovalBroker("headless", "", { scope })).authorize(callId, name, arguments)
+        }
+    }
+
+    private suspend fun ensureAgentPolicyCurrent(session: ChatSession, profile: ProviderProfile) {
+        currentCoroutineContext().ensureActive()
+        val broker = currentCoroutineContext()[AgentToolRunContext]?.broker ?: return
+        val expected = AgentPermissionResolver.resolve(session, profile = profile)
+        if (broker.currentScope()?.policy != expected) {
+            throw kotlinx.coroutines.CancellationException("Agent permissions changed. Resume this turn with the current permissions.")
+        }
+    }
+
     private suspend fun executeWorkspaceToolWithLiveProgress(
         workspaceRoot: String,
         mode: io.parchment.ai.model.WorkspaceMode,
         allowShell: Boolean,
+        accessScope: ToolAccessScope,
         callId: String,
         toolName: String,
         argumentsJson: String,
         thoughtSignature: String = "",
         precedingThinking: String = "",
         onStatus: suspend (String) -> Unit,
-        onToolCall: suspend (ToolCallRecord) -> Unit
+        onToolCall: suspend (ToolCallRecord) -> Unit,
+        activityContext: RunActivityContext?
     ): ToolCallRecord {
         val intent = WorkspaceHarness.describeToolCallIntent(toolName, argumentsJson)
+        if (AgentPermissionGate.effect(accessScope, toolName, argumentsJson).requiresApproval) onStatus("Awaiting approval: $intent")
+        val authorization = authorizeWorkspaceTool(accessScope, callId, toolName, argumentsJson, activityContext)
+        if (authorization is ToolAuthorization.Denied) return ToolCallRecord(
+            id = callId, name = toolName, argumentsJson = argumentsJson,
+            resultText = "Error: ${authorization.reason}", isError = true,
+            thoughtSignature = thoughtSignature, precedingThinking = precedingThinking
+        )
+        val permit = (authorization as ToolAuthorization.Allowed).permit
         onStatus("$intent…")
         val initialRunningRecord = ToolCallRecord(
             id = callId,
@@ -229,12 +290,15 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onToolCall(initialRunningRecord)
 
         val liveChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.CONFLATED)
-        val startMs = PlatformBridge.currentTimeMillis()
+        val clock = activityContext?.activity?.let { activity -> { activity.elapsedMs } } ?: PlatformBridge::monotonicTimeMillis
+        val startMs = clock()
         // IMPORTANT: Run the blocking tool execution in `async(Dispatchers.IO)` (which NEVER calls `flow.emit()`)
         // and consume `liveChannel` directly on the caller's coroutine so Kotlin's `Flow` context invariant is NEVER violated!
         return kotlinx.coroutines.coroutineScope {
             val workerDeferred = async(Dispatchers.IO) {
                 try {
+                    currentCoroutineContext().ensureActive()
+                    val workerJob = currentCoroutineContext()[kotlinx.coroutines.Job]!!
                     WorkspaceHarness.executeToolCall(
                         workspaceRoot = workspaceRoot,
                         mode = mode,
@@ -242,6 +306,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                         callId = callId,
                         toolName = toolName,
                         argumentsJson = argumentsJson,
+                        accessScope = permit.scope,
+                        permit = permit,
+                        isCancelled = { !workerJob.isActive || permit.isRevoked() },
                         onOutputDelta = { partial ->
                             liveChannel.trySend(partial)
                         }
@@ -252,7 +319,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             }
             try {
                 for (partialOut in liveChannel) {
-                    val elapsedSec = ((PlatformBridge.currentTimeMillis() - startMs) / 100L) / 10.0
+                    val elapsedSec = ((clock() - startMs) / 100L) / 10.0
                     val lastNonEmptyLine = partialOut.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
                     val statusHeader = intent.lineSequence().firstOrNull().orEmpty()
                     val liveStatus = if (lastNonEmptyLine.isNotEmpty()) {
@@ -271,6 +338,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 val rawRecord = workerDeferred.await()
                 rawRecord.copy(
                     isRunning = false,
+                    durationMs = (clock() - startMs).coerceAtLeast(1L),
                     thoughtSignature = thoughtSignature.ifBlank { rawRecord.thoughtSignature },
                     precedingThinking = precedingThinking.ifBlank { rawRecord.precedingThinking }
                 )
@@ -285,6 +353,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         workspaceRoot: String,
         mode: io.parchment.ai.model.WorkspaceMode,
         allowShell: Boolean,
+        accessScope: ToolAccessScope,
         calls: List<Triple<String, String, String>>, // (callId, toolName, argumentsJson)
         firstThoughtSignature: String = "",
         firstPrecedingThinking: String = "",
@@ -297,77 +366,98 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         val canRunBatchInParallel = calls.size > 1 && calls.all { (_, fnName, _) ->
             WorkspaceHarness.isParallelSafeReadOnlyTool(fnName)
         }
-        if (!canRunBatchInParallel) {
-            val results = mutableListOf<ToolCallRecord>()
-            for ((idx, triple) in calls.withIndex()) {
-                val (callId, fnName, argsJson) = triple
-                val signedRec = executeWorkspaceToolWithLiveProgress(
-                    workspaceRoot = workspaceRoot,
-                    mode = mode,
-                    allowShell = allowShell,
-                    callId = callId,
-                    toolName = fnName,
-                    argumentsJson = argsJson,
-                    thoughtSignature = if (idx == 0) firstThoughtSignature else "",
-                    precedingThinking = if (idx == 0) firstPrecedingThinking else "",
-                    onStatus = onStatus,
-                    onToolCall = onToolCall
-                )
-                val rec = circuitBreaker.onToolExecuted(signedRec)
-                circuitBreaker.goalState?.let { onGoalProgress(it) }
-                onToolCall(rec)
-                results.add(rec)
-            }
-            return results
-        }
-
-        // Parallel fast path: emit RUNNING cards for all read-only tools immediately,
-        // execute them concurrently on Dispatchers.IO, and emit completed records in deterministic order!
-        val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
-        onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
-        for ((idx, triple) in calls.withIndex()) {
-            val (callId, fnName, argsJson) = triple
-            onToolCall(
-                ToolCallRecord(
-                    id = callId,
-                    name = fnName,
-                    argumentsJson = argsJson,
-                    resultText = "Running $fnName in parallel…",
-                    isRunning = true,
-                    thoughtSignature = if (idx == 0) firstThoughtSignature else "",
-                    precedingThinking = if (idx == 0) firstPrecedingThinking else ""
-                )
-            )
-        }
-
-        val rawCompleted = kotlinx.coroutines.coroutineScope {
-            calls.mapIndexed { idx, (callId, fnName, argsJson) ->
-                async(Dispatchers.IO) {
-                    val raw = WorkspaceHarness.executeToolCall(
+        val activity = currentCoroutineContext()[RunActivityContext]?.activity
+        val batch = activity?.beginTools(if (canRunBatchInParallel) calls.size else 1)
+        try {
+            if (!canRunBatchInParallel) {
+                val results = mutableListOf<ToolCallRecord>()
+                for ((idx, triple) in calls.withIndex()) {
+                    val (callId, fnName, argsJson) = triple
+                    val signedRec = executeWorkspaceToolWithLiveProgress(
                         workspaceRoot = workspaceRoot,
                         mode = mode,
                         allowShell = allowShell,
+                        accessScope = accessScope,
                         callId = callId,
                         toolName = fnName,
-                        argumentsJson = argsJson
+                        argumentsJson = argsJson,
+                        thoughtSignature = if (idx == 0) firstThoughtSignature else "",
+                        precedingThinking = if (idx == 0) firstPrecedingThinking else "",
+                        onStatus = onStatus,
+                        onToolCall = onToolCall,
+                        activityContext = activity?.let { RunActivityContext(it, requireNotNull(batch).branches.single()) }
                     )
-                    raw.copy(
-                        isRunning = false,
-                        thoughtSignature = if (idx == 0) firstThoughtSignature.ifBlank { raw.thoughtSignature } else raw.thoughtSignature,
-                        precedingThinking = if (idx == 0) firstPrecedingThinking.ifBlank { raw.precedingThinking } else raw.precedingThinking
-                    )
+                    val rec = circuitBreaker.onToolExecuted(signedRec)
+                    circuitBreaker.goalState?.let { onGoalProgress(it) }
+                    onToolCall(rec)
+                    results.add(rec)
                 }
-            }.map { it.await() }
-        }
+                return results
+            }
 
-        val finalResults = mutableListOf<ToolCallRecord>()
-        for (rawRec in rawCompleted) {
-            val rec = circuitBreaker.onToolExecuted(rawRec)
-            circuitBreaker.goalState?.let { onGoalProgress(it) }
-            onToolCall(rec)
-            finalResults.add(rec)
-        }
-        return finalResults
+            // Parallel fast path: emit RUNNING cards for all read-only tools immediately,
+            // execute them concurrently on Dispatchers.IO, and emit completed records in deterministic order!
+            val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
+            onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
+            for ((idx, triple) in calls.withIndex()) {
+                val (callId, fnName, argsJson) = triple
+                onToolCall(
+                    ToolCallRecord(
+                        id = callId,
+                        name = fnName,
+                        argumentsJson = argsJson,
+                        resultText = "Running $fnName in parallel…",
+                        isRunning = true,
+                        thoughtSignature = if (idx == 0) firstThoughtSignature else "",
+                        precedingThinking = if (idx == 0) firstPrecedingThinking else ""
+                    )
+                )
+            }
+
+            val rawCompleted = kotlinx.coroutines.coroutineScope {
+                calls.mapIndexed { idx, (callId, fnName, argsJson) ->
+                    val work = activity?.let { RunActivityContext(it, requireNotNull(batch).branches[idx]) }
+                    async(Dispatchers.IO + (work ?: EmptyCoroutineContext)) {
+                        try {
+                            val authorization = authorizeWorkspaceTool(accessScope, callId, fnName, argsJson)
+                            currentCoroutineContext().ensureActive()
+                            val workerJob = currentCoroutineContext()[kotlinx.coroutines.Job]!!
+                            val startedAt = activity?.elapsedMs ?: 0L
+                            val raw = if (authorization is ToolAuthorization.Denied) ToolCallRecord(
+                                id = callId, name = fnName, argumentsJson = argsJson,
+                                resultText = "Error: ${authorization.reason}", isError = true
+                            ) else WorkspaceHarness.executeToolCall(
+                                workspaceRoot = workspaceRoot,
+                                mode = mode,
+                                allowShell = allowShell,
+                                callId = callId,
+                                toolName = fnName,
+                                argumentsJson = argsJson,
+                                accessScope = (authorization as ToolAuthorization.Allowed).permit.scope,
+                                permit = authorization.permit,
+                                isCancelled = { !workerJob.isActive || authorization.permit.isRevoked() }
+                            )
+                            raw.copy(
+                                isRunning = false,
+                                durationMs = if (authorization is ToolAuthorization.Allowed && activity != null)
+                                    (activity.elapsedMs - startedAt).coerceAtLeast(1L) else raw.durationMs,
+                                thoughtSignature = if (idx == 0) firstThoughtSignature.ifBlank { raw.thoughtSignature } else raw.thoughtSignature,
+                                precedingThinking = if (idx == 0) firstPrecedingThinking.ifBlank { raw.precedingThinking } else raw.precedingThinking
+                            )
+                        } finally { work?.let { it.activity.completeBranch(it.branch) } }
+                    }
+                }.map { it.await() }
+            }
+
+            val finalResults = mutableListOf<ToolCallRecord>()
+            for (rawRec in rawCompleted) {
+                val rec = circuitBreaker.onToolExecuted(rawRec)
+                circuitBreaker.goalState?.let { onGoalProgress(it) }
+                onToolCall(rec)
+                finalResults.add(rec)
+            }
+            return finalResults
+        } finally { batch?.close() }
     }
     private val json = Json {
         ignoreUnknownKeys = true
@@ -411,8 +501,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         initialMediaItems: List<GeneratedMediaItem> = emptyList(),
         initialWebSources: List<WebSourceCitation> = emptyList(),
         initialGoalTracker: GoalTrackerState? = null,
-        initialElapsedMs: Long = 0L
-    ): Flow<StreamUpdate> = flow {
+        initialElapsedMs: Long = 0L,
+        initialApiUsageRecords: List<ApiUsageRecord> = emptyList(),
+        initialTokenMetrics: TokenMetrics = TokenMetrics(),
+        usageOwnerSessionId: String = session.id,
+        usageOwnerRunId: String = "",
+        usagePurpose: String = "chat"
+    ): Flow<StreamUpdate> = runActivityFlow(session.modelOverride.ifBlank { profile.defaultModel }) { activity ->
         val model = session.modelOverride.ifBlank { profile.defaultModel }.trim()
         if (model.isBlank()) {
             emit(
@@ -420,10 +515,10 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     message = "No Model ID is selected. Fetch models automatically from the endpoint or enter a Model ID manually in Providers & Proxy."
                 )
             )
-            return@flow
+            return@runActivityFlow
         }
-        val startTime = PlatformBridge.currentTimeMillis()
-        var firstTokenTime = 0L
+        val startTime = activity.elapsedMs
+        var firstTokenTime = -1L
 
         val cleanInitialPrefix = stripInlineErrorNotices(continueFromAssistantPrefix)
         val contentBuilder = StringBuilder(cleanInitialPrefix)
@@ -444,23 +539,28 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             )
         }
         var lastInteractionId = ""
-        var inputTokens = 0
-        var cachedTokens = 0
-        var stepReasoningTokens = 0
-        var stepOutputTokens = 0
-        var completedStepsReasoningTokens = 0
-        var completedStepsOutputTokens = 0
+        val usageLedger = ProviderUsageLedger(profile, model, initialApiUsageRecords, initialTokenMetrics,
+            usageOwnerSessionId, usageOwnerRunId.ifBlank { currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformBridge.createRunId() }, usagePurpose)
+        var latestUsageMetrics = usageLedger.metrics()
+        val toolPolicy = AgentPermissionResolver.resolve(session, profile = profile)
+        val transportProfile = profile.copy(
+            useLegacyFallbackEndpoint = profile.protocol != ProviderProtocol.CUSTOM && profile.useLegacyFallbackEndpoint,
+            enableWebSearch = profile.enableWebSearch && toolPolicy.webAccess && toolPolicy.allowsTool("web_search"),
+            enableUrlContext = profile.enableUrlContext && toolPolicy.webAccess && toolPolicy.allowsTool("web_fetch"),
+            enableCodeExecution = profile.enableCodeExecution && toolPolicy.allowsTool("code_execution") && toolPolicy.approvalMode == ToolApprovalMode.NEVER,
+            enableImageGeneration = profile.enableImageGeneration && toolPolicy.allowsTool("image_generation"),
+            enableVideoGeneration = profile.enableVideoGeneration && toolPolicy.allowsTool("video_generation"),
+            allowShellExecution = false
+        )
         var activeDecodeAccumulatedMs = 0L
-        var currentBurstStartMs = 0L
-        var currentBurstLastMs = 0L
-        var totalToolExecutionMs = 0L
-        var toolBatchActiveStartMs = 0L
+        var currentBurstStartMs = -1L
+        var currentBurstLastMs = -1L
         var lastRawReq = ""
         var lastRawResp = ""
         fun recordTokenActivity() {
-            val now = PlatformBridge.currentTimeMillis()
-            if (firstTokenTime == 0L) firstTokenTime = now
-            if (currentBurstStartMs == 0L) {
+            val now = activity.elapsedMs
+            if (firstTokenTime < 0L) firstTokenTime = now
+            if (currentBurstStartMs < 0L) {
                 currentBurstStartMs = now
                 currentBurstLastMs = now
             } else {
@@ -477,22 +577,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
 
         fun closeCurrentDecodeBurst() {
-            if (currentBurstStartMs > 0L && currentBurstLastMs >= currentBurstStartMs) {
+            if (currentBurstStartMs >= 0L && currentBurstLastMs >= currentBurstStartMs) {
                 activeDecodeAccumulatedMs += (currentBurstLastMs - currentBurstStartMs).coerceAtLeast(40L)
             }
-            currentBurstStartMs = 0L
-            currentBurstLastMs = 0L
-        }
-
-        fun commitCompletedStepUsage() {
-            if (stepReasoningTokens > 0) {
-                completedStepsReasoningTokens += stepReasoningTokens
-                stepReasoningTokens = 0
-            }
-            if (stepOutputTokens > 0) {
-                completedStepsOutputTokens += stepOutputTokens
-                stepOutputTokens = 0
-            }
+            currentBurstStartMs = -1L
+            currentBurstLastMs = -1L
         }
 
         fun recordRawWireBounded(req: String, resp: String) {
@@ -504,11 +593,48 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             }
         }
 
-        fun recordStepUsage(inTok: Int, cacheTok: Int, thinkTok: Int, outTok: Int) {
-            if (inTok > 0) inputTokens = maxOf(inputTokens, inTok)
-            if (cacheTok > 0) cachedTokens = maxOf(cachedTokens, cacheTok)
-            if (thinkTok > 0) stepReasoningTokens = maxOf(stepReasoningTokens, thinkTok)
-            if (outTok > 0) stepOutputTokens = maxOf(stepOutputTokens, outTok)
+        suspend fun beginUsageRequest(dialect: UsageDialect): String {
+            val mediaInputs = buildSet {
+                val fees = requestChargePricing(profile, model).perUnitUsd
+                historyNodes.filter { it.includedInContext }.forEach { node ->
+                    node.activeVariant.attachments.forEach { attachment ->
+                        if (attachment.base64Data.isNotBlank() || attachment.localFilePath.isNotBlank()) {
+                            when {
+                                attachment.mimeType.startsWith("audio/", true) -> add("input_audio")
+                                attachment.mimeType.startsWith("video/", true) -> add("input_video")
+                                attachment.mimeType.startsWith("image/", true) && (fees["input_image_count"] ?: 0.0) > 0 -> add("input_image_count")
+                            }
+                        }
+                    }
+                }
+            }
+            val record = usageLedger.begin(dialect, mediaInputs)
+            latestUsageMetrics = usageLedger.metrics()
+            emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
+            return record.requestId
+        }
+
+        suspend fun recordRequestUsage(requestId: String?, responseId: String, dialect: UsageDialect, usage: ProviderTokenUsage) {
+            if (responseId.isNotBlank()) lastInteractionId = responseId
+            val record = usageLedger.update(requestId, responseId, dialect, usage) ?: return
+            latestUsageMetrics = usageLedger.metrics()
+            emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
+        }
+
+        suspend fun beginMediaUsage(wireDialect: String, component: String) {
+            val record = usageLedger.beginMedia(wireDialect, component)
+            latestUsageMetrics = usageLedger.metrics()
+            emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
+        }
+
+        suspend fun recordGeneratedMedia(item: GeneratedMediaItem) {
+            recordTokenActivity()
+            usageLedger.observeChargeComponent("output_${item.kind.name.lowercase()}")?.let { record ->
+                latestUsageMetrics = usageLedger.metrics()
+                emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
+            }
+            generatedMedia.add(item)
+            emit(StreamUpdate.MediaGenerated(item))
         }
 
         fun appendSignatureIfUnique(sig: String): String {
@@ -539,11 +665,6 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
         suspend fun upsertToolCallAndEmit(tc: ToolCallRecord) {
             closeCurrentDecodeBurst()
-            val now = PlatformBridge.currentTimeMillis()
-            if (tc.isRunning && toolBatchActiveStartMs == 0L) {
-                toolBatchActiveStartMs = now
-                commitCompletedStepUsage()
-            }
             val existingIdx = executedTools.indexOfFirst { it.id == tc.id && tc.id.isNotBlank() }
             val enriched = if (existingIdx >= 0) {
                 val prev = executedTools[existingIdx]
@@ -561,24 +682,16 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             }
             emit(StreamUpdate.ToolCallEvent(enriched))
             if (!enriched.isRunning) {
-                if (toolBatchActiveStartMs > 0L && executedTools.none { it.isRunning }) {
-                    totalToolExecutionMs += (PlatformBridge.currentTimeMillis() - toolBatchActiveStartMs).coerceAtLeast(0L)
-                    toolBatchActiveStartMs = 0L
-                } else if (toolBatchActiveStartMs == 0L && enriched.durationMs > 0L && existingIdx < 0) {
-                    totalToolExecutionMs += enriched.durationMs
-                }
                 extractCitationsFromToolCall(enriched).forEach { recordRawCitationAndEmit(it) }
             }
         }
-        val initialGoalObjective = extractGoalObjectiveFromHistory(historyNodes)
+        val initialGoalObjective = if (toolPolicy.toolsEnabled) extractGoalObjectiveFromHistory(historyNodes) else ""
         val circuitBreaker = WorkspaceHarness.LoopCircuitBreaker(
-            initialGoal = initialGoalTracker ?: if (initialGoalObjective.isNotBlank()) {
+            initialGoal = initialGoalTracker?.takeIf { toolPolicy.toolsEnabled } ?: if (initialGoalObjective.isNotBlank()) {
                 GoalTrackerState(goalObjective = initialGoalObjective)
             } else null
         )
         circuitBreaker.goalState?.let { emit(StreamUpdate.GoalProgress(it)) }
-
-        PlatformBridge.notifyLongDecodeStart(model)
 
         try {
             var activeBaseHistoryNodes = applyCrossProviderReasoningHandoff(
@@ -603,9 +716,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 // thinking again without outputting any final prose), automatically relax thinkingEffort
                 // and surface the completed thought summary so the model immediately writes the final answer!
                 val effectiveProfileForPass = when {
-                    emptyAnswerNudgePass == 2 -> profile.copy(thinkingEffort = "low")
-                    emptyAnswerNudgePass >= 3 -> profile.copy(thinkingEffort = "minimal")
-                    else -> profile
+                    emptyAnswerNudgePass == 2 -> transportProfile.copy(thinkingEffort = "low")
+                    emptyAnswerNudgePass >= 3 -> transportProfile.copy(thinkingEffort = "minimal")
+                    else -> transportProfile
                 }
 
                 // If continuing a turn that already accumulated thoughts or tool calls (either before clicking
@@ -657,15 +770,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onContent = { delta ->
                                         if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
+                                        recordGeneratedMedia(item)
                                     },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
@@ -673,9 +784,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onRawWire = { req, resp ->
                                         recordRawWireBounded(req, resp)
                                     },
-                                    onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
-                                    },
+                                    onRequestStarted = ::beginUsageRequest,
+                                    onUsage = ::recordRequestUsage,
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             }
@@ -711,15 +821,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onContent = { delta ->
                                         if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
+                                        recordGeneratedMedia(item)
                                     },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
@@ -727,10 +835,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onRawWire = { req, resp ->
                                         recordRawWireBounded(req, resp)
                                     },
-                                    onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
-                                    },
+                                    onRequestStarted = ::beginUsageRequest,
+                                    onUsage = ::recordRequestUsage,
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -798,15 +904,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onContent = { delta ->
                                         if (delta.isNotEmpty()) recordTokenActivity()
                                         contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                        val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
                                         PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
+                                        recordGeneratedMedia(item)
                                     },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
@@ -814,9 +918,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onRawWire = { req, resp ->
                                         recordRawWireBounded(req, resp)
                                     },
-                                    onUsage = { inTok, cacheTok, thinkTok, outTok ->
-                                        recordStepUsage(inTok, cacheTok, thinkTok, outTok)
-                                    },
+                                    onRequestStarted = ::beginUsageRequest,
+                                    onUsage = ::recordRequestUsage,
                                     onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                 )
                             }
@@ -840,9 +943,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         emit(StreamUpdate.ThinkingDelta(delta))
                                     },
                                     onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
+                                        recordGeneratedMedia(item)
                                     },
                                     onContent = { delta ->
                                         if (delta.isNotEmpty()) recordTokenActivity()
@@ -851,7 +952,10 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     },
                                     onRawWire = { req, resp ->
                                         recordRawWireBounded(req, resp)
-                                    }
+                                    },
+                                    onRequestStarted = ::beginUsageRequest,
+                                    onUsage = ::recordRequestUsage,
+                                    onMediaRequestStarted = ::beginMediaUsage
                                 )
                             }
 
@@ -865,9 +969,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
                                     onFirstToken = { recordTokenActivity() },
                                     onMedia = { item ->
-                                        recordTokenActivity()
-                                        generatedMedia.add(item)
-                                        emit(StreamUpdate.MediaGenerated(item))
+                                        recordGeneratedMedia(item)
                                     },
                                     onContent = { delta ->
                                         if (delta.isNotEmpty()) recordTokenActivity()
@@ -876,11 +978,16 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     },
                                     onRawWire = { req, resp ->
                                         recordRawWireBounded(req, resp)
-                                    }
+                                    },
+                                    onRequestStarted = { beginMediaUsage("openai_audio_speech", "output_audio") }
                                 )
                             }
 
-                            if (modalityProfile.isDedicatedVideo || isExplicitVideoPath) {
+                            val customProfile = profile.protocol == ProviderProtocol.CUSTOM
+                            val explicitChat = customProfile && profile.customDialect.trim().lowercase() == CUSTOM_DIALECT_OPENAI_CHAT
+                            if (explicitChat) {
+                                runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                            } else if (!customProfile && (modalityProfile.isDedicatedVideo || isExplicitVideoPath)) {
                                 try {
                                     runUniversalMediaGeneration(forceVideo = true)
                                 } catch (videoErr: Throwable) {
@@ -891,7 +998,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         throw videoErr
                                     }
                                 }
-                            } else if (isDirectImagesEndpoint) {
+                            } else if (!customProfile && isDirectImagesEndpoint) {
                                 try {
                                     runUniversalMediaGeneration(forceVideo = false)
                                 } catch (imgErr: Throwable) {
@@ -902,7 +1009,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         throw imgErr
                                     }
                                 }
-                            } else if (isDirectAudioEndpoint) {
+                            } else if (!customProfile && isDirectAudioEndpoint) {
                                 try {
                                     runUniversalAudioSpeechGeneration()
                                 } catch (audErr: Throwable) {
@@ -940,15 +1047,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onContent = { delta ->
                                             if (delta.isNotEmpty()) recordTokenActivity()
                                             contentBuilder.append(delta)
-                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                            val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                            val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
                                             PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                             emit(StreamUpdate.ContentDelta(delta))
                                         },
                                         onMedia = { item ->
-                                            recordTokenActivity()
-                                            generatedMedia.add(item)
-                                            emit(StreamUpdate.MediaGenerated(item))
+                                            recordGeneratedMedia(item)
                                         },
                                         onToolCall = { tc ->
                                             upsertToolCallAndEmit(tc)
@@ -956,10 +1061,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onRawWire = { req, resp ->
                                             recordRawWireBounded(req, resp)
                                         },
-                                        onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
-                                            if (id.isNotBlank()) lastInteractionId = id
-                                            recordStepUsage(inTok, cacheTok, thinkTok, outTok)
-                                        },
+                                        onRequestStarted = ::beginUsageRequest,
+                                        onUsage = ::recordRequestUsage,
                                         onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
                                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1048,8 +1151,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 onContent = { delta ->
                                     if (delta.isNotEmpty()) recordTokenActivity()
                                     contentBuilder.append(delta)
-                                    val approxOut = (contentBuilder.length / 4).coerceAtLeast(completedStepsOutputTokens + stepOutputTokens)
-                                    val elapsedSec = ((PlatformBridge.currentTimeMillis() - startTime) / 1000L).toInt()
+                                    val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                    val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
                                     PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                     emit(StreamUpdate.ContentDelta(delta))
                                 },
@@ -1059,10 +1162,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 onRawWire = { req, resp ->
                                     recordRawWireBounded(req, resp)
                                 },
-                                onUsage = { id, inTok, cacheTok, outTok ->
-                                    if (id.isNotBlank()) lastInteractionId = id
-                                    recordStepUsage(inTok, cacheTok, 0, outTok)
-                                },
+                                onRequestStarted = ::beginUsageRequest,
+                                onUsage = ::recordRequestUsage,
                                 onCitation = { cit -> recordRawCitationAndEmit(cit) }
                             )
                         }
@@ -1165,29 +1266,24 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             }
 
             closeCurrentDecodeBurst()
-            if (toolBatchActiveStartMs > 0L) {
-                totalToolExecutionMs += (PlatformBridge.currentTimeMillis() - toolBatchActiveStartMs).coerceAtLeast(0L)
-                toolBatchActiveStartMs = 0L
-            }
-            commitCompletedStepUsage()
-
-            val endTime = PlatformBridge.currentTimeMillis()
+            val endTime = activity.elapsedMs
             val totalDurationMs = (endTime - startTime + initialElapsedMs.coerceAtLeast(0L)).coerceAtLeast(1L)
-            val ttftMs = if (firstTokenTime > startTime) (firstTokenTime - startTime) else totalDurationMs
-            val fallbackInTokens = if (inputTokens > 0) {
-                inputTokens
+            val ttftMs = if (firstTokenTime >= startTime) (firstTokenTime - startTime) else totalDurationMs
+            val reportedUsage = usageLedger.metrics()
+            val fallbackInTokens = if (usageLedger.hasReportedInput) {
+                reportedUsage.inputTokens
             } else {
                 val sysTok = O200kTokenizer.countTokens(buildCompiledSystemPrompt(session, circuitBreaker.goalState))
                 val histTok = historyNodes.filter { it.includedInContext }.sumOf {
                     O200kTokenizer.countMessageVariantTokens(it.role, it.activeVariant, includeReasoningAndTools = false)
                 }
-                (sysTok + histTok).coerceAtLeast(1)
+                (sysTok.toLong() + histTok).coerceAtLeast(1L)
             }
             val rawMetrics = computeTurnTokenMetrics(
-                reportedInputTokens = inputTokens,
-                reportedCachedTokens = cachedTokens,
-                reportedReasoningTokens = completedStepsReasoningTokens,
-                reportedOutputTokens = completedStepsOutputTokens,
+                reportedInputTokens = reportedUsage.inputTokens,
+                reportedCachedTokens = reportedUsage.cachedInputTokens,
+                reportedReasoningTokens = reportedUsage.reasoningTokens,
+                reportedOutputTokens = reportedUsage.outputTokens,
                 fallbackInputTokens = fallbackInTokens,
                 contentText = contentBuilder.toString(),
                 thinkingText = thinkingBuilder.toString(),
@@ -1195,9 +1291,17 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 totalDurationMs = totalDurationMs,
                 ttftMs = ttftMs,
                 activeDecodeDurationMs = activeDecodeAccumulatedMs,
-                totalToolExecutionMs = totalToolExecutionMs
-            )
-            val costUsd = profile.calculateTurnCostUsd(rawMetrics)
+                totalToolExecutionMs = activity.toolMs,
+                hasReportedInput = usageLedger.hasReportedInput,
+                hasReportedOutput = usageLedger.hasReportedOutput,
+                hasReportedReasoning = usageLedger.hasReportedReasoning
+            ).copy(cacheCreationInputTokens = reportedUsage.cacheCreationInputTokens,
+                cacheCreationCostUnits = reportedUsage.cacheCreationCostUnits, reportedRequests = reportedUsage.reportedRequests,
+                usageIsComplete = reportedUsage.usageIsComplete, costIsAvailable = reportedUsage.costIsAvailable,
+                estimatedCostUsd = reportedUsage.estimatedCostUsd,
+                outputIncludesUnreportedReasoning = reportedUsage.outputIncludesUnreportedReasoning,
+                unpricedCostComponents = reportedUsage.unpricedCostComponents,
+                reportedCostRequests = reportedUsage.reportedCostRequests)
 
             // If web search or URL tools were active and the model included inline markdown citations, bind them too
             if (profile.enableWebSearch || profile.enableUrlContext || executedTools.any {
@@ -1225,19 +1329,17 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     mediaItems = generatedMedia,
                     webSources = finalWebSources,
                     providerInteractionId = lastInteractionId,
-                    metrics = rawMetrics.copy(estimatedCostUsd = costUsd),
+                    metrics = rawMetrics,
                     rawRequest = lastRawReq,
-                    rawResponse = lastRawResp
+                    rawResponse = lastRawResp,
+                    apiUsageRecords = usageLedger.snapshots()
                 )
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
-            PlatformBridge.killActiveShellProcesses()
             throw e
         } catch (t: Throwable) {
             val cleanErr = extractCleanApiErrorSummary(t.message ?: t::class.simpleName ?: "Unknown network error")
             emit(StreamUpdate.Error(message = cleanErr, rawDetails = lastRawResp))
-        } finally {
-            PlatformBridge.notifyLongDecodeComplete()
         }
     }.flowOn(Dispatchers.IO)
 
@@ -1247,41 +1349,41 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
      * - Denominator uses `activeDecodeDurationMs` (active token streaming bursts excluding TTFT wait and local tool execution time).
      */
     internal fun computeTurnTokenMetrics(
-        reportedInputTokens: Int,
-        reportedCachedTokens: Int,
-        reportedReasoningTokens: Int,
-        reportedOutputTokens: Int,
-        fallbackInputTokens: Int,
+        reportedInputTokens: Long,
+        reportedCachedTokens: Long,
+        reportedReasoningTokens: Long,
+        reportedOutputTokens: Long,
+        fallbackInputTokens: Long,
         contentText: String,
         thinkingText: String,
         executedTools: List<ToolCallRecord>,
         totalDurationMs: Long,
         ttftMs: Long,
         activeDecodeDurationMs: Long,
-        totalToolExecutionMs: Long
+        totalToolExecutionMs: Long,
+        hasReportedInput: Boolean = reportedInputTokens > 0L,
+        hasReportedOutput: Boolean = reportedOutputTokens > 0L,
+        hasReportedReasoning: Boolean = reportedReasoningTokens > 0L
     ): TokenMetrics {
-        val finalInTokens = if (reportedInputTokens > 0) reportedInputTokens else fallbackInputTokens.coerceAtLeast(1)
+        val finalInTokens = if (hasReportedInput) reportedInputTokens.coerceAtLeast(0L) else fallbackInputTokens.coerceAtLeast(0L)
         val bpeThinkTokens = if (thinkingText.isNotEmpty()) {
             O200kTokenizer.countTokens(thinkingText).coerceAtLeast(1)
         } else 0
         val bpeToolCallTokens = executedTools.sumOf { tc ->
-            O200kTokenizer.countTokens(tc.name) + O200kTokenizer.countTokens(tc.argumentsJson)
+            O200kTokenizer.countTokens(tc.name).toLong() + O200kTokenizer.countTokens(tc.argumentsJson)
         }
         val bpeContentTokens = if (contentText.isNotEmpty()) {
             O200kTokenizer.countTokens(contentText).coerceAtLeast(1)
         } else 0
 
-        val adjustedReportedOut = if (reportedReasoningTokens == 0 && bpeThinkTokens > 0 && reportedOutputTokens > bpeThinkTokens) {
-            (reportedOutputTokens - bpeThinkTokens).coerceAtLeast(1)
-        } else {
-            reportedOutputTokens
-        }
-        val finalThinkTokens = maxOf(reportedReasoningTokens, bpeThinkTokens)
-        val finalOutTokens = maxOf(adjustedReportedOut, bpeContentTokens + bpeToolCallTokens).coerceAtLeast(1)
-        val totalGeneratedTokens = (finalOutTokens + finalThinkTokens).coerceAtLeast(1)
+        val finalThinkTokens = if (hasReportedReasoning) reportedReasoningTokens.coerceAtLeast(0L)
+            else if (hasReportedOutput) 0L else bpeThinkTokens.toLong()
+        val finalOutTokens = if (hasReportedOutput) reportedOutputTokens.coerceAtLeast(0L)
+            else saturatingTokenSum(bpeContentTokens.toLong(), bpeToolCallTokens)
+        val totalGeneratedTokens = saturatingTokenSum(finalOutTokens, finalThinkTokens)
 
         val netLlmGenerationMs = (totalDurationMs - totalToolExecutionMs.coerceAtLeast(0L)).coerceAtLeast(250L)
-        val minRealisticBurstMs = maxOf(500L, totalGeneratedTokens.toLong() * 8L)
+        val minRealisticBurstMs = maxOf(500L, totalGeneratedTokens.coerceAtMost(Long.MAX_VALUE / 8L) * 8L)
         val effectiveDecodeMs = if (activeDecodeDurationMs >= minRealisticBurstMs && activeDecodeDurationMs <= netLlmGenerationMs) {
             activeDecodeDurationMs
         } else {
@@ -1295,7 +1397,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             outputTokens = finalOutTokens,
             ttftMs = ttftMs,
             durationMs = totalDurationMs,
-            tokensPerSec = ((tokPerSec * 10.0).toInt()) / 10.0
+            tokensPerSec = kotlin.math.floor(tokPerSec * 10.0) / 10.0
         )
     }
 
@@ -1309,8 +1411,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         profile: ProviderProfile,
         model: String,
         prompt: String,
-        maxOutputTokens: Int? = null
-    ): Result<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        maxOutputTokens: Int? = null,
+        ownerSessionId: String = "",
+        ownerRunId: String = "",
+        purpose: String = "utility",
+        onUsage: suspend (ApiUsageRecord, TokenMetrics) -> Unit = { _, _ -> }
+    ): Result<String> = kotlinx.coroutines.withContext(Dispatchers.IO + AgentToolRunContext(null)) {
         runCatching {
             val cleanModel = model.trim().ifBlank { profile.defaultModel.trim() }
             require(cleanModel.isNotBlank()) { "No model selected for utility generation." }
@@ -1320,7 +1426,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 createdAt = 0L,
                 updatedAt = 0L,
                 profileId = profile.id,
-                modelOverride = cleanModel
+                modelOverride = cleanModel,
+                permissionOverrides = io.parchment.ai.model.AgentPermissionOverrides(toolsEnabled = false)
             )
             val userNode = MessageNode(
                 id = "util-node",
@@ -1339,24 +1446,30 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             )
             val sb = StringBuilder()
             var streamErr: String? = null
+            var completed = false
             streamGeneration(
                 profile = fastProfile,
                 session = tempSession,
-                historyNodes = listOf(userNode)
+                historyNodes = listOf(userNode),
+                usageOwnerSessionId = ownerSessionId,
+                usageOwnerRunId = ownerRunId,
+                usagePurpose = purpose
             ).collect { upd ->
                 when (upd) {
                     is StreamUpdate.ContentDelta -> sb.append(upd.delta)
-                    is StreamUpdate.Completed -> if (sb.isEmpty()) sb.append(upd.fullContent)
+                    is StreamUpdate.Completed -> { completed = true; sb.clear(); sb.append(upd.fullContent) }
+                    is StreamUpdate.UsageUpdated -> onUsage(upd.record, upd.metrics)
                     is StreamUpdate.Error -> streamErr = upd.message
                     else -> {}
                 }
             }
             val finalStr = sb.toString().trim().removeSurrounding("\"").removeSurrounding("'").trim()
-            if (finalStr.isEmpty() && !streamErr.isNullOrBlank()) {
+            if (!streamErr.isNullOrBlank()) {
                 error(streamErr)
             }
+            require(completed && finalStr.isNotBlank()) { "Utility response ended without a complete result." }
             finalStr
-        }
+        }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
     }
 
     /**
@@ -1755,9 +1868,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
         onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
+        var usageRequestId: String? = null
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
@@ -1783,7 +1898,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         var simplifyThinkingOnRetry = false
         var omitResponseFormatOnRetry = false
         var forceImageResponseFormatOnRetry = false
-        var omitBuiltInToolsOnRetry = false
+        var omitBuiltInToolsOnRetry = AgentPermissionResolver.resolve(session, profile = profile).approvalMode != ToolApprovalMode.NEVER
         var foldHistoricalToolsOnRetry = false
         val hasHistoricalToolsOrSigs = activeNodes.any {
             it.role == MessageRole.ASSISTANT && (it.activeVariant.toolCalls.isNotEmpty() || it.activeVariant.thinkingSignature.isNotBlank())
@@ -1966,10 +2081,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val workspaceTools = WorkspaceHarness.buildGeminiInteractionsTools(
                         session.workspaceMode,
                         session.workspacePath,
-                        profile.allowShellExecution,
+                        AgentPermissionResolver.resolve(session, profile = profile).allowShell,
                         goalModeActive = circuitBreaker.goalState != null,
                         enableWebTools = (profile.enableWebSearch && omitBuiltInToolsOnRetry) || profile.enableUrlContext,
-                        includeLocalWebSearchTool = profile.enableWebSearch && omitBuiltInToolsOnRetry
+                        includeLocalWebSearchTool = profile.enableWebSearch && omitBuiltInToolsOnRetry,
+                        policy = AgentPermissionResolver.resolve(session, profile = profile)
                     )
                     val toolsArray = buildJsonArray {
                         if (!omitBuiltInToolsOnRetry || workspaceTools.isEmpty()) {
@@ -2047,9 +2163,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             onFunctionCall = { callId, fnName, argsStr ->
                                 addUniqueToolCall(callId, fnName, argsStr)
                             },
-                            onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                            onUsage = { id, usage ->
                                 if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
-                                onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                                onUsage(usageRequestId, id, UsageDialect.GEMINI_INTERACTIONS, usage)
                             },
                             onCitation = onCitation
                         )
@@ -2058,6 +2174,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
 
                 try {
                     // Live SSE Streaming Mode (`stream = true`) with automatic Background Poll Recovery
+                    ensureAgentPolicyCurrent(session, profile)
+                    usageRequestId = onRequestStarted(UsageDialect.GEMINI_INTERACTIONS)
                     httpClient.preparePost(finalUrl) {
                         applyAuthAndCustomHeaders(profile)
                         header("Accept", "text/event-stream")
@@ -2069,6 +2187,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             onRawWire(requestJsonStr, errText)
                             error("Gemini Interactions HTTP ${response.status.value}: $errText")
                         }
+
 
                         val channel = response.bodyAsChannel()
                         val pendingFnArgsByIndex = mutableMapOf<Int, Pair<String, Pair<String, StringBuilder>>>()
@@ -2094,13 +2213,24 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     currentPrevInteractionId = idCandidate
                                 }
 
+                                val eventUsage = evObj["usage"] as? JsonObject
+                                    ?: (evObj["metadata"] as? JsonObject)?.get("total_usage") as? JsonObject
+                                if (eventUsage != null) {
+                                    onUsage(usageRequestId, "", UsageDialect.GEMINI_INTERACTIONS,
+                                        parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, eventUsage, response = evObj))
+                                }
+
                                 when (type) {
                                     "interaction.start", "interaction.created", "interaction.status_update" -> {
+                                        onUsage(usageRequestId, idCandidate.orEmpty(), UsageDialect.GEMINI_INTERACTIONS,
+                                            parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, interactionSub?.get("usage") as? JsonObject))
                                         val st = interactionSub?.get("status")?.jsonPrimitive?.contentOrNull
                                             ?: evObj["status"]?.jsonPrimitive?.contentOrNull ?: "streaming"
                                         onStatus("Interaction $st", currentPrevInteractionId)
                                     }
                                     "content.start", "step.start" -> {
+                                        onUsage(usageRequestId, "", UsageDialect.GEMINI_INTERACTIONS,
+                                            parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, null, response = evObj))
                                         val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: 0
                                         val contentObj = (evObj["content"] as? JsonObject) ?: (evObj["step"] as? JsonObject)
                                         val cType = contentObj?.get("type")?.jsonPrimitive?.contentOrNull
@@ -2351,18 +2481,18 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                             extractCitationsFromGeminiObject(item, onCitation)
                                         }
                                         extractCitationsFromGeminiObject(completedObj, onCitation)
-                                        val usageObj = completedObj["usage"] as? JsonObject
-                                        if (usageObj != null) {
-                                            val inTok = usageObj["total_input_tokens"]?.jsonPrimitive?.intOrNull
-                                                ?: usageObj["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val cacheTok = usageObj["total_cached_tokens"]?.jsonPrimitive?.intOrNull
-                                                ?: usageObj["cached_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val thinkTok = usageObj["total_thought_tokens"]?.jsonPrimitive?.intOrNull
-                                                ?: usageObj["total_reasoning_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val outTok = usageObj["total_output_tokens"]?.jsonPrimitive?.intOrNull
-                                                ?: usageObj["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            onUsage(currentPrevInteractionId, inTok, cacheTok, thinkTok, outTok)
+                                        val finalText = extractGeminiInteractionText(completedObj)
+                                        val streamed = roundModelText.toString()
+                                        if (finalText.length > streamed.length && finalText.startsWith(streamed)) {
+                                            val suffix = finalText.substring(streamed.length)
+                                            onFirstToken()
+                                            receivedAnyStreamContent = true
+                                            roundModelText.append(suffix)
+                                            onContent(suffix)
                                         }
+                                        val usageObj = completedObj["usage"] as? JsonObject
+                                        onUsage(usageRequestId, completedObj["id"]?.jsonPrimitive?.contentOrNull ?: currentPrevInteractionId, UsageDialect.GEMINI_INTERACTIONS,
+                                            parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, usageObj, isFinal = true, response = completedObj))
                                     }
                                     "error" -> {
                                         val errObj = evObj["error"] as? JsonObject
@@ -2392,9 +2522,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                                 onFunctionCall = { callId, fnName, argsStr ->
                                                     addUniqueToolCall(callId, fnName, argsStr)
                                                 },
-                                                onUsage = { id, inTok, cacheTok, thinkTok, outTok ->
+                                                onUsage = { id, usage ->
                                                     if (profile.useStatefulChaining && id.isNotBlank()) currentPrevInteractionId = id
-                                                    onUsage(id, inTok, cacheTok, thinkTok, outTok)
+                                                    onUsage(usageRequestId, id, UsageDialect.GEMINI_INTERACTIONS, usage)
                                                 },
                                                 onCitation = onCitation
                                             )
@@ -2432,9 +2562,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onFunctionCall = { callId, fnName, argsStr ->
                                             addUniqueToolCall(callId, fnName, argsStr)
                                         },
-                                        onUsage = { uId, inTok, cacheTok, thinkTok, outTok ->
+                                        onUsage = { uId, usage ->
                                             if (profile.useStatefulChaining && uId.isNotBlank()) currentPrevInteractionId = uId
-                                            onUsage(uId, inTok, cacheTok, thinkTok, outTok)
+                                            onUsage(usageRequestId, uId, UsageDialect.GEMINI_INTERACTIONS, usage)
                                         },
                                         onCitation = onCitation
                                     )
@@ -2643,7 +2773,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val results = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
-                allowShell = profile.allowShellExecution,
+                allowShell = AgentPermissionResolver.resolve(session, profile = profile).allowShell,
+                accessScope = ToolAccessScope(
+                    AgentPermissionResolver.resolve(session, profile = profile),
+                    goalModeActive = circuitBreaker.goalState != null,
+                    includeLocalWebSearchTool = profile.enableWebSearch && omitBuiltInToolsOnRetry
+                ),
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = stepSigString,
                 firstPrecedingThinking = stepThoughtTxt,
@@ -2672,6 +2807,22 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
     }
 
+    internal fun extractGeminiInteractionText(interaction: JsonObject): String = buildString {
+        val steps = interaction["steps"] as? JsonArray ?: interaction["outputs"] as? JsonArray
+        steps?.forEach stepLoop@ { element ->
+            val step = element as? JsonObject ?: return@stepLoop
+            when (step["type"]?.jsonPrimitive?.contentOrNull) {
+                "text" -> append(step["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                "model_output" -> (step["content"] as? JsonArray)?.forEach contentLoop@ { content ->
+                    val block = content as? JsonObject ?: return@contentLoop
+                    if (block["type"]?.jsonPrimitive?.contentOrNull in listOf("text", null)) {
+                        append(block["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun parseCompletedGeminiInteractionObject(
         interactionObj: JsonObject,
         onFirstToken: () -> Unit,
@@ -2679,7 +2830,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onContent: suspend (String) -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onFunctionCall: (String, String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onUsage: suspend (String, ProviderTokenUsage) -> Unit,
         onCitation: suspend (RawWebCitation) -> Unit = {},
         sessionId: String = ""
     ) {
@@ -2759,15 +2910,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         extractCitationsFromGeminiObject(interactionObj, onCitation)
 
         val usageObj = interactionObj["usage"] as? JsonObject
-        val inTok = usageObj?.get("total_input_tokens")?.jsonPrimitive?.intOrNull
-            ?: usageObj?.get("input_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        val cacheTok = usageObj?.get("total_cached_tokens")?.jsonPrimitive?.intOrNull
-            ?: usageObj?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        val thinkTok = usageObj?.get("total_thought_tokens")?.jsonPrimitive?.intOrNull
-            ?: usageObj?.get("total_reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        val outTok = usageObj?.get("total_output_tokens")?.jsonPrimitive?.intOrNull
-            ?: usageObj?.get("output_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        onUsage(id, inTok, cacheTok, thinkTok, outTok)
+        onUsage(id, parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, usageObj, isFinal = true, response = interactionObj))
     }
 
     /**
@@ -3026,9 +3169,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (Int, Int, Int, Int) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
         onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
+        var usageRequestId: String? = null
         val cleanModel = model.trim().removePrefix("models/")
         val knownModalities = resolveKnownOutputModalities(profile, cleanModel)
         val modelOutputsImages = knownModalities.contains("image")
@@ -3045,7 +3190,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         var upgradeMinimalToLowOnRetry = false
         var useBudgetDialectOnRetry = false
         var simplifyThinkingOnRetry = false
-        var disableMixedToolsOnRetry = false
+        var disableMixedToolsOnRetry = AgentPermissionResolver.resolve(session, profile = profile).approvalMode != ToolApprovalMode.NEVER
         var forceImageModalityOnRetry = false
         var omitImageModalityOnRetry = false
         var foldHistoricalToolsOnRetry = false
@@ -3055,10 +3200,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val activeWorkspaceTools = WorkspaceHarness.activeToolsForMode(
                 session.workspaceMode,
                 session.workspacePath,
-                profile.allowShellExecution,
+                AgentPermissionResolver.resolve(session, profile = profile).allowShell,
                 goalModeActive = circuitBreaker.goalState != null,
                 enableWebTools = (profile.enableWebSearch && disableMixedToolsOnRetry) || profile.enableUrlContext,
-                includeLocalWebSearchTool = profile.enableWebSearch && disableMixedToolsOnRetry
+                includeLocalWebSearchTool = profile.enableWebSearch && disableMixedToolsOnRetry,
+                policy = AgentPermissionResolver.resolve(session, profile = profile)
             )
             var roundModelParts = mutableListOf<JsonObject>()
             val roundToolCalls = mutableListOf<Triple<String, String, String>>() // (callId, name, argsJson)
@@ -3194,6 +3340,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 onRawWire(reqStr, "Dispatching to $url ...")
 
                 try {
+                    ensureAgentPolicyCurrent(session, profile)
+                    usageRequestId = onRequestStarted(UsageDialect.GEMINI_CONTENT)
                     httpClient.preparePost(url) {
                         applyAuthAndCustomHeaders(profile)
                         header("Accept", "text/event-stream")
@@ -3205,6 +3353,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             onRawWire(reqStr, err)
                             error("Gemini streamGenerateContent HTTP ${response.status.value}: $err")
                         }
+
 
                         suspend fun processCandidateParts(parts: JsonArray) {
                             for (p in parts) {
@@ -3305,17 +3454,20 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 extractCitationsFromGeminiCandidate(firstCand, onCitation)
 
                                 val usage = obj["usageMetadata"] as? JsonObject
+                                if (firstCand?.get("groundingMetadata") is JsonObject) {
+                                    onUsage(usageRequestId, "", UsageDialect.GEMINI_CONTENT,
+                                        parseProviderUsage(UsageDialect.GEMINI_CONTENT, null, response = obj))
+                                }
                                 if (usage != null) {
-                                    val inTok = usage["promptTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val cacheTok = usage["cachedContentTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val thinkTok = usage["thoughtsTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val outTok = usage["candidatesTokenCount"]?.jsonPrimitive?.intOrNull ?: 0
-                                    onUsage(inTok, cacheTok, thinkTok, outTok)
+                                    onUsage(usageRequestId, obj["responseId"]?.jsonPrimitive?.contentOrNull.orEmpty(), UsageDialect.GEMINI_CONTENT,
+                                        parseProviderUsage(UsageDialect.GEMINI_CONTENT, usage, isFinal = firstCand?.get("finishReason") != null, response = obj))
                                 }
                             },
                             onPlainJsonFallback = { body ->
                                 onRawWire(reqStr, body)
                                 val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                onUsage(usageRequestId, obj["responseId"]?.jsonPrimitive?.contentOrNull.orEmpty(), UsageDialect.GEMINI_CONTENT,
+                                    parseProviderUsage(UsageDialect.GEMINI_CONTENT, obj["usageMetadata"] as? JsonObject, isFinal = true, response = obj))
                                 val candidates = obj["candidates"] as? JsonArray
                                 val firstCand = candidates?.firstOrNull() as? JsonObject
                                 val parts = (firstCand?.get("content") as? JsonObject)?.get("parts") as? JsonArray
@@ -3446,7 +3598,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
-                allowShell = profile.allowShellExecution,
+                allowShell = AgentPermissionResolver.resolve(session, profile = profile).allowShell,
+                accessScope = ToolAccessScope(
+                    AgentPermissionResolver.resolve(session, profile = profile),
+                    goalModeActive = circuitBreaker.goalState != null,
+                    includeLocalWebSearchTool = profile.enableWebSearch && disableMixedToolsOnRetry
+                ),
                 calls = roundToolCalls,
                 firstThoughtSignature = cleanRoundSig,
                 circuitBreaker = circuitBreaker,
@@ -3714,9 +3871,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int, Int) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
         onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
+        var usageRequestId: String? = null
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
@@ -3734,7 +3893,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         var stripSamplingOnRetry = false
         var omitReasoningOnRetry = false
         var useLegacyWebSearchPreviewOnRetry = false
-        var omitOpenAiNativeWebSearchOnRetry = false
+        var omitOpenAiNativeWebSearchOnRetry = AgentPermissionResolver.resolve(session, profile = profile).approvalMode != ToolApprovalMode.NEVER
         var omitEncryptedContentIncludeOnRetry = false
         var omitImageGenToolOnRetry = false
         var foldHistoricalToolsOnRetry = false
@@ -3866,10 +4025,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                         val wsTools = WorkspaceHarness.buildOpenAiResponsesTools(
                             session.workspaceMode,
                             session.workspacePath,
-                            profile.allowShellExecution,
+                            AgentPermissionResolver.resolve(session, profile = profile).allowShell,
                             goalModeActive = circuitBreaker.goalState != null,
                             enableWebTools = profile.enableWebSearch || profile.enableUrlContext,
-                            includeLocalWebSearchTool = profile.enableWebSearch && omitOpenAiNativeWebSearchOnRetry
+                            includeLocalWebSearchTool = profile.enableWebSearch && omitOpenAiNativeWebSearchOnRetry,
+                            policy = AgentPermissionResolver.resolve(session, profile = profile)
                         )
                         wsTools.forEach { add(it) }
                     }
@@ -3891,6 +4051,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 onRawWire(reqStr, "Dispatching to $url ...")
 
                 try {
+                    ensureAgentPolicyCurrent(session, profile)
+                    usageRequestId = onRequestStarted(UsageDialect.OPENAI_RESPONSES)
                     httpClient.preparePost(url) {
                         applyAuthAndCustomHeaders(profile)
                         header("Accept", "text/event-stream")
@@ -3902,6 +4064,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             onRawWire(reqStr, err)
                             error("OpenAI Responses HTTP ${response.status.value}: $err")
                         }
+
 
                         val fnBuildersByItemId = mutableMapOf<String, Pair<String, Pair<String, StringBuilder>>>()
 
@@ -3918,6 +4081,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         val respSub = evObj["response"] as? JsonObject
                                         val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
                                         if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id
+                                        onUsage(usageRequestId, id, UsageDialect.OPENAI_RESPONSES,
+                                            parseProviderUsage(UsageDialect.OPENAI_RESPONSES, respSub?.get("usage") as? JsonObject))
                                     }
                                     "response.output_text.delta" -> {
                                         val delta = evObj["delta"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -3971,6 +4136,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     }
                                     "response.output_item.done" -> {
                                         val item = evObj["item"] as? JsonObject
+                                        onUsage(usageRequestId, "", UsageDialect.OPENAI_RESPONSES,
+                                            parseProviderUsage(UsageDialect.OPENAI_RESPONSES, null, response = evObj))
                                         val itemType = item?.get("type")?.jsonPrimitive?.contentOrNull
                                         if (itemType == "function_call") {
                                             val itemId = item["id"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -4022,14 +4189,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         }
                                         val usage = respSub?.get("usage") as? JsonObject
                                         if (usage != null) {
-                                            val inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val cacheTok = (usage["input_tokens_details"] as? JsonObject)
-                                                ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                            val thinkTok = (usage["output_tokens_details"] as? JsonObject)
-                                                ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                            val rawOutTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val outTok = if (thinkTok in 1..rawOutTok) (rawOutTok - thinkTok) else rawOutTok
-                                            onUsage(currentPrevResponseId, inTok, cacheTok, thinkTok, outTok)
+                                            onUsage(usageRequestId, respSub.get("id")?.jsonPrimitive?.contentOrNull ?: currentPrevResponseId, UsageDialect.OPENAI_RESPONSES,
+                                                parseProviderUsage(UsageDialect.OPENAI_RESPONSES, usage, isFinal = true, response = respSub))
                                         }
                                     }
                                     "error" -> {
@@ -4043,6 +4204,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 val root = json.parseToJsonElement(fullBody).jsonObject
                                 val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
                                 if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id
+                                onUsage(usageRequestId, id, UsageDialect.OPENAI_RESPONSES,
+                                    parseProviderUsage(UsageDialect.OPENAI_RESPONSES, root["usage"] as? JsonObject, isFinal = true, response = root))
                                 val outputArr = root["output"] as? JsonArray
                                 outputArr?.forEach { itemEl ->
                                     val item = itemEl as? JsonObject ?: return@forEach
@@ -4245,7 +4408,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val results = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
-                allowShell = profile.allowShellExecution,
+                allowShell = AgentPermissionResolver.resolve(session, profile = profile).allowShell,
+                accessScope = ToolAccessScope(
+                    AgentPermissionResolver.resolve(session, profile = profile),
+                    goalModeActive = circuitBreaker.goalState != null,
+                    includeLocalWebSearchTool = profile.enableWebSearch && omitOpenAiNativeWebSearchOnRetry
+                ),
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = roundEncryptedReasoning,
                 firstPrecedingThinking = roundReasoningBuilder.toString().trim(),
@@ -4469,9 +4637,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (Int, Int, Int, Int) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
         onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
+        var usageRequestId: String? = null
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         val extraToolMessages = mutableListOf<JsonObject>()
@@ -4561,9 +4731,10 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val wsTools = WorkspaceHarness.buildOpenAiChatCompletionsTools(
                         session.workspaceMode,
                         session.workspacePath,
-                        profile.allowShellExecution,
+                        AgentPermissionResolver.resolve(session, profile = profile).allowShell,
                         goalModeActive = circuitBreaker.goalState != null,
-                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext
+                        enableWebTools = profile.enableWebSearch || profile.enableUrlContext,
+                        policy = AgentPermissionResolver.resolve(session, profile = profile)
                     )
                     if (wsTools.isNotEmpty()) {
                         put("tools", wsTools)
@@ -4583,6 +4754,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 onRawWire(reqStr, "Dispatching to $url ...")
 
                 try {
+                    ensureAgentPolicyCurrent(session, profile)
+                    usageRequestId = onRequestStarted(UsageDialect.OPENAI_CHAT)
                     httpClient.preparePost(url) {
                         applyAuthAndCustomHeaders(profile)
                         header("Accept", "text/event-stream")
@@ -4594,6 +4767,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             onRawWire(reqStr, err)
                             error("Chat Completions HTTP ${response.status.value}: $err")
                         }
+
 
                         readSseOrJsonFallback(
                             channel = response.bodyAsChannel(),
@@ -4664,19 +4838,15 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 extractCitationsFromChatCompletionsObject(obj, onCitation)
                                 val usage = obj["usage"] as? JsonObject
                                 if (usage != null) {
-                                    val inTok = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val cacheTok = (usage["prompt_tokens_details"] as? JsonObject)
-                                        ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                    val thinkTok = (usage["completion_tokens_details"] as? JsonObject)
-                                        ?.get("reasoning_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                    val rawOutTok = usage["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val outTok = if (thinkTok in 1..rawOutTok) (rawOutTok - thinkTok) else rawOutTok
-                                    onUsage(inTok, cacheTok, thinkTok, outTok)
+                                    onUsage(usageRequestId, obj["id"]?.jsonPrimitive?.contentOrNull.orEmpty(), UsageDialect.OPENAI_CHAT,
+                                        parseProviderUsage(UsageDialect.OPENAI_CHAT, usage, isFinal = firstChoice?.get("finish_reason") != null || choices?.isEmpty() == true))
                                 }
                             },
                             onPlainJsonFallback = { body ->
                                 onRawWire(reqStr, body)
                                 val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@readSseOrJsonFallback
+                                onUsage(usageRequestId, root["id"]?.jsonPrimitive?.contentOrNull.orEmpty(), UsageDialect.OPENAI_CHAT,
+                                    parseProviderUsage(UsageDialect.OPENAI_CHAT, root["usage"] as? JsonObject, isFinal = true))
                                 val firstMsg = ((root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("message") as? JsonObject
                                 val reasoning = firstMsg?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
                                     ?: firstMsg?.get("reasoning")?.jsonPrimitive?.contentOrNull ?: ""
@@ -4823,7 +4993,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
-                allowShell = profile.allowShellExecution,
+                allowShell = AgentPermissionResolver.resolve(session, profile = profile).allowShell,
+                accessScope = ToolAccessScope(
+                    AgentPermissionResolver.resolve(session, profile = profile),
+                    goalModeActive = circuitBreaker.goalState != null,
+                    includeLocalWebSearchTool = profile.enableWebSearch
+                ),
                 calls = validCalls.map { (callId, fnName, argsSb) -> Triple(callId, fnName, argsSb.toString().ifBlank { "{}" }) },
                 circuitBreaker = circuitBreaker,
                 onStatus = onStatus,
@@ -5042,9 +5217,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onContent: suspend (String) -> Unit,
         onToolCall: suspend (ToolCallRecord) -> Unit,
         onRawWire: suspend (String, String) -> Unit,
-        onUsage: (String, Int, Int, Int) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
         onCitation: suspend (RawWebCitation) -> Unit = {}
     ) {
+        var usageRequestId: String? = null
         val activeNodes = sanitizeContextNodes(historyNodes)
         val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
         var foldHistoricalToolsOnRetry = false
@@ -5056,7 +5233,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         var stripSamplingOnRetry = false
         // "auto" -> adaptive (or budget if thinkingBudgetTokens >= 1024); "adaptive" -> force adaptive; "budget" -> force enabled+budget; "omit" -> omit thinking object
         var thinkingModeOverride = "auto"
-        var omitNativeWebSearchOnRetry = false
+        var omitNativeWebSearchOnRetry = AgentPermissionResolver.resolve(session, profile = profile).approvalMode != ToolApprovalMode.NEVER
         var loopStep = 0
 
         while (loopStep < MAX_SAFETY_HORIZON_STEPS) {
@@ -5179,10 +5356,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val wsTools = WorkspaceHarness.buildAnthropicTools(
                         session.workspaceMode,
                         session.workspacePath,
-                        profile.allowShellExecution,
+                        AgentPermissionResolver.resolve(session, profile = profile).allowShell,
                         goalModeActive = circuitBreaker.goalState != null,
                         enableWebTools = profile.enableWebSearch || profile.enableUrlContext,
-                        includeLocalWebSearchTool = profile.enableWebSearch && omitNativeWebSearchOnRetry
+                        includeLocalWebSearchTool = profile.enableWebSearch && omitNativeWebSearchOnRetry,
+                        policy = AgentPermissionResolver.resolve(session, profile = profile)
                     )
                     val allAnthropicTools = buildJsonArray {
                         if (profile.enableWebSearch && !omitNativeWebSearchOnRetry) {
@@ -5211,6 +5389,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 onRawWire(reqStr, "Dispatching to $url ...")
 
                 try {
+                    ensureAgentPolicyCurrent(session, profile)
+                    usageRequestId = onRequestStarted(UsageDialect.ANTHROPIC)
                     httpClient.preparePost(url) {
                         applyAuthAndCustomHeaders(profile)
                         header("anthropic-version", "2023-06-01")
@@ -5227,10 +5407,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             error("Anthropic Messages HTTP ${response.status.value}: $err")
                         }
 
+
                         var msgId = ""
-                        var inTok = 0
-                        var cacheReadTok = 0
-                        var outTok = 0
 
                         readSseOrJsonFallback(
                             channel = response.bodyAsChannel(),
@@ -5245,15 +5423,15 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         msgId = msgObj?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
                                         val usage = msgObj?.get("usage") as? JsonObject
                                         if (usage != null) {
-                                            inTok = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            cacheReadTok = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            onUsage(msgId, inTok, cacheReadTok, outTok)
+                                            onUsage(usageRequestId, msgId, UsageDialect.ANTHROPIC,
+                                                parseProviderUsage(UsageDialect.ANTHROPIC, usage))
                                         }
                                     }
                                     "content_block_start" -> {
                                         val idx = evObj["index"]?.jsonPrimitive?.intOrNull ?: streamBlocksByIndex.size
                                         val cb = evObj["content_block"] as? JsonObject
+                                        onUsage(usageRequestId, msgId, UsageDialect.ANTHROPIC,
+                                            parseProviderUsage(UsageDialect.ANTHROPIC, null, response = evObj))
                                         when (cb?.get("type")?.jsonPrimitive?.contentOrNull) {
                                             "thinking" -> {
                                                 val initThink = cb["thinking"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -5350,15 +5528,15 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                             }
                                         }
                                     }
+                                    "message_stop" -> {
+                                        onUsage(usageRequestId, msgId, UsageDialect.ANTHROPIC,
+                                            parseProviderUsage(UsageDialect.ANTHROPIC, null, isFinal = true))
+                                    }
                                     "message_delta" -> {
                                         val usage = evObj["usage"] as? JsonObject
                                         if (usage != null) {
-                                            val dIn = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            val dCache = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                            if (dIn > 0) inTok = dIn
-                                            if (dCache > 0) cacheReadTok = dCache
-                                            outTok = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: outTok
-                                            onUsage(msgId, inTok, cacheReadTok, outTok)
+                                            onUsage(usageRequestId, msgId, UsageDialect.ANTHROPIC,
+                                                parseProviderUsage(UsageDialect.ANTHROPIC, usage))
                                         }
                                     }
                                     "error" -> {
@@ -5373,10 +5551,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 val id = root["id"]?.jsonPrimitive?.contentOrNull ?: ""
                                 val usage = root["usage"] as? JsonObject
                                 if (usage != null) {
-                                    val uIn = usage["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val uCache = usage["cache_read_input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    val uOut = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                    onUsage(id, uIn, uCache, uOut)
+                                    onUsage(usageRequestId, id, UsageDialect.ANTHROPIC,
+                                        parseProviderUsage(UsageDialect.ANTHROPIC, usage, isFinal = true, response = root))
                                 }
                                 val contentArr = root["content"] as? JsonArray
                                 contentArr?.forEachIndexed { idx, el ->
@@ -5575,7 +5751,12 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             val batchRecords = executeWorkspaceToolBatchWithLiveProgress(
                 workspaceRoot = session.workspacePath,
                 mode = session.workspaceMode,
-                allowShell = profile.allowShellExecution,
+                allowShell = AgentPermissionResolver.resolve(session, profile = profile).allowShell,
+                accessScope = ToolAccessScope(
+                    AgentPermissionResolver.resolve(session, profile = profile),
+                    goalModeActive = circuitBreaker.goalState != null,
+                    includeLocalWebSearchTool = profile.enableWebSearch && omitNativeWebSearchOnRetry
+                ),
                 calls = turnToolCalls.map { (callId, fnPair) -> Triple(callId, fnPair.first, fnPair.second) },
                 firstThoughtSignature = firstSignedThinking,
                 firstPrecedingThinking = firstSignedThinkingText,
@@ -5971,7 +6152,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onFirstToken: () -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onContent: suspend (String) -> Unit,
-        onRawWire: suspend (String, String) -> Unit
+        onRawWire: suspend (String, String) -> Unit,
+        onRequestStarted: suspend () -> Unit
     ) {
         val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
             .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
@@ -6011,6 +6193,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             onStatus("Synthesizing speech ($model • $voice)…")
             onRawWire(reqStr, "Dispatching to $targetUrl ...")
 
+            ensureAgentPolicyCurrent(session, profile)
+            onRequestStarted()
             val resp = httpClient.post(targetUrl) {
                 applyAuthAndCustomHeaders(profile)
                 contentType(ContentType.Application.Json)
@@ -6091,7 +6275,10 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onThinking: suspend (String) -> Unit,
         onMedia: suspend (GeneratedMediaItem) -> Unit,
         onContent: suspend (String) -> Unit,
-        onRawWire: suspend (String, String) -> Unit
+        onRawWire: suspend (String, String) -> Unit,
+        onRequestStarted: UsageRequestStarter,
+        onUsage: UsageReporter,
+        onMediaRequestStarted: suspend (String, String) -> Unit
     ) {
         val latestUserPrompt = historyNodes.lastOrNull { it.role == MessageRole.USER }?.activeVariant?.content.orEmpty()
             .ifBlank { historyNodes.lastOrNull()?.activeVariant?.content.orEmpty() }
@@ -6231,6 +6418,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     onStatus("Submitting video generation task ($model)…", "")
                     onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
 
+                    ensureAgentPolicyCurrent(session, profile)
+                    onMediaRequestStarted("video_generation", "output_video")
                     val createResp = httpClient.post(finalCreateUrl) {
                         applyAuthAndCustomHeaders(profile)
                         contentType(ContentType.Application.Json)
@@ -6246,7 +6435,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     if ((createStatus == 400 || createStatus == 422) && pIdx < payloadSequence.lastIndex) {
                         continue // Self-heal payload schema on the same URL
                     }
-                    break
+                    break@outerUrlLoop
                 }
             }
 
@@ -6271,7 +6460,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     onMedia = onMedia,
                     onToolCall = {},
                     onRawWire = onRawWire,
-                    onUsage = { _, _, _, _ -> }
+                    onRequestStarted = onRequestStarted,
+                    onUsage = onUsage
                 )
                 extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id)
                 return
@@ -6459,6 +6649,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     onStatus("Generating image ($model • ${ profile.mediaAspectRatio })…", "")
                     onRawWire(reqStr, "Dispatching to $finalUrl ...")
 
+                    ensureAgentPolicyCurrent(session, profile)
+                    onMediaRequestStarted("image_generation", "output_image")
                     val resp = httpClient.post(finalUrl) {
                         applyAuthAndCustomHeaders(profile)
                         contentType(ContentType.Application.Json)
@@ -6478,7 +6670,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                         }
                         continue // Self-heal payload parameters
                     }
-                    break
+                    break@outerImgLoop
                 }
             }
 
@@ -6499,7 +6691,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     onMedia = onMedia,
                     onToolCall = {},
                     onRawWire = onRawWire,
-                    onUsage = { _, _, _, _ -> }
+                    onRequestStarted = onRequestStarted,
+                    onUsage = onUsage
                 )
                 return
             }
@@ -6520,7 +6713,10 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                         onThinking = onThinking,
                         onMedia = onMedia,
                         onContent = onContent,
-                        onRawWire = onRawWire
+                        onRawWire = onRawWire,
+                        onRequestStarted = onRequestStarted,
+                        onUsage = onUsage,
+                        onMediaRequestStarted = onMediaRequestStarted
                     )
                     return
                 }
@@ -7332,10 +7528,11 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             sb.appendLine()
         }
 
-        if (session.workspaceMode != io.parchment.ai.model.WorkspaceMode.OFF && session.workspacePath.isNotBlank()) {
+        val workspacePolicy = AgentPermissionResolver.resolve(session)
+        if (workspacePolicy.hasWorkspace && workspacePolicy.allowsTool("fs_read")) {
             sb.appendLine("### Local Workspace Agent Harness")
-            sb.appendLine("You have direct access to the local workspace directory (`${session.workspacePath}`) via native tools (`fs_list`, `fs_read`, `fs_search`${if (session.workspaceMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE) ", `fs_write`, `fs_edit`, `agent_memory`, `shell_exec`" else ""}, `todo_write`, `goal_complete`, `dice_roll`). Inspect files with `fs_read` before editing, keep edits surgical with `fs_edit`, and record durable project/story conventions with `agent_memory`. For multi-step tasks, track your steps with `todo_write` and verify completion with `goal_complete`.")
-            val discoveredContext = WorkspaceHarness.discoverWorkspaceContextFiles(session.workspacePath)
+            sb.appendLine("Use only the tools advertised for the mounted directory (`${workspacePolicy.workspacePath}`). Inspect files before editing, keep edits surgical, and preserve durable conventions with agent_memory when permitted. Track multi-step tasks with todo_write and verify before goal_complete. An approval does not expand permissions; denied tools remain disabled.")
+            val discoveredContext = WorkspaceHarness.discoverWorkspaceContextFiles(workspacePolicy.workspacePath)
             if (discoveredContext.isNotBlank()) {
                 sb.appendLine()
                 sb.appendLine(discoveredContext)
@@ -7465,7 +7662,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         val trimmed = rawExtraJson.trim()
         if (trimmed.isEmpty()) return base
         val extraObj = runCatching { json.parseToJsonElement(trimmed).jsonObject }.getOrNull() ?: return base
-        return deepMergeJsonObjects(base, extraObj)
+        // Raw provider options cannot grant tools or replace the harness's execution authority.
+        return deepMergeJsonObjects(base, JsonObject(extraObj.filterKeys { it !in setOf("tools", "tool_choice", "tool_config") }))
     }
 
     private fun deepMergeJsonObjects(target: JsonObject, overrideObj: JsonObject): JsonObject {

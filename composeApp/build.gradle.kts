@@ -1,5 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.security.KeyStore
+import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -40,6 +42,26 @@ val generateBuildConfig by tasks.registering {
         )
     }
 }
+
+val validatePrivateReleaseSigner by tasks.registering {
+    doLast {
+        val location = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+            ?: error("Release signing requires ANDROID_KEYSTORE_PATH; load the private signer first.")
+        val password = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+            ?: error("Release signing requires ANDROID_KEYSTORE_PASSWORD.")
+        val alias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+            ?: error("Release signing requires ANDROID_KEY_ALIAS.")
+        val store = KeyStore.getInstance(file(location), password.toCharArray())
+        require(store.isKeyEntry(alias)) { "Release signer alias must contain a private key." }
+        val certificate = store.getCertificate(alias) ?: error("Release signer certificate is unavailable.")
+        val fingerprint = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        require(fingerprint != "ed96a0a733e9e6d38633f04a6a182c997fe60d480d9e33e5f078faa2536d26eb") {
+            "The exposed repository key cannot sign a release. Use the private signer and migration plan."
+        }
+    }
+}
+tasks.matching { it.name == "validateSigningRelease" }.configureEach { dependsOn(validatePrivateReleaseSigner) }
 
 kotlin {
     compilerOptions {
@@ -117,29 +139,14 @@ android {
     }
 
     signingConfigs {
-        // Consistent OTA signing keystore so Android upgrades in-place without signature conflicts
-        getByName("debug") {
-            val otaKeystore = rootProject.file("keystore/parchment-ota-signing.jks")
-            if (otaKeystore.exists()) {
-                storeFile = otaKeystore
-                storePassword = "parchment123"
-                keyAlias = "parchment"
-                keyPassword = "parchment123"
-            }
-        }
+        // Debug uses the developer's normal local debug key. Release has no repository-key fallback.
         create("releaseSigning") {
             val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            val defaultOtaKeystore = rootProject.file("keystore/parchment-ota-signing.jks")
-            val chosen = if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
-                file(keystorePath)
-            } else {
-                defaultOtaKeystore
-            }
-            if (chosen.exists()) {
-                storeFile = chosen
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "parchment123"
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "parchment"
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "parchment123"
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
             }
         }
     }

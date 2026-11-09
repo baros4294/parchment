@@ -207,7 +207,8 @@ fun SepiaButton(
     modifier: Modifier = Modifier,
     style: SepiaButtonStyle = SepiaButtonStyle.OUTLINE,
     enabled: Boolean = true,
-    compact: Boolean = false
+    compact: Boolean = false,
+    wrapText: Boolean = false
 ) {
     val p = LocalParchmentPalette.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -316,8 +317,8 @@ fun SepiaButton(
             if (parsed.cleanText.isNotEmpty()) {
                 BasicText(
                     text = parsed.cleanText,
-                    maxLines = 1,
-                    softWrap = false,
+                    maxLines = if (wrapText) Int.MAX_VALUE else 1,
+                    softWrap = wrapText,
                     overflow = TextOverflow.Ellipsis,
                     style = p.uiBodyStyle.copy(
                         color = textColor,
@@ -459,8 +460,6 @@ fun SepiaTextField(
         if (label.isNotBlank()) {
             BasicText(
                 text = label,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
                 style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
             )
             Spacer(Modifier.height(4.dp))
@@ -551,7 +550,7 @@ fun SepiaTextField(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = minHeight, max = if (singleLine) minHeight.coerceAtLeast(38.dp) else maxHeight)
+                        .heightIn(min = minHeight, max = if (singleLine) Dp.Infinity else maxHeight)
                         .clip(shape)
                         .background(if (borderless) Color.Transparent else p.cardBg)
                         .then(
@@ -905,7 +904,8 @@ fun SepiaContextGaugeRing(
     contextLimitTokens: Int,
     sessionCostUsd: Double = 0.0,
     onClick: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sessionCostLabel: String = ""
 ) {
     val p = LocalParchmentPalette.current
     val isUnlimited = contextLimitTokens <= 0
@@ -961,7 +961,10 @@ fun SepiaContextGaugeRing(
         }
 
         val win = LocalParchmentWindowSize.current
-        val costTag = if (sessionCostUsd > 0.0 && !win.isCompact) " • ${formatUsdCost(sessionCostUsd)}" else ""
+        val costTag = if (!win.isCompact) {
+            sessionCostLabel.takeIf { it.isNotBlank() }?.let { " • $it" }
+                ?: if (sessionCostUsd > 0.0) " • ~${formatUsdCost(sessionCostUsd)}" else ""
+        } else ""
         val labelStr = if (win.isCompact) {
             formatCompactTokens(usedTokens)
         } else if (isUnlimited) {
@@ -1001,7 +1004,9 @@ fun countWordsFast(text: CharSequence): Int {
     return count
 }
 
-fun formatCompactTokens(tokens: Int): String = when {
+fun formatCompactTokens(tokens: Int): String = formatCompactTokens(tokens.toLong())
+
+fun formatCompactTokens(tokens: Long): String = when {
     tokens >= 1_000_000 -> {
         val m = (tokens / 100_000) / 10.0
         if (m == m.toLong().toDouble()) "${m.toLong()}M" else "${m}M"

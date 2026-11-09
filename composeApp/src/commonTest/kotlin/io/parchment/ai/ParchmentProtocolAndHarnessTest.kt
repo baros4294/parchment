@@ -276,6 +276,7 @@ class ParchmentProtocolAndHarnessTest {
             mode = WorkspaceMode.OFF,
             callId = "tc_todo_1",
             toolName = "todo_write",
+            goalModeActive = true,
             argumentsJson = """{"goal":"Write 2-part treatise","todos":[{"id":"1","content":"Part 1","status":"completed"},{"id":"2","content":"Part 2","status":"in_progress"}]}"""
         )
         assertFalse(todoCall.isError, "todo_write must work even when WorkspaceMode is OFF")
@@ -291,6 +292,7 @@ class ParchmentProtocolAndHarnessTest {
             mode = WorkspaceMode.OFF,
             callId = "tc_done_1",
             toolName = "goal_complete",
+            goalModeActive = true,
             argumentsJson = """{"summary":"Treatise completed","verification":"Both parts verified"}"""
         )
         breaker.onToolExecuted(doneCall)
@@ -631,7 +633,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(!cleanMd.contains("alert(1)"))
 
         // 16. Verify 2026 Harness Tools: calc_eval, fs_multi_edit, fs_glob, fs_move, fs_delete
-        val mathRec = WorkspaceHarness.executeToolCall("", WorkspaceMode.OFF, "c_math", "calc_eval", """{"expression":"(2^10 + sqrt(144)) / 2"}""")
+        val mathRec = WorkspaceHarness.executeToolCall("", WorkspaceMode.OFF, "c_math", "calc_eval", """{"expression":"(2^10 + sqrt(144)) / 2"}""", goalModeActive = true)
         assertTrue(!mathRec.isError, "calc_eval failed: ${mathRec.resultText}")
         assertTrue(mathRec.resultText.endsWith("= 518"), "Expected 518, got: ${mathRec.resultText}")
 
@@ -1265,8 +1267,8 @@ class ParchmentProtocolAndHarnessTest {
         )
         // 400 generated tokens (300 reasoning + 100 output) over 4.0s active decode = 100.0 tok/s (not 0.3 tok/s!)
         assertEquals(100.0, metrics.tokensPerSec)
-        assertEquals(300, metrics.reasoningTokens)
-        assertEquals(100, metrics.outputTokens)
+        assertEquals(300L, metrics.reasoningTokens)
+        assertEquals(100L, metrics.outputTokens)
 
         // 2. Verify IncrementalProseBlockCache matches full parseProseBlocks bit-for-bit during streaming
         val sampleMarkdown = buildString {

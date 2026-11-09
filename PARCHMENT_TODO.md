@@ -1,374 +1,158 @@
-# Parchment Production Quality Plan
+# Parchment TODO
 
-Updated: 2026-11-08. Baseline: main at 4dad8ab671ab5add25a8fa21c40f960d03ea31ea (published v2.0.57).
+Updated 2026-11-09. Read this status first, then only the relevant task entries. AGENTS.md owns workflow; MEMORY holds reference contracts. Task IDs stay stable.
 
-## Execution contract
+## Current status
 
-- Plan each improvement before editing its implementation. Investigate every source area and refine this plan when evidence reveals another defect.
-- Group related checklist items under a subheader into a coherent implementation batch. Verify the complete batch with meaningful regressions/platform builds, then commit and push once to origin/main.
-- Split unusually large or high-risk work into independently verifiable batches. Keep unfinished items open and update MEMORY/TODO/README with the batch's actual results.
-- An item is complete only after its implementation, batch verification and lock succeed. Failed verification keeps the batch and affected items open.
-- Preserve the five existing platform edits and review them as part of the relevant background-lifecycle milestones.
-- Four supplied Android background edits are preserved in stash 7e1827538dd5e9bbf8ad836346bbeda62577104c during the persistence batch; reapply before the background batch and retain the stash until integration is verified.
-- Never copy builds into the installed Windows Parchment directory. Use workspace build artifacts for testing and GitHub Release OTA for installed updates.
-- Keep Compose Foundation UI, vector icons, bounded vertical palettes and wrapped rows. Keep model routing independent of model identifiers and device routing independent of manufacturer/version names.
-- Search the web and retrieve current official documentation before changing protocol behavior. This session has no exposed web_search tool; use actual HTTP web searches and official page retrieval, recording the sources below.
-- Never optimize by dropping history, changing user instructions, weakening permission checks or silently enabling provider-side storage.
-- Use JDK 21, the local Android SDK and --no-daemon for Gradle. Verify compiler execution strategy before changing daemon configuration.
-- Do not hide unresolved runtime verification behind a passing compilation. Record limitations and leave those acceptance checks open.
-- Continue until all concrete findings are resolved, required checks pass, and a final audit finds no unresolved critical or high-priority defects.
+- **Last verified batch: 5.5d + 3.2 timing/leases.** 45 selected clock/coordinator/approval/HTTP/native Windows lease tests and Android Kotlin compilation pass at 2.0.64/264. Prior fee/persistence results remain valid. Whole-run owners span tools, compaction and queue/preparation handoffs; approval-only waits release holds. Android uptime excludes deep sleep; desktop excludes unobserved scheduling gaps over five seconds (short desktop suspensions remain an accounting limit).
+- **Latest UI gate: 2.6 / 8.1a–8.3a.** Three desktop UI tests pass: shared registry saved-choice/search behavior; inherited choice/reset semantics; portrait/landscape/dark/1.8× font renders; owning-chat approval wrapping, scrolling and Stop. Back/Escape state and available-height drawer cap compile and pass source/caller review. Prior permission/lease passes remain valid; handset/IME/reader checks stay at 10.3. Renders: .parchment-local/verification/permissions/.
+- **Latest settings gate: 8.1b / 8.2b.** Provider/assistant sampling and typography stack vertically, including matching search fields. Single-line inputs grow with font size; theme presets wrap in shared radio rows. Source/caller/diff review, 320dp/1.8× and 740dp/1× form renders, input/placeholder fit and preset selection pass; final Android Kotlin compilation passes at 2.0.64/264. Three permission UI tests also passed; unaffected runtime/HTTP results are reused.
+- **Current boundary: one-time UI review checkpoint.** The user authorized an early commit/push of these UI updates and their integrated local dependencies to origin/main for review. Accept: reviewed staged diff, excluded private/local artifacts and matching local/remote commit. After publishing, await UI review before resuming broader TODO work. This exception applies only this time; 10.5 stays unfinished. Phone/release-secret setup waits for 10.3.
 
-## Verified baseline observations
+## Working rule
 
-- Windows: S0 Low Power Idle / Network Connected; AC and DC sleep-after settings are both 300 seconds.
-- Windows PowerShell interprets the current helper's 0x80000001 as a negative Int32; conversion to the native UInt32 argument fails. The published helper uses the same signed-literal pattern with 0x80000041.
-- Latest published Android manifest still declares dataSync. The working tree's specialUse and concurrent-run changes are not in v2.0.57.
-- Android test device is now available and authorized: OnePlus PLZ110, Android 17/API 37, ColorOS V17.0.0; installed Parchment 2.0.57, versionCode 257, targetSdk 36.
-- Device notification permission is not granted. Parchment is on the user battery-exemption list; Data Saver is disabled.
-- Historical device exits include OTHER KILLS BY SYSTEM at foreground-service importance 125. Proprietary o-kill/o-stop codes have no verified public interpretation; do not branch on them.
-- No Parchment foreground service was active during the initial device inspection. This alone does not establish a defect because no active generation was verified.
-- Test workers use temporary storage rather than the user's installed app data. Their shared fixed temporary directory still needs isolation and cleanup review.
-- UI frame pacing already times out unavailable frames and uses a delay fallback; do not misdiagnose an indefinite frame-clock wait.
-- Tool dispatch receives root/mode, but not the Shell toggle or a complete enabled-tool policy. Sequential and parallel paths both require enforcement.
-- Memory and checklist tools can write workspace files despite their broad read-only metadata.
-- Built-in path checks are lexical, and a shell's working directory provides no OS process confinement.
-- Disk-save scheduling cancels the previous pending session save; investigate loss of dirty changes when different chats update.
-- Native power hooks are scoped to a network generation call instead of the complete agent run.
-- The Gemini background toggle controls poll recovery of a stateful interaction; the outgoing request currently does not request background=true.
-- Google documents store=false as incompatible with background execution. Keep stateless defaults and require explicit opt-in for stored server recovery.
+Follow AGENTS.md: bounded edits → complete caller/diff review → smallest useful check → record/close batch. Add regressions for demonstrated behavior risks. Reuse unaffected passes; rerun only what a failure/fix affects. Full platform/package/device verification stays at 10.3. Never lose data/instructions, weaken permissions or guess opaque protocol data.
 
-## Prioritized implementation queue
+Phone is unplugged by the user. Continue source/local verification; defer all handset checks to 10.3, then stop and request reconnection/ADB authorization. Do not request it earlier. Tick each completed, verified bullet immediately; leave device-dependent bullets unchecked until that gate.
 
-### 01 — P0: Baseline, exhaustive audit and protocol evidence
+Checkboxes mean implemented and locally verified; the final Git lock is step 10.5.
 
-- [ ] Map every source file, build/release configuration and public boundary; distinguish verified defects from investigation candidates.
-- [ ] Fetch current official references for Responses, Chat Completions, Gemini Interactions, GenerateContent, Anthropic Messages, streaming, reasoning/signatures and tool-result formats.
-- [x] Run the existing desktop suite and Android compilation; baseline 20/20 passed and the current verified persistence batch passes 66/66.
-- [ ] Review test storage, subprocess cleanup and isolation before broadening the suite.
-- Files: all source areas; PARCHMENT_TODO.md; build and workflow configuration.
-- Verification: source coverage matrix below, fetched official references, baseline test/build results.
-- Lock: include this plan and baseline evidence in the first verified implementation commit.
+## Remaining execution order
 
-### 02 — P0: Correct and monitor Windows power requests
+1. **2.6, 8.1–8.3:** UI consistency/fit/accessibility; handset checks at 10.3.
+3. **6.1–6.3, 7.4:** bounded I/O/archive/OTA and proven cleanup.
+4. **4.1–4.4, 2.5, 3.3–3.4:** protocol/process/recovery contracts; fix confirmed high defects first.
+5. **5.2–5.4, 7.1–7.3, 7.5:** measured efficiency and work bounds.
+6. **9.2–9.3:** confirmed core gaps and complete workflows.
+7. **10.2–10.5, 3.5:** final audit, one platform/device matrix, concise docs, one commit/push.
 
-- [x] Replace signed PowerShell literals with correctly typed native values for both acquisition and release.
-- [x] Confirm native acquisition success; do not treat a live helper process as proof of an active power request.
-- [x] Serialize holder creation/rearming and preserve concurrent-session reference ownership.
-- [x] Ensure helper termination/release when the final owner stops or the parent exits.
-- [x] Keep the documented Modern Standby/DC limits visible; do not claim local execution continues through actual sleep.
-- Files: desktopMain/platform/PlatformBridge.desktop.kt; desktopTest/platform/WindowsPowerLeaseTest.kt; PARCHMENT_MEMORY.md.
-- Verification: real native-call/process-boundary regression, two owners with one completing, helper failure/termination, desktopTest and desktop compilation.
-- Lock: completion is published by the commit containing this verified Windows milestone; confirm origin/main reachability after push.
+Finish one related batch and tick its verified bullets before moving on. A confirmed critical/high defect takes priority over this speed order.
 
-### 19 — P0: Generated build configuration tracks its inputs
+## 1. Foundation (verified)
 
-- [x] Declare appVersion, appVersionCode and githubRepo as generateBuildConfig inputs.
-- [x] Verify changing build properties regenerates runtime constants and matches APK metadata; unchanged inputs remain up to date.
-- [x] Re-run relevant desktop/Android/release checks and verify the signing identity before device validation.
-- Files: composeApp/build.gradle.kts; build verification evidence; MEMORY/TODO/README.
-- Evidence: validation APK manifest was 2.0.59/259 while generated runtime constants remained 2.0.0/200.
-- Lock: verified build-cache correction commit and push.
+- [x] Repair monitored Windows power leases, concurrent owners and cleanup.
+- [x] Track generated runtime-version/repository inputs.
+- [x] Fix Tabs dimming, narrow layout and dismissal/Back behavior.
+- [x] Shared atomic snapshots, lossless dirty revisions, hydration/metadata races, backup/migration recovery and inline attachment preservation.
+- [x] Enforce explicit Shell permission in every tool path.
+- [x] Per-request usage ledger across five JSON/SSE protocols; cumulative updates, TTL cache writes, wide counts, interruption/continuation records and transparent estimates.
+- [x] Custom dialect dispatch, Interactions step usage/final-text recovery and safe catalog identity lookup.
+- [x] Guard JSON/ZIP exports; verify usage-record export/import/recovery.
+- [x] 92-test/build gate and Android compact usage rendering.
 
-### 03 — P0: Atomic persistence and lossless dirty-session scheduling
+## 2. Approval, access and process controls (next bulk section)
 
-- Snapshot hydration/shared-storage batch verified: 66/66 tests, both Kotlin targets, Android release and real-device draft/checkpoint/restart smoke; published by the commit containing this completion log.
-- Batch implementation order: make the compact/full marker part of each in-memory snapshot; merge metadata onto queued/full history; apply asynchronous hydration to the current state without resurrecting deleted chats or replacing edits; refuse export/generation from missing full history.
-- Attachment recovery boundary: retain inline bytes when the referenced local file is missing/unreadable; verify readable persisted media before dropping redundant base64.
-- Consolidate Android/desktop atomic writes and JSON recovery in `src/jvmShared`; use API-26-compatible NIO readers, synced staging and atomic replacement without a truncating fallback. Preserve migration sources until a valid destination commits, and preserve valid backups when the primary is corrupt.
-- Make native write/delete failures reach the dirty writer; allow healthy files to checkpoint when another file fails and retry retained failures with bounded backoff. Give each test worker an owned temporary directory.
-- Batch files: Models.kt, ParchmentDiskWriter.kt, ParchmentStatePersistence.kt, ParchmentApp.kt, both platform bridges, shared JVM storage helpers, composeApp/build.gradle.kts, focused hydration/storage/writer regressions and MEMORY/TODO/README.
-- Batch verification: full-versus-stub snapshot races, metadata clearing, async hydration versus edits/deletions, corrupt-primary/valid-backup recovery, failed migration preservation, native error propagation, independent-file writes/retry, desktopTest, both Kotlin targets and Android release; inspect the connected device for smoke verification when applicable.
-- [x] Desktop atomic storage verified: complete staging/sync, atomic target and backup replacement, sharing-friendly reads, bounded transient-lock recovery; five new regressions. Android replacement and shared scheduling remain open.
-- [x] Review settings, chat, backup and temporary-file replacement paths on both platforms; consolidate validated snapshot storage in `src/jvmShared`.
-- [x] Replace truncate-in-place fallbacks with safe staged replacement and recoverable failure handling for settings/chats/backups and legacy chat migration.
-- [x] Coalesce all dirty session IDs through one serialized writer; retain per-file revisions, in-flight updates, deletions and lifecycle checkpoints.
-- [x] Propagate native save/delete errors; checkpoint healthy files independently, gate migration settings on required chat revisions, retry retained failures, and clear the recovered save notice.
-- [x] Make hydration snapshot-local; preserve full pending payloads, explicit metadata clears, drafts, concurrent loading edits/deletions and missing-file inline attachments.
-- [x] Recover valid settings/chat backups without replacing them with corrupt primaries, and retain failed migration sources and invalid snapshots.
-- [ ] Add clear recovery UI for chats/settings with no usable complete snapshot; review all startup/bulk-operation and per-chat draft callback ownership races.
-- [ ] Keep disk checkpoints independent of rendering and avoid synchronous full-vault rewrites during activity transitions.
-- [ ] Recover from truncated/corrupt writes without overwriting valid history with defaults or dehydrated stubs.
-- Files: ParchmentStatePersistence.kt; ParchmentApp.kt persistence callbacks; both PlatformBridge actuals; common/desktop persistence tests.
-- Verification: interrupted replacement, failed write, two chats updating, shutdown flush, corrupt primary with valid backup, dehydration/import regressions; both platform compilations and assembleRelease.
-- Lock: verified persistence commit and push.
+- [x] **2.1 Data:** assistant defaults and explicit chat overrides; inheritance differs from Off/unmount. Legacy Shell resets safely; imports carry no tool authority. Permission/import/hydration regressions pass.
+  Files: Models, new permission models, StatePersistence/metadata merge. Check: old settings/chat fixtures preserve intent; imports cannot create approval grants.
+- [x] **2.2 Enforcement:** shared dispatch policy denies unknown/disabled tools and read-only/indirect writes. Raw provider options cannot grant tools. HTTP regressions verify no writes before approval and independent parallel decisions.
+  Files: AgentPermissionGate, WorkspaceHarness, engine. Check: direct/parallel calls cannot bypass toggles or advertise their own authority.
+- [x] **2.3 Approval broker:** per-run/chat exact-action requests, one-use permits, exact run grants, Deny and Stop. Policy/path edits invalidate grants and pending actions; repeated denials do not prompt again. Cancellation, two-chat and HTTP revocation tests pass.
+  Files: ToolApprovalBroker, runtime context. Check: cancellation/revocation/two-chat tests; no approved action executes after invalidation.
+- [x] **2.4 Boundaries:** canonical ancestors and guarded recursive scans; escaping read/write/edit/move/delete calls fail before effects. Windows junction integration and public web/DNS/redirect/disabled-network tests pass. Provider transport stays separate.
+  Files: bridges/harness. Check: traversal/links/recursive scans, redirected/private destinations and disabled network.
+- [ ] **2.5 Shell ownership:** cancel only the owning run's processes. Require genuine OS confinement or accurately described explicit full access; keep command grants narrowly scoped.
+  Files: process bridge/run context. Desktop two-process cancellation passes. Android owned-session control is local; verify protocol first, app-UID descendant cleanup at 10.3. Exact/stale grant checks pass.
+- [x] **2.6 UI:** Workspace/Tools/assistant defaults share vertical policy controls and a searchable registry. Saved tool choices are separate from effective availability; toggles do not grant folder/Shell/web access. Manual Override is first; owning-chat actions wrap and scroll, with single-target switch/radio semantics and 48dp targets. Shell/network/power limits are explicit. Three desktop UI regressions/renders and source/caller review pass; earlier revocation/HTTP passes reused. Back/Escape and drawer-height changes compile; actual handset/IME/reader behavior waits for 10.3.
 
-### 04 — P0: Authoritative agent permissions and cancellable approvals
+## 3. Long-horizon execution and Android recovery
 
-- [x] Enforce the existing Shell toggle at dispatch; READ_WRITE alone cannot authorize a command, and all five provider paths pass the permission explicitly.
-- [ ] Add assistant defaults and explicit chat overrides for approval, sandbox/file access, enabled tools, shell and web-tool permissions.
-- [ ] Distinguish inherited settings from explicit Off/unmount. Move local permissions out of provider ownership.
-- [ ] Migrate existing workspaces without silently granting full access or preserving blanket approval.
-- [ ] Enforce current policy immediately before every actual effect, including unadvertised tool names, parallel calls, memory append/overwrite and checklist file writes.
-- [ ] Add an asynchronous approval broker with exact action previews, Allow once, narrowly scoped Allow for this run, Deny and Stop.
-- [ ] Revalidate pending requests after policy/file changes; cancellation and repeated denial must not start work or loop prompts.
-- [ ] Imported chats/settings and model-generated arguments cannot mint approval grants.
-- Files: Models.kt; new harness/AgentPermissionGate.kt and ToolApprovalBroker.kt; WorkspaceHarness.kt; AiProviderEngine.kt; persistence/migrations; O200kTokenizer.kt for matching active-tool accounting.
-- Verification: disabled shell in read/write mode, unknown/disabled calls, read-only writes, Never-ask still bounded, denial/cancellation/revocation, parallel authorization, indirect writes and migration/import fixtures.
-- Lock: verified permission engine commit and push before exposing permissive UI choices.
+- [x] **3.1 Coordinator:** process-owned state, run identities, frozen provider context and explicit phases. Invisible workers drain before handoff; stale events cannot erase a replacement. Nine ownership/clock/handoff regressions and both Kotlin checks pass. Actual handset recreation remains in 3.5/10.3.
+- [x] **3.2 Leases:** process-owned absolute snapshots span tools, compaction and queue/preparation handoffs; approval-only waits release CPU/Wi-Fi/native holds while active parallel work retains them. Stale/lazy cancellation cleanup is owner-scoped; service snapshots recover from live process owners and process death retains no phantom owner. 45 focused desktop tests and Android Kotlin compilation pass. Actual handset service recreation remains at 3.5/10.3.
+- [ ] **3.3 Checkpoints:** persist known tool outcomes, pending actions and valid continuation. Resume safely after socket/OS interruption; never repeat uncertain mutations or restart a user-stopped run.
+  Files: coordinator/persistence/engine. Check: interruption/process restart/explicit Stop/unknown-outcome fixtures.
+- [ ] **3.4 Android:** reapply stash 7e1827538dd5e9bbf8ad836346bbeda62577104c, then verify specialUse, visible foreground startup, application context, permission refresh and bounded liveness-based CPU leases. Surface promotion/lock errors; no phantom notifications.
+  Files: manifest, service, MainActivity/bootstrap/Android bridge. Stash merged without overwriting local work; unbounded wake lock corrected. Source/check gate in progress; whole-run ownership, approval waits and device instrumentation remain. Keep the stash.
+- [ ] **3.5 Device matrix:** app switch, screen off/Doze, denied notifications, compaction, two runs, approval waits, process death/recovery and cleanup.
+  Check: actual Android 17 handset. Explain real sleep/battery limits; local computation cannot continue through actual suspension.
 
-### 05 — P0: Real filesystem/network boundaries and scoped process cancellation
+## 4. Protocol contracts and universal capabilities
 
-- [ ] Resolve existing ancestors and targets against allowed roots; prevent symlink/junction escapes in reads, writes and recursive list/glob/search.
-- [ ] Validate both source and destination of moves and every target of multi-edit.
-- [ ] Check web-tool hosts and redirects; distinguish required provider transport from tool network access.
-- [ ] Restricted modes cannot run arbitrary shell without verified OS process confinement. Full access must be explicit and accurately described.
-- [ ] Replace global shell termination during Stop/Steer/compaction with ownership by session/run.
-- [ ] Make reusable command grants exact or securely scoped; never grant a broad interpreter prefix by inference.
-- Files: WorkspaceHarness.kt; common PlatformBridge contract; both actual bridges; run/permission context; filesystem/network/process tests.
-- Verification: traversal, symlink/junction fixtures, moves, redirected/private destinations, disabled network, two simultaneous processes with one cancelled, stale grants.
-- Lock: verified boundary/cancellation commit and push.
+- [ ] **4.1 Replay:** verify all five request/history/tool schemas; preserve opaque provider reasoning/signatures, call/result batch boundaries and closing prose. Stamp actual wire/model.
+  Files: engine/adapters/Models. Check: current official fixtures, cross-provider/model isolation and signed history.
+- [ ] **4.2 Streams/retries:** fragmented/malformed SSE, tool/reasoning-only endings, continuation/stop/errors. No duplicate accepted jobs/tools; Custom never changes its declared URL/dialect.
+  Check: local HTTP/SSE round trips and recovery fixtures.
+- [ ] **4.3 Storage:** separate persisted history, chaining and actual background execution; stateless remains default. Background requires explicit compatible storage opt-in.
+  Files: engine/settings. Check: documented combinations and model-scoped chains.
+- [ ] **4.4 Discovery:** remove model-name/version routing; use live/registry capabilities, exact/canonical aliases and conflict-aware precedence. Keep creator identity accurate; realtime requires explicit support.
+  Files: ModelsDevClient, engine, Models/icons. Check: arbitrary/misleading IDs, overrides, conflicts, unknown modalities and media-job recovery.
 
-### 06 — P0: Whole-run ownership, checkpoints and safe recovery
+## 5. Token efficiency and complete cost visibility
 
-- [ ] Add an AgentRunCoordinator with unique run/session ownership and explicit preparing/running/waiting/interrupted/stopped/completed phases.
-- [ ] Hold protection across tool rounds, compaction and queue handoff rather than individual HTTP calls.
-- [ ] Keep run data/checkpointing independent of Compose lifecycle while publishing compact progress updates.
-- [ ] Persist original provider/model, target variant, known tool outcomes, pending actions and valid continuation state.
-- [ ] Resume after OS/network interruption using verified continuation or local history.
-- [ ] Never automatically replay a mutation with unknown outcome or restart a user-stopped run.
-- [ ] Release CPU/power holds when all runs are awaiting human approval, and reconcile owners after restart.
-- Files: new harness/AgentRunCoordinator.kt; Models.kt; ParchmentApp.kt; ParchmentStatePersistence.kt; AiProviderEngine.kt; PlatformBridge contract.
-- Verification: compaction with uninterrupted lease ownership, missing UI frames, queue handoff, two tabs, process-restart fixtures, socket interruption, pending approvals, unknown mutation outcomes and explicit user Stop.
-- Lock: verified coordinator/checkpoint commit and push.
+- [x] **5.1 Utility usage:** title/summary/compaction/translation/draft and failed/interrupted attempts carry chat/run/purpose records. Persisted utility ledger and usage drawer are wired; cumulative updates coalesce. 45 usage/HTTP/hydration regressions and both Kotlin checks pass.
+- [ ] **5.2 Prompt/cache:** measure system/history/tool/lore/attachment overhead; keep stable cacheable prefixes/tool definitions and prune only with safe context/evidence rules.
+  Files: engine/harness/tokenizer/compaction. Check: representative coding workloads before/after; compare input/output/reasoning/cache reads/writes and estimated spend.
+- [ ] **5.3 Extra requests:** remove duplicate creation/tools, unnecessary summaries and continuation/nudges; preserve accepted-job state.
+  Check: request counts and interrupted recovery.
+- [ ] **5.4 Controls:** useful spend/effort/context options and usage breakdowns, preserving explicit model choices and uncapped user instructions.
+  Files: policy/settings/metrics. Check: budgets stop safely without losing history.
+- [x] **5.5a Totals:** unique owned requests across all versions/utilities; fork provenance preserved and duplicate user-token estimates removed. Regeneration/fork/deduplication/partial tests pass in the 37-test/Kotlin gate.
+- [x] **5.5b Rates:** explicit free/missing prices, model-owned snapshots, TTL/context tiers and exact per-token units. Nine pricing regressions pass within the 49-test gate; both Kotlin targets pass. Vertical editor preserves blank = unknown and 0 = free.
+- [x] **5.5c Fees:** reported totals replace estimates; metadata audio/search/request rates use matching units. Persist direct media attempts and label missing tool/media charges, audio/cache splits and external BYOK billing. Image/video hard errors stop endpoint probing. 55 fee/usage/HTTP/persistence tests and both Kotlin targets pass. Per-image/container/video costs remain explicitly partial without compatible usage/rates.
+- [x] **5.5d Time:** shared monotonic run/thinking/tool accounting excludes approval-only waits and subtracts parallel tool intervals once. Android uses uptime; one-second liveness samples exclude unobserved desktop scheduling gaps over five seconds (short desktop suspension cannot be identified precisely). Clock rollback/gap, two-owner, parallel/approval, cancellation/revocation and HTTP duration regressions pass in the 45-test/Android gate with 3.2.
 
-### 07 — P0: Android foreground-service readiness and device verification
+## 6. Bounded I/O, archives and OTA
 
-- [ ] Review/adapt existing specialUse changes against current official requirements.
-- [ ] Confirm foreground startup while an activity is visible; expose startup/promotion/lock failures.
-- [ ] Initialize application context safely for service-led restart; refresh power/notification state on resume.
-- [ ] Maintain bounded renewable CPU leases from run liveness, not token arrival; remove reliance on foreground/screen-on Wi-Fi lock guarantees.
-- [ ] Restore only valid persisted runs, distinguish user stop from system interruption, and avoid phantom notifications/locks.
-- [ ] Request notification access through the activity UI; denial does not by itself prohibit foreground-service startup.
-- [ ] Run device tests on Android 17/API 37 using generic capabilities, not OnePlus/ColorOS branches.
-- [ ] Add app-owned instrumentation for private service lifecycle checks; direct shell starts were correctly rejected by exported=false and are not a startup-failure result.
-- Files: AndroidManifest.xml; LongDecodeForegroundService.kt; MainActivity.kt; PlatformBridge.android.kt; application bootstrap if needed; background-state UI.
-- Verification: compileDebugKotlinAndroid and assembleRelease, then on-device app switching, screen-off/Doze, notification denial, compaction, two runs, pending approvals, process death and cleanup.
-- Lock: verified Android improvement commit(s) and push; runtime acceptance remains open until device results exist.
+- [ ] **6.1 Files/media:** reduce whole-file/string/image copies; cap allocation/pixels/cache and stream where possible without truncating editable source. Review shell output and cancellation.
+  Files: bridges, codecs, media/harness. Check: large/malformed inputs and memory/work bounds.
+- [ ] **6.2 Archives:** validate paths/bombs/malformed bundles before committing state; preserve per-chat relative media paths and interrupted import/export recovery.
+  Files: persistence/codecs/bridges. Check: traversal, oversized ZIPs, malformed PNG/JSON and partial extraction.
+- [ ] **6.3 OTA:** stream to owned staged files, verify completion/size and authoritative digest/signing evidence, cancel without installation, checkpoint/back up runs before maintenance.
+  Files: OtaUpdateEngine, bridges, OTA UI/installer. Check: truncated downloads, unknown lengths, mismatch/cancel and data preservation.
 
-### 08 — P0: Explicit protocol contracts and lossless historical replay
+## 7. Performance, startup and maintainability
 
-- [ ] Verify each request/stream/tool-result builder against fetched official schemas.
-- [ ] Preserve Custom endpoint URL and declared dialect; do not silently switch its payload or endpoint through fallback.
-- [ ] Stamp the actual wire dialect/model on completed and interrupted turns.
-- [ ] Preserve opaque reasoning/signature data exactly where the official protocol requires it; do not infer private encryption/protobuf formats.
-- [ ] Preserve parallel and sequential tool boundaries and closing assistant prose.
-- [ ] Implement documented continuation/stop/error behavior and test fragmented streaming.
-- [ ] Separate server storage, chaining and genuine background execution; stateless remains the default.
-- Files: AiProviderEngine.kt and eventual protocol adapters; Models.kt; protocol/history tests; provider settings.
-- Verification: official-schema fixtures and local HTTP/SSE round trips for all five wire paths plus Custom; malformed/fragmented events, reasoning/tool-only endings, continuation and cross-provider/model isolation.
-- Lock: separate verified protocol improvements and pushes; no protocol edit without recorded documentation evidence.
+- [ ] **7.1 Baselines:** measure cold/warm first useful frame/typing, idle heap/working set, CPU/disk/network and sustained streaming on desktop/Android.
+- [ ] **7.2 Startup/state:** move safe loads/migrations/fonts/tokenizer/discovery off the UI path; bound queues/caches and inactive payload retention; preserve lean heap/hydration/timeline limits.
+  Files: App/persistence/platform/registry. Check: large chats/vaults and lifecycle equivalence.
+- [ ] **7.3 Incremental work:** replace repeated buffer scans/serialization/copies with correct incremental work; retain bounded wire previews.
+  Files: streaming/tokenizer/renderer code. Check: Unicode/chunk equivalence and allocation/work measurements.
+- [ ] **7.4 Modules:** remove proven dead code/dependencies and consolidate duplication; split oversized controllers/adapters around explicit ownership.
+  Check: behavior-equivalence tests before/after.
+- [ ] **7.5 Renderers:** bound recursion/work and repeated Markdown/LaTeX/SVG/icon parsing.
+  Check: nested/fuzz/pathological inputs and both-platform rendering.
 
-### 09 — P1: Universal model discovery and modality routing
+## 8. Calm, consistent mobile/UI behavior
 
-- [ ] Remove model-name/version substring routing and prefer explicit model specs, live discovery and registry metadata.
-- [ ] Review canonical alias collisions, missing values and source precedence instead of taking unsafe maxima/defaults.
-- [ ] For unknown capabilities, use only documented/observed endpoint-parameter recovery before output or accepted side effects.
-- [ ] Do not infer realtime support solely from text/audio output modalities.
-- [ ] Keep lab identity derived from creator metadata and preserve explicit Custom behavior.
-- Files: ModelsDevClient.kt; AiProviderEngine.kt routing; Models.kt capability data; ParchmentIcons.kt creator lookup; registry tests.
-- Verification: arbitrary model IDs, misleading names, conflicting registries, explicit overrides, unknown modalities, accepted jobs without duplicate creation and Custom endpoints.
-- Lock: verified discovery/routing commit and push.
+- [x] **8.0 Floating notice:** rounded rectangle overlay with calm motion, wrapping and dismiss action. Wide/narrow/1.6× font/dark renders, pointer dismissal and stable document position pass; fixed-height clipping removed. Existing timeout retained.
+- [ ] **8.1 Layout:** vertical substantial choices; no horizontal option scrolling or redundant labels; consistent type/spacing/icons/corners/colors/action states.
+- [ ] **8.2 Fit:** portrait/landscape, IME, long names, enlarged fonts and accidental clipping; clear complete/partial/unknown cost labels.
+- [ ] **8.3 Motion/access:** shared calm transitions without jumps/overlap; reduced motion, touch/contrast/keyboard/reader semantics.
+  Files: App/Components/SettingsPages/Modals/Theme. Check: rendered desktop + actual Android interactions; preserve verified Tabs behavior.
+- [x] **8.1a–8.3a Permission controls:** vertical saved/effective choices, wrapping long actions/paths, no new control animation, radio/switch semantics and 48dp targets. Portrait/landscape/dark/1.8× desktop renders, inherited choice/reset, search and owning-chat Stop pass. Remaining general forms/accessibility and handset checks are covered by the parent items.
+- [x] **8.1b / 8.2b Settings forms:** provider/assistant sampling/history and typography fields stack vertically, including search counterparts. Labels wrap and single-line fields grow with enlarged text. Shared theme preset rows wrap, retain selection and provide 48dp radio targets. Narrow 1.8×/wide form renders, vertical input/placeholder fit, preset callback/selection and Android Kotlin compilation pass. Parent UI/device coverage remains open.
 
-### 10 — P1: Correct usage, caching, billing and timing
+## 9. 2026 workflow coverage
 
-- [ ] Verify provider-specific input/output/reasoning/cache read/cache creation semantics.
-- [ ] Prevent double counting, overflow, non-finite pricing values and misleading estimates.
-- [ ] Keep approval/suspension waiting separate from actual generation/tool timing.
-- [ ] Use monotonic duration measurement where applicable while retaining wall time for persisted timestamps.
-- Files: Models.kt; AiProviderEngine.kt; ModelsDevClient.kt; O200kTokenizer.kt; metrics UI/tests.
-- Verification: official usage fixtures, multiple rounds, parallel waits, cache creation pricing, incomplete usage, approval pause, clock changes and large totals.
-- Lock: verified metrics commit and push.
+- [x] **9.1 Matrix:** implemented/partial/missing features and confirmed core gaps are in docs/FEATURE_COVERAGE.md, checked against source/current official references.
+  Agent: approvals, boundaries, recovery, tools/protocols, parallel calls, questions/Steer/Queue, context, diffs/evidence, cost and extensions.
+  Daily chat: models/search/navigation, edits/regen/forks, attachments/PDF/media/voice, rendering/copy, privacy/export/backup/OTA/mobile.
+  Roleplay: cards/scenarios/greetings/variants, lore/persona/macros, notes/continuity and branching/rewind.
+- [ ] **9.2 Gaps:** implement confirmed essential gaps as small, testable tasks; retain KISS and avoid unsupported completeness claims.
+- [ ] **9.3 Workflows:** verify complete agent, daily-chat and roleplay flows and update the matrix.
 
-### 11 — P1: Streaming OTA, integrity and cancellation
+## 10. CI and final verification/lock
 
-- [ ] Stream installer downloads to staged files instead of accumulating and concatenating whole byte arrays.
-- [ ] Validate completion/size and available authoritative digest/signing evidence before installation.
-- [ ] Preserve cancellation and clean only owned temporary files; interrupted download cannot launch an installer.
-- [ ] Checkpoint active runs and backups before maintenance/OTA transition.
-- [ ] Keep updates inside the established release/OTA workflow.
-- Files: OtaUpdateEngine.kt; PlatformBridge contract/actuals; OTA state UI; installer/release workflow as justified.
-- Verification: interrupted/malformed/truncated HTTP download, unknown Content-Length, digest mismatch, cancellation, cleanup and data preservation; desktop package and Android release builds.
-- Lock: verified OTA commit and push.
+- [x] **10.1 CI:** current Node-24 actions, bounded download-only retries, authoritative Gradle checksum, regression-before-package gate and reduced redundant work. Four retry tests, real wrapper launch and actionlint pass. No GitHub rerun; final CI run follows the final push.
+- [x] **10.2a Signing:** repository key removed/rejected; private local key/password protected and excluded from Git. CI secret-only staging, PR isolation, Gradle validation and four signer tests pass; real new-key acceptance/old-key rejection verified. Migration/release guidance is explicit. Final secrets/device setup remains in 10.3.
+- [ ] **10.2 Final audit:** recheck every public boundary/error/recovery/performance path; resolve remaining critical/high findings.
+- [ ] **10.3 One final matrix:** desktopTest, compileDebugKotlinAndroid, assembleRelease, createDistributable and the desktop/device runtime matrix. Resolve failures and rerun only affected checks.
+- [ ] **10.4 Docs:** concise MEMORY/TODO/README/CONTRIBUTING with actual results, measured improvements and practical limits.
+- [ ] **10.5 One final commit/push:** only after every required step and final verification pass; confirm origin/main reachability.
 
-### 12 — P1: Bounded media/archive/file I/O
+## Build and evidence notes
 
-- [ ] Audit attachment, image decode, ZIP export/import and storage-manager reads for whole-file copies and unbounded allocation.
-- [ ] Reject malformed/unsafe archives before committing extracted state; preserve relative per-chat media paths.
-- [ ] Bound work/pixel allocation and stream where possible without truncating editable source files.
-- [ ] Review workspaceRead full-file counting, shell output limits and cancellation responsiveness.
-- Files: both PlatformBridge actuals; persistence export/import; CardAndPromptCodec.kt; media UI; WorkspaceHarness.kt.
-- Verification: large inputs, archive traversal/bombs, malformed PNG/JSON/media, interrupted extraction/export and existing round trips.
-- Lock: verified I/O improvements and pushes.
+Prefer scripts/verify.ps1 (see CONTRIBUTING); it supplies JDK/SDK, stable version flags, quiet output and two workers. Test mode requires explicit filters; Final runs the complete Gradle matrix. -Preview executes nothing. Do not rebuild for tracking/docs changes. Current verified APK/runtime: 2.0.64/264; compare signer/version before device installs.
 
-### 13 — P1: Streaming/rendering performance without semantic loss
-
-- [ ] Replace repeated full-buffer word scans with tested incremental accounting where observed.
-- [ ] Bound registry/SVG/path/text caches and avoid unnecessary full history/state copying during deltas.
-- [ ] Maintain compact bounded wire previews, active-session hydration and streaming timeline windows.
-- [ ] Audit nested Markdown/LaTeX/SVG parsing and rendering for pathological input, recursion and repeated parsing.
-- Files: ParchmentApp.kt; ParchmentComponents.kt; ProseRenderer.kt; LatexMathRenderer.kt; SvgSceneRenderer.kt; ParchmentIcons.kt; registry/cache code.
-- Verification: incremental/full-result equivalence, Unicode/chunk boundaries, nested/fuzz inputs, large streaming turns, allocation/work measurements and rendered desktop/mobile output.
-- Lock: verified performance/regression improvements and pushes; reject optimizations that change valid output.
-
-### 14 — P1: Workspace/Tools permission UI and background diagnostics
-
-- [x] Fix Tabs-menu screen dimming; remove full-screen dismissal indication, adapt narrow cards and sheet height, verify actual Android rendering/interactions and desktop/Android compilation.
-- [ ] Use a shared effective-policy editor in Workspace settings and the Tools drawer.
-- [ ] Expose approval, access, folders, enabled tools, shell/network and long-run readiness without misleading sandbox claims.
-- [ ] Keep the Manual Override Bar first; use existing vectors and bounded wrapped layouts.
-- [ ] Replace automatic privilege escalation on locked-tool chips with explicit policy editing.
-- [ ] Show owning-chat approval requests and background/power states; settings changes affect future effects immediately.
-- [ ] Keep global settings search and context/tool counts consistent with the new controls.
-- Files: ParchmentSettingsPages.kt; ParchmentApp.kt; ParchmentComponents.kt; ParchmentModalsAndNavigation.kt; O200kTokenizer.kt.
-- Verification: both targets, desktop and compact device renders, inheritance/reset, two-tab pending approvals, revocation, keyboard/back navigation and no redundant/emoji UI regressions.
-- Lock: verified UI commit and push after the enforcement layer.
-
-### 23 — P1: Harness token efficiency and API-credit accountability
-
-- User priority: reduce API-credit consumption during multi-day coding work; investigate both input and output tokens before selecting optimizations.
-- First efficiency batch: record the actual request composition and every billed round, check stable cache prefixes and historical tool-output growth, then implement only changes with measurable savings and preserved task evidence.
-- Confirmed accounting findings: input/cache-read totals currently use a maximum across rounds; Anthropic cache creation and OpenAI `cache_write_tokens`/TTL charges are omitted; utility calls discard usage. Read the current schemas listed below before implementing the ledger.
-- Observed mobile baseline: the empty General chat shows approximately 2.4k estimated context tokens; distinguish this local estimate from actual provider billing when measuring system/tool overhead.
-- [ ] Audit per-round input, cache read/write, reasoning and output usage across all protocols; ensure totals include every billed round.
-- [ ] Verify price estimates against provider usage semantics, including cache creation, and clearly label unknown/estimated costs.
-- [ ] Measure repeated history/system/tool overhead, workspace/lore context, retries/nudges, and compaction/title/summary utility calls.
-- [ ] Keep stable cacheable prefixes/tool definitions where supported and use documented caching/continuation without changing privacy defaults or model-name routing.
-- [ ] Shape stale/noisy output and use targeted search/read ranges; preserve editable source, required reasoning/signatures and essential evidence.
-- [ ] Avoid duplicate requests/completed tools and unnecessary continuation/summaries; recognize accepted jobs before retrying creation.
-- [ ] Add justified spend/efficiency controls and usage breakdowns while retaining explicit model/effort choices and uncapped instructions.
-- [ ] Validate token savings on representative coding workloads alongside correctness/recovery checks.
-- Files: provider/harness/tokenizer, Models/registry, prompt/context/compaction, usage/settings UI and regressions.
-- Verification: current official caching/billing/protocol docs, per-round fixtures and before/after input/output/cache/reasoning measurements.
-- Lock: coherent verified efficiency/accounting batches; update MEMORY, TODO and README with measured results.
-
-### 21 — P1: Whole-app performance, memory, startup and modularity
-
-- [ ] Measure cold/warm startup, first useful frame, ready-to-type time, idle working set/heap, streaming frame work/allocations, and large-session/vault behavior on desktop and Android.
-- [ ] Keep startup work off the critical UI path where safe; review settings/chat loading, migrations, fonts/icons, tokenizer warming, model discovery and hydration.
-- [ ] Minimize idle CPU/disk/network work, redundant serialization, full-buffer scans, large byte/string copies, duplicate attachment payloads and retained inactive state.
-- [ ] Bound caches and queues; preserve the lean runtime heap, compact inactive chats and windowed streaming timelines without losing content.
-- [ ] Remove proven dead code/imports/dependencies and consolidate tested duplication across protocols, persistence, platform I/O and UI.
-- [ ] Split oversized controllers/adapters into clear modules with explicit ownership and contracts; keep platform code and shared logic separated.
-- [ ] Record before/after measurements and regression outcomes for each optimization/refactor; preserve correctness, history, permissions and recovery behavior.
-- Files: modules justified by profiling/audit; ParchmentApp/StatePersistence/DiskWriter, provider/registry, renderers/icons, platform bridges, build configuration and focused regression/benchmark code.
-- Verification: representative cold/warm launches, idle and sustained streaming measurements, large chats/media/tool sequences, behavior-equivalence tests, both platform builds and real-device UI behavior.
-- Lock: each measured/verified improvement committed and pushed; update MEMORY, TODO and README with practical limits and final results.
-
-### 17 — P1: UI consistency, mobile fit and calm editorial motion
-
-- [ ] Audit all option rows, chip groups, drawers, palettes and settings; prefer compact vertical lists for substantial choices and remove horizontal option scrolling.
-- [ ] Identify clipped, truncated or unnatural controls on the actual Android device at portrait/landscape widths, with IME open, long labels and enlarged font scale.
-- [ ] Keep necessary action text readable; distinguish deliberate content previews from accidental truncation.
-- [ ] Unify spacing, typography, vector icon sizes, corners, borders, hover/press feedback and selected/disabled/error states.
-- [ ] Make transitions calm and consistent with shared motion primitives; prevent layout jumps, overlapping animations and excessive effects.
-- [ ] Respect platform motion/accessibility settings and maintain touch targets, contrast, keyboard navigation and screen-reader semantics.
-- [x] Verify Tabs dismissal has no full-screen indication/dimming and that sheet interactions do not accidentally dismiss it.
-- Files: ParchmentApp.kt; ParchmentComponents.kt; ParchmentSettingsPages.kt; ParchmentModalsAndNavigation.kt; ParchmentTheme.kt; relevant platform UI hooks only if required.
-- Verification: rendered desktop and real-device screenshots/interactions, keyboard and font-scale matrix, existing regression suite, both targets and Android release build.
-- Lock: focused verified UI improvements and pushes; update MEMORY, TODO and README with the final behavior.
-
-### 18 — P1: Current 2026 capability coverage for all three workflows
-
-- [ ] Build an evidence-based feature matrix for agent work, everyday chat and roleplay, recording implemented/partial/missing status and current official sources.
-- [ ] Classify core requirements, workflow-dependent capabilities and optional additions; prioritize practical gaps while retaining KISS.
-- [ ] Agent coverage: safe approvals/access boundaries, reliable background/recovery, accurate tool/protocol state, parallel calls, user questions/steering/queues, context management, evidence/diffs, cost/usage observability and extension/integration needs.
-- [ ] Daily-chat coverage: dynamic model/provider capabilities, search/navigation, editable/regenerable/forkable messages, attachments/media/PDF, voice, rich rendering/copy, privacy, backup/export, OTA and responsive mobile operation.
-- [ ] Roleplay coverage: character/scenario cards, greetings/variants, lore activation, persona/macros, author notes, continuity memory, branching/rewind, configurable context and readable dialogue/narration.
-- [ ] Check current protocol/platform support rather than fixed model-name lists; add only justified missing core capabilities as individual planned/testable tasks.
-- [ ] Verify end-to-end workflows and keep the capability matrix/documentation current after each implementation.
-- Files: PARCHMENT_TODO.md feature matrix; affected modules justified by confirmed gaps; README.md and PARCHMENT_MEMORY.md.
-- Verification: current official documentation, code-path evidence, workflow tests and rendered/runtime output; no unsupported "bleeding-edge" or completeness claims.
-- Lock: every implemented capability separately verified and pushed.
-
-### 15 — P2: Build/CI/process hygiene and documentation
-
-- [ ] Verify and select compiler execution behavior that does not leave orphan Gradle/Kotlin daemons.
-- [ ] Keep SDK/dependency compatibility ceilings and distinguish build heap from app runtime heap.
-- [ ] Add appropriate regression execution to CI before packaging/publication.
-- [ ] Correct README/CONTRIBUTING/PARCHMENT_MEMORY claims and commands to match tested behavior and documented OS limits.
-- Files: gradle.properties; build.gradle.kts as needed; workflows; README.md; CONTRIBUTING.md; PARCHMENT_MEMORY.md.
-- Verification: repeated local/CI-equivalent builds, daemon cleanup, both distributions, factual/documented commands.
-- Lock: verified build/documentation commits and pushes.
-
-### 16 — P2: Maintainability/scalability refactors and final adversarial audit
-
-- [ ] Refactor large controllers/adapters only around verified contracts and measured duplication.
-- [ ] Review all remaining error boundaries and remove dead/duplicated paths after equivalence tests.
-- [ ] Repeat the source coverage/security/recovery/performance audit and add newly evidenced tasks here.
-- [ ] Run the complete regression matrix and final working-tree/remote verification.
-- Files: only modules justified by the repeated audit.
-- Verification: behavior-equivalence tests, both targets/release/package, device and desktop runtime matrix, no unresolved critical/high-priority findings.
-- Lock: every improvement verified and pushed; all completed items reachable from origin/main.
-
-## Audit coverage matrix
-
-| Area | Files | Current status |
-|---|---|---|
-| Domain/settings | Models.kt | Architecture and defaults mapped; permission/metric deep audit open |
-| Agent harness | WorkspaceHarness.kt | Dispatch, side effects and cancellation gaps confirmed; complete boundary review open |
-| Provider transport | AiProviderEngine.kt | Five paths mapped; current-schema verification and full stream/retry audit open |
-| Model registry | ModelsDevClient.kt | Sources/routing mapped; metadata precedence and bounded cache audit open |
-| Persistence | ParchmentStatePersistence.kt | Split storage/dehydration mapped; atomic/dirty scheduling audit open |
-| UI controller | ParchmentApp.kt | Streaming/queue/compaction mapped; state ownership and repeated work audit open |
-| Settings/navigation | SettingsPages, ModalsAndNavigation, Components, Theme | Architecture mapped; permissions and compact rendering verification open |
-| Prose/math/SVG/icons | ProseRenderer, LatexMathRenderer, SvgSceneRenderer, ParchmentIcons | Public contracts mapped; pathological inputs/caches/rendering audit open |
-| Codecs/tokenization | CardAndPromptCodec, O200kTokenizer | Existing test coverage mapped; boundary and accounting audit open |
-| Desktop platform | Main.kt, PlatformBridge.desktop.kt | Window/storage/process/power mapped; native power defect reproduced |
-| Android platform | MainActivity, bridge, foreground service, file provider, OTA receiver, manifest | Device facts verified; implementation and lifecycle tests open |
-| OTA/build/release | OtaUpdateEngine, installer, Gradle, workflow | Architecture mapped; streaming/integrity/CI audit open |
-| Tests | commonTest suite; new focused tests as needed | 20 existing tests identified; baseline execution open |
-
-## Verification commands
-
-Set JAVA_HOME=C:/Users/Baros/.jdks/temurin-21 and ANDROID_HOME=%LOCALAPPDATA%/Android/Sdk in the same shell invocation; set ANDROID_SDK_ROOT to ANDROID_HOME.
-
-- Desktop regression: gradlew.bat :composeApp:desktopTest --no-daemon
-- Desktop compilation: gradlew.bat :composeApp:compileKotlinDesktop --no-daemon
-- Android compilation: gradlew.bat :composeApp:compileDebugKotlinAndroid --no-daemon
-- Android release gate: gradlew.bat :composeApp:assembleRelease --no-daemon
-- Desktop package gate when relevant: gradlew.bat :composeApp:createDistributable --no-daemon
-- Record exact test/build/device outcomes for each milestone below before lock.
-
-## Official documentation evidence
-
-Fetched and read during the audit; retrieve specific sections again before implementing an affected contract.
-
-- Windows execution state: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate
-- Modern Standby power-request limits: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest
-- Android foreground-service types/timeouts: https://developer.android.com/develop/background-work/services/fgs/service-types and https://developer.android.com/develop/background-work/services/fgs/timeout
-- Android Doze: https://developer.android.com/training/monitoring-device-state/doze-standby
-- Notification permission: https://developer.android.com/develop/ui/compose/notifications/notification-permission
-- Wi-Fi lock limits: https://developer.android.com/reference/android/net/wifi/WifiManager
-- Process importance: https://developer.android.com/reference/android/app/ActivityManager.RunningAppProcessInfo
-- Gemini Interactions schema: https://aistudio.google.com/api-reference/interactions-api
-- Gemini state/storage: https://aistudio.google.com/docs/interactions-overview
-- GenerateContent schema: https://aistudio.google.com/api-reference/generate-content
-- Gemini thinking/signatures: https://aistudio.google.com/docs/thinking . Thought blocks must be replayed unchanged; implementation review remains open.
-- OpenAI reasoning: https://developers.openai.com/api/docs/guides/reasoning
-- OpenAI Responses references fetched successfully: https://developers.openai.com/api/reference/resources/responses/methods/create and https://developers.openai.com/api/reference/resources/responses . Chat reference: https://developers.openai.com/api/reference/resources/chat .
-- Anthropic Messages: https://platform.claude.com/docs/en/api/messages
-- Anthropic tool use: https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
-- Anthropic thinking/caching: https://platform.claude.com/docs/en/build-with-claude/extended-thinking and https://platform.claude.com/docs/en/build-with-claude/prompt-caching
-- Kotlin compilation/cache documentation: https://kotlinlang.org/docs/gradle-compilation-and-caches.html . Installed KGP 2.3.21 and successful builds validate the quoted '-Pkotlin.compiler.execution.strategy=in-process' argument.
-- Atomic filesystem contracts re-fetched on 2026-11-08: https://developer.android.com/reference/java/nio/file/Files (API 26), https://developer.android.com/reference/android/util/AtomicFile (caller-owned threading protection), and https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Files.html (ATOMIC_MOVE may reject replacement and must not fall back to an unsafe copy). HTTP Google/Bing web searches were attempted; their responses did not provide useful source results, so the official references were read directly.
-- Usage/cache schemas fetched on 2026-11-08: https://developers.openai.com/api/docs/guides/prompt-caching.md (cache writes, TTL breakdown, stable prefixes and cost calculation); https://developers.openai.com/api/reference/resources/responses/methods/create ; https://platform.claude.com/docs/en/build-with-claude/prompt-caching (uncached + cache-read + cache-creation input totals); https://ai.google.dev/api/generate-content ; https://aistudio.google.com/api-reference/interactions-api .
-- Device verification uses the official ADB reference: https://developer.android.com/tools/adb . Verify signer/version before reinstalling, preserve data, verify focus/input before lifecycle tests, and wait for Home completion before restarting.
-
-## Verification and lock log
-
-- Snapshot/shared-storage batch verified: 66/66 desktop tests, both Kotlin compilations and `assembleRelease` passed; release DEX/lint gates completed with minification disabled. Runtime constants/APK match 2.0.63/263 and the installed certificate. Real Android 17 draft checkpoint/cold-restart and cleanup passed after correcting an automation focus/Home race. Desktop JAR contains both shared storage helpers. The commit containing this log publishes the batch once; broader run-recovery/permissions/cost work stays open.
-- Runtime shell-toggle milestone verified: 42/42 tests, both target compilations and Android release passed; default/explicit denial and read-only precedence are covered. The commit containing this entry publishes the dispatch fix.
-- Shared disk writer locked and pushed: d4f5e612d86e9552afb96a66c89dbe30376a9728; 39 tests, both compilations and Android release passed.
-- Shared disk-writer milestone verified: 39/39 desktop tests, both compilations and Android release passed; seven regressions cover asynchronous dirty-write ordering/recovery. The commit containing this entry publishes the scoped scheduler improvement.
-- Desktop atomic-storage milestone locked and pushed: 39db6ea74e902094aa49dca700c6ea8664d16ff9; 32 tests and target compilation passed.
-- Desktop atomic-storage milestone verified: 32/32 tests, including five new filesystem regressions; desktop and Android debug compilation passed. The commit containing this entry publishes the scoped desktop improvement.
-- Tabs milestone locked and pushed: cd6c43bfbe4875c67698d9666b441b695085cc54, with Android device interactions/rendering and compilation/release verification.
-- Build-input milestone locked and pushed: 24f4d3a6a1661ac81ed88bd6289735c67980d080. 27/27 regressions, both targets and Android release passed; unchanged/changed-input behavior and restored SHA-256 were verified.
-- Tabs mobile verification passed on Android 17/API 37: compact full-width card/list, content-sized sheet, identical outside-sheet RGB (244,236,216), inside-gap tap preserved the menu, outside tap and Back dismissed it. The commit containing this completion publishes the verified shared UI fix; broader UI audits remain open.
-- Baseline: 20/20 existing desktop tests passed; Android debug compilation passed. An initially unquoted Gradle property was split by PowerShell; the quoted invocation passed.
-- Windows milestone: 27/27 desktop tests passed (20 existing + 7 native/process regressions); desktop and Android debug compilation passed. Tests now guard UInt32 conversion, Java/PowerShell command encoding, progress output, owner races, quiet helper recovery and parent/final-owner cleanup.
-- Windows milestone locked and pushed: 01a28498458ec0141f24a188ebe80b2ce9ff0048; origin/main reachability verified. GitHub rejected the initial private author email, so only the unpublished commit was amended using the repository's existing verified noreply address. The remaining queue is open.
-
-## Previous completed work
-
-The composer Custom inputs were moved into the Tools drawer Manual Override Bar, both targets/release were verified, memory was updated and the change was locked before this audit. That completed work is preserved as baseline context.
+Core sources (reuse applicable fetched evidence; consult the changed external contract once):
+- OpenAI: https://developers.openai.com/api/reference/resources/responses/methods/create ; https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create ; https://developers.openai.com/api/docs/guides/reasoning ; https://developers.openai.com/api/docs/guides/prompt-caching.md
+- Gemini: https://aistudio.google.com/api-reference/interactions-api ; https://aistudio.google.com/docs/interactions-overview ; https://aistudio.google.com/docs/thinking ; https://ai.google.dev/api/generate-content
+- Anthropic: https://platform.claude.com/docs/en/api/messages ; https://platform.claude.com/docs/en/build-with-claude/streaming ; https://platform.claude.com/docs/en/build-with-claude/prompt-caching ; https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+- Windows: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate ; https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest
+- Android: https://developer.android.com/develop/background-work/services/fgs/service-types ; https://developer.android.com/develop/background-work/services/fgs/timeout ; https://developer.android.com/training/monitoring-device-state/doze-standby ; https://developer.android.com/tools/adb
+- Build: https://kotlinlang.org/docs/gradle-compilation-and-caches.html ; https://docs.gradle.org/8.13/userguide/command_line_interface.html
+- Permissions: https://developers.openai.com/codex/agent-approvals-security ; https://developers.openai.com/codex/sandboxing (fetched 2026-11-08; approvals and OS confinement are separate).
+- Boundaries/processes: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Path.html ; https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Process.html ; https://developer.android.com/reference/java/lang/Process ; https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html (fetched 2026-11-08; validate redirects and bind HTTP connections to validated DNS addresses).
+- Android sessions/notifications: https://developer.android.com/reference/android/system/Os ; https://pubs.opengroup.org/onlinepubs/9799919799/functions/kill.html ; https://android.googlesource.com/platform/external/toybox/+/refs/heads/main/toys/other/setsid.c ; https://developer.android.com/develop/ui/views/notifications/notification-permission (fetched 2026-11-08; notification denial does not prohibit foreground-service startup).
+- UI/coroutines: https://developer.android.com/develop/ui/compose/state ; https://kotlinlang.org/docs/cancellation-and-timeouts.html ; https://kotlinlang.org/docs/coroutine-context-and-dispatchers.html (fetched 2026-11-08).
+- Rate data (fetched 2026-11-09): https://developers.openai.com/api/docs/guides/prompt-caching.md ; https://platform.claude.com/docs/en/about-claude/pricing ; https://models.dev/api.json ; https://openrouter.ai/api/v1/models ; https://vercel.com/docs/ai-gateway/models-and-providers ; https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json . Explicit zero is retained; per-token fields use their declared units, not magnitude heuristics.
+- Fees (fetched 2026-11-09): https://developers.openai.com/api/docs/pricing ; https://developers.openai.com/api/reference/resources/responses/methods/create ; https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool ; https://ai.google.dev/api/generate-content ; https://openrouter.ai/docs/api/reference/overview ; https://openrouter.ai/docs/api/api-reference/models/get-models . Reported totals replace estimates. Audio tokens and search/request counts use their declared units; per-image/container/video billing stays partial without compatible usage/rates. BYOK credit totals exclude external provider billing.

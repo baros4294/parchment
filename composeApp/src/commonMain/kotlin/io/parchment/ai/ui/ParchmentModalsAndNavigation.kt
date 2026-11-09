@@ -2283,7 +2283,9 @@ internal fun ContextWindowBreakdownPopover(
     onSummarizeStory: () -> Unit,
     onOpenPricingSettings: () -> Unit,
     onClose: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    utilityUsageRecords: List<io.parchment.ai.model.ApiUsageRecord> = emptyList(),
+    sessionCostLabel: String = ""
 ) {
     val p = LocalParchmentPalette.current
     val isUnlimited = breakdown.contextLimitTokens <= 0
@@ -2347,7 +2349,8 @@ internal fun ContextWindowBreakdownPopover(
                     style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
                 )
                 val limitText = if (isUnlimited) "∞" else formatCompactTokens(breakdown.contextLimitTokens)
-                val costSuffix = if (sessionTotalCostUsd > 0.0) " • Session ${formatUsdCost(sessionTotalCostUsd)}" else ""
+                val costSuffix = sessionCostLabel.takeIf { it.isNotBlank() }?.let { " • Session $it" }
+                    ?: if (sessionTotalCostUsd > 0.0) " • Session ~${formatUsdCost(sessionTotalCostUsd)}" else ""
                 BasicText(
                     text = "o200k_base • ${breakdown.totalUsedTokens} / $limitText tok ($pctInt% used)$costSuffix",
                     style = p.monoStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
@@ -2430,6 +2433,8 @@ internal fun ContextWindowBreakdownPopover(
         }
 
         SepiaDivider()
+
+        UtilityUsageSummary(utilityUsageRecords)
 
         // Quick Context Management Actions
         @OptIn(ExperimentalLayoutApi::class)

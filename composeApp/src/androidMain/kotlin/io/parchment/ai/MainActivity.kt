@@ -50,6 +50,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var manageAllFilesLauncher: ActivityResultLauncher<Intent>
     private lateinit var voiceRecognizerLauncher: ActivityResultLauncher<Intent>
     private lateinit var audioPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
+    private var notificationPermissionRequested = false
 
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -184,6 +186,10 @@ class MainActivity : ComponentActivity() {
                     launchRecognizerDialogFallback(errCb)
                 }
             }
+        }
+
+        notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            LongDecodeForegroundService.refreshNotificationNotice(applicationContext)
         }
 
         onBackPressedDispatcher.addCallback(
@@ -360,6 +366,25 @@ class MainActivity : ComponentActivity() {
             deferred.complete(null)
         }
         return deferred.await()
+    }
+
+    /**
+     * Offers notification permission once while visible. Denial does not prevent a foreground service.
+     */
+    override fun onResume() {
+        super.onResume()
+        LongDecodeForegroundService.refreshNotificationNotice(applicationContext)
+    }
+
+    fun requestNotificationPermission() {
+        runOnUiThread {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationPermissionRequested ||
+                !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return@runOnUiThread
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return@runOnUiThread
+            notificationPermissionRequested = true
+            runCatching { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                .onFailure { LongDecodeForegroundService.reportFailure(it) }
+        }
     }
 
     fun launchVoiceRecognizer(onResult: (String) -> Unit, onError: (String) -> Unit) {

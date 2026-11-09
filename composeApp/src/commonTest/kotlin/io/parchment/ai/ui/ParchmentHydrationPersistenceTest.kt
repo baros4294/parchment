@@ -138,6 +138,7 @@ class ParchmentHydrationPersistenceTest {
         assertTrue(result.isCompactStub)
         assertFailsWith<IllegalStateException> { saveSingleChatSessionToDisk(stub) }
         assertFailsWith<IllegalStateException> { encodeChatSessionsToZipBundleBytes(listOf(stub)) }
+        assertFailsWith<IllegalStateException> { encodeChatSessionJsonForExport(stub) }
     }
 
     @Test
@@ -203,5 +204,37 @@ class ParchmentHydrationPersistenceTest {
             }) })
         }
         assertEquals("AAAA", stripRedundantAttachmentBase64(original).messages.single().activeVariant.attachments.single().base64Data)
+    }
+
+    @Test
+    fun exportHydratesFullHistoryAndPreservesPartialUsageForRecovery() {
+        val id = "test-usage-export-" + PlatformBridge.currentTimeMillis()
+        val record = io.parchment.ai.model.ApiUsageRecord("request", "response", "openai_responses", "fixture", "fixture-model",
+            usage = io.parchment.ai.model.ProviderTokenUsage(inputTokens = 0L, cachedInputTokens = 0L,
+                cacheCreationInputTokens = 0L, outputTokens = null, outputIncludesReasoning = true))
+        val original = full(id).let { session -> session.copy(messages = session.messages.map { node ->
+            node.copy(variants = node.variants.map { it.copy(apiUsageRecords = listOf(record)) })
+        }) }
+        try {
+            saveSingleChatSessionToDisk(original)
+            val exported = encodeChatSessionJsonForExport(dehydrateChatSessionToCompactStub(original)).decodeToString()
+            val imported = compactStateJson.decodeFromString<ChatSession>(exported)
+            assertEquals(original.messages, imported.messages)
+            assertEquals(original.storySummary, imported.storySummary)
+            val restored = imported.messages.single().activeVariant.apiUsageRecords.single()
+            assertEquals(record, restored)
+            assertFalse(restored.usage.isFinal)
+            assertEquals(null, restored.usage.outputTokens)
+            val profile = io.parchment.ai.model.ProviderProfile("fixture", "Fixture", io.parchment.ai.model.ProviderProtocol.OPENAI_RESPONSES)
+            val ledger = io.parchment.ai.network.ProviderUsageLedger(profile, "fixture-model", listOf(restored))
+            ledger.update(null, "response", io.parchment.ai.network.UsageDialect.OPENAI_RESPONSES,
+                io.parchment.ai.model.ProviderTokenUsage(inputTokens = 100L, cachedInputTokens = 0L, cacheCreationInputTokens = 0L,
+                    reasoningTokens = 0L, outputTokens = 5L, outputIncludesReasoning = true, isFinal = true))
+            assertEquals(1, ledger.metrics().reportedRequests)
+            assertEquals(100L, ledger.metrics().inputTokens)
+            assertEquals(5L, ledger.metrics().outputTokens)
+        } finally {
+            PlatformBridge.deleteChatSessionFile(id)
+        }
     }
 }

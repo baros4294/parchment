@@ -11,6 +11,7 @@ import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
+import io.parchment.ai.model.AgentPermissionResolver
 
 data class ContextCompactionPlan(
     val mutedNodeIds: Set<String>,
@@ -286,26 +287,21 @@ object O200kTokenizer {
             countTokens(session.storySummary)
 
         // 3. Workspace & Harness Tool Schemas
-        val wsPath = session.workspacePath.ifBlank { assistant.workspacePath }
-        val effectiveWsMode = if (session.workspaceMode != WorkspaceMode.OFF) {
-            session.workspaceMode
-        } else if (session.workspacePath.isBlank()) {
-            assistant.workspaceMode
-        } else {
-            WorkspaceMode.OFF
-        }
-        val enableWeb = profile.enableWebSearch || profile.enableUrlContext || assistant.enableWebSearch
+        val toolPolicy = AgentPermissionResolver.resolve(session, assistant, profile)
+        val wsPath = toolPolicy.workspacePath
+        val effectiveWsMode = toolPolicy.workspaceMode
         val activeTools = WorkspaceHarness.activeToolsForMode(
             mode = effectiveWsMode,
             workspacePath = wsPath,
-            allowShell = profile.allowShellExecution,
+            allowShell = toolPolicy.allowShell,
             goalModeActive = goalModeActive,
-            enableWebTools = enableWeb
+            enableWebTools = toolPolicy.webAccess,
+            policy = toolPolicy
         )
         val toolSchemaTokens = activeTools.sumOf { t ->
             countTokens(t.name) + countTokens(t.description) + countTokens(t.parametersSchemaString) + 8
         }
-        val wsContextTokens = if (effectiveWsMode != WorkspaceMode.OFF && wsPath.isNotBlank()) {
+        val wsContextTokens = if (toolPolicy.hasWorkspace && toolPolicy.allowsTool("fs_read")) {
             countTokens(WorkspaceHarness.discoverWorkspaceContextFiles(wsPath)) + 95
         } else 0
         val goalModeTokens = if (goalModeActive) 110 else 0

@@ -13,6 +13,26 @@ class WindowsPowerLeaseTest {
     private val isWindows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
 
     @Test
+    fun absoluteSnapshotsReleaseApprovalOnlyHoldsAndCanResume() {
+        if (!isWindows) return
+        val processes = CopyOnWriteArrayList<Process>()
+        WindowsPowerLease(launchHelper = { script -> launchWindowsPowerHelper(script).also { processes.add(it) } }).use { lease ->
+            lease.reconcile(2)
+            await("Native hold was not acquired.") { lease.snapshot.status == WindowsPowerLeaseStatus.ACTIVE }
+            lease.reconcile(1)
+            assertEquals(1, lease.snapshot.owners)
+            assertEquals(1, processes.size)
+            lease.reconcile(0)
+            assertEquals(WindowsPowerLeaseStatus.IDLE, lease.snapshot.status)
+            await("Approval-only wait retained a native hold.") { processes.none { it.isAlive } }
+            lease.reconcile(1)
+            await("Native hold did not resume.") { lease.snapshot.status == WindowsPowerLeaseStatus.ACTIVE }
+            assertEquals(1, lease.snapshot.owners)
+        }
+        await("Final cleanup retained a helper.") { processes.none { it.isAlive } }
+    }
+
+    @Test
     fun nativeHeartbeatConfirmsUnsignedPowerRequest() {
         if (!isWindows) return
         val processes = CopyOnWriteArrayList<Process>()

@@ -104,6 +104,9 @@ data class ModelPricingSpec(
     val cacheReadPricePerM: Double = 0.0,
     val cacheWritePricePerM: Double = 0.0,
     val reasoningPricePerM: Double = 0.0,
+    val knownPricing: TokenPricing? = null,
+    val contextPricingTiers: List<ContextPricingTier> = emptyList(),
+    val chargePricing: ChargePricing = ChargePricing(),
     val contextWindowTokens: Int = 128000,
     val maxOutputTokens: Int? = null,
     val outputModalities: List<String> = emptyList(),
@@ -141,6 +144,7 @@ data class ProviderProfile(
     val enableUrlContext: Boolean = false,
     val enableImageGeneration: Boolean = false,
     val enableVideoGeneration: Boolean = false,
+    /** Legacy import field only; local shell authority belongs to assistant/chat permissions. */
     val allowShellExecution: Boolean = false,
     val mediaAspectRatio: String = "1:1",
     val mediaResolution: String = "1K",
@@ -160,18 +164,23 @@ data class ProviderProfile(
     val cacheReadPricePerM: Double = 0.0,
     val cacheWritePricePerM: Double = 0.0,
     val reasoningPricePerM: Double = 0.0,
+    val knownPricing: TokenPricing? = null,
+    val pricingModelId: String = "",
     val customModelSpecs: Map<String, ModelPricingSpec> = emptyMap(),
     val anthropicBetaHeaders: String = "",
     val rawJsonExtraBody: String = ""
 ) {
     fun calculateTurnCostUsd(metrics: TokenMetrics): Double {
-        val uncachedInput = (metrics.inputTokens - metrics.cachedInputTokens).coerceAtLeast(0)
-        val inCost = (uncachedInput / 1_000_000.0) * inputPricePerM
-        val cacheCost = (metrics.cachedInputTokens / 1_000_000.0) * cacheReadPricePerM
-        val effReasoningPrice = if (reasoningPricePerM > 0.0) reasoningPricePerM else outputPricePerM
-        val thinkCost = (metrics.reasoningTokens / 1_000_000.0) * effReasoningPrice
-        val outCost = (metrics.outputTokens / 1_000_000.0) * outputPricePerM
-        return inCost + cacheCost + thinkCost + outCost
+        return tokenPricing().estimate(metrics) ?: 0.0
+    }
+
+    fun tokenPricing(modelId: String = defaultModel): TokenPricing {
+        val model = customModelSpecs[modelId]
+        model?.knownPricing?.let { return it }
+        val base = if (pricingModelId.isNotBlank() && pricingModelId != modelId) TokenPricing()
+            else knownPricing ?: legacyTokenPricing(inputPricePerM, outputPricePerM, cacheReadPricePerM, cacheWritePricePerM, reasoningPricePerM)
+        return if (model == null) base else legacyTokenPricing(model.inputPricePerM, model.outputPricePerM,
+            model.cacheReadPricePerM, model.cacheWritePricePerM, model.reasoningPricePerM).withMissingFrom(base)
     }
 }
 
@@ -226,17 +235,25 @@ data class GoalTrackerState(
 @Immutable
 @Serializable
 data class TokenMetrics(
-    val inputTokens: Int = 0,
-    val cachedInputTokens: Int = 0,
-    val reasoningTokens: Int = 0,
-    val outputTokens: Int = 0,
+    val inputTokens: Long = 0,
+    val cachedInputTokens: Long = 0,
+    val reasoningTokens: Long = 0,
+    val outputTokens: Long = 0,
     val ttftMs: Long = 0L,
     val durationMs: Long = 0L,
     val tokensPerSec: Double = 0.0,
-    val estimatedCostUsd: Double = 0.0
+    val estimatedCostUsd: Double = 0.0,
+    val cacheCreationInputTokens: Long = 0,
+    val cacheCreationCostUnits: Double = 0.0,
+    val reportedRequests: Int = 0,
+    val usageIsComplete: Boolean = false,
+    val costIsAvailable: Boolean = false,
+    val outputIncludesUnreportedReasoning: Boolean = false,
+    val unpricedCostComponents: Set<String> = emptySet(),
+    val reportedCostRequests: Int = 0
 ) {
-    val totalTokens: Int
-        get() = inputTokens + reasoningTokens + outputTokens
+    val totalTokens: Long
+        get() = saturatingTokenSum(inputTokens, reasoningTokens, outputTokens)
 }
 
 @Immutable
@@ -283,6 +300,8 @@ data class MessageVariant(
     val modelUsed: String = "",
     val createdAt: Long = 0L,
     val tokenMetrics: TokenMetrics = TokenMetrics(),
+    val apiUsageRecords: List<ApiUsageRecord> = emptyList(),
+    val legacyUsageOwnerSessionId: String = "",
     val rawRequestPreview: String = "",
     val rawResponsePreview: String = ""
 )
@@ -422,6 +441,7 @@ data class AssistantAgent(
     val fragments: List<ContextFragment> = emptyList(),
     val workspacePath: String = "",
     val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
+    val permissionDefaults: AgentPermissionPolicy? = null,
     val enableWebSearch: Boolean = false
 )
 
@@ -561,6 +581,8 @@ data class ChatSession(
     val viewMode: ViewMode = ViewMode.EDITORIAL_TURNS,
     val workspacePath: String = "",
     val workspaceMode: WorkspaceMode = WorkspaceMode.OFF,
+    val permissionOverrides: AgentPermissionOverrides? = null,
+    val utilityUsageRecords: List<ApiUsageRecord> = emptyList(),
     val messages: List<MessageNode> = emptyList(),
     @Transient val isCompactStub: Boolean = false
 )
