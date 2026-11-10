@@ -15,6 +15,11 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      reuse_android_run:
+        description: "Windows only: ID of the run whose APK to reuse. The release keeps that run's version. Leave empty for a full build."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -26,6 +31,7 @@ concurrency:
 jobs:
   build-android-apk:
     name: Build Android .APK (Universal)
+    if: ${{ !inputs.reuse_android_run }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -117,7 +123,31 @@ jobs:
   build-windows-exe:
     name: Build Windows .EXE Installer (Zero-Trace Uninstall & Silent OTA)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      build_number: ${{ steps.build.outputs.number }}
     steps:
+      - name: Resolve Build Number
+        id: build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN: ${{ inputs.reuse_android_run }}
+        run: |
+          # A reused APK carries its own run's version, so the installer and release must match it.
+          $number = $env:GITHUB_RUN_NUMBER
+          if ($env:REUSE_RUN) {
+            if ($env:REUSE_RUN -notmatch '^\d+$') { throw "reuse_android_run must be a run ID" }
+            if ($env:GITHUB_REF.StartsWith("refs/tags/")) { throw "Reusing an APK is for branch runs only" }
+            $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:REUSE_RUN" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Could not read run $env:REUSE_RUN" }
+            if ($run.path -ne ".github/workflows/build-installers.yml") { throw "Run $env:REUSE_RUN is not an installer build" }
+            $number = $run.run_number
+          }
+          "number=$number" >> $env:GITHUB_OUTPUT
+
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
@@ -132,13 +162,15 @@ jobs:
 
       - name: Verify Regressions and Build Windows Runtime
         shell: pwsh
+        env:
+          BUILD_NUMBER: ${{ steps.build.outputs.number }}
         run: |
-          $appVer = "2.0.$env:GITHUB_RUN_NUMBER"
+          $appVer = "2.0.$env:BUILD_NUMBER"
           if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
             $appVer = $env:GITHUB_REF.Substring(11)
           }
           if ($appVer -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version" }
-          $appCode = 200 + [int]$env:GITHUB_RUN_NUMBER
+          $appCode = 200 + [int]$env:BUILD_NUMBER
           python .github/scripts/test_run_gradle.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test_workflow_tools.py
@@ -154,8 +186,10 @@ jobs:
 
       - name: Package Minimal Zero-Trace .EXE Installer with Inno Setup
         shell: pwsh
+        env:
+          BUILD_NUMBER: ${{ steps.build.outputs.number }}
         run: |
-          $appVer = "2.0.$env:GITHUB_RUN_NUMBER"
+          $appVer = "2.0.$env:BUILD_NUMBER"
           if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
             $appVer = $env:GITHUB_REF.Substring(11)
           }
@@ -171,18 +205,22 @@ jobs:
   publish-github-release:
     name: Publish OTA Release Assets (.APK & .EXE)
     needs: [build-android-apk, build-windows-exe]
-    if: github.event_name != 'pull_request'
+    # A skipped job skips its dependents unless the condition says otherwise.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.build-windows-exe.result == 'success' && (needs.build-android-apk.result == 'success' || (inputs.reuse_android_run && needs.build-android-apk.result == 'skipped')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Determine Release Tag
         id: rel
+        env:
+          BUILD_NUMBER: ${{ needs.build-windows-exe.outputs.build_number }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v2.0.$GITHUB_RUN_NUMBER"
+            TAG="v2.0.$BUILD_NUMBER"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -191,6 +229,8 @@ jobs:
         with:
           name: Parchment-Android-APK
           path: release-assets
+          run-id: ${{ inputs.reuse_android_run || github.run_id }}
+          github-token: ${{ inputs.reuse_android_run && github.token || '' }}
 
       - name: Download Windows EXE Installer Artifact
         uses: actions/download-artifact@v8.0.2

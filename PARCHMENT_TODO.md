@@ -6,7 +6,7 @@ Updated 2026-11-10. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 - **Source:** `main` (second user-requested lock, 2026-11-10; see `git log`) holds everything checked below, including the Parchment default, icon family, native Windows caption, UI sweep, contracts 4.1–4.4 and efficiency 5.2–5.4.
 - **Last verified:** all 303 desktop tests and the Android Kotlin compile pass at 2.0.64/264 (`verify.py status` shows the latest). Android pickers and export dialogs still need a real run at 10.3.
-- **Published:** v2.0.65/265 (run 42616265429) is verified off-device only. Each early source push needs a fresh user request; no releases or device access.
+- **Published:** v2.0.65/265 (run 42616265429) is verified off-device only. Each early source push needs a fresh user request; no device access. To rebuild only Windows, run the workflow with `reuse_android_run` set to the run whose APK to keep.
 - **Next action:** performance baselines 7.1, then the order below. Real Windows and Android review of the UI is at 10.3.
 - **Phone:** unplugged. Do source and local work only. At 10.3, stop and request reconnection and ADB authorization. Device-dependent items stay unchecked until then.
 
