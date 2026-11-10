@@ -5,45 +5,16 @@
     android:viewportWidth="256"
     android:viewportHeight="256">
 
-    <!-- Inner Border Frame -->
+    <!-- Nib, with its breather hole and slit cut out -->
     <path
-        android:pathData="M56,56 L200,56 L200,200 L56,200 Z"
-        android:strokeWidth="4"
-        android:strokeColor="#D5C4A1"
-        android:fillColor="#00000000" />
+        android:fillColor="#261C14"
+        android:fillType="evenOdd"
+        android:pathData="M108,56 H148 V76 C160,92 170,106 170,118 C170,134 146,154 128,176 C110,154 86,134 86,118 C86,106 96,92 108,76 Z M128,108 A10,10 0 1 0 128,128 A10,10 0 1 0 128,108 Z M125,128 H131 V176 H125 Z" />
 
-    <!-- Minimalist Folio Lines -->
+    <!-- The line of ink it has just written -->
     <path
-        android:pathData="M76,92 L138,92"
-        android:strokeWidth="6"
+        android:pathData="M92,194 L164,194"
+        android:strokeWidth="11"
         android:strokeLineCap="round"
-        android:strokeColor="#C4AE88" />
-    <path
-        android:pathData="M76,114 L126,114"
-        android:strokeWidth="6"
-        android:strokeLineCap="round"
-        android:strokeColor="#C4AE88" />
-    <path
-        android:pathData="M76,136 L112,136"
-        android:strokeWidth="6"
-        android:strokeLineCap="round"
-        android:strokeColor="#C4AE88" />
-
-    <!-- KISS Fountain Pen Nib (Espresso Ink & Terracotta) -->
-    <path
-        android:pathData="M178,70 L190,82 L152,154 L104,178 L128,130 Z"
-        android:fillColor="#261C14" />
-    <path
-        android:pathData="M178,70 L190,82 L168,104 L156,92 Z"
-        android:fillColor="#9E4730" />
-    <path
-        android:pathData="M104,178 L136,146"
-        android:strokeWidth="4.5"
-        android:strokeLineCap="round"
-        android:strokeColor="#F4ECD8" />
-
-    <!-- Sealing Wax Star -->
-    <path
-        android:pathData="M86,160 L90,170 L100,174 L90,178 L86,188 L82,178 L72,174 L82,170 Z"
-        android:fillColor="#9E4730" />
+        android:strokeColor="#8B5A2B" />
 </vector>

@@ -4,42 +4,36 @@ Updated 2026-11-10. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** the user-requested lock of 2026-11-10 holds UI 8.1c–8.4a, protocol replay 4.1a, stream recovery 4.2a, storage modes 4.3, I/O and update safety 6.1–6.3b, cleanup 7.4a–b, workflow 11.1, signing follow-up 10.2c.
-- **Last verified:** all 277 desktop tests and the Android Kotlin compile pass at 2.0.64/264 (`verify.py status` shows the latest). Android pickers and export dialogs still need a real run at 10.3.
-- **Published:** v2.0.65/265 (run 42616265429) is verified off-device only. The one-time early push authorization is used up; no further publishing or device access.
-- **Next action:** apply the user's review of the new design (docs/DESIGN.md), then model discovery 4.4 and the order below.
+- **Source:** `main` (second user-requested lock, 2026-11-10; see `git log`) holds everything checked below, including the Parchment default, icon family, native Windows caption, UI sweep, contracts 4.1–4.4 and efficiency 5.2–5.4.
+- **Last verified:** all 303 desktop tests and the Android Kotlin compile pass at 2.0.64/264 (`verify.py status` shows the latest). Android pickers and export dialogs still need a real run at 10.3.
+- **Published:** v2.0.65/265 (run 42616265429) is verified off-device only. Each early source push needs a fresh user request; no releases or device access.
+- **Next action:** performance baselines 7.1, then the order below. Real Windows and Android review of the UI is at 10.3.
 - **Phone:** unplugged. Do source and local work only. At 10.3, stop and request reconnection and ADB authorization. Device-dependent items stay unchecked until then.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Otherwise small, clear fixes come before long audits.
 
-1. **4.1–4.4, 2.5, 3.3–3.4:** protocol, process and recovery contracts.
+1. **4.1, 2.5, 3.4:** what is left needs provider keys or the phone.
 2. **7.4:** split ParchmentApp and SettingsPages once state ownership is decided.
-3. **5.2–5.4, 7.1–7.3, 7.5:** measured efficiency and work bounds.
-4. **9.2–9.3, 8.1–8.3:** core gaps, complete workflows, remaining broad UI review.
+3. **7.1–7.3, 7.5:** measured efficiency and work bounds.
+4. **9.2–9.5:** core gaps, complete workflows, skills and MCP, computer and phone use.
 5. **10.2–10.6, 3.5:** final audit, one platform and device matrix, docs, one commit and push, final cleanup.
 
 ## Open tasks
 
 ### Access, process and recovery
 
-- [ ] **2.5 Shell ownership:** cancel only the owning run's processes. Require genuine OS confinement or accurately described explicit full access; keep command grants narrow. Desktop two-process cancellation and exact/stale grant checks pass. Verify the Android owned-session protocol first; app-UID descendant cleanup waits for 10.3.
-- [ ] **3.3 Checkpoints:** persist known tool outcomes, pending actions and valid continuation. Resume safely after socket or OS interruption; never repeat uncertain mutations or restart a user-stopped run. Check: interruption, process restart, explicit Stop and unknown-outcome fixtures.
+- [ ] **2.5 Shell ownership:** the owned-session protocol is proven under a real shell. Remaining: Android descendant cleanup on a device at 10.3.
 - [ ] **3.4 Android:** verify specialUse, visible foreground startup, application context, permission refresh and bounded liveness-based CPU leases; surface promotion and lock errors; no phantom notifications. Stash 7e1827538dd5e9bbf8ad836346bbeda62577104c is merged locally; keep it until device integration passes. Whole-run ownership, approval waits and device instrumentation remain.
 - [ ] **3.5 Device matrix:** app switch, screen off/Doze, denied notifications, compaction, two runs, approval waits, process death/recovery and cleanup on the Android 17 handset. Explain real sleep and battery limits.
 
 ### Protocols
 
 - [ ] **4.1 Replay:** schema and isolation audit is done against current docs (4.1a). Remaining: a live round trip on each provider needs keys; the docs did not settle generateContent's per-part signature rules or whether Responses reasoning items need `id`; Anthropic redacted_thinking is not saved, so an interrupted tool turn relies on the fold retry.
-- [ ] **4.2 Streams/retries:** core recovery is done (4.2a). Remaining: Anthropic `pause_turn` needs server-tool blocks replayed; output-limit stops (`length`, `max_tokens`, `MAX_TOKENS`, `response.incomplete`) end with no notice to the user.
-- [ ] **4.4 Discovery:** remove model-name/version routing; use live/registry capabilities, exact aliases and conflict-aware precedence; keep creator identity accurate; realtime requires explicit support. Check: misleading IDs, overrides, conflicts, unknown modalities, media-job recovery.
 
 ### Token efficiency
 
-- [ ] **5.2 Prompt/cache:** measure system/history/tool/lore/attachment overhead; keep stable cacheable prefixes; prune only with safe evidence rules. Check: representative coding workloads before and after, including cache reads/writes and spend.
-- [ ] **5.3 Extra requests:** remove duplicate creation/tools, unnecessary summaries and nudges; preserve accepted-job state. Check: request counts and interrupted recovery.
-- [ ] **5.4 Controls:** useful spend/effort/context options and breakdowns, preserving explicit model choices and uncapped instructions. Check: budgets stop safely without losing history.
 
 ### Updates
 
@@ -55,15 +49,15 @@ Confirmed critical or high defects always go first. Otherwise small, clear fixes
 
 ### UI
 
-- [ ] **8.1 Layout:** general consistency review of type, spacing, icons, corners, colors and action states beyond the completed controls and forms.
-- [ ] **8.2 Fit:** general screen and long-name coverage, clear cost labels; IME and rotation at 10.3.
-- [ ] **8.4 Page design:** core screens are done (8.4a). Remaining: the deeper settings pages, assistant and card editors and modals still use the older card style; settings summaries still say "profile(s)". Real Windows and Android review at 10.3.
-- [ ] **8.3 Motion/access:** desktop reduced motion (Compose honors the Android system scale; confirm at 10.3); handset reader checks at 10.3.
+- [ ] **8.2 Fit:** screen, long-name and cost-label work is done. Remaining: IME and rotation on a device at 10.3.
+- [ ] **8.3 Motion/access:** the Reduce motion setting is done. Remaining: confirm Android's system animation scale and handset reader checks at 10.3.
 
 ### Workflows
 
 - [ ] **9.2 Gaps:** implement confirmed essential gaps as small, testable tasks without unsupported completeness claims.
 - [ ] **9.3 Workflows:** verify complete agent, daily-chat and roleplay flows and update docs/FEATURE_COVERAGE.md.
+- [ ] **9.4 Skills and MCP:** add agent skills and MCP server support, under the existing tool permissions and approvals. Check: a real skill and MCP server work end to end; disabled or unapproved tools stay blocked.
+- [ ] **9.5 Computer and phone use:** let the agent see and operate the Windows desktop and Android phone, with explicit opt-in, per-action approval and an always-available Stop. Check: real tasks on both platforms; denied or stopped actions never run. Device runs wait for 10.3.
 
 ### Final gate
 
@@ -84,6 +78,9 @@ Confirmed critical or high defects always go first. Otherwise small, clear fixes
 - [x] **3.1 Coordinator:** process-owned runs, frozen context, safe handoff.
 - [x] **3.2 Leases:** whole-run owners; approval waits release holds; owner-scoped cleanup.
 - [x] **5.1 Utility usage:** every utility and failed attempt carries chat/run/purpose records.
+- [x] **5.2 Prompt/cache:** 40-step fixture run shares 70.7% of each request with the last, up from 26.8%. Compaction moves in batches; keyword lore sits late; Anthropic marks the newest tool turn. Real provider billing is unmeasured.
+- [x] **5.3 Extra requests:** no nudge after a finished goal; accepted video jobs resume on Continue, from this profile's own endpoints only.
+- [x] **5.4 Controls:** per-chat spend limit stops before the next request and keeps history. A reply with no cache split counts at its lowest price.
 - [x] **5.5a Totals:** unique owned requests; fork provenance preserved.
 - [x] **5.5b Rates:** free vs unknown prices, TTL/context tiers, exact units.
 - [x] **5.5c Fees:** reported totals replace estimates; missing charges are labelled.
@@ -91,11 +88,17 @@ Confirmed critical or high defects always go first. Otherwise small, clear fixes
 - [x] **6.1 Files/media:** bounded shell output, line reads, images, caches and downloads (6.1a); streamed exports (6.1b); streamed chat import (6.1c). Attachment, drop, paste and share picks refuse oversized files with a message and read off the Android main thread; large text stays out of history (6.1d).
 - [x] **6.2 Archives:** all-or-nothing import; crafted chats cannot reach outside app storage; web links open only in a browser; desktop never launches executables; atomic desktop exports.
 - [x] **4.1a Replay audit:** padded OpenAI reasoning kept; turns stamped with the real wire; sequential tool steps stay separate; Chat reasoning stays in its family and covers closing prose; portable, unique tool IDs; model-scoped Responses chains; attachment types per wire.
+- [x] **3.3 Checkpoints:** changes are saved before they run; interrupted tools record an unknown outcome and interrupted replies say so; nothing resumes without Continue.
+- [x] **4.2b Stops:** output-limit notice; Anthropic `pause_turn` continues with server blocks intact.
+- [x] **4.4 Discovery:** settings, then provider, then registry; no routing by model name; realtime needs explicit support.
 - [x] **4.2a Stream recovery:** streams need the provider's finish signal; split JSON stays whole; `response.failed` is an error; Chat calls without `index` stay separate; Custom never reroutes after a failure; accepted video jobs are never resubmitted.
 - [x] **4.3 Storage:** new installs are stateless; `store` follows its own setting and chaining implies it; polling and cancel require stored Gemini interactions; built-in Gemini and OpenAI profiles reset to stateless once (user decision).
 - [x] **6.3a Verified staging:** size and SHA-256 checks before install; imported settings keep this device's update repository.
 - [x] **6.3b Active runs:** updates refuse to start, and refuse again after the download, while a chat runs or a prompt is queued.
-- [x] **8.4a Page design:** Lapis on Vellum default and dark twin; replies on the page with a lapis rule for prompts; actions on hover, focus or request; one-line header, chat rows and tabs; plain-language copy; invitation empty state; reasoning defaults to None; `UiGalleryTest` renders real screens.
+- [x] **8.1 Layout:** one scale for type, corners and borders; sentence case and real plurals; button hierarchy; icon family and app icon (docs/DESIGN.md).
+- [x] **8.6 Bubbles:** messenger bubbles by default; Page view stays.
+- [x] **8.5 Profile:** name and picture in Settings, used on your messages and for `{{user}}`; imports cannot set the picture path.
+- [x] **8.4a Page design:** Parchment default with Lapis themes as choices; replies on the page with a lapis rule for prompts; actions on hover, focus or request; one-line header, chat rows and tabs; plain-language copy; invitation empty state; reasoning defaults to None; native Windows caption; hover hints on buttons and chips; `UiGalleryTest` renders real screens.
 - [x] **8.0 Floating notice:** rounded overlay, wrapping, dismiss action.
 - [x] **8.1a–8.3a Permission controls:** vertical choices, wrapping actions, single 48dp targets.
 - [x] **8.1b/8.2b Settings forms:** stacked fields, growing inputs, wrapping theme presets.

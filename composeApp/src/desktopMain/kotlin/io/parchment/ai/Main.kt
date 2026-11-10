@@ -1,42 +1,19 @@
 package io.parchment.ai
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.window.WindowDraggableArea
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -46,35 +23,24 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.PointerIcon
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
-import androidx.compose.ui.window.WindowScope
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.parchment.ai.platform.PlatformBridge
-import io.parchment.ai.ui.KissIcon
-import io.parchment.ai.ui.KissVectorIcon
+import io.parchment.ai.platform.WindowsChrome
 import io.parchment.ai.ui.LocalParchmentPalette
 import io.parchment.ai.ui.ParchmentApp
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import org.jetbrains.skia.Image
 import java.awt.Component
+import java.awt.Dimension
 import java.awt.Container
-import java.awt.Cursor
-import java.awt.GraphicsEnvironment
 import java.awt.MouseInfo
-import java.awt.Rectangle
-import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
@@ -146,31 +112,13 @@ private fun attachDropTargetRecursively(component: Component, createTarget: () -
     }
 }
 
-private fun computeUsableMaximizedBounds(window: java.awt.Window): Rectangle {
-    return runCatching {
-        val gc = window.graphicsConfiguration
-            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration
-        val screenBounds = gc.bounds
-        val insets = Toolkit.getDefaultToolkit().getScreenInsets(gc)
-        val x = screenBounds.x + insets.left
-        val y = screenBounds.y + insets.top
-        val w = (screenBounds.width - insets.left - insets.right).coerceAtLeast(640)
-        // Keep 1px margin when all insets are 0 so Windows 11 auto-hide taskbar can still trigger
-        val bottomInset = if (insets.bottom == 0 && insets.top == 0 && insets.left == 0 && insets.right == 0) 1 else insets.bottom
-        val h = (screenBounds.height - insets.top - bottomInset).coerceAtLeast(480)
-        Rectangle(x, y, w, h)
-    }.getOrElse {
-        GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
-    }
-}
-
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 fun main() {
     // Enable hardware VSync so Skia renders smoothly at the monitor's native refresh rate (60Hz / 120Hz / 144Hz / 240Hz)
     System.setProperty("skiko.vsync.enabled", "true")
 
     application {
-        var windowTitle by remember { mutableStateOf("Parchment — Literary & Bleeding-Edge AI Studio") }
+        var windowTitle by remember { mutableStateOf("Parchment") }
         PlatformBridge.windowStatusCallback = { newTitle -> windowTitle = newTitle }
 
     val initialGeom = remember { loadSavedWindowGeometry() }
@@ -251,25 +199,11 @@ fun main() {
             exitApplication()
         }
 
-        val toggleMaximizeRestore: () -> Unit = {
-            val isMax = windowState.placement == WindowPlacement.Maximized || windowState.placement == WindowPlacement.Fullscreen
-            if (isMax) {
-                windowState.placement = WindowPlacement.Floating
-                windowState.size = DpSize(lastFloatingWidth.dp, lastFloatingHeight.dp)
-                if (lastFloatingX >= 0 && lastFloatingY >= 0) {
-                    windowState.position = WindowPosition(lastFloatingX.dp, lastFloatingY.dp)
-                }
-            } else {
-                windowState.placement = WindowPlacement.Maximized
-            }
-        }
-
         Window(
             onCloseRequest = closeAndSave,
             state = windowState,
             title = windowTitle,
             icon = appIconPainter,
-            undecorated = true,
             onKeyEvent = { keyEvent ->
                 val isPasteShortcut = keyEvent.type == KeyEventType.KeyDown &&
                     !keyEvent.isAltPressed &&
@@ -351,306 +285,18 @@ fun main() {
                     )
                 }
                 attachDropTargetRecursively(window, makeDropTarget)
-                window.maximizedBounds = computeUsableMaximizedBounds(window)
+                window.minimumSize = Dimension(640, 480)
             }
-            val isMaximized = windowState.placement == WindowPlacement.Maximized ||
-                windowState.placement == WindowPlacement.Fullscreen
-
-            LaunchedEffect(window, isMaximized) {
-                val usable = computeUsableMaximizedBounds(window)
-                window.maximizedBounds = usable
-                if (isMaximized && window.bounds != usable) {
-                    window.bounds = usable
-                }
-            }
-
-            Box(modifier = Modifier.fillMaxSize()) {
-                ParchmentApp(
-                    desktopWindowHeader = {
-                        KissDesktopTitleBar(
-                            windowTitle = windowTitle,
-                            appIconPainter = appIconPainter,
-                            isMaximized = isMaximized,
-                            onMinimize = { windowState.isMinimized = true },
-                            onToggleMaximize = toggleMaximizeRestore,
-                            onClose = closeAndSave
-                        )
-                    }
-                )
-
-                if (!isMaximized) {
-                    DesktopWindowResizeEdges(window = window)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WindowScope.KissDesktopTitleBar(
-    windowTitle: String,
-    appIconPainter: BitmapPainter?,
-    isMaximized: Boolean,
-    onMinimize: () -> Unit,
-    onToggleMaximize: () -> Unit,
-    onClose: () -> Unit
-) {
-    val p = LocalParchmentPalette.current
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(30.dp)
-            .background(p.sheetBg),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        // Draggable Window Caption Region with Double-Click to Maximize / Restore
-        WindowDraggableArea(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .pointerInput(isMaximized) {
-                    detectTapGestures(
-                        onDoubleTap = { onToggleMaximize() }
-                    )
-                }
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = 12.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (appIconPainter != null) {
-                    Image(
-                        painter = appIconPainter,
-                        contentDescription = "Parchment",
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clip(RoundedCornerShape(3.5.dp))
-                    )
-                } else {
-                    KissVectorIcon(
-                        icon = KissIcon.EDIT,
-                        tint = p.accent,
-                        size = 13.dp
-                    )
-                }
-                BasicText(
-                    text = "Parchment",
-                    maxLines = 1,
-                    style = p.uiHeaderStyle.copy(
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = p.primaryInk
-                    )
-                )
-            }
-        }
-
-        // Right Caption Controls: Minimize (—), Maximize/Restore (□/❐), Close (×)
-        Row(
-            modifier = Modifier.fillMaxHeight(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // 1. Minimize Button
-            val minInteraction = remember { MutableInteractionSource() }
-            val minHovered by minInteraction.collectIsHoveredAsState()
-            Box(
-                modifier = Modifier
-                    .width(44.dp)
-                    .fillMaxHeight()
-                    .background(if (minHovered) p.primaryInk.copy(alpha = 0.09f) else Color.Transparent)
-                    .clickable(interactionSource = minInteraction, indication = null, onClick = onMinimize),
-                contentAlignment = Alignment.Center
-            ) {
-                Canvas(modifier = Modifier.size(10.dp)) {
-                    val y = size.height / 2f
-                    drawLine(
-                        color = p.primaryInk,
-                        start = Offset(0f, y),
-                        end = Offset(size.width, y),
-                        strokeWidth = 1.3.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
-
-            // 2. Maximize / Restore Button
-            val maxInteraction = remember { MutableInteractionSource() }
-            val maxHovered by maxInteraction.collectIsHoveredAsState()
-            Box(
-                modifier = Modifier
-                    .width(44.dp)
-                    .fillMaxHeight()
-                    .background(if (maxHovered) p.primaryInk.copy(alpha = 0.09f) else Color.Transparent)
-                    .clickable(interactionSource = maxInteraction, indication = null, onClick = onToggleMaximize),
-                contentAlignment = Alignment.Center
-            ) {
-                Canvas(modifier = Modifier.size(10.dp)) {
-                    val strokeW = 1.25.dp.toPx()
-                    val stroke = Stroke(width = strokeW)
-                    if (isMaximized) {
-                        val boxW = size.width * 0.78f
-                        val boxH = size.height * 0.78f
-                        val off = size.width - boxW
-                        drawRoundRect(
-                            color = p.primaryInk,
-                            topLeft = Offset(off, 0f),
-                            size = Size(boxW, boxH),
-                            cornerRadius = CornerRadius(1.dp.toPx()),
-                            style = stroke
-                        )
-                        drawRoundRect(
-                            color = p.sheetBg,
-                            topLeft = Offset(0f, off),
-                            size = Size(boxW, boxH),
-                            cornerRadius = CornerRadius(1.dp.toPx())
-                        )
-                        drawRoundRect(
-                            color = p.primaryInk,
-                            topLeft = Offset(0f, off),
-                            size = Size(boxW, boxH),
-                            cornerRadius = CornerRadius(1.dp.toPx()),
-                            style = stroke
-                        )
-                    } else {
-                        drawRoundRect(
-                            color = p.primaryInk,
-                            topLeft = Offset.Zero,
-                            size = size,
-                            cornerRadius = CornerRadius(1.2.dp.toPx()),
-                            style = stroke
+            ParchmentApp(
+                desktopWindowHeader = {
+                    val p = LocalParchmentPalette.current
+                    LaunchedEffect(window, p.canvasBg, p.primaryInk, p.border) {
+                        WindowsChrome.applyCaption(
+                            window.windowHandle, p.canvasBg.toArgb(), p.primaryInk.toArgb(), p.border.toArgb(), p.canvasBg.luminance() < 0.5f
                         )
                     }
                 }
-            }
-
-            // 3. Close Button (Warm Crimson Hover with Crisp White X)
-            val closeInteraction = remember { MutableInteractionSource() }
-            val closeHovered by closeInteraction.collectIsHoveredAsState()
-            Box(
-                modifier = Modifier
-                    .width(46.dp)
-                    .fillMaxHeight()
-                    .background(if (closeHovered) p.danger else Color.Transparent)
-                    .clickable(interactionSource = closeInteraction, indication = null, onClick = onClose),
-                contentAlignment = Alignment.Center
-            ) {
-                val xColor = if (closeHovered) Color.White else p.primaryInk
-                Canvas(modifier = Modifier.size(10.dp)) {
-                    val strokeW = 1.35.dp.toPx()
-                    drawLine(
-                        color = xColor,
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, size.height),
-                        strokeWidth = strokeW,
-                        cap = StrokeCap.Round
-                    )
-                    drawLine(
-                        color = xColor,
-                        start = Offset(size.width, 0f),
-                        end = Offset(0f, size.height),
-                        strokeWidth = strokeW,
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
+            )
         }
-    }
-}
-
-@Composable
-private fun DesktopWindowResizeEdges(window: java.awt.Window) {
-    val edgeThickness = 5.dp
-    val cornerSize = 10.dp
-
-    @Composable
-    fun ResizeZone(
-        modifier: Modifier,
-        cursorType: Int,
-        dxLeft: Boolean = false,
-        dxRight: Boolean = false,
-        dyTop: Boolean = false,
-        dyBottom: Boolean = false
-    ) {
-        Box(
-            modifier = modifier
-                .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(cursorType)))
-                .pointerInput(cursorType) {
-                    var startMouseX = 0
-                    var startMouseY = 0
-                    var startBounds = Rectangle()
-                    var dragging = false
-                    awaitPointerEventScope {
-                        while (true) {
-                            val ev = awaitPointerEvent()
-                            when (ev.type) {
-                                PointerEventType.Press -> {
-                                    val pt = MouseInfo.getPointerInfo()?.location
-                                    if (pt != null) {
-                                        startMouseX = pt.x
-                                        startMouseY = pt.y
-                                        startBounds = window.bounds
-                                        dragging = true
-                                    }
-                                }
-                                PointerEventType.Move -> {
-                                    if (dragging && ev.changes.any { it.pressed }) {
-                                        val pt = MouseInfo.getPointerInfo()?.location
-                                        if (pt != null) {
-                                            val deltaX = pt.x - startMouseX
-                                            val deltaY = pt.y - startMouseY
-                                            var newX = startBounds.x
-                                            var newY = startBounds.y
-                                            var newW = startBounds.width
-                                            var newH = startBounds.height
-                                            val minW = 640
-                                            val minH = 480
-                                            if (dxRight) {
-                                                newW = (startBounds.width + deltaX).coerceAtLeast(minW)
-                                            }
-                                            if (dyBottom) {
-                                                newH = (startBounds.height + deltaY).coerceAtLeast(minH)
-                                            }
-                                            if (dxLeft) {
-                                                val candidateW = (startBounds.width - deltaX).coerceAtLeast(minW)
-                                                newX = startBounds.x + (startBounds.width - candidateW)
-                                                newW = candidateW
-                                            }
-                                            if (dyTop) {
-                                                val candidateH = (startBounds.height - deltaY).coerceAtLeast(minH)
-                                                newY = startBounds.y + (startBounds.height - candidateH)
-                                                newH = candidateH
-                                            }
-                                            window.setBounds(newX, newY, newW, newH)
-                                        }
-                                    } else {
-                                        dragging = false
-                                    }
-                                }
-                                PointerEventType.Release -> {
-                                    dragging = false
-                                }
-                            }
-                        }
-                    }
-                }
-        )
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Edges
-        ResizeZone(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(edgeThickness), Cursor.N_RESIZE_CURSOR, dyTop = true)
-        ResizeZone(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(edgeThickness), Cursor.S_RESIZE_CURSOR, dyBottom = true)
-        ResizeZone(Modifier.align(Alignment.CenterStart).fillMaxHeight().width(edgeThickness), Cursor.W_RESIZE_CURSOR, dxLeft = true)
-        ResizeZone(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(edgeThickness), Cursor.E_RESIZE_CURSOR, dxRight = true)
-        // Corners
-        ResizeZone(Modifier.align(Alignment.TopStart).size(cornerSize), Cursor.NW_RESIZE_CURSOR, dxLeft = true, dyTop = true)
-        ResizeZone(Modifier.align(Alignment.TopEnd).size(cornerSize), Cursor.NE_RESIZE_CURSOR, dxRight = true, dyTop = true)
-        ResizeZone(Modifier.align(Alignment.BottomStart).size(cornerSize), Cursor.SW_RESIZE_CURSOR, dxLeft = true, dyBottom = true)
-        ResizeZone(Modifier.align(Alignment.BottomEnd).size(cornerSize), Cursor.SE_RESIZE_CURSOR, dxRight = true, dyBottom = true)
     }
 }

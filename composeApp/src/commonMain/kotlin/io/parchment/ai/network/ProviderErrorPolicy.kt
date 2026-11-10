@@ -83,7 +83,7 @@ internal fun AiProviderEngine.isHardAuthOrQuotaError(err: Throwable): Boolean {
 }
 
 internal fun AiProviderEngine.isTransientOrProxyTimeoutError(err: Throwable): Boolean {
-    if (err is kotlinx.coroutines.CancellationException || err is AiProviderEngine.AcceptedJobException) return false
+    if (err is kotlinx.coroutines.CancellationException || err is AiProviderEngine.NoRetryException) return false
     // Fail fast on hard authentication, permission, or billing/quota deactivation errors
     if (isHardAuthOrQuotaError(err)) {
         return false
@@ -144,7 +144,7 @@ internal fun AiProviderEngine.shouldFallbackToLegacyProtocol(
     err: Throwable,
     useLegacyFallbackEndpoint: Boolean
 ): Boolean {
-    if (err is kotlinx.coroutines.CancellationException || err is AiProviderEngine.AcceptedJobException) return false
+    if (err is kotlinx.coroutines.CancellationException || err is AiProviderEngine.NoRetryException) return false
     val actual = if (err is StepRetriesExhaustedException && err.cause != null) err.cause!! else err
     if (isHardAuthOrQuotaError(actual)) return false
     if (isEndpointUnsupportedForAutoFallback(actual)) return true

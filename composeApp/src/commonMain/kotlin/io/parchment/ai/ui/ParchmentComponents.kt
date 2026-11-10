@@ -55,6 +55,7 @@ import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.AnnotatedString
 import io.parchment.ai.model.ProviderProfile
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,10 +94,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.isWebLink
 import io.parchment.ai.platform.PlatformBridge
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.delay
 
 /**
  * Adaptive Window Size Breakpoints (WindowSizeClass pattern for Mobile Portrait vs Tablet vs Desktop).
@@ -110,6 +119,12 @@ data class ParchmentWindowSize(
 }
 
 val LocalParchmentWindowSize = compositionLocalOf { ParchmentWindowSize() }
+
+/** True when the person turned off decorative movement in Settings. */
+val LocalReduceMotion = compositionLocalOf { false }
+
+/** Counts for interface text: "1 chat", "3 chats". */
+fun plural(count: Int, noun: String): String = "$count $noun${if (count == 1) "" else "s"}"
 
 /**
  * Adaptive Setting Row:
@@ -132,7 +147,7 @@ fun SepiaAdaptiveRow(
         ) {
             BasicText(
                 text = label,
-                style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium, fontSize = 13.5.sp)
+                style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium, fontSize = 14.sp)
             )
             content()
         }
@@ -162,7 +177,7 @@ enum class SepiaButtonStyle {
 
 private val KISS_SCALE_SPRING = spring<Float>(dampingRatio = 0.78f, stiffness = 680f)
 private val KISS_LIFT_SPRING = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 560f)
-private val COMPACT_BTN_SHAPE = RoundedCornerShape(7.dp)
+private val COMPACT_BTN_SHAPE = RoundedCornerShape(8.dp)
 private val REGULAR_BTN_SHAPE = RoundedCornerShape(8.dp)
 
 /**
@@ -186,8 +201,14 @@ fun Modifier.kissClickable(
     val isPressed by interactionSource.collectIsPressedAsState()
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isFocused by interactionSource.collectIsFocusedAsState()
+    val reduceMotion = LocalReduceMotion.current
+    // A click also moves focus, so the ring is kept for focus that arrives from the keyboard.
+    var focusFromPointer by remember { mutableStateOf(false) }
+    LaunchedEffect(isPressed, isFocused) {
+        if (isPressed) focusFromPointer = true else if (!isFocused) focusFromPointer = false
+    }
     val targetScale = when {
-        !enabled -> 1f
+        !enabled || reduceMotion -> 1f
         isPressed -> pressScale
         isHovered -> hoverScale
         else -> 1f
@@ -197,7 +218,7 @@ fun Modifier.kissClickable(
         animationSpec = KISS_SCALE_SPRING
     )
     val liftY by animateFloatAsState(
-        targetValue = if (isHovered && !isPressed && enabled) -1.2f else 0f,
+        targetValue = if (isHovered && !isPressed && enabled && !reduceMotion) -1.2f else 0f,
         animationSpec = KISS_LIFT_SPRING
     )
     return this
@@ -208,7 +229,7 @@ fun Modifier.kissClickable(
             translationY = liftY
         }
         .then(if (selected != null) Modifier.semantics { this.selected = selected } else Modifier)
-        .sepiaFocusRing(isFocused, focusColor)
+        .sepiaFocusRing(isFocused && !focusFromPointer, focusColor)
         .clickable(
             interactionSource = interactionSource,
             indication = null,
@@ -256,7 +277,8 @@ fun SepiaButton(
     enabled: Boolean = true,
     compact: Boolean = false,
     wrapText: Boolean = false,
-    contentDescription: String? = null
+    contentDescription: String? = null,
+    hint: String? = contentDescription
 ) {
     val p = LocalParchmentPalette.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -266,7 +288,7 @@ fun SepiaButton(
 
     val baseBg = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else p.border.copy(alpha = 0.55f)
-        SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else p.border.copy(alpha = 0.55f)
+        SepiaButtonStyle.SECONDARY -> if (enabled) p.elevatedBg else p.border.copy(alpha = 0.55f)
         SepiaButtonStyle.OUTLINE -> if (enabled) p.cardBg else p.elevatedBg.copy(alpha = 0.4f)
         SepiaButtonStyle.GHOST -> Color.Transparent
         SepiaButtonStyle.DANGER -> if (enabled) p.danger else p.border.copy(alpha = 0.55f)
@@ -288,8 +310,8 @@ fun SepiaButton(
     }
 
     val textColor = when (style) {
-        SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER ->
-            if (enabled) onFillInk(baseBg) else p.mutedInk
+        SepiaButtonStyle.PRIMARY, SepiaButtonStyle.DANGER -> if (enabled) onFillInk(baseBg) else p.mutedInk
+        SepiaButtonStyle.SECONDARY -> if (enabled) p.primaryInk else p.mutedInk
         SepiaButtonStyle.OUTLINE -> when {
             !enabled -> p.mutedInk.copy(alpha = 0.6f)
             isPressed || isHovered -> p.accent
@@ -304,7 +326,7 @@ fun SepiaButton(
 
     val borderColor = when (style) {
         SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else Color.Transparent
-        SepiaButtonStyle.SECONDARY -> if (enabled) p.accentSecondary else Color.Transparent
+        SepiaButtonStyle.SECONDARY -> if (enabled) p.border else Color.Transparent
         SepiaButtonStyle.OUTLINE -> when {
             !enabled -> p.border.copy(alpha = 0.32f)
             isPressed -> p.accent
@@ -324,9 +346,9 @@ fun SepiaButton(
         else -> 14.dp
     }
     val fontSize = when {
-        compact && win.isVeryNarrow -> 11.5.sp
+        compact && win.isVeryNarrow -> 12.sp
         compact -> 12.sp
-        win.isCompact -> 12.5.sp
+        win.isCompact -> 13.sp
         else -> 13.sp
     }
 
@@ -343,7 +365,7 @@ fun SepiaButton(
             .background(bgColor)
             .then(
                 if (borderColor != Color.Transparent) {
-                    Modifier.border(if (isPressed || isHovered) 0.9.dp else 0.65.dp, borderColor, shape)
+                    Modifier.border(if (isPressed || isHovered) 0.75.dp else 0.75.dp, borderColor, shape)
                 } else Modifier
             )
             .padding(
@@ -388,6 +410,7 @@ fun SepiaButton(
                 )
             }
         }
+        HoverHint(hint, isHovered && !isPressed)
     }
 }
 
@@ -397,7 +420,8 @@ fun SepiaChip(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    contentDescription: String? = null
+    contentDescription: String? = null,
+    hint: String? = contentDescription
 ) {
     val p = LocalParchmentPalette.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -426,7 +450,7 @@ fun SepiaChip(
             .accessibilityLabel(contentDescription ?: parsed.iconOnlyName())
             .clip(shape)
             .background(bg)
-            .border(if (selected || isHovered) 0.9.dp else 0.65.dp, borderCol, shape)
+            .border(if (selected || isHovered) 0.75.dp else 0.75.dp, borderCol, shape)
             .padding(horizontal = if (win.isCompact) 7.dp else 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -461,6 +485,7 @@ fun SepiaChip(
                 )
             }
         }
+        HoverHint(hint, isHovered && !isPressed)
     }
 }
 
@@ -471,6 +496,55 @@ fun ThemeSwatch(canvas: Color, accent: Color) {
         Modifier.size(22.dp).clip(CircleShape).background(canvas).border(1.dp, LocalParchmentPalette.current.border, CircleShape),
         contentAlignment = Alignment.Center
     ) { Box(Modifier.size(9.dp).clip(CircleShape).background(accent)) }
+}
+
+private const val HOVER_HINT_DELAY_MS = 450L
+
+/** Centers a hint under its control, flipping above it and staying inside the window. */
+private object HoverHintPosition : PopupPositionProvider {
+    private const val GAP = 6
+    private const val MARGIN = 8
+
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset {
+        val x = (anchorBounds.center.x - popupContentSize.width / 2)
+            .coerceIn(MARGIN, (windowSize.width - popupContentSize.width - MARGIN).coerceAtLeast(MARGIN))
+        val below = anchorBounds.bottom + GAP
+        val fitsBelow = below + popupContentSize.height <= windowSize.height - MARGIN
+        return IntOffset(x, if (fitsBelow) below else (anchorBounds.top - GAP - popupContentSize.height).coerceAtLeast(MARGIN))
+    }
+}
+
+/**
+ * A short explanation shown after the pointer rests on a control. Touch has no hover, and readers
+ * already get the control's own name, so the hint is visual only.
+ */
+@Composable
+internal fun HoverHint(text: String?, hovered: Boolean) {
+    if (text.isNullOrBlank() || LocalParchmentWindowSize.current.isCompact) return
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(hovered) {
+        if (hovered) delay(HOVER_HINT_DELAY_MS)
+        visible = hovered
+    }
+    if (!visible) return
+    val p = LocalParchmentPalette.current
+    Popup(popupPositionProvider = HoverHintPosition, properties = PopupProperties(focusable = false)) {
+        Box(
+            Modifier
+                .semantics { hideFromAccessibility() }
+                .widthIn(max = 280.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(p.primaryInk)
+                .padding(horizontal = 9.dp, vertical = 5.dp)
+        ) {
+            BasicText(text, style = p.uiLabelStyle.copy(color = p.canvasBg, fontWeight = FontWeight.Normal))
+        }
+    }
 }
 
 /** The lapis rule that marks prompts on the page and the current item in lists. */
@@ -520,7 +594,7 @@ fun SepiaConfirmationCard(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(12.dp)
     Column(
         modifier
             .widthIn(max = 420.dp)
@@ -561,7 +635,7 @@ fun SepiaAccentSwatch(color: Color, name: String, selected: Boolean, onClick: ()
     ) {
         Box(
             Modifier.size(24.dp).clip(CircleShape).background(color)
-                .border(if (selected) 2.dp else 0.8.dp, if (selected) p.primaryInk else p.border, CircleShape)
+                .border(if (selected) 2.dp else 0.75.dp, if (selected) p.primaryInk else p.border, CircleShape)
         )
     }
 }
@@ -710,7 +784,7 @@ fun SepiaTextField(
                         .background(if (borderless) Color.Transparent else p.cardBg)
                         .then(
                             if (!borderless) {
-                                Modifier.border(if (isFocused) 1.2.dp else 0.85.dp, borderColor, shape)
+                                Modifier.border(if (isFocused) 1.dp else 0.75.dp, borderColor, shape)
                             } else Modifier
                         )
                         .padding(
@@ -771,7 +845,7 @@ fun SepiaSectionCard(
             .fillMaxWidth()
             .clip(shape)
             .background(p.cardBg)
-            .border(0.65.dp, p.border.copy(alpha = 0.52f), shape)
+            .border(0.75.dp, p.border.copy(alpha = 0.52f), shape)
             .animateContentSize(
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioNoBouncy,
@@ -880,7 +954,7 @@ fun SepiaAvatarCircle(
             .size(sizeDp)
             .clip(CircleShape)
             .background(bg)
-            .border(0.8.dp, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
+            .border(0.75.dp, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
         if (parsedIcon != null) {
@@ -996,7 +1070,7 @@ fun SepiaToggleRow(
         },
         animationSpec = spring(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
     )
-    val shape = RoundedCornerShape(7.dp)
+    val shape = RoundedCornerShape(8.dp)
     val isFocused by interactionSource.collectIsFocusedAsState()
     Row(
         modifier = modifier
@@ -1016,7 +1090,7 @@ fun SepiaToggleRow(
             BasicText(
                 text = title,
                 style = p.uiBodyStyle.copy(
-                    fontSize = 13.5.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = if (isHovered || isPressed) p.accent else p.primaryInk
                 )
@@ -1058,13 +1132,14 @@ fun KissStreamingPulseDot(
             repeatMode = RepeatMode.Reverse
         )
     )
+    val still = LocalReduceMotion.current
     Box(
         modifier = modifier
             .size(8.dp)
             .graphicsLayer {
-                scaleX = pulseScale
-                scaleY = pulseScale
-                alpha = pulseAlpha
+                scaleX = if (still) 1f else pulseScale
+                scaleY = if (still) 1f else pulseScale
+                alpha = if (still) 1f else pulseAlpha
             }
             .clip(CircleShape)
             .background(color)
@@ -1103,13 +1178,15 @@ fun SepiaContextGaugeRing(
         animationSpec = tween(250)
     )
 
-    val shape = RoundedCornerShape(7.dp)
+    val shape = RoundedCornerShape(8.dp)
+    val gaugeInteraction = remember { MutableInteractionSource() }
+    val gaugeHovered by gaugeInteraction.collectIsHoveredAsState()
     Row(
         modifier = modifier
-            .then(if (onClick != null) Modifier.kissClickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.kissClickable(interactionSource = gaugeInteraction, onClick = onClick) else Modifier)
             .clip(shape)
             .background(p.elevatedBg.copy(alpha = 0.6f))
-            .border(0.85.dp, p.border.copy(alpha = 0.65f), shape)
+            .border(0.75.dp, p.border.copy(alpha = 0.65f), shape)
             .padding(horizontal = 7.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -1156,6 +1233,7 @@ fun SepiaContextGaugeRing(
             overflow = TextOverflow.Ellipsis,
             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk)
         )
+        HoverHint("How much of this model's context the chat uses. Click for the breakdown.", gaugeHovered)
     }
 }
 
@@ -1225,7 +1303,7 @@ fun SepiaSearchableModelPicker(
     onSelectModel: (profileId: String, modelId: String) -> Unit,
     modifier: Modifier = Modifier,
     maxListHeight: Dp = 280.dp,
-    placeholder: String = "🔍 Search models (e.g. deepseek, qwen, 32b, flash)…"
+    placeholder: String = "🔍 Search models"
 ) {
     val p = LocalParchmentPalette.current
     var searchQuery by remember { mutableStateOf("") }
@@ -1363,7 +1441,7 @@ fun SepiaSearchableModelPicker(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 SepiaChip(
-                    label = "All Families",
+                    label = "All families",
                     selected = selectedVendorFilter.isEmpty(),
                     onClick = { selectedVendorFilter = "" }
                 )
@@ -1416,7 +1494,7 @@ fun SepiaSearchableModelPicker(
                     val rowInteraction = remember { MutableInteractionSource() }
                     val isHovered by rowInteraction.collectIsHoveredAsState()
                     val isPressed by rowInteraction.collectIsPressedAsState()
-                    val rowShape = RoundedCornerShape(7.dp)
+                    val rowShape = RoundedCornerShape(8.dp)
 
                     Row(
                         modifier = Modifier
@@ -1438,7 +1516,7 @@ fun SepiaSearchableModelPicker(
                                 }
                             )
                             .border(
-                                width = if (isSel) 1.dp else 0.7.dp,
+                                width = if (isSel) 1.dp else 0.75.dp,
                                 color = when {
                                     isSel -> p.accent
                                     isHovered -> p.accent.copy(alpha = 0.55f)
@@ -1481,7 +1559,7 @@ fun SepiaSearchableModelPicker(
                                 Box(
                                     modifier = Modifier
                                         .widthIn(max = 105.dp)
-                                        .clip(RoundedCornerShape(5.dp))
+                                        .clip(RoundedCornerShape(6.dp))
                                         .background(p.sheetBg)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
@@ -1489,19 +1567,19 @@ fun SepiaSearchableModelPicker(
                                         text = opt.profileName,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.narrationInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.narrationInk)
                                     )
                                 }
                             }
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
+                                    .clip(RoundedCornerShape(6.dp))
                                     .background(p.elevatedBg)
                                     .padding(horizontal = 5.dp, vertical = 2.dp)
                             ) {
                                 BasicText(
                                     text = if (opt.contextWindowTokens <= 0) "∞" else formatCompactTokens(opt.contextWindowTokens),
-                                    style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFamily = p.codeFontFamily)
                                 )
                             }
                             if (isSel) {
@@ -1686,7 +1764,7 @@ fun SepiaDiffLinesList(
                         Spacer(Modifier.width(7.dp))
                         BasicText(
                             text = "- ${line.text}",
-                            style = p.monoStyle.copy(color = removedColor, fontSize = 11.5.sp)
+                            style = p.monoStyle.copy(color = removedColor, fontSize = 12.sp)
                         )
                     }
                 }
@@ -1707,7 +1785,7 @@ fun SepiaDiffLinesList(
                         Spacer(Modifier.width(7.dp))
                         BasicText(
                             text = "+ ${line.text}",
-                            style = p.monoStyle.copy(color = addedColor, fontSize = 11.5.sp)
+                            style = p.monoStyle.copy(color = addedColor, fontSize = 12.sp)
                         )
                     }
                 }
@@ -1717,7 +1795,7 @@ fun SepiaDiffLinesList(
                         style = p.uiLabelStyle.copy(
                             color = p.mutedInk,
                             fontFamily = p.codeFontFamily,
-                            fontSize = 10.5.sp
+                            fontSize = 11.sp
                         ),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
                     )
@@ -1725,7 +1803,7 @@ fun SepiaDiffLinesList(
                 DiffLineKind.CONTEXT -> {
                     BasicText(
                         text = "  ${line.text}",
-                        style = p.monoStyle.copy(color = p.narrationInk, fontSize = 11.5.sp),
+                        style = p.monoStyle.copy(color = p.narrationInk, fontSize = 12.sp),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp)
                     )
                 }
@@ -1780,7 +1858,7 @@ fun SepiaFileDiffCard(
             .clip(shape)
             .background(p.cardBg)
             .border(
-                width = 0.85.dp,
+                width = 0.75.dp,
                 color = if (isError) p.danger.copy(alpha = 0.7f) else p.border.copy(alpha = 0.8f),
                 shape = shape
             )
@@ -1820,7 +1898,7 @@ fun SepiaFileDiffCard(
                             text = shortFileName,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         )
                     }
                     if (parentDir.isNotEmpty()) {
@@ -1828,7 +1906,7 @@ fun SepiaFileDiffCard(
                             text = parentDir,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.monoStyle.copy(color = p.mutedInk, fontSize = 9.5.sp)
+                            style = p.monoStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                         )
                     }
                 }
@@ -1841,26 +1919,26 @@ fun SepiaFileDiffCard(
                 if (addedCount > 0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(5.dp))
+                            .clip(RoundedCornerShape(6.dp))
                             .background(addedGreen.copy(alpha = 0.16f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         BasicText(
                             text = "+$addedCount",
-                            style = p.monoStyle.copy(color = addedGreen, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                            style = p.monoStyle.copy(color = addedGreen, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         )
                     }
                 }
                 if (removedCount > 0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(5.dp))
+                            .clip(RoundedCornerShape(6.dp))
                             .background(p.danger.copy(alpha = 0.16f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         BasicText(
                             text = "−$removedCount",
-                            style = p.monoStyle.copy(color = p.danger, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                            style = p.monoStyle.copy(color = p.danger, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         )
                     }
                 }

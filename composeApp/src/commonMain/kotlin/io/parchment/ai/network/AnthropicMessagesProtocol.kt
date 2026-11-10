@@ -54,6 +54,14 @@ private sealed class AnthropicStreamBlock {
 
     data class Text(val text: StringBuilder = StringBuilder()) : AnthropicStreamBlock()
 
+    /** A provider-run block, such as a web search call or result, replayed exactly as received. */
+    data class ServerBlock(val raw: JsonObject, val streamedInput: StringBuilder = StringBuilder()) : AnthropicStreamBlock() {
+        fun resolved(parse: (String) -> JsonObject?): JsonObject {
+            val input = streamedInput.toString().takeIf { it.isNotBlank() }?.let(parse) ?: return raw
+            return JsonObject(raw + ("input" to input))
+        }
+    }
+
     data class ToolUse(
         val id: String,
         val name: String,
@@ -82,6 +90,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
     onThinking: suspend (String, String) -> Unit,
     onContent: suspend (String) -> Unit,
     onToolCall: suspend (ToolCallRecord) -> Unit,
+    onOutputLimit: suspend () -> Unit = {},
     onRawWire: suspend (String, String) -> Unit,
     onRequestStarted: UsageRequestStarter,
     onUsage: UsageReporter,
@@ -107,6 +116,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
         val streamBlocksByIndex = mutableMapOf<Int, AnthropicStreamBlock>()
         var stepEmittedOutput = false
         var stepRetryAttempt = 0
+        var turnPaused = false
 
         while (true) {
             streamBlocksByIndex.clear()
@@ -214,8 +224,9 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                         extraLoopMessages.clear()
                         extraLoopMessages.addAll(compactedAnthropicExtras)
                     }
-                    for (extraMsg in compactedAnthropicExtras) {
-                        add(extraMsg)
+                    // The newest turn carries the marker, so each tool step reads the steps before it from cache.
+                    compactedAnthropicExtras.forEachIndexed { index, extraMsg ->
+                        add(if (index == compactedAnthropicExtras.lastIndex) extraMsg.withCacheMarkerOnLastBlock() else extraMsg)
                     }
                 }
 
@@ -320,6 +331,9 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                                             val data = cb["data"]?.jsonPrimitive?.contentOrNull ?: ""
                                             streamBlocksByIndex[idx] = AnthropicStreamBlock.RedactedThinking(data)
                                         }
+                                        "server_tool_use", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result" -> {
+                                            if (cb != null) streamBlocksByIndex[idx] = AnthropicStreamBlock.ServerBlock(cb)
+                                        }
                                         "text" -> {
                                             val initTxt = cb["text"]?.jsonPrimitive?.contentOrNull ?: ""
                                             val block = AnthropicStreamBlock.Text()
@@ -388,6 +402,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                                             val partial = deltaObj["partial_json"]?.jsonPrimitive?.contentOrNull ?: ""
                                             val toolBlock = streamBlocksByIndex[idx] as? AnthropicStreamBlock.ToolUse
                                             toolBlock?.streamedInputJson?.append(partial)
+                                            (streamBlocksByIndex[idx] as? AnthropicStreamBlock.ServerBlock)?.streamedInput?.append(partial)
                                         }
                                         "citations_delta" -> {
                                             val citObj = deltaObj["citation"] as? JsonObject ?: deltaObj
@@ -402,7 +417,10 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                                         parseProviderUsage(UsageDialect.ANTHROPIC, null, isFinal = true))
                                 }
                                 "message_delta" -> {
-                                    if ((evObj["delta"] as? JsonObject)?.get("stop_reason")?.jsonPrimitive?.contentOrNull != null) streamFinished = true
+                                    val stopReason = (evObj["delta"] as? JsonObject)?.get("stop_reason")?.jsonPrimitive?.contentOrNull
+                                    if (stopReason != null) streamFinished = true
+                                    if (stopReason == "max_tokens") onOutputLimit()
+                                    if (stopReason == "pause_turn") turnPaused = true
                                     val usage = evObj["usage"] as? JsonObject
                                     if (usage != null) {
                                         onUsage(usageRequestId, msgId, UsageDialect.ANTHROPIC,
@@ -560,6 +578,11 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                         })
                     }
                 }
+                is AnthropicStreamBlock.ServerBlock -> {
+                    assistantContentBlocksForToolLoop.add(block.resolved { raw ->
+                        runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+                    })
+                }
                 is AnthropicStreamBlock.Text -> {
                     if (block.text.isNotEmpty()) {
                         assistantContentBlocksForToolLoop.add(buildJsonObject {
@@ -586,6 +609,15 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
         }
 
         if (turnToolCalls.isEmpty()) {
+            if (turnPaused && assistantContentBlocksForToolLoop.isNotEmpty()) {
+                // A long provider-run step paused: sending the turn back as it stands lets it continue.
+                extraLoopMessages.add(buildJsonObject {
+                    put("role", "assistant")
+                    put("content", JsonArray(assistantContentBlocksForToolLoop))
+                })
+                onStatus("Continuing a long-running step…")
+                continue
+            }
             val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
             if (stopHookPrompt != null) {
                 if (assistantContentBlocksForToolLoop.isNotEmpty()) {
@@ -661,6 +693,14 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
  * preserving signed `thinking` blocks, `tool_use` + `tool_result` pairs, PDF `document` blocks,
  * and separating adjacent coalesced text blocks with `\n\n`.
  */
+private fun JsonObject.withCacheMarkerOnLastBlock(): JsonObject {
+    val blocks = (this["content"] as? JsonArray)?.takeIf { it.isNotEmpty() } ?: return this
+    val last = blocks.last() as? JsonObject ?: return this
+    if (last["type"]?.jsonPrimitive?.contentOrNull in setOf("thinking", "redacted_thinking")) return this
+    val marked = JsonObject(last + ("cache_control" to buildJsonObject { put("type", "ephemeral") }))
+    return JsonObject(this + ("content" to JsonArray(blocks.dropLast(1) + marked)))
+}
+
 private val ANTHROPIC_IMAGE_TYPES = setOf("image/jpeg", "image/png", "image/gif", "image/webp")
 
 internal fun AiProviderEngine.buildAnthropicBaseMessages(

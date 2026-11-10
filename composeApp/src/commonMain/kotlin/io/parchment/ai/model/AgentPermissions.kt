@@ -88,6 +88,7 @@ fun AppStateSnapshot.withImportedPermissions(
     currentUpdateRepo: String = AppStateSnapshot().otaGithubRepo
 ): AppStateSnapshot = copy(
     otaGithubRepo = currentUpdateRepo, // An imported file must not choose which installers run here.
+    preferences = preferences.copy(profilePicturePath = ""), // Nor which local file gets opened.
     assistants = assistants.map { it.withImportedPermissions() },
     sessions = sessions.map { it.withImportedPermissions() },
     profiles = profiles.map { it.copy(allowShellExecution = false) },

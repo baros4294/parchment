@@ -47,7 +47,7 @@ internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifi
     var lastMessage by remember { mutableStateOf(message) }
     SideEffect { if (message.isNotBlank()) lastMessage = message }
     val visibleMessage = message.ifBlank { lastMessage }
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(12.dp)
     AnimatedVisibility(
         visible = message.isNotBlank(),
         modifier = modifier.widthIn(max = 560.dp),

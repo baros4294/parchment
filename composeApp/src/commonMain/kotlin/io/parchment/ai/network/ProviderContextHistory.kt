@@ -2,8 +2,12 @@ package io.parchment.ai.network
 
 import io.ktor.client.request.get
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.harness.wasCutOff
+import io.parchment.ai.harness.withInterruptedOutcome
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
+import io.parchment.ai.model.ContextFragment
+import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.GoalTrackerState
 import io.parchment.ai.model.MessageNode
@@ -32,6 +36,7 @@ fun AiProviderEngine.stripInlineErrorNotices(raw: String): String {
     }
     var cleaned = raw
     val suffixes = listOf(
+        OUTPUT_LIMIT_NOTICE,
         "\n\n*[Stream paused/interrupted:",
         "\n\n*[Stream interrupted",
         "\n\n*[Interrupted:"
@@ -84,14 +89,7 @@ internal fun AiProviderEngine.buildEffectiveHistoryAndPrefix(
     passTag: String,
     forceVisibleThoughtSummary: Boolean = false
 ): Pair<List<MessageNode>, String> {
-    val sanitizedTools = executedTools.map { tc ->
-        if (tc.isRunning || tc.resultText == "Running shell command…" || tc.resultText == "Running ${tc.name}…") {
-            tc.copy(
-                isRunning = false,
-                resultText = "[Tool execution interrupted before completion — re-run ${tc.name} if needed]"
-            )
-        } else tc
-    }
+    val sanitizedTools = executedTools.map { tc -> if (tc.wasCutOff()) tc.withInterruptedOutcome() else tc }
     val hasPriorTurnProgress = sanitizedTools.isNotEmpty() ||
         (continuePrefix.isBlank() && (thinkingText.isNotEmpty() || signatureText.isNotEmpty()))
     return if (hasPriorTurnProgress) {
@@ -139,6 +137,14 @@ internal fun AiProviderEngine.buildEffectiveHistoryAndPrefix(
  * Condenses the oldest 50% of active unmuted conversation turns into a compact Continuity Digest
  * while keeping the newest turns in full verbatim fidelity.
  */
+private fun ChatSession.triggeredKeywordFragments(): List<ContextFragment> {
+    val recent = messages.takeLast(8).joinToString("\n") { it.activeVariant.content }
+    return (fragments + activeCard?.embeddedFragments.orEmpty()).filter { frag ->
+        frag.mode == FragmentActivationMode.KEYWORD &&
+            frag.keywords.any { it.isNotBlank() && recent.contains(it.trim(), ignoreCase = true) }
+    }
+}
+
 internal fun AiProviderEngine.compactHistoryNodesOnOverflow(nodes: List<MessageNode>): List<MessageNode> {
     val activeIndices = nodes.mapIndexedNotNull { idx, n -> if (n.includedInContext) idx else null }
     if (activeIndices.size <= 4) return nodes
@@ -251,24 +257,15 @@ internal fun AiProviderEngine.buildCompiledSystemPrompt(
     }
 
     // Composable Context Fragments & Card Lorebook
+    // Keyword matches change from turn to turn, so they join the late note; only constants stay up here.
     val allFragments = session.fragments + session.activeCard?.embeddedFragments.orEmpty()
     if (allFragments.isNotEmpty()) {
-        val recentWindowText = session.messages.takeLast(8)
-            .joinToString("\n") { it.activeVariant.content }
-        val triggeredFragments = allFragments.filter { frag ->
-            when (frag.mode) {
-                io.parchment.ai.model.FragmentActivationMode.PINNED -> true
-                io.parchment.ai.model.FragmentActivationMode.MUTED -> false
-                io.parchment.ai.model.FragmentActivationMode.KEYWORD -> {
-                    frag.keywords.isEmpty() || frag.keywords.any { kw ->
-                        kw.isNotBlank() && recentWindowText.contains(kw.trim(), ignoreCase = true)
-                    }
-                }
-            }
+        val alwaysOnFragments = allFragments.filter { frag ->
+            frag.mode == FragmentActivationMode.PINNED || (frag.mode == FragmentActivationMode.KEYWORD && frag.keywords.isEmpty())
         }
-        if (triggeredFragments.isNotEmpty()) {
+        if (alwaysOnFragments.isNotEmpty()) {
             sb.appendLine("### Context Fragments & World Knowledge")
-            for (frag in triggeredFragments) {
+            for (frag in alwaysOnFragments) {
                 sb.appendLine("#### ${frag.title}")
                 sb.appendLine(expandMacros(frag.content.trim()))
                 sb.appendLine()
@@ -338,11 +335,17 @@ internal fun AiProviderEngine.injectAuthorsNoteIntoHistory(
         if (session.authorsNote.isNotBlank()) appendLine(session.authorsNote.trim())
     }.trim()
 
-    if (combinedNote.isBlank() || baseList.isEmpty()) return baseList
+    val triggeredKnowledge = session.triggeredKeywordFragments().joinToString("\n\n") { "#### ${it.title}\n${it.content.trim()}" }
+    if ((combinedNote.isBlank() && triggeredKnowledge.isBlank()) || baseList.isEmpty()) return baseList
 
     val depth = session.authorsNoteDepth.coerceIn(0, baseList.size)
     val targetIdx = (baseList.size - 1 - depth).coerceIn(0, baseList.size - 1)
     val (targetRole, targetContent) = baseList[targetIdx]
-    baseList[targetIdx] = targetRole to "$targetContent\n\n[Author's Note / Scene Direction: $combinedNote]"
+    val note = buildString {
+        append(targetContent)
+        if (triggeredKnowledge.isNotBlank()) append("\n\n[Relevant World Knowledge:\n$triggeredKnowledge]")
+        if (combinedNote.isNotBlank()) append("\n\n[Author's Note / Scene Direction: $combinedNote]")
+    }
+    baseList[targetIdx] = targetRole to note
     return baseList
 }

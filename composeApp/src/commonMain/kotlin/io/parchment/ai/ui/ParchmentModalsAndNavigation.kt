@@ -154,7 +154,7 @@ internal fun DesktopBrowserTabBar(
                             style = p.uiLabelStyle.copy(
                                 color = if (isSelected) p.primaryInk else p.narrationInk,
                                 fontWeight = FontWeight.Medium,
-                                fontSize = 12.5.sp
+                                fontSize = 13.sp
                             )
                         )
                     }
@@ -240,7 +240,7 @@ internal fun MobileTabSwitcherModal(
         val sheetShape = if (isCompactScreen) {
             RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
         } else {
-            RoundedCornerShape(14.dp)
+            RoundedCornerShape(12.dp)
         }
         Column(
             modifier = Modifier
@@ -280,7 +280,7 @@ internal fun MobileTabSwitcherModal(
                         )
                     }
                     SepiaButton(
-                        text = "+ New Tab",
+                        text = "+ New tab",
                         compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = onNewTab
@@ -342,7 +342,7 @@ internal fun MobileTabSwitcherModal(
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(p.cardBg)
                                         .border(
-                                            width = if (isSel) 1.5.dp else 0.85.dp,
+                                            width = if (isSel) 1.5.dp else 0.75.dp,
                                             color = if (isSel) p.accent else p.border,
                                             shape = RoundedCornerShape(12.dp)
                                         )
@@ -392,14 +392,14 @@ internal fun MobileTabSwitcherModal(
                                                 text = asstName,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
+                                                style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
                                             )
                                             if (modelLabel.isNotBlank()) {
                                                 BasicText(
                                                     text = modelLabel,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
-                                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                                    style = p.monoStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                                 )
                                             }
                                         }
@@ -423,7 +423,7 @@ internal fun MobileTabSwitcherModal(
                                                 text = streamInfo.statusText.ifBlank { "Running in background…" },
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
-                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
+                                                style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                             )
                                         }
                                     } else {
@@ -432,7 +432,7 @@ internal fun MobileTabSwitcherModal(
                                         } else ""
                                         BasicText(
                                             text = "${sess.messages.size} messages$dateSuffix",
-                                            style = p.uiLabelStyle.copy(fontSize = 10.sp)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp)
                                         )
                                     }
                                 }
@@ -548,15 +548,17 @@ internal fun TopEditorialBar(
                                 text = activeSession.title,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
+                                style = p.uiHeaderStyle.copy(fontSize = 15.sp),
                                 modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }.accessibilityLabel("Edit title: ${activeSession.title}")
                             )
                             if (!isCompactScreen && activeSession.messages.isNotEmpty()) {
-                                KissVectorIcon(
-                                    icon = KissIcon.SPARKLES,
-                                    tint = p.mutedInk,
-                                    size = 12.dp,
-                                    modifier = Modifier.kissClickable { onRegenerateTitleAi() }.accessibilityLabel("Regenerate title")
+                                SepiaButton(
+                                    text = "✦",
+                                    contentDescription = "Regenerate title",
+                                    hint = "Write a new title from this chat",
+                                    compact = true,
+                                    style = SepiaButtonStyle.GHOST,
+                                    onClick = onRegenerateTitleAi
                                 )
                             }
                         }
@@ -581,7 +583,7 @@ internal fun TopEditorialBar(
                             text = capsuleText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(fontSize = 11.5.sp),
+                            style = p.uiLabelStyle.copy(fontSize = 12.sp),
                             modifier = Modifier.weight(1f, fill = false)
                         )
                         KissVectorIcon(
@@ -612,7 +614,7 @@ internal fun TopEditorialBar(
                             .clip(tabBadgeShape)
                             .background(if (backgroundStreamingCount > 0) p.accent.copy(alpha = 0.16f) else p.cardBg)
                             .border(
-                                width = if (backgroundStreamingCount > 0) 1.2.dp else 1.dp,
+                                width = if (backgroundStreamingCount > 0) 1.dp else 1.dp,
                                 color = if (backgroundStreamingCount > 0) p.accent else p.border,
                                 shape = tabBadgeShape
                             )
@@ -631,7 +633,7 @@ internal fun TopEditorialBar(
                             BasicText(
                                 text = openTabCount.toString(),
                                 style = p.monoStyle.copy(
-                                    fontSize = 11.5.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (backgroundStreamingCount > 0) p.accent else p.primaryInk
                                 )
@@ -681,7 +683,7 @@ internal fun TopEditorialBar(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(p.cardBg)
-                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
                     .padding(11.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -699,7 +701,7 @@ internal fun TopEditorialBar(
                         KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
                         BasicText(
                             text = "Choose a model",
-                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         )
                         BasicText(
                             text = "($totalModelsCount)",
@@ -711,7 +713,7 @@ internal fun TopEditorialBar(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SepiaButton(
-                            text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage Providers",
+                            text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage providers",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -802,7 +804,7 @@ internal fun ParchmentSidebar(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(999.dp))
                 .background(p.cardBg.copy(alpha = 0.7f))
-                .border(0.8.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(999.dp))
+                .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(999.dp))
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -970,7 +972,8 @@ internal fun ParchmentSidebar(
                 }
                 if (assistantTopics.size > 1 || assistantTopics.any { it.messages.isNotEmpty() || it.title != "New Chat" }) {
                     SepiaButton(
-                        text = "Clear All",
+                        text = "Clear all",
+                        hint = "Delete every chat for this assistant",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onDeleteAllTopicsForAssistant
@@ -1027,7 +1030,7 @@ internal fun ParchmentSidebar(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(
-                                        fontSize = 13.5.sp,
+                                        fontSize = 14.sp,
                                         fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
                                     )
                                 )
@@ -1043,7 +1046,7 @@ internal fun ParchmentSidebar(
                         val showRowActions = if (isCompactScreen) touchActionsChatId == sess.id else rowHovered || rowHasFocus
                         if (isCompactScreen) {
                             SepiaButton(
-                                text = if (showRowActions) "×" else "⋯",
+                                text = if (showRowActions) "▴" else "⋯",
                                 contentDescription = if (showRowActions) "Hide chat actions" else "Chat actions",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
@@ -1062,13 +1065,14 @@ internal fun ParchmentSidebar(
                                 SepiaButton(
                                     text = "✦",
                                     contentDescription = "Regenerate title",
+                                    hint = "Write a new title from this chat",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onRegenerateSessionTitle(sess.id) }
                                 )
                             }
                             SepiaButton(
-                                text = "×",
+                                text = "🗑",
                                 contentDescription = "Delete chat",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
@@ -1127,9 +1131,9 @@ internal fun ParchmentAttachmentViewerModal(
                         .widthIn(max = 1040.dp)
                         .fillMaxWidth(0.94f)
                         .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(p.cardBg)
-                        .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
+                        .border(1.dp, p.accent, RoundedCornerShape(12.dp))
                         .blockTapThrough()
                         .padding(14.dp),
                     verticalArrangement = Arrangement.SpaceBetween
@@ -1140,7 +1144,7 @@ internal fun ParchmentAttachmentViewerModal(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .background(p.sheetBg.copy(alpha = 0.85f))
-                            .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                            .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1155,7 +1159,7 @@ internal fun ParchmentAttachmentViewerModal(
                                     text = item.title,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
-                                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                                    style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                                 )
                             }
                             val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
@@ -1337,9 +1341,9 @@ internal fun ParchmentAttachmentViewerModal(
                         .widthIn(max = 940.dp)
                         .fillMaxWidth(0.94f)
                         .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(p.cardBg)
-                        .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
+                        .border(1.dp, p.accent, RoundedCornerShape(12.dp))
                         .blockTapThrough()
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1360,7 +1364,7 @@ internal fun ParchmentAttachmentViewerModal(
                                     text = item.title,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
-                                    style = p.uiHeaderStyle.copy(fontSize = 15.5.sp)
+                                    style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                                 )
                             }
                             BasicText(
@@ -1451,7 +1455,7 @@ internal fun ParchmentAttachmentViewerModal(
                             else -> {
                                 BasicText(
                                     text = item.textContent.ifEmpty { "(Empty file)" },
-                                    style = p.monoStyle.copy(fontSize = 12.5.sp, lineHeight = 18.sp)
+                                    style = p.monoStyle.copy(fontSize = 13.sp, lineHeight = 18.sp)
                                 )
                             }
                         }
@@ -1603,7 +1607,7 @@ internal fun extractSessionVaultItems(
                                     ?.joinToString("\n\n").orEmpty()
                             }
                         }
-                        val badge = if (low == "fs_write") "✦ AI WROTE" else "✦ AI EDITED"
+                        val badge = if (low == "fs_write") "✦ AI wrote" else "✦ AI edited"
                         aiArtifacts.add(
                             AiGeneratedChatArtifact.WorkspaceFileArtifact(
                                 turnNumber = turnNum,
@@ -1701,7 +1705,7 @@ internal fun ParchmentRightFilesSidebar(
                     text = "Chat Files & Sources ($totalCount)",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                    style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                 )
             }
             SepiaButton(
@@ -1758,7 +1762,7 @@ internal fun ParchmentRightFilesSidebar(
                 ) {
                     KissVectorIcon(icon = KissIcon.FOLDER, tint = p.mutedInk, size = 26.dp)
                     BasicText(
-                        text = "No Files or Sources Yet",
+                        text = "No files or sources yet",
                         style = p.uiHeaderStyle.copy(fontSize = 14.sp, color = p.narrationInk)
                     )
                     BasicText(
@@ -1790,11 +1794,11 @@ internal fun ParchmentRightFilesSidebar(
                     ) {
                         KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 12.dp)
                         BasicText(
-                            text = "AI-GENERATED FILES & MEDIA (${aiArtifacts.size})",
+                            text = "Files and media from AI (${aiArtifacts.size})",
                             style = p.uiLabelStyle.copy(
                                 color = p.accent,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 10.5.sp,
+                                fontSize = 11.sp,
                                 letterSpacing = 0.5.sp
                             )
                         )
@@ -1809,7 +1813,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
-                                        .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                                         .clickable(role = Role.Button) {
                                             val wsRoot = activeSession.workspacePath
                                             val liveText = if (wsRoot.isNotBlank()) {
@@ -1856,13 +1860,13 @@ internal fun ParchmentRightFilesSidebar(
                                                 )
                                                 BasicText(
                                                     text = parsedBadge.cleanText.ifEmpty { item.actionBadge },
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                                 )
                                             }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
-                                            style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                         )
                                     }
                                     Row(
@@ -1874,14 +1878,14 @@ internal fun ParchmentRightFilesSidebar(
                                             text = shortName,
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                         )
                                     }
                                     BasicText(
                                         text = "${item.filePath} • Click to inspect",
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                     )
                                 }
                             }
@@ -1896,7 +1900,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
-                                        .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                                         .clickable(role = Role.Button) {
                                             if (isVideo) {
                                                 val target = media.localFilePath.ifBlank { media.remoteUrl }
@@ -1929,14 +1933,14 @@ internal fun ParchmentRightFilesSidebar(
                                                     size = 9.5.dp
                                                 )
                                                 BasicText(
-                                                    text = if (isVideo) "AI VIDEO" else "AI IMAGE",
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                    text = if (isVideo) "AI video" else "AI image",
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                                 )
                                             }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
-                                            style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                         )
                                     }
                                     Row(
@@ -1952,12 +1956,12 @@ internal fun ParchmentRightFilesSidebar(
                                             text = fileLabel,
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                         )
                                     }
                                     BasicText(
                                         text = if (isVideo) "Click to play MP4 video" else "Click to zoom image",
-                                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.accent)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.accent)
                                     )
                                 }
                             }
@@ -1968,7 +1972,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
-                                        .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                                         .clickable(role = Role.Button) {
                                             onInspectAttachment(
                                                 PromptAttachment(
@@ -2003,14 +2007,14 @@ internal fun ParchmentRightFilesSidebar(
                                                     size = 9.5.dp
                                                 )
                                                 BasicText(
-                                                    text = "AI ${item.language.uppercase()}",
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                                    text = "AI ${item.language}",
+                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                                 )
                                             }
                                         }
                                         BasicText(
                                             text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
-                                            style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                         )
                                     }
                                     Row(
@@ -2022,12 +2026,12 @@ internal fun ParchmentRightFilesSidebar(
                                             text = item.fileName,
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                         )
                                     }
                                     BasicText(
                                         text = "Click to view full code",
-                                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                     )
                                 }
                             }
@@ -2043,11 +2047,11 @@ internal fun ParchmentRightFilesSidebar(
                     ) {
                         KissVectorIcon(icon = KissIcon.UPLOAD, tint = p.narrationInk, size = 12.dp)
                         BasicText(
-                            text = "USER-UPLOADED DOCUMENTS (${userUploads.size})",
+                            text = "Your uploads (${userUploads.size})",
                             style = p.uiLabelStyle.copy(
                                 color = p.narrationInk,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 10.5.sp,
+                                fontSize = 11.sp,
                                 letterSpacing = 0.5.sp
                             )
                         )
@@ -2083,7 +2087,7 @@ internal fun ParchmentRightFilesSidebar(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(p.cardBg)
-                                .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                                .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
                                 .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(5.dp)
@@ -2109,14 +2113,14 @@ internal fun ParchmentRightFilesSidebar(
                                             size = 9.5.dp
                                         )
                                         BasicText(
-                                            text = "USER UPLOAD",
-                                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                                            text = "Your upload",
+                                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         )
                                     }
                                 }
                                 BasicText(
                                     text = "$turnLabel • $kindLabel",
-                                    style = p.uiLabelStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                 )
                             }
                             Row(
@@ -2134,7 +2138,7 @@ internal fun ParchmentRightFilesSidebar(
                                         text = att.fileName,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
-                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                     )
                                 }
                                 if (entry.turnNumber > 0) {
@@ -2159,11 +2163,11 @@ internal fun ParchmentRightFilesSidebar(
                     ) {
                         KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accentSecondary, size = 12.dp)
                         BasicText(
-                            text = "GROUNDED WEB SOURCES (${webSources.size})",
+                            text = "Web sources (${webSources.size})",
                             style = p.uiLabelStyle.copy(
                                 color = p.accentSecondary,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 10.5.sp,
+                                fontSize = 11.sp,
                                 letterSpacing = 0.5.sp
                             )
                         )
@@ -2181,7 +2185,7 @@ internal fun ParchmentRightFilesSidebar(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(p.cardBg)
-                                .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                                .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
                                 .clickable(role = Role.Button, onClickLabel = "Open source") { openWebLink(src.url) }
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -2204,14 +2208,14 @@ internal fun ParchmentRightFilesSidebar(
                                     ) {
                                         BasicText(
                                             text = "[${src.index}]",
-                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         )
                                     }
                                     BasicText(
                                         text = src.domain.ifBlank { src.url },
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                     )
                                 }
                                 Row(
@@ -2220,7 +2224,7 @@ internal fun ParchmentRightFilesSidebar(
                                 ) {
                                     BasicText(
                                         text = "Turn #${item.turnNumber} • $lineLabel",
-                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                     )
                                     KissVectorIcon(
                                         icon = KissIcon.EXTERNAL_LINK,
@@ -2233,7 +2237,7 @@ internal fun ParchmentRightFilesSidebar(
                                 text = src.title.ifBlank { src.url },
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                             )
                             if (quoteExcerpt.isNotBlank()) {
                                 Row(
@@ -2249,7 +2253,7 @@ internal fun ParchmentRightFilesSidebar(
                                         text = "$lineLabel: \"$quoteExcerpt\"",
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 10.5.sp)
+                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
                                     )
                                 }
                             }
@@ -2315,7 +2319,7 @@ internal fun ContextWindowBreakdownPopover(
         CategorySlice(historyLabel, breakdown.chatHistoryTokens, colHistory),
         CategorySlice("Current Composer Draft", breakdown.composerDraftTokens, colDraft),
         CategorySlice(
-            label = "Free Space Remaining",
+            label = "Free space remaining",
             tokens = breakdown.freeSpaceTokens,
             color = colFree,
             isFreeSpace = true
@@ -2326,9 +2330,9 @@ internal fun ContextWindowBreakdownPopover(
         modifier = modifier
             .fillMaxWidth()
             .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(11.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(p.cardBg)
-            .border(1.dp, p.accent.copy(alpha = 0.75f), RoundedCornerShape(11.dp))
+            .border(1.dp, p.accent.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -2339,15 +2343,15 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 BasicText(
-                    text = "Context Window Breakdown",
-                    style = p.uiHeaderStyle.copy(fontSize = 14.5.sp)
+                    text = "Context window breakdown",
+                    style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                 )
                 val limitText = if (isUnlimited) "∞" else formatCompactTokens(breakdown.contextLimitTokens)
                 val costSuffix = sessionCostLabel.takeIf { it.isNotBlank() }?.let { " • Session $it" }
                     ?: if (sessionTotalCostUsd > 0.0) " • Session ~${formatUsdCost(sessionTotalCostUsd)}" else ""
                 BasicText(
                     text = "o200k_base • ${breakdown.totalUsedTokens} / $limitText tok ($pctInt% used)$costSuffix",
-                    style = p.monoStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                    style = p.monoStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                 )
             }
             SepiaButton(
@@ -2367,7 +2371,7 @@ internal fun ContextWindowBreakdownPopover(
                 .height(10.dp)
                 .clip(RoundedCornerShape(999.dp))
                 .background(p.elevatedBg)
-                .border(0.65.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+                .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
         ) {
             for (slice in slices) {
                 if (slice.tokens > 0) {
@@ -2463,7 +2467,7 @@ internal fun ContextWindowBreakdownPopover(
                 )
             }
             SepiaButton(
-                text = "⚙ Limit & Pricing",
+                text = "⚙ Limit & pricing",
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = {

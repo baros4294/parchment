@@ -340,7 +340,7 @@ class ParchmentProtocolAndHarnessTest {
 
         // 6. Rolling Context Compactor must compact verbose outputs older than 8 steps
         val longOutput = "Line of file content\n".repeat(60)
-        val compactedOld = WorkspaceHarness.compactStaleToolOutputText(1, 15, "fs_read", longOutput)
+        val compactedOld = WorkspaceHarness.compactStaleToolOutputText(1, 30, "fs_read", longOutput)
         assertTrue(compactedOld.startsWith("[Compacted step #1"), "Old verbose tool output (>8 steps ago) must be compacted")
         val recentUnchanged = WorkspaceHarness.compactStaleToolOutputText(12, 15, "fs_read", longOutput)
         assertEquals(longOutput, recentUnchanged, "Recent tool output (<=8 steps ago) must remain verbatim")
@@ -1765,19 +1765,24 @@ class ParchmentProtocolAndHarnessTest {
         )
         assertEquals(listOf("image"), mergedPreservesMedia.outputModalities)
 
-        // 4. Verify 3-Tier Universal Modality Classifier (Image, Interleaved, Video, Audio/TTS, Live Realtime Audio)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "seedream-5-0-pro").isDedicatedImage)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "black-forest-labs/flux-2-pro").isDedicatedImage)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gemini-3.1-flash-image").isInterleavedImage)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "bytedance/seedance-2.5").isDedicatedVideo)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "veo-3.1-fast").isDedicatedVideo)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "kwaivgi/kling-v3.0-pro").isDedicatedVideo)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "alibaba/wan-3.0-prime").isDedicatedVideo)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "minimax/hailuo-3-max").isDedicatedVideo)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "bytedance-seed/seed-audio-1-0").isDedicatedAudioTts)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "tts-1-hd").isDedicatedAudioTts)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gemini-3.8-flash-live-preview").isLiveRealtimeAudio)
-        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "gpt-4o-realtime-preview").isLiveRealtimeAudio)
+        // 4. Capabilities come from settings, the provider and the registry, never from a model's name
+        listOf("flux-writer-unlisted", "wan-chat-unlisted", "veo-lite-assistant-unlisted", "my-realtime-notes-unlisted").forEach { misleading ->
+            val profile = AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, misleading)
+            assertEquals(listOf("text"), profile.outputModalities, misleading)
+            assertFalse(profile.isLiveRealtimeAudio, misleading)
+        }
+        val imageEndpoint = defaultOpenAi.copy(endpointPathOverride = "/v1/images/generations")
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(imageEndpoint, "unlisted-model").isDedicatedImage)
+        fun withSpec(id: String, vararg outputs: String) = defaultOpenAi.copy(
+            customModelSpecs = mapOf(id to io.parchment.ai.model.ModelPricingSpec(modelId = id, outputModalities = outputs.toList()))
+        )
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(withSpec("house-model", "video"), "house-model").isDedicatedVideo)
+        assertFalse(AiProviderEngine.resolveModelModalityProfile(withSpec("audio-chat", "text", "audio"), "audio-chat").isLiveRealtimeAudio)
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(withSpec("voice-live", "text", "audio", "realtime"), "voice-live").isLiveRealtimeAudio)
+        // A setting beats what a provider reported for the same model
+        AiProviderEngine.parseModelsListJson("""{"data":[{"id":"conflicted-model","output_modalities":["image"]}]}""")
+        assertTrue(AiProviderEngine.resolveModelModalityProfile(defaultOpenAi, "conflicted-model").isDedicatedImage)
+        assertFalse(AiProviderEngine.resolveModelModalityProfile(withSpec("conflicted-model", "text"), "conflicted-model").isDedicatedImage)
 
         // 5. Verify Model Lab Icons Are Never Hijacked by fallbackProtocolName ("OPENAI_RESPONSES")
         assertEquals("doubao", resolveLabSlugForModelOrProvider("seedream-5-0-pro", "OPENAI_RESPONSES"))

@@ -61,6 +61,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
     onContent: suspend (String) -> Unit,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
     onToolCall: suspend (ToolCallRecord) -> Unit,
+    onOutputLimit: suspend () -> Unit = {},
     onRawWire: suspend (String, String) -> Unit,
     onRequestStarted: UsageRequestStarter,
     onUsage: UsageReporter,
@@ -348,7 +349,9 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                             }
                             extractCitationsFromGeminiCandidate(firstCand, onCitation)
 
-                            if ((firstCand?.get("finishReason") as? JsonPrimitive)?.contentOrNull != null) streamFinished = true
+                            val finishReason = (firstCand?.get("finishReason") as? JsonPrimitive)?.contentOrNull
+                            if (finishReason != null) streamFinished = true
+                            if (finishReason == "MAX_TOKENS") onOutputLimit()
                             val usage = obj["usageMetadata"] as? JsonObject
                             if (firstCand?.get("groundingMetadata") is JsonObject) {
                                 onUsage(usageRequestId, "", UsageDialect.GEMINI_CONTENT,

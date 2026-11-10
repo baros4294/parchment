@@ -86,6 +86,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
     onContent: suspend (String) -> Unit,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
     onToolCall: suspend (ToolCallRecord) -> Unit,
+    onOutputLimit: suspend () -> Unit = {},
     onRawWire: suspend (String, String) -> Unit,
     onRequestStarted: UsageRequestStarter,
     onUsage: UsageReporter,
@@ -668,6 +669,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                                         ?: evObj["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
                                     roundContinuationToken = completedObj["continuation_token"]?.jsonPrimitive?.contentOrNull
                                         ?: evObj["continuation_token"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                    if (roundStatus == "incomplete") onOutputLimit()
                                     for ((_, pair) in pendingFnArgsByIndex.entries.sortedBy { it.key }) {
                                         addUniqueToolCall(pair.first, pair.second.first, pair.second.second.toString())
                                     }

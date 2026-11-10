@@ -59,6 +59,7 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
     onContent: suspend (String) -> Unit,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
     onToolCall: suspend (ToolCallRecord) -> Unit,
+    onOutputLimit: suspend () -> Unit = {},
     onRawWire: suspend (String, String) -> Unit,
     onRequestStarted: UsageRequestStarter,
     onUsage: UsageReporter,
@@ -209,7 +210,9 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
                             }
                             val choices = obj["choices"] as? JsonArray
                             val firstChoice = choices?.firstOrNull() as? JsonObject
-                            if ((firstChoice?.get("finish_reason") as? JsonPrimitive)?.contentOrNull != null) streamFinished = true
+                            val finishReason = (firstChoice?.get("finish_reason") as? JsonPrimitive)?.contentOrNull
+                            if (finishReason != null) streamFinished = true
+                            if (finishReason == "length") onOutputLimit()
                             val delta = (firstChoice?.get("delta") as? JsonObject)
                                 ?: (firstChoice?.get("message") as? JsonObject)
                             if (delta != null) {

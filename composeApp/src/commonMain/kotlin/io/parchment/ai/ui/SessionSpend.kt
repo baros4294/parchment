@@ -6,8 +6,9 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.network.aggregateApiUsageRecords
+import io.parchment.ai.network.spendTowardLimit
 
-internal data class SessionSpendSummary(val metrics: TokenMetrics, val legacyEstimateUsd: Double, val legacyTurns: Int) {
+internal data class SessionSpendSummary(val metrics: TokenMetrics, val legacyEstimateUsd: Double, val legacyTurns: Int, val towardLimitUsd: Double = 0.0) {
     val estimateUsd: Double get() = (metrics.estimatedCostUsd + legacyEstimateUsd).takeIf { it.isFinite() && it >= 0 } ?: 0.0
     val partial: Boolean get() = legacyTurns > 0 || !metrics.usageIsComplete || !metrics.costIsAvailable
     val label: String get() = when {
@@ -43,7 +44,7 @@ internal fun sessionSpendSummary(session: ChatSession, profile: ProviderProfile)
         }
     }
     session.utilityUsageRecords.forEach(::add)
-    return SessionSpendSummary(aggregateApiUsageRecords(requests.values), legacyCost, legacyTurns)
+    return SessionSpendSummary(aggregateApiUsageRecords(requests.values), legacyCost, legacyTurns, spendTowardLimit(requests.values) + legacyCost)
 }
 
 /** Preserve copied evidence while keeping its original billing owner through future forks. */

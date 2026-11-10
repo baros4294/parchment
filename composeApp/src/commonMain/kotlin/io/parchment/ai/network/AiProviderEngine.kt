@@ -110,6 +110,9 @@ object AiProviderEngine {
     internal const val MAX_PRE_TOKEN_RETRIES = 10
     internal const val RETRY_WAIT_SECONDS = 60
 
+/** Shown under an answer the model had to cut short; removed before the text is sent back. */
+internal const val OUTPUT_LIMIT_NOTICE = "\n\n*[Stopped at the model's output limit. Use Continue to keep going.]*"
+
 /** Marker prefixing a carried-forward reasoning narrative from a different provider. */
 internal const val REASONING_HANDOFF_MARKER = "[Prior reasoning summary]"
 
@@ -124,8 +127,15 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
 
     internal class StepRetriesExhaustedException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
+    /** A stop that sending the request again could only make worse. */
+    internal open class NoRetryException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
     /** The provider already accepted this job, so retrying the request could pay for it twice. */
-    internal class AcceptedJobException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+    internal class AcceptedJobException(message: String, cause: Throwable? = null) : NoRetryException(message, cause)
+
+    /** The chat reached the spend limit set in Settings. */
+    internal class SpendLimitException(limitUsd: Double) :
+        NoRetryException("This chat reached its ${"$"}$limitUsd spend limit. Raise or clear the limit in Settings to continue.")
 
     internal suspend fun waitWithRetryCountdown(
         attempt: Int,
@@ -189,6 +199,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         initialMediaItems: List<GeneratedMediaItem> = emptyList(),
         initialWebSources: List<WebSourceCitation> = emptyList(),
         initialGoalTracker: GoalTrackerState? = null,
+        resumeMediaTask: String = "",
+        spendLimitUsd: Double = 0.0,
+        spendBeforeRunUsd: Double = 0.0,
         initialElapsedMs: Long = 0L,
         initialApiUsageRecords: List<ApiUsageRecord> = emptyList(),
         initialTokenMetrics: TokenMetrics = TokenMetrics(),
@@ -230,6 +243,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         val usageLedger = ProviderUsageLedger(profile, model, initialApiUsageRecords, initialTokenMetrics,
             usageOwnerSessionId, usageOwnerRunId.ifBlank { currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformBridge.createRunId() }, usagePurpose)
         var latestUsageMetrics = usageLedger.metrics()
+        val ledgerSpendAtStart = spendTowardLimit(usageLedger.snapshots())
         val toolPolicy = AgentPermissionResolver.resolve(session, profile = profile)
         val transportProfile = profile.copy(
             useLegacyFallbackEndpoint = profile.protocol != ProviderProtocol.CUSTOM && profile.useLegacyFallbackEndpoint,
@@ -281,7 +295,14 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             }
         }
 
+        fun stopIfOverSpendLimit() {
+            if (spendLimitUsd > 0.0 && spendBeforeRunUsd + spendTowardLimit(usageLedger.snapshots()) - ledgerSpendAtStart >= spendLimitUsd) {
+                throw SpendLimitException(spendLimitUsd)
+            }
+        }
+
         suspend fun beginUsageRequest(dialect: UsageDialect): String {
+            stopIfOverSpendLimit()
             val mediaInputs = buildSet {
                 val fees = requestChargePricing(profile, model).perUnitUsd
                 historyNodes.filter { it.includedInContext }.forEach { node ->
@@ -310,6 +331,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
 
         suspend fun beginMediaUsage(wireDialect: String, component: String) {
+            stopIfOverSpendLimit()
             val record = usageLedger.beginMedia(wireDialect, component)
             latestUsageMetrics = usageLedger.metrics()
             emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
@@ -388,6 +410,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 chainingActive = profile.useStatefulChaining
             )
             var currentContinuePrefix = cleanInitialPrefix
+            var reachedOutputLimit = false
             var retryAttempt = 0
             var continuationPass = 0
             var emptyAnswerNudgePass = 0
@@ -466,6 +489,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onMedia = { item ->
                                         recordGeneratedMedia(item)
                                     },
+                                    onOutputLimit = { reachedOutputLimit = true },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
                                     },
@@ -517,6 +541,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onMedia = { item ->
                                         recordGeneratedMedia(item)
                                     },
+                                    onOutputLimit = { reachedOutputLimit = true },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
                                     },
@@ -600,6 +625,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     onMedia = { item ->
                                         recordGeneratedMedia(item)
                                     },
+                                    onOutputLimit = { reachedOutputLimit = true },
                                     onToolCall = { tc ->
                                         upsertToolCallAndEmit(tc)
                                     },
@@ -614,6 +640,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
 
                             suspend fun runUniversalMediaGeneration(forceVideo: Boolean) {
                                 executeByteDanceArkGeneration(
+                                    resumeTask = resumeMediaTask,
                                     profile = profile,
                                     model = model,
                                     session = session,
@@ -679,7 +706,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 try {
                                     runUniversalMediaGeneration(forceVideo = true)
                                 } catch (videoErr: Throwable) {
-                                    if (videoErr is kotlinx.coroutines.CancellationException || videoErr is AcceptedJobException) throw videoErr
+                                    if (videoErr is kotlinx.coroutines.CancellationException || videoErr is NoRetryException) throw videoErr
                                     if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
                                         runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
                                     } else {
@@ -743,6 +770,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onMedia = { item ->
                                             recordGeneratedMedia(item)
                                         },
+                                        onOutputLimit = { reachedOutputLimit = true },
                                         onToolCall = { tc ->
                                             upsertToolCallAndEmit(tc)
                                         },
@@ -846,6 +874,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                     PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                     emit(StreamUpdate.ContentDelta(delta))
                                 },
+                                onOutputLimit = { reachedOutputLimit = true },
                                 onToolCall = { tc ->
                                     upsertToolCallAndEmit(tc)
                                 },
@@ -873,7 +902,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val hasThoughtsOrTools = thinkingBuilder.isNotBlank() || signatureBuilder.isNotBlank() || executedTools.isNotEmpty()
                     val isBreakerTripped = circuitBreaker.checkTripped() != null
 
-                    if (hasNoFinalAnswer && hasThoughtsOrTools && !isBreakerTripped && emptyAnswerNudgePass < 3) {
+                    val goalAlreadyFinished = circuitBreaker.goalState?.isCompleted == true
+                    if (hasNoFinalAnswer && hasThoughtsOrTools && !isBreakerTripped && !goalAlreadyFinished && emptyAnswerNudgePass < 3) {
                         emptyAnswerNudgePass++
                         currentContinuePrefix = ""
                         val nudgeStatus = when (emptyAnswerNudgePass) {
@@ -1010,7 +1040,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
 
             emit(
                 StreamUpdate.Completed(
-                    fullContent = contentBuilder.toString(),
+                    fullContent = contentBuilder.toString() + if (reachedOutputLimit) OUTPUT_LIMIT_NOTICE else "",
                     fullThinking = thinkingBuilder.toString(),
                     trailingThinking = if (executedTools.isNotEmpty()) currentStepThinkingBuilder.toString().trim() else "",
                     thinkingSignature = signatureBuilder.toString(),

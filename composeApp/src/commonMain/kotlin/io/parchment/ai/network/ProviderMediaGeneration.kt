@@ -160,7 +160,11 @@ internal suspend fun AiProviderEngine.executeOpenAiAudioSpeechEndpoint(
     error("Audio Speech HTTP $lastStatus: $lastErrorBody")
 }
 
+/** "video-task:<endpoint index>:<id>", checked against this profile's own endpoints before it is polled. */
+private val RESUMABLE_VIDEO_TASK = Regex("""video-task:(\d{1,2}):([A-Za-z0-9._-]{1,128})""")
+
 internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
+    resumeTask: String = "",
     profile: ProviderProfile,
     model: String,
     session: ChatSession,
@@ -257,9 +261,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             put("prompt", latestUserPrompt)
         }
 
-        val isByteDanceFamily = model.contains("seedance", ignoreCase = true) ||
-            model.contains("doubao", ignoreCase = true) ||
-            baseClean.contains("volces.com", ignoreCase = true) ||
+        val isByteDanceFamily = baseClean.contains("volces.com", ignoreCase = true) ||
             baseClean.contains("bytepluses.com", ignoreCase = true) ||
             baseClean.endsWith("/api/v3", ignoreCase = true)
 
@@ -298,8 +300,15 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
         var createBody = ""
         var createStatus = 0
         var reqStr = ""
+        // A job the provider accepted before the app closed is picked up again rather than paid for twice.
+        val resumed = RESUMABLE_VIDEO_TASK.matchEntire(resumeTask)?.takeIf { it.groupValues[1].toInt() in candidateTaskUrls.indices }
+        if (resumed != null) {
+            activeTaskUrl = candidateTaskUrls[resumed.groupValues[1].toInt()]
+            createBody = buildJsonObject { put("id", resumed.groupValues[2]); put("status", "queued") }.toString()
+            createStatus = 200
+        }
 
-        outerUrlLoop@ for (candUrl in candidateTaskUrls) {
+        outerUrlLoop@ for (candUrl in if (resumed == null) candidateTaskUrls else emptyList()) {
             activeTaskUrl = candUrl
             val finalCreateUrl = buildUrlWithAuthQuery(profile, candUrl)
             val isTasksEndpoint = candUrl.contains("contents/generations/tasks", ignoreCase = true)
@@ -401,6 +410,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             ?: immediateVideoUrl?.let { "sync-${PlatformBridge.currentTimeMillis()}" }
             ?: error("Video generation response did not contain a task 'id' or 'url': $createBody")
 
+        val taskRef = "video-task:${candidateTaskUrls.indexOf(activeTaskUrl)}:$taskId"
         var latestTaskObj = createObj
         if (immediateVideoUrl == null) {
             var status = createObj["status"]?.jsonPrimitive?.contentOrNull
@@ -418,7 +428,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
                 status.equals("starting", ignoreCase = true)
             ) {
                 pollCount++
-                onStatus("Video Generating ($status • poll #$pollCount)…", taskId)
+                onStatus("Video Generating ($status • poll #$pollCount)…", taskRef)
                 delay(3000L)
                 val pollUrl = buildUrlWithAuthQuery(profile, "${activeTaskUrl.trimEnd('/')}/$taskId")
                 latestTaskObj = try {
@@ -437,7 +447,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
                             "Video task $taskId was accepted, but its status could not be read, so it was not submitted again. ${e.message.orEmpty()}", e
                         )
                     }
-                    onStatus("Video status check failed — trying again ($failedPolls/$MAX_VIDEO_POLL_FAILURES)…", taskId)
+                    onStatus("Video status check failed — trying again ($failedPolls/$MAX_VIDEO_POLL_FAILURES)…", taskRef)
                     continue
                 }
                 failedPolls = 0
@@ -462,7 +472,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             ?: throw AiProviderEngine.AcceptedJobException("Video task completed but no video URL was found in response: $latestTaskObj")
 
         onFirstToken()
-        onStatus("Downloading generated MP4 video…", taskId)
+        onStatus("Downloading generated MP4 video…", taskRef)
         val videoBytes = runCatching {
             downloadMediaBytes(videoUrl, MAX_DOWNLOADED_VIDEO_BYTES)
         }.getOrElse { ByteArray(0) }
@@ -487,10 +497,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
         val refImages = resolveBinaryAttachments(latestUserNode?.activeVariant)
             .filter { it.mimeType.lowercase().startsWith("image/") }
 
-        val isHighResSeedreamFamily = model.contains("seedream", ignoreCase = true) ||
-            model.contains("doubao", ignoreCase = true) ||
-            model.contains("dreamina", ignoreCase = true) ||
-            profile.mediaResolution in listOf("2K", "4K")
+        val isHighResSeedreamFamily = profile.mediaResolution in listOf("2K", "4K")
         val primarySize = if (isHighResSeedreamFamily) {
             resolveSeedreamImageSize(profile.mediaAspectRatio, profile.mediaResolution)
         } else {

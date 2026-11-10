@@ -186,8 +186,8 @@ class AgentPermissionUiTest {
         val session = ChatSession("chat", "Fixture", 1L, 1L, profile.id)
         val state = AppStateSnapshot(profiles = listOf(profile), activeProfileId = profile.id,
             assistants = listOf(assistant), activeAssistantId = assistant.id)
-        val labels = listOf("Temperature (", "Top-P (", "Max Output Tokens (", "Legacy Thinking Budget (",
-            "History Message Limit (", "Prose Font Size (", "Code Font Size (", "Max Reading Width (")
+        val labels = listOf("Temperature (", "Top-P (", "Max output tokens (", "Legacy thinking budget (",
+            "History message limit (", "Prose font size (", "Code font size (", "Max reading width (")
         val presetLabels = ThemeConfig.PRESETS.map { it.name.substringBefore(" (") }
         listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
             listOf("provider", "assistant", "fonts").forEach { page ->
@@ -212,8 +212,8 @@ class AgentPermissionUiTest {
                         click(nodes(scene).single { text(it).startsWith(assistant.name) && it.config.contains(SemanticsActions.OnClick) })
                         settle(scene, 0L)
                     }
-                    val first = if (page == "fonts") "Prose Font Size (" else "Temperature ("
-                    val second = if (page == "fonts") "Code Font Size (" else "Top-P ("
+                    val first = if (page == "fonts") "Prose font size (" else "Temperature ("
+                    val second = if (page == "fonts") "Code font size (" else "Top-P ("
                     val fieldNodes = nodes(scene).filter { node ->
                         !node.config.contains(SemanticsActions.SetText) && labels.any { text(node).startsWith(it) }
                     }

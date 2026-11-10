@@ -71,6 +71,16 @@ class SessionSpendTest {
         assertEquals("", sessionSpendSummary(chat(emptyList()), profile).label)
     }
 
+    @Test fun aMissingCacheSplitStaysUnavailableButStillCountsTowardTheLimitAtItsLowestPrice() {
+        val noSplit = record("no-split").copy(pricing = TokenPricing(inputPerM = 1.0, outputPerM = 2.0, cacheReadPerM = 0.1),
+            usage = ProviderTokenUsage(inputTokens = 1_000_000, outputTokens = 0, isFinal = true))
+        val spend = sessionSpendSummary(chat(emptyList(), listOf(noSplit)), profile)
+        assertEquals("cost unavailable", spend.label)
+        assertEquals(0.1, spend.towardLimitUsd, 1e-12)
+        val known = sessionSpendSummary(chat(emptyList(), listOf(record("known"))), profile)
+        assertEquals(known.estimateUsd, known.towardLimitUsd, 1e-12)
+    }
+
     @Test fun reportedFreeCostsRemainVisibleWhenTokenUsageIsMissing() {
         val reported = record("free").copy(usage = ProviderTokenUsage(charges = ProviderChargeUsage(reportedTotalUsd = 0.0)))
         val spend = sessionSpendSummary(chat(emptyList(), listOf(reported)), profile)

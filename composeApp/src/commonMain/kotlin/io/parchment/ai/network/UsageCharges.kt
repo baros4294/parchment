@@ -165,3 +165,20 @@ internal fun estimateRequestCost(record: ApiUsageRecord): RequestCostEstimate {
     if (!total.isFinite()) return RequestCostEstimate(0.0, missing + "cost overflow")
     return RequestCostEstimate(total, missing)
 }
+
+/**
+ * What a spend limit counts. Many servers leave out the cache split, which makes the displayed
+ * cost unavailable; here that input counts at its lowest possible price, so the limit still
+ * holds and never stops a run on an overestimate.
+ */
+internal fun spendTowardLimit(records: Collection<ApiUsageRecord>): Double {
+    val total = records.sumOf { record ->
+        val usage = record.usage
+        val splitMissing = usage.isComplete && (usage.cachedInputTokens == null || usage.cacheCreationInputTokens == null)
+        val estimate = estimateRequestCost(record)
+        if (!splitMissing || estimate.reported) estimate.usd else estimateRequestCost(record.copy(usage = usage.copy(
+            cachedInputTokens = usage.cachedInputTokens ?: usage.inputTokens,
+            cacheCreationInputTokens = usage.cacheCreationInputTokens ?: 0L))).usd
+    }
+    return total.takeIf { it.isFinite() && it >= 0 } ?: 0.0
+}

@@ -1,5 +1,6 @@
 package io.parchment.ai.ui
 
+import io.parchment.ai.harness.settledForDisk
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AgentPermissionOverrides
 import io.parchment.ai.model.AgentPermissionResolver
@@ -670,15 +671,7 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
         stripped.copy(
             messages = stripped.messages.map { node ->
                 node.copy(
-                    variants = node.variants.map { v ->
-                        val hasRunningTools = v.toolCalls.any { it.isRunning }
-                        if (v.isStreaming || hasRunningTools) {
-                            v.copy(
-                                isStreaming = false,
-                                toolCalls = if (hasRunningTools) v.toolCalls.map { if (it.isRunning) it.copy(isRunning = false) else it } else v.toolCalls
-                            )
-                        } else v
-                    }
+                    variants = node.variants.map { v -> v.settledForDisk() }
                 )
             }
         )
@@ -947,13 +940,11 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     return fresh
 }
 
-/** Moves settings the user never changed to the page design. Every choice stays available in Settings. */
+/** Moves display settings to the page design once. Every choice stays available in Settings. */
 private fun applyDesignDefaultsOnce(saved: AppStateSnapshot): AppStateSnapshot {
     if (saved.designDefaultsApplied) return saved
-    val theme = if (saved.theme.copy(name = "") == ThemeConfig.CLASSIC_SEPIA.copy(name = "")) ThemeConfig() else saved.theme
     val builtInProfiles = setOf("prof-gemini-interactions", "prof-openai-responses", "prof-anthropic-messages")
     return saved.copy(
-        theme = theme,
         designDefaultsApplied = true,
         profiles = saved.profiles.map {
             if (it.id in builtInProfiles && it.thinkingEffort == "high") it.copy(thinkingEffort = "none") else it
@@ -992,15 +983,7 @@ internal fun sanitizeLoadedSnapshot(saved: AppStateSnapshot): AppStateSnapshot {
                 ),
                 messages = sess.messages.map { node ->
                     node.copy(
-                        variants = node.variants.map { v ->
-                            val hasRunningTools = v.toolCalls.any { it.isRunning }
-                            if (v.isStreaming || hasRunningTools) {
-                                v.copy(
-                                    isStreaming = false,
-                                    toolCalls = if (hasRunningTools) v.toolCalls.map { if (it.isRunning) it.copy(isRunning = false) else it } else v.toolCalls
-                                )
-                            } else v
-                        }
+                        variants = node.variants.map { v -> v.settledForDisk() }
                     )
                 }
             )

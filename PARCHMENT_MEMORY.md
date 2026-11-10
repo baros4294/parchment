@@ -53,6 +53,8 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 - Records use wide nullable counts, owner/run/purpose identities, cumulative coalescing and TTL pricing. Failed requests stay unknown. Session totals count each owned request once and exclude copied fork charges.
 - Model snapshots preserve explicit free and unknown prices (blank unknown, 0 free), exact units and tiers. Reported gateway totals replace estimates. Missing per-image/container/video fees and external BYOK billing stay explicitly partial.
 
+- Keep request beginnings stable: stale tool output compacts in batches of 8, and keyword lore goes in the late note, not the system prompt.
+
 ## Persistence
 
 - Layout: parchment-settings.json, backups/, chats/<id>/chat.json and per-chat media/. Keep safe legacy migration and portable relative export paths.
@@ -74,7 +76,7 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 
 ## UI and performance
 
-- docs/DESIGN.md owns the page design. designDefaultsApplied moves untouched settings to its defaults once; unchanged built-in profiles at high reasoning move to none.
+- docs/DESIGN.md owns the page design, tokens and icons. designDefaultsApplied moves display settings to its defaults once; built-in profiles at high reasoning move to none. Windows uses the native caption through WindowsChrome (JNA).
 - Foundation primitives and KissVectorIcon/ModelLabSvgIcon; no raw OS emoji. Prose and code baseline 14sp. Prefer vertical choices and wrapped rows; no horizontal option scrollbars.
 - Shared controls expose one labelled target with state and a 48dp minimum. Field labels merge into input semantics; a contentDescription would replace the value for readers.
 - Palette build keeps muted, danger and success ink at 4.5:1 on all surfaces; filled controls use onFillInk.

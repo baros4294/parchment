@@ -1,5 +1,10 @@
 package io.parchment.ai.ui
 
+import io.parchment.ai.harness.wasCutOff
+import io.parchment.ai.harness.withInterruptedOutcome
+import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.hoverable
 import androidx.compose.ui.draw.alpha
@@ -53,7 +58,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -75,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -438,7 +443,7 @@ fun ParchmentApp(
                 uiScope.launch {
                     attachPickedFiles(dropped)
                     if (dropped.none { it.oversized }) {
-                        bannerNotification = "Attached ${dropped.size} item(s): ${dropped.joinToString { it.fileName }}"
+                        bannerNotification = "Attached ${plural(dropped.size, "item")}: ${dropped.joinToString { it.fileName }}"
                     }
                 }
             }
@@ -978,18 +983,7 @@ fun ParchmentApp(
                 val curStepThink = if (accumulatedTools.isEmpty()) "" else if (isFinal) currentStepThinkingTarget.toString() else currentStepThinkingTarget.substring(0, displayedStepThinkingLen.coerceAtMost(currentStepThinkingTarget.length))
                 val curSig = signatureSb.toString()
                 val curTools = if (isFinal) {
-                    accumulatedTools.map { tc ->
-                        if (tc.isRunning || tc.resultText == "Running shell command…" || tc.resultText == "Running ${tc.name}…") {
-                            tc.copy(
-                                isRunning = false,
-                                resultText = if (tc.resultText.startsWith("[Running ")) {
-                                    tc.resultText + "\n[Tool execution interrupted before completion]"
-                                } else {
-                                    "[Tool execution interrupted before completion]"
-                                }
-                            )
-                        } else tc
-                    }
+                    accumulatedTools.map { tc -> if (tc.wasCutOff()) tc.withInterruptedOutcome() else tc }
                 } else {
                     accumulatedTools.toList()
                 }
@@ -1395,11 +1389,14 @@ fun ParchmentApp(
                     try {
                         AiProviderEngine.streamGeneration(
                             profile = effectiveProfileForApi,
-                            session = finalSessionForCall,
+                            session = finalSessionForCall.withProfileName(appState.preferences),
                             historyNodes = finalHistoryForCall,
                             continueFromAssistantPrefix = AiProviderEngine.stripInlineErrorNotices(networkContentTarget.toString()),
                             initialThinking = networkThinkingTarget.toString(),
                             initialSignature = signatureSb.toString(),
+                            resumeMediaTask = existingTargetVariant?.pendingBackgroundInteractionId.orEmpty(),
+                            spendLimitUsd = appState.preferences.chatSpendLimitUsd,
+                            spendBeforeRunUsd = if (appState.preferences.chatSpendLimitUsd > 0.0) sessionSpendSummary(finalSessionForCall, effectiveProfileForApi).towardLimitUsd else 0.0,
                             initialToolCalls = accumulatedTools.toList(),
                             initialMediaItems = accumulatedMedia.toList(),
                             initialWebSources = accumulatedWebSources,
@@ -1511,6 +1508,8 @@ fun ParchmentApp(
                                         updateOwnedStream { cur ->
                                             cur?.copy(isThinkingPhase = true)
                                         }
+                                        // Saved before it runs, so a crash mid-change leaves a record instead of a blank.
+                                        if (!WorkspaceHarness.isParallelSafeReadOnlyTool(enrichedTool.name)) flushCheckpointToDisk(isFinal = false)
                                     }
                                 }
                                 is StreamUpdate.GoalProgress -> {
@@ -2103,7 +2102,7 @@ fun ParchmentApp(
                         draftInput = ""
                     )
                 }
-                bannerNotification = "Rewound last $dropCount message(s)."
+                bannerNotification = "Rewound last ${plural(dropCount, "message")}."
             }
             return
         }
@@ -2260,7 +2259,7 @@ fun ParchmentApp(
             try {
                 AiProviderEngine.streamGeneration(
                     profile = draftProfile,
-                    session = complete.copy(permissionOverrides = AgentPermissionOverrides(toolsEnabled = false)),
+                    session = complete.withProfileName(appState.preferences).copy(permissionOverrides = AgentPermissionOverrides(toolsEnabled = false)),
                     historyNodes = historyForCall,
                     usageOwnerSessionId = targetSessId,
                     usageOwnerRunId = draftRunId,
@@ -2751,7 +2750,10 @@ fun ParchmentApp(
                 }
             }
 
-            CompositionLocalProvider(LocalParchmentWindowSize provides windowSize) {
+            CompositionLocalProvider(
+                LocalParchmentWindowSize provides windowSize,
+                LocalReduceMotion provides appState.preferences.reduceMotion
+            ) {
                 var horizontalSwipeDelta by remember { mutableStateOf(0f) }
                 var startedNearLeftEdge by remember { mutableStateOf(false) }
 
@@ -2792,7 +2794,6 @@ fun ParchmentApp(
                 ) {
                     if (desktopWindowHeader != null) {
                         desktopWindowHeader()
-                        SepiaDivider()
                     }
 
                     // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
@@ -3261,7 +3262,7 @@ fun ParchmentApp(
                                         appDiskWriter.replaceState(finalSnap, removedIds)
                                         appDiskWriter.flushBlocking()
                                         appState = finalSnap
-                                        bannerNotification = "Imported settings & assistants (preserved ${finalSnap.sessions.size} chat(s))."
+                                        bannerNotification = "Imported settings & assistants (preserved ${plural(finalSnap.sessions.size, "chat")})."
                                     },
                                     onImportChatSessions = { importedList ->
                                         val byId = LinkedHashMap<String, ChatSession>()
@@ -3303,7 +3304,7 @@ fun ParchmentApp(
                                             ),
                                             immediateFlush = true
                                         )
-                                        bannerNotification = "Imported $addedOrUpdated chat(s) into ${PlatformBridge.getChatsStorageDirectoryPath()}."
+                                        bannerNotification = "Imported ${plural(addedOrUpdated, "chat")} into ${PlatformBridge.getChatsStorageDirectoryPath()}."
                                     },
                                     onWipeAllData = {
                                         activeStreamsBySession.values.forEach { it.job?.cancel() }
@@ -3422,7 +3423,7 @@ fun ParchmentApp(
                                         if (pasted.isNotEmpty()) {
                                             attachPickedFiles(pasted)
                                             if (pasted.none { it.oversized }) {
-                                                bannerNotification = "Attached ${pasted.size} clipboard item(s): ${pasted.joinToString { it.fileName }}"
+                                                bannerNotification = "Attached ${plural(pasted.size, "clipboard item")}: ${pasted.joinToString { it.fileName }}"
                                             }
                                             true
                                         } else {
@@ -3553,14 +3554,14 @@ fun ParchmentApp(
                                                 updateActiveSession(immediate = true) { sess ->
                                                     sess.copy(messages = sess.messages.take(keepCount))
                                                 }
-                                                bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed $dropped later turn(s))."
+                                                bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed ${plural(dropped, "later turn")})."
                                             } else {
                                                 // Clicked `↺ Rewind` on the final message: rewind that turn (or turn pair) so it's never a no-op!
                                                 val dropCount = if (total >= 2 && activeSession.messages.last().role == MessageRole.ASSISTANT) 2 else 1
                                                 updateActiveSession(immediate = true) { sess ->
                                                     sess.copy(messages = sess.messages.dropLast(dropCount))
                                                 }
-                                                bannerNotification = "Rewound last $dropCount turn(s)."
+                                                bannerNotification = "Rewound last ${plural(dropCount, "turn")}."
                                             }
                                         }
                                     },
@@ -3767,7 +3768,7 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(p.canvasBg.copy(alpha = 0.88f))
-                                    .border(2.dp, p.accent, RoundedCornerShape(14.dp))
+                                    .border(2.dp, p.accent, RoundedCornerShape(12.dp))
                                     .padding(24.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -3777,11 +3778,11 @@ fun ParchmentApp(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.UPLOAD, tint = p.accent, size = 34.dp)
                                     BasicText(
-                                        text = "Drop Images, Videos, or Files to Attach",
+                                        text = "Drop images, videos, or files to attach",
                                         style = p.uiHeaderStyle.copy(fontSize = 20.sp, color = p.accent)
                                     )
                                     BasicText(
-                                        text = "Supports PNG, JPG, WEBP, GIF, MP4, WEBM, MOV, PDF, Audio, and Code/Text files",
+                                        text = "Supports PNG, JPG, WEBP, GIF, MP4, WEBM, MOV, PDF, audio, and Code/Text files",
                                         style = p.uiLabelStyle.copy(color = p.narrationInk)
                                     )
                                 }
@@ -3807,7 +3808,7 @@ fun ParchmentApp(
                                     is DeleteConfirmRequest.SingleSession ->
                                         "Are you sure you want to delete '${confirmReq.title}'? This cannot be undone."
                                     is DeleteConfirmRequest.ClearAllSessions ->
-                                        "Are you sure you want to delete all ${confirmReq.count} chat(s) for '${confirmReq.assistantName}'? Your Assistant and System Prompt will be kept."
+                                        "Are you sure you want to delete all ${plural(confirmReq.count, "chat")} for '${confirmReq.assistantName}'? Your Assistant and System Prompt will be kept."
                                     is DeleteConfirmRequest.ClearCurrentMessages ->
                                         "Are you sure you want to clear all messages in '${confirmReq.title}'?"
                                 }
@@ -4203,7 +4204,7 @@ private fun ManuscriptViewport(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
                         .background(p.cardBg)
-                        .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                        .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -4214,8 +4215,8 @@ private fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         BasicText(
-                            text = "Chat Notes & Memory",
-                            style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
+                            text = "Chat notes & memory",
+                            style = p.uiHeaderStyle.copy(fontSize = 15.sp),
                             modifier = Modifier.padding(top = 4.dp)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -4227,7 +4228,7 @@ private fun ManuscriptViewport(
                                     onClick = onExportChatMarkdown
                                 )
                                 SepiaButton(
-                                    text = "Clear Chat",
+                                    text = "Clear chat",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = onRequestClearCurrentChat
@@ -4246,7 +4247,7 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = activeSession.systemPrompt,
                         onValueChange = { sp -> onUpdateSession { it.copy(systemPrompt = sp) } },
-                        label = "Extra Instructions for This Chat",
+                        label = "Extra instructions for this chat",
                         placeholder = "Optional instructions added specifically to this conversation…",
                         singleLine = false,
                         minHeight = 64.dp,
@@ -4256,7 +4257,7 @@ private fun ManuscriptViewport(
                     SepiaTextField(
                         value = activeSession.authorsNote,
                         onValueChange = { note -> onUpdateSession { it.copy(authorsNote = note) } },
-                        label = "Style & Tone Reminder",
+                        label = "Style & tone reminder",
                         placeholder = "Optional reminder kept near the end of the conversation…",
                         singleLine = false,
                         minHeight = 52.dp,
@@ -4270,7 +4271,7 @@ private fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         BasicText(
-                            text = "Chat Summary & Memory",
+                            text = "Chat summary & memory",
                             style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
                             modifier = Modifier.padding(top = 4.dp, end = 8.dp)
                         )
@@ -4308,17 +4309,21 @@ private fun ManuscriptViewport(
 
         // Main Chat Area + Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
         val win = LocalParchmentWindowSize.current
-        Box(
+        val userPicture = remember(preferences.profilePicturePath) {
+            preferences.profilePicturePath.takeIf { it.isNotBlank() }?.let(PlatformBridge::loadImageBitmapFromFile)
+        }
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
         ) {
+            val pageGutter = if (win.isCompact) 12.dp else 18.dp
             LazyColumn(
                 state = listState,
+                contentPadding = PaddingValues(horizontal = maxOf(pageGutter, (maxWidth - p.maxReadingWidth) / 2 + pageGutter)),
                 modifier = Modifier
                     .fillMaxHeight()
-                    .widthIn(max = p.maxReadingWidth)
                     .fillMaxWidth()
                     .pointerInput(activeSession.id) {
                         awaitPointerEventScope {
@@ -4339,8 +4344,7 @@ private fun ManuscriptViewport(
                                 }
                             }
                         }
-                    }
-                    .padding(horizontal = if (win.isCompact) 12.dp else 18.dp),
+                    },
                 verticalArrangement = Arrangement.spacedBy(
                     if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else if (win.isCompact) 20.dp else 12.dp
                 )
@@ -4376,7 +4380,7 @@ private fun ManuscriptViewport(
                             if (card != null && card.firstMessage.isNotBlank()) {
                                 Spacer(Modifier.height(4.dp))
                                 SepiaButton(
-                                    text = "Start Opening Scene",
+                                    text = "Start opening scene",
                                     compact = true,
                                     style = SepiaButtonStyle.PRIMARY,
                                     onClick = {
@@ -4390,7 +4394,7 @@ private fun ManuscriptViewport(
                                                     MessageVariant(
                                                         id = "var-greeting-$idx-$now",
                                                         content = g.replace("{{char}}", card.name)
-                                                            .replace("{{user}}", activeSession.userName),
+                                                            .replace("{{user}}", activeSession.withProfileName(preferences).userName),
                                                         modelUsed = "Card Greeting #${idx + 1}",
                                                         createdAt = now
                                                     )
@@ -4414,9 +4418,10 @@ private fun ManuscriptViewport(
                         node = node,
                         nodeIndex = index,
                         isLatestTurn = index >= activeSession.messages.lastIndex - 1,
+                        userPicture = userPicture,
                         viewMode = preferences.defaultViewMode,
                         preferences = preferences,
-                        userName = activeSession.userName,
+                        userName = activeSession.withProfileName(preferences).userName,
                         characterName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
                             ?: activeAssistant.name.takeIf { activeAssistant.id.isNotBlank() }.orEmpty(),
                         assistantIconEmoji = activeAssistant.iconEmoji,
@@ -4552,7 +4557,7 @@ private fun ManuscriptViewport(
                         modifier = Modifier
                             .clip(audioPillShape)
                             .background(p.canvasBg.copy(alpha = 0.96f))
-                            .border(1.2.dp, p.accent, audioPillShape)
+                            .border(1.dp, p.accent, audioPillShape)
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
                         Row(
@@ -4575,7 +4580,7 @@ private fun ManuscriptViewport(
                                 style = p.uiLabelStyle.copy(
                                     color = p.primaryInk,
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 11.5.sp
+                                    fontSize = 12.sp
                                 )
                             )
                             // Mic listen / pause toggle
@@ -4583,7 +4588,7 @@ private fun ManuscriptViewport(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(999.dp))
                                     .background(if (isVoiceListening) p.accent else p.sheetBg)
-                                    .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                    .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
                                     .kissClickable { onTriggerVoiceInput() }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
@@ -4615,7 +4620,7 @@ private fun ManuscriptViewport(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(999.dp))
                                         .background(p.sheetBg)
-                                        .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                        .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
                                         .kissClickable {
                                             PlatformBridge.speakTextAloud(latestAssistantText)
                                         }
@@ -4638,7 +4643,7 @@ private fun ManuscriptViewport(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(999.dp))
                                     .background(p.sheetBg)
-                                    .border(0.8.dp, p.border, RoundedCornerShape(999.dp))
+                                    .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
                                     .kissClickable {
                                         PlatformBridge.stopSpeakingAloud()
                                         if (isStreaming) onStopStream()
@@ -4661,7 +4666,7 @@ private fun ManuscriptViewport(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(999.dp))
                                     .background(if (isLiveVoiceMode) p.accent.copy(alpha = 0.16f) else p.sheetBg)
-                                    .border(0.8.dp, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(999.dp))
+                                    .border(0.75.dp, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(999.dp))
                                     .kissClickable {
                                         if (isLiveVoiceMode) PlatformBridge.stopSpeakingAloud()
                                         onToggleLiveVoiceMode()
@@ -4703,7 +4708,7 @@ private fun ManuscriptViewport(
                         modifier = Modifier
                             .clip(pillOuterShape)
                             .background(p.canvasBg.copy(alpha = 0.96f))
-                            .border(1.2.dp, p.border, pillOuterShape)
+                            .border(1.dp, p.border, pillOuterShape)
                             .padding(3.dp)
                     ) {
                         Row(
@@ -4828,7 +4833,7 @@ private fun ManuscriptViewport(
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(7.dp))
+                                            .clip(RoundedCornerShape(8.dp))
                                             .background(if (isAsst) p.sheetBg.copy(alpha = 0.65f) else p.elevatedBg.copy(alpha = 0.45f))
                                             .kissClickable(pressScale = 0.98f) {
                                                 minimapInteractionTick++
@@ -4849,7 +4854,7 @@ private fun ManuscriptViewport(
                                                 style = p.uiLabelStyle.copy(
                                                     color = if (isAsst) p.accent else p.primaryInk,
                                                     fontWeight = FontWeight.Bold,
-                                                    fontSize = 10.5.sp
+                                                    fontSize = 11.sp
                                                 )
                                             )
                                             if (mNode.variants.size > 1) {
@@ -4876,7 +4881,7 @@ private fun ManuscriptViewport(
                                                             BasicText(
                                                                 text = "v${vIdx + 1}",
                                                                 style = p.uiLabelStyle.copy(
-                                                                    fontSize = 9.5.sp,
+                                                                    fontSize = 11.sp,
                                                                     color = if (vSel) onFillInk(p.accent) else p.narrationInk,
                                                                     fontWeight = FontWeight.Bold
                                                                 )
@@ -4903,7 +4908,7 @@ private fun ManuscriptViewport(
                         modifier = Modifier
                             .clip(RoundedCornerShape(999.dp))
                             .background(p.cardBg.copy(alpha = 0.94f))
-                            .border(0.85.dp, p.border, RoundedCornerShape(999.dp))
+                            .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
                             .padding(vertical = 4.dp, horizontal = 3.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -4993,7 +4998,7 @@ private fun ManuscriptViewport(
                 .padding(horizontal = if (win.isCompact) 10.dp else 14.dp, vertical = 7.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            val deckShape = RoundedCornerShape(14.dp)
+            val deckShape = RoundedCornerShape(12.dp)
             Column(
                 modifier = Modifier
                     .widthIn(max = p.maxReadingWidth)
@@ -5001,7 +5006,7 @@ private fun ManuscriptViewport(
                     .clip(deckShape)
                     .background(p.cardBg)
                     .border(
-                        width = if (isStreaming) 1.2.dp else 0.9.dp,
+                        width = if (isStreaming) 1.dp else 0.75.dp,
                         color = if (isStreaming) p.accent else p.border.copy(alpha = 0.85f),
                         shape = deckShape
                     )
@@ -5033,7 +5038,7 @@ private fun ManuscriptViewport(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
                             .background(p.sheetBg.copy(alpha = 0.78f))
-                            .border(0.65.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                            .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                             .clickable(role = Role.Button, onClickLabel = if (statusExpanded) "Collapse status" else "Expand status") { statusExpanded = !statusExpanded }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -5076,7 +5081,7 @@ private fun ManuscriptViewport(
                                 style = p.monoStyle.copy(
                                     color = p.narrationInk,
                                     fontSize = 11.sp,
-                                    lineHeight = 15.5.sp
+                                    lineHeight = 16.sp
                                 ),
                                 modifier = Modifier.padding(start = 16.dp)
                             )
@@ -5091,7 +5096,7 @@ private fun ManuscriptViewport(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
                             .background(p.elevatedBg.copy(alpha = 0.7f))
-                            .border(0.8.dp, p.accentSecondary, RoundedCornerShape(8.dp))
+                            .border(0.75.dp, p.accentSecondary, RoundedCornerShape(8.dp))
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -5115,7 +5120,7 @@ private fun ManuscriptViewport(
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     SepiaButton(
-                                        text = "⚡ Steer Now",
+                                        text = "⚡ Steer now",
                                         compact = true,
                                         style = SepiaButtonStyle.SECONDARY,
                                         onClick = { onSteerQueuedPromptNow(qItem) }
@@ -5161,9 +5166,9 @@ private fun ManuscriptViewport(
                                 .fillMaxWidth()
                                 .heightIn(max = drawerMaxHeight)
                                 .verticalScroll(rememberScrollState())
-                                .clip(RoundedCornerShape(9.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .background(p.sheetBg.copy(alpha = 0.65f))
-                                .border(0.8.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(9.dp))
+                                .border(0.75.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
@@ -5282,12 +5287,12 @@ private fun ManuscriptViewport(
                                 )
                                 if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                     SepiaChip(
-                                        label = "💻 Code Exec",
+                                        label = "💻 Code exec",
                                         selected = activeProfile.enableCodeExecution,
                                         onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
                                     )
                                     SepiaChip(
-                                        label = "🔗 URL Context",
+                                        label = "🔗 URL context",
                                         selected = activeProfile.enableUrlContext,
                                         onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                                     )
@@ -5322,12 +5327,12 @@ private fun ManuscriptViewport(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 BasicText(
-                                    text = "Co-Writing Helpers:",
+                                    text = "Co-Writing helpers:",
                                     style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
                                     modifier = Modifier.padding(top = 5.dp, end = 4.dp)
                                 )
                                 SepiaButton(
-                                    text = "✍ Draft My Reply",
+                                    text = "✍ Draft my reply",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = {
@@ -5336,7 +5341,7 @@ private fun ManuscriptViewport(
                                     }
                                 )
                                 SepiaButton(
-                                    text = "🧭 Guide Next Reply",
+                                    text = "🧭 Guide next reply",
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.SECONDARY,
@@ -5377,7 +5382,7 @@ private fun ManuscriptViewport(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                    .border(0.75.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(horizontal = 6.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -5390,8 +5395,8 @@ private fun ManuscriptViewport(
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
                                             .size(34.dp)
-                                            .clip(RoundedCornerShape(5.dp))
-                                            .border(0.6.dp, p.border, RoundedCornerShape(5.dp))
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .border(0.75.dp, p.border, RoundedCornerShape(6.dp))
                                     )
                                 } else {
                                     KissVectorIcon(
@@ -5457,7 +5462,7 @@ private fun ManuscriptViewport(
                             .heightIn(max = 224.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(p.sheetBg.copy(alpha = 0.82f))
-                            .border(0.65.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .border(0.75.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
                             .verticalScroll(rememberScrollState())
                             .padding(6.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -5473,7 +5478,7 @@ private fun ManuscriptViewport(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(7.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .background(
                                         when {
                                             isExact || isPressed -> p.accent.copy(alpha = 0.14f)
@@ -5482,9 +5487,9 @@ private fun ManuscriptViewport(
                                         }
                                     )
                                     .border(
-                                        width = 0.6.dp,
+                                        width = 0.75.dp,
                                         color = if (isExact || isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
-                                        shape = RoundedCornerShape(7.dp)
+                                        shape = RoundedCornerShape(8.dp)
                                     )
                                     .kissClickable(
                                         pressScale = 0.99f,
@@ -5546,7 +5551,7 @@ private fun ManuscriptViewport(
                                                 overflow = TextOverflow.Ellipsis,
                                                 style = p.uiBodyStyle.copy(
                                                     color = p.primaryInk,
-                                                    fontSize = 11.5.sp
+                                                    fontSize = 12.sp
                                                 )
                                             )
                                         }
@@ -5572,7 +5577,7 @@ private fun ManuscriptViewport(
                                 }
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(5.dp))
+                                        .clip(RoundedCornerShape(6.dp))
                                         .background(p.elevatedBg.copy(alpha = 0.7f))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
@@ -5588,7 +5593,7 @@ private fun ManuscriptViewport(
                                         BasicText(
                                             text = if (spec.takesArgument) "arg" else "Run",
                                             style = p.monoStyle.copy(
-                                                fontSize = 10.sp,
+                                                fontSize = 11.sp,
                                                 color = p.narrationInk,
                                                 fontWeight = FontWeight.Medium
                                             )
@@ -5737,7 +5742,7 @@ private fun ManuscriptViewport(
                             .heightIn(max = 224.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(p.sheetBg.copy(alpha = 0.82f))
-                            .border(0.65.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .border(0.75.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
                             .verticalScroll(rememberScrollState())
                             .padding(6.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -5755,7 +5760,7 @@ private fun ManuscriptViewport(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(7.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .background(
                                         when {
                                             isPressed -> p.accent.copy(alpha = 0.14f)
@@ -5764,9 +5769,9 @@ private fun ManuscriptViewport(
                                         }
                                     )
                                     .border(
-                                        width = 0.6.dp,
+                                        width = 0.75.dp,
                                         color = if (isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
-                                        shape = RoundedCornerShape(7.dp)
+                                        shape = RoundedCornerShape(8.dp)
                                     )
                                     .kissClickable(
                                         pressScale = 0.99f,
@@ -5830,7 +5835,7 @@ private fun ManuscriptViewport(
                                             overflow = TextOverflow.Ellipsis,
                                             style = p.uiBodyStyle.copy(
                                                 color = p.narrationInk,
-                                                fontSize = 11.5.sp
+                                                fontSize = 12.sp
                                             )
                                         )
                                     }
@@ -5920,9 +5925,9 @@ private fun ManuscriptViewport(
                 }
 
                 val toolsChipLabel = if (win.isCompact) {
-                    if (hasActiveTools) "⚙ •" else "⚙"
+                    if (hasActiveTools) "🔧 •" else "🔧"
                 } else {
-                    if (hasActiveTools) "⚙ Tools •" else "⚙ Tools"
+                    if (hasActiveTools) "🔧 Tools •" else "🔧 Tools"
                 }
 
                 val activeComposerModelId = activeSession.modelOverride
@@ -6053,6 +6058,7 @@ private fun ManuscriptViewport(
                         ) {
                             SepiaChip(
                                 label = thinkingLabel,
+                                hint = "How much the model reasons before it answers. Click to change.",
                                 selected = activeProfile.thinkingEffort.isNotBlank() && !activeProfile.thinkingEffort.equals("none", ignoreCase = true),
                                 onClick = {
                                     val next = nextPreset(THINKING_EFFORT_PRESETS, activeProfile.thinkingEffort.lowercase(), "medium")
@@ -6063,6 +6069,7 @@ private fun ManuscriptViewport(
                         SepiaChip(
                             label = toolsChipLabel,
                             contentDescription = "Tools",
+                            hint = "Web search, workspace and other tools for this chat",
                             selected = showComposerToolsDrawer || hasActiveTools,
                             onClick = { onComposerToolsDrawerChange(!showComposerToolsDrawer) }
                         )
@@ -6099,6 +6106,7 @@ private fun ManuscriptViewport(
                         ) {
                             SepiaButton(
                                 text = "■ Stop",
+                                hint = "Stop this reply",
                                 compact = true,
                                 style = SepiaButtonStyle.DANGER,
                                 onClick = onStopStream
@@ -6109,6 +6117,7 @@ private fun ManuscriptViewport(
                             ) {
                                 SepiaButton(
                                     text = "⏳ Queue",
+                                    hint = "Send this after the current reply finishes",
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.OUTLINE,
@@ -6116,6 +6125,7 @@ private fun ManuscriptViewport(
                                 )
                                 SepiaButton(
                                     text = "⚡ Steer ↵",
+                                    hint = "Send this now to guide the current reply",
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.PRIMARY,
@@ -6152,12 +6162,14 @@ private fun ManuscriptViewport(
                             if (isStreaming) {
                                 SepiaButton(
                                     text = "■ Stop",
+                                    hint = "Stop this reply",
                                     compact = true,
                                     style = SepiaButtonStyle.DANGER,
                                     onClick = onStopStream
                                 )
                                 SepiaButton(
                                     text = "⏳ Queue",
+                                    hint = "Send this after the current reply finishes",
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.OUTLINE,
@@ -6165,6 +6177,7 @@ private fun ManuscriptViewport(
                                 )
                                 SepiaButton(
                                     text = "⚡ Steer ↵",
+                                    hint = "Send this now to guide the current reply",
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.PRIMARY,
@@ -6193,11 +6206,31 @@ private fun ManuscriptViewport(
 // - 1-Tap `📋 Copy` (Plain Text) & `📋 MD` (Markdown) Buttons
 // - Vertical Stacking of Action Buttons & Telemetry so Portrait `⋯ More` NEVER Hides Buttons!
 // ============================================================================================
+private const val MAX_SHRINKABLE_BUBBLE_CHARS = 800
+private const val SENT_BUBBLE_WIDTH_FRACTION = 0.84f
+private const val REPLY_BUBBLE_WIDTH_FRACTION = 0.94f
+
+/** A messenger bubble: yours on the right, the assistant's on the left, each with one tucked corner. */
+private fun Modifier.messageBubble(fromUser: Boolean, shrink: Boolean, fill: Color, edge: Color): Modifier {
+    val shape = RoundedCornerShape(16.dp, 16.dp, if (fromUser) 4.dp else 16.dp, if (fromUser) 16.dp else 4.dp)
+    return layout { measurable, constraints ->
+        val capped = constraints.copy(minWidth = 0, maxWidth = (constraints.maxWidth * if (fromUser) SENT_BUBBLE_WIDTH_FRACTION else REPLY_BUBBLE_WIDTH_FRACTION).toInt())
+        val bubble = measurable.measure(capped)
+        layout(bubble.width, bubble.height) { bubble.place(0, 0) }
+    }
+        .then(if (shrink) Modifier.width(IntrinsicSize.Max) else Modifier)
+        .clip(shape)
+        .background(fill)
+        .border(0.75.dp, edge, shape)
+        .padding(horizontal = 13.dp, vertical = 9.dp)
+}
+
 @Composable
 private fun MessageTurnItem(
     node: MessageNode,
     nodeIndex: Int,
     isLatestTurn: Boolean = false,
+    userPicture: ImageBitmap? = null,
     viewMode: ViewMode,
     preferences: PreferencesConfig,
     userName: String,
@@ -6267,12 +6300,15 @@ private fun MessageTurnItem(
     var footerHasFocus by remember { mutableStateOf(false) }
     val footerVisible = win.isCompact || turnHovered || footerHasFocus || showMoreActions || activeVar.isStreaming
     val footerAlpha by animateFloatAsState(if (footerVisible) 1f else 0f, tween(120))
+    val showBubbles = viewMode == ViewMode.EDITORIAL_TURNS
+    val isSentBubble = showBubbles && !isAssistant
 
     // Disable outer `.animateContentSize` while `activeVar.isStreaming` is true so 60/120fps VSync character
     // streaming never fights a lagging spring height animation on every wrapped line!
     val baseContainerModifier = if (viewMode == ViewMode.MANUSCRIPT) {
         Modifier
             .fillMaxWidth()
+            .hoverable(turnHoverSource)
             .then(
                 if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                 else Modifier
@@ -6283,7 +6319,6 @@ private fun MessageTurnItem(
             )
             .padding(vertical = 6.dp)
     } else {
-        // The page itself is the container: replies sit on it, and prompts carry a lapis rule.
         Modifier
             .fillMaxWidth()
             .hoverable(turnHoverSource)
@@ -6312,7 +6347,7 @@ private fun MessageTurnItem(
         baseContainerModifier
     }
 
-    Column(modifier = containerModifier) {
+    Column(modifier = containerModifier, horizontalAlignment = if (isSentBubble) Alignment.End else Alignment.Start) {
         // Turn Header & Branch/Swipe Bar (FlowRow so Speaker/Model and Swipe/Thought pills never overlap on mobile!)
         val showTurnHeader = isAssistant || preferences.showUserAvatar || preferences.showUserName ||
             preferences.showUserTimestamp || node.variants.size > 1 || !node.includedInContext
@@ -6343,16 +6378,7 @@ private fun MessageTurnItem(
                         )
                     }
                 } else if (!isAssistant && preferences.showUserAvatar) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(p.elevatedBg)
-                            .border(0.8.dp, p.border, CircleShape),
-                            contentAlignment = Alignment.Center
-                    ) {
-                        KissVectorIcon(icon = KissIcon.USER, tint = p.narrationInk, size = 12.5.dp)
-                    }
+                    ProfilePicture(userPicture, 22.dp)
                 }
 
                 val showTurnTimestamp = (isAssistant && preferences.showModelTimestamp) || (!isAssistant && preferences.showUserTimestamp)
@@ -6392,7 +6418,7 @@ private fun MessageTurnItem(
                             BasicText(
                                 text = timeSuffix,
                                 maxLines = 1,
-                                style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
+                                style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                             )
                         }
                         if (!node.includedInContext) {
@@ -6471,6 +6497,7 @@ private fun MessageTurnItem(
                     SepiaButton(
                         text = chipText,
                         compact = true,
+                        hint = "Show or hide the reasoning and tool steps",
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
                             manualThinkingToggle = if (isActivelyThinkingThisNode) {
@@ -6503,7 +6530,7 @@ private fun MessageTurnItem(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(p.sheetBg.copy(alpha = 0.58f))
-                    .border(0.65.dp, if (isActivelyThinkingThisNode) p.accent.copy(alpha = 0.8f) else p.border.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                    .border(0.75.dp, if (isActivelyThinkingThisNode) p.accent.copy(alpha = 0.8f) else p.border.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -6587,7 +6614,7 @@ private fun MessageTurnItem(
                                     style = p.uiBodyStyle.copy(
                                         color = p.primaryInk,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 12.5.sp
+                                        fontSize = 13.sp
                                     )
                                 )
                                 if (livePeekInfo.isToolRunning) {
@@ -6598,11 +6625,11 @@ private fun MessageTurnItem(
                                             .padding(horizontal = 6.dp, vertical = 1.5.dp)
                                     ) {
                                         BasicText(
-                                            text = "RUNNING",
+                                            text = "Running",
                                             style = p.monoStyle.copy(
                                                 color = p.accent,
                                                 fontWeight = FontWeight.Bold,
-                                                fontSize = 9.sp
+                                                fontSize = 11.sp
                                             )
                                         )
                                     }
@@ -6623,7 +6650,7 @@ private fun MessageTurnItem(
                                 } else {
                                     p.uiBodyStyle.copy(
                                         color = p.narrationInk,
-                                        fontSize = 12.5.sp,
+                                        fontSize = 13.sp,
                                         lineHeight = 18.sp
                                     )
                                 }
@@ -6684,16 +6711,16 @@ private fun MessageTurnItem(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(7.dp))
+                            .clip(RoundedCornerShape(8.dp))
                             .background(p.cardBg)
                             .border(
-                                width = if (tc.isRunning) 1.15.dp else 0.85.dp,
+                                width = if (tc.isRunning) 1.dp else 0.75.dp,
                                 color = when {
                                     tc.isError -> p.danger.copy(alpha = 0.7f)
                                     tc.isRunning -> p.accent
                                     else -> p.border.copy(alpha = 0.75f)
                                 },
-                                shape = RoundedCornerShape(7.dp)
+                                shape = RoundedCornerShape(8.dp)
                             )
                             .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(5.dp)
@@ -6723,7 +6750,7 @@ private fun MessageTurnItem(
                                     text = "${tc.name}(${tc.argumentsJson})",
                                     maxLines = if (effectiveExpanded) 8 else 2,
                                     overflow = TextOverflow.Ellipsis,
-                                    style = p.monoStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.5.sp)
+                                    style = p.monoStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                                 )
                             }
                             Row(
@@ -6811,7 +6838,7 @@ private fun MessageTurnItem(
                                     KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
                                     BasicText(
                                         text = "Thought #$thoughtStepCounter",
-                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp)
+                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                     )
                                 }
                                 LiteraryProseRenderer(
@@ -6845,7 +6872,7 @@ private fun MessageTurnItem(
                                 KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
                                 BasicText(
                                     text = "Thought #$thoughtStepCounter",
-                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp)
+                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                 )
                             }
                             LiteraryProseRenderer(
@@ -6890,7 +6917,7 @@ private fun MessageTurnItem(
                         )
                         BasicText(
                             text = "Reasoning signature saved",
-                            style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
+                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFamily = p.codeFontFamily)
                         )
                     }
                 }
@@ -6918,12 +6945,12 @@ private fun MessageTurnItem(
                 modifier = Modifier
                     .padding(bottom = 8.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(9.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(p.sheetBg.copy(alpha = 0.78f))
                     .border(
-                        width = 0.9.dp,
+                        width = 0.75.dp,
                         color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
-                        shape = RoundedCornerShape(9.dp)
+                        shape = RoundedCornerShape(8.dp)
                     )
                     .padding(11.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -6988,7 +7015,7 @@ private fun MessageTurnItem(
                                 BasicText(
                                     text = "[${item.id}] ${item.content}",
                                     style = p.uiBodyStyle.copy(
-                                        fontSize = 12.5.sp,
+                                        fontSize = 13.sp,
                                         color = itemColor,
                                         fontWeight = if (st == "in_progress") FontWeight.SemiBold else FontWeight.Normal
                                     )
@@ -7014,7 +7041,14 @@ private fun MessageTurnItem(
         }
 
         // Main Prose Content OR In-Place Editor
-        Column(if (isAssistant) Modifier else Modifier.rubricMark(p.accent).padding(start = 14.dp, top = 2.dp, bottom = 2.dp)) {
+        val shrinkBubble = !isEditing && !activeVar.isStreaming && activeVar.attachments.isEmpty() &&
+            activeVar.mediaItems.isEmpty() && activeVar.content.length < MAX_SHRINKABLE_BUBBLE_CHARS
+        val contentModifier = when {
+            showBubbles -> Modifier.messageBubble(fromUser = !isAssistant, shrink = shrinkBubble, fill = if (isAssistant) p.cardBg else p.accent.copy(alpha = 0.16f), edge = if (isAssistant) p.border else Color.Transparent)
+            isAssistant -> Modifier
+            else -> Modifier.rubricMark(p.accent).padding(start = 14.dp, top = 2.dp, bottom = 2.dp)
+        }
+        Column(contentModifier) {
         if (isEditing) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SepiaTextField(
@@ -7031,7 +7065,7 @@ private fun MessageTurnItem(
                 ) {
                     if (!isAssistant) {
                         SepiaButton(
-                            text = "↻ Save & Regenerate",
+                            text = "↻ Save & regenerate",
                             compact = true,
                             style = SepiaButtonStyle.PRIMARY,
                             onClick = {
@@ -7051,7 +7085,7 @@ private fun MessageTurnItem(
                         }
                     )
                     SepiaButton(
-                        text = "Save as New Version",
+                        text = "Save as new version",
                         compact = true,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
@@ -7129,7 +7163,7 @@ private fun MessageTurnItem(
                                     .widthIn(max = 360.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -7212,7 +7246,7 @@ private fun MessageTurnItem(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                                    .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -7252,7 +7286,7 @@ private fun MessageTurnItem(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
+                                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
                                     .padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -7295,7 +7329,7 @@ private fun MessageTurnItem(
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         if (bmp != null) {
                                             SepiaButton(
-                                                text = "🔍 View & Zoom",
+                                                text = "🔍 View & zoom",
                                                 compact = true,
                                                 style = SepiaButtonStyle.PRIMARY,
                                                 onClick = { onInspectGeneratedImage(media) }
@@ -7312,7 +7346,7 @@ private fun MessageTurnItem(
                                         }
                                         if (media.localFilePath.isNotBlank()) {
                                             SepiaButton(
-                                                text = "Copy Image",
+                                                text = "Copy image",
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
                                                 onClick = {
@@ -7334,7 +7368,7 @@ private fun MessageTurnItem(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.accentSecondary, RoundedCornerShape(10.dp))
+                                    .border(0.75.dp, p.accentSecondary, RoundedCornerShape(10.dp))
                                     .padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -7345,14 +7379,14 @@ private fun MessageTurnItem(
                                     KissVectorIcon(icon = KissIcon.VIDEO, tint = p.accent, size = 15.dp)
                                     BasicText(
                                         text = "Generated Video (${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""})",
-                                        style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
+                                        style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
-                                            text = "▶ Play Video (.MP4)",
+                                            text = "▶ Play video (.MP4)",
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
@@ -7368,7 +7402,7 @@ private fun MessageTurnItem(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
-                                    .border(0.85.dp, p.accentSecondary, RoundedCornerShape(10.dp))
+                                    .border(0.75.dp, p.accentSecondary, RoundedCornerShape(10.dp))
                                     .padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -7379,14 +7413,14 @@ private fun MessageTurnItem(
                                     KissVectorIcon(icon = KissIcon.AUDIO, tint = p.accent, size = 15.dp)
                                     BasicText(
                                         text = "Generated Audio (${media.mimeType})",
-                                        style = p.uiHeaderStyle.copy(fontSize = 14.5.sp, color = p.accent)
+                                        style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
-                                            text = "▶ Play Audio (.MP3)",
+                                            text = "▶ Play audio (.MP3)",
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
@@ -7416,7 +7450,7 @@ private fun MessageTurnItem(
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = if (isSentBubble) Arrangement.spacedBy(4.dp, Alignment.End) else Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     var isSpeakingThisTurn by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
@@ -7629,7 +7663,7 @@ private fun MessageTurnItem(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 BasicText(
-                                    text = "~${formatCompactTokens(outProseTok)} tok",
+                                    text = "~${formatCompactTokens(outProseTok)} tokens",
                                     style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                                 if (thinkTok > 0) {
@@ -7766,7 +7800,7 @@ private fun MessageTurnItem(
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp).alpha(footerAlpha),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = if (isSentBubble) Arrangement.spacedBy(5.dp, Alignment.End) else Arrangement.spacedBy(5.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 val attSuffix = if (activeVar.attachments.isNotEmpty()) {
@@ -7804,7 +7838,7 @@ private fun MessageTurnItem(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(p.sheetBg.copy(alpha = 0.85f))
-                    .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
                     .padding(11.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -7861,7 +7895,7 @@ private fun MessageTurnItem(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSelectedLine) p.accent.copy(alpha = 0.12f) else p.cardBg)
                                 .border(
-                                    width = if (isSelectedLine) 1.15.dp else 0.85.dp,
+                                    width = if (isSelectedLine) 1.dp else 0.75.dp,
                                     color = if (isSelectedLine) p.accent else p.border,
                                     shape = RoundedCornerShape(8.dp)
                                 )
@@ -7893,7 +7927,7 @@ private fun MessageTurnItem(
                                     ) {
                                         BasicText(
                                             text = "[${src.index}]",
-                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         )
                                     }
                                     Column(
@@ -7904,14 +7938,14 @@ private fun MessageTurnItem(
                                             text = src.title.ifBlank { src.domain.ifBlank { src.url } },
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                         )
                                         if (src.domain.isNotBlank()) {
                                             BasicText(
                                                 text = src.domain,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 10.5.sp)
+                                                style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                                             )
                                         }
                                     }
@@ -7950,7 +7984,7 @@ private fun MessageTurnItem(
                                                 style = p.uiLabelStyle.copy(
                                                     color = p.accent,
                                                     fontWeight = FontWeight.Bold,
-                                                    fontSize = 10.sp
+                                                    fontSize = 11.sp
                                                 )
                                             )
                                         }
@@ -7983,7 +8017,7 @@ private fun MessageTurnItem(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(p.sheetBg)
-                        .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
+                        .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
                         .padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -7992,7 +8026,7 @@ private fun MessageTurnItem(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        BasicText(text = "Outgoing Request Payload:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                        BasicText(text = "Outgoing request payload:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
                         SepiaButton(
                             text = if (copiedRawWire == "req") "✓" else "📋",
                             compact = true,
@@ -8011,7 +8045,7 @@ private fun MessageTurnItem(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            BasicText(text = "Latest Wire Event / Response:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                            BasicText(text = "Latest wire event / response:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
                             SepiaButton(
                                 text = if (copiedRawWire == "resp") "✓" else "📋",
                                 compact = true,

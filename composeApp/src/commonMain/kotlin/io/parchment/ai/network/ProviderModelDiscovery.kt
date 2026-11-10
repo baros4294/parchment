@@ -100,6 +100,9 @@ internal fun AiProviderEngine.recordDiscoveredModality(modelId: String, modaliti
     }
 }
 
+/** Added only when a provider or a user's model settings state live, two-way support. */
+internal const val REALTIME_MODALITY = "realtime"
+
 internal fun AiProviderEngine.recordDiscoveredVendor(modelId: String, vendor: String) {
     val clean = modelId.trim().removePrefix("models/").lowercase()
     val cleanVendor = vendor.trim()
@@ -119,66 +122,13 @@ fun AiProviderEngine.getDiscoveredVendorForModel(modelId: String): String? {
         ?: ModelsDevClient.getCachedVendorSlug(modelId)
 }
 
-internal fun AiProviderEngine.inferStructuralModalitiesFromModelSlug(
-    modelId: String,
-    endpointOverride: String = ""
-): List<String> {
-    val s = modelId.trim().lowercase()
-    val ov = endpointOverride.trim().lowercase()
-    if (s.isEmpty() && ov.isEmpty()) return emptyList()
-
+/** An explicit endpoint path states what the profile generates; a model's name never does. */
+private fun modalitiesFromEndpointOverride(endpointOverride: String): List<String> {
+    val path = endpointOverride.trim().lowercase()
     return when {
-        ov.contains("contents/generations/tasks") ||
-            ov.contains("videos/generations") ||
-            ov.contains("video/generations") ||
-            s.contains("seedance") ||
-            s.contains("veo-") || s.contains("/veo") || s.startsWith("veo") ||
-            s.contains("sora") ||
-            s.contains("kling") ||
-            (s.contains("wan") && !s.contains("image")) && (s.contains("wan-") || s.contains("wan2") || s.contains("wan3") || s.contains("wanx")) ||
-            s.contains("hailuo") ||
-            s.contains("runway") || s.contains("gen-3") || s.contains("gen-4") || s.contains("aleph-") ||
-            s.contains("luma") || s.contains("ray-2") || s.contains("ray2") ||
-            s.contains("pixverse") || s.contains("vidu") || s.contains("pika-") ||
-            s.contains("hunyuan-video") || s.contains("cogvideo") || s.contains("mochi-") ||
-            s.contains("ltx-video") || s.contains("grok-imagine-video") ||
-            (s.contains("flux") && s.contains("video")) || s.contains("happyhorse") -> listOf("video")
-
-        (s.contains("gemini") && s.contains("image")) ||
-            s.contains("nano-banana") ||
-            (s.contains("gpt-5") && s.contains("image")) ||
-            (s.contains("omni") && s.contains("image")) -> listOf("text", "image")
-
-        ov.contains("images/generations") ||
-            ov.contains("images/edits") ||
-            s.contains("seedream") ||
-            s.contains("dreamina") ||
-            s.contains("imagen") ||
-            s.contains("dall-e") ||
-            s.contains("gpt-image") ||
-            s.contains("chatgpt-image") ||
-            (s.contains("flux") && !s.contains("video")) ||
-            s.contains("recraft") ||
-            s.contains("ideogram") ||
-            s.contains("midjourney") ||
-            s.contains("stable-diffusion") || s.contains("sdxl") || s.contains("sd3") ||
-            s.contains("qwen-image") ||
-            (s.contains("wan") && s.contains("image")) ||
-            s.contains("grok-imagine-image") || s.contains("grok-2-image") || s.contains("aurora") ||
-            s.contains("mai-image") || s.contains("muse-image") || s.contains("riverflow") ||
-            s.contains("krea") || s.contains("kolors") || s.contains("playground-v") ||
-            s.contains("hidream") -> listOf("image")
-
-        ov.contains("audio/speech") ||
-            s.contains("seed-audio") ||
-            s.startsWith("tts-") || s.contains("/tts-") || s.endsWith("-tts") || s.contains("-tts-") ||
-            s.contains("elevenlabs") || s.contains("cosyvoice") || s.contains("fish-speech") ||
-            s.contains("kokoro") || s.contains("sonic-") -> listOf("audio")
-
-        s.contains("-live") || s.contains("live-") ||
-            s.contains("-realtime") || s.contains("realtime-") ||
-            s.contains("native-audio") -> listOf("text", "audio")
-
+        path.contains("contents/generations/tasks") || path.contains("videos/generations") || path.contains("video/generations") -> listOf("video")
+        path.contains("images/generations") || path.contains("images/edits") -> listOf("image")
+        path.contains("audio/speech") -> listOf("audio")
         else -> emptyList()
     }
 }
@@ -196,23 +146,14 @@ internal fun AiProviderEngine.resolveKnownOutputModalities(profile: ProviderProf
     discoveredModelModalities[shortKey]?.takeIf { it.isNotEmpty() }?.let { return it }
     discoveredModelModalities[canonical]?.takeIf { it.isNotEmpty() }?.let { return it }
 
-    val registryMods = ModelsDevClient.getCachedOutputModalities(modelId)
-    val structuralMods = inferStructuralModalitiesFromModelSlug(modelId, profile?.endpointPathOverride.orEmpty())
-    return when {
-        structuralMods.any { it != "text" } -> structuralMods
-        registryMods.isNotEmpty() -> registryMods
-        else -> structuralMods
-    }
+    return ModelsDevClient.getCachedOutputModalities(modelId)
+        .ifEmpty { modalitiesFromEndpointOverride(profile?.endpointPathOverride.orEmpty()) }
 }
 
 fun AiProviderEngine.resolveModelModalityProfile(profile: ProviderProfile?, modelId: String): ModelModalityProfile {
     val outMods = resolveKnownOutputModalities(profile, modelId)
     val inMods = ModelsDevClient.getCachedInputModalities(modelId).ifEmpty { listOf("text") }
-    val s = modelId.trim().lowercase()
-    val isLive = s.contains("-live") || s.contains("live-") ||
-        s.contains("-realtime") || s.contains("realtime-") ||
-        s.contains("native-audio") ||
-        (outMods.contains("audio") && outMods.contains("text"))
+    val isLive = outMods.contains(REALTIME_MODALITY)
     val isDedicatedVid = outMods.contains("video") && !outMods.contains("text")
     val isDedicatedImg = outMods.contains("image") && !outMods.contains("text")
     val isInterleavedImg = outMods.contains("image") && outMods.contains("text")
@@ -320,6 +261,7 @@ internal fun AiProviderEngine.parseModelsListJson(bodyText: String): List<String
         if (genMethods.any { it.contains("bidi") }) {
             outList.add("text")
             outList.add("audio")
+            outList.add(REALTIME_MODALITY)
         } else if (genMethods.any { it.contains("predict") || it.contains("generateimages") } &&
             genMethods.none { it.contains("generatecontent") }
         ) {

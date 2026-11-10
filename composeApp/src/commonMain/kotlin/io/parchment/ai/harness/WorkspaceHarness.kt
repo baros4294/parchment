@@ -1634,6 +1634,8 @@ object WorkspaceHarness {
      * Keeps the most recent `keepRecentCount` tool outputs verbatim, while compacting older verbose
      * tool outputs (>850 chars) into concise 1-line receipts so multi-day runs never overflow context.
      */
+    private const val COMPACTION_BATCH = 8
+
     fun compactStaleToolOutputText(
         stepIndex: Int,
         totalSteps: Int,
@@ -1641,7 +1643,9 @@ object WorkspaceHarness {
         rawOutput: String,
         keepRecentCount: Int = 8
     ): String {
-        if (totalSteps - stepIndex <= keepRecentCount || rawOutput.length <= 850) {
+        // A boundary sliding every step would rewrite earlier text and miss the provider's cache each time.
+        val boundary = if (keepRecentCount > 0) ((totalSteps - keepRecentCount) / COMPACTION_BATCH) * COMPACTION_BATCH else totalSteps
+        if (stepIndex >= boundary || rawOutput.length <= 850) {
             return rawOutput
         }
         val firstLine = rawOutput.lineSequence().firstOrNull()?.take(140).orEmpty()

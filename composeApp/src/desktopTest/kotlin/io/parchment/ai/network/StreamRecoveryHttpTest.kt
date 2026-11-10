@@ -175,6 +175,105 @@ class StreamRecoveryHttpTest {
         }
     }
 
+    @Test fun anAnswerCutOffByTheOutputLimitSaysSoAndTheNoticeIsNotReplayed() {
+        val cut = """{"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}"""
+        Server(listOf(Reply(sse(cut)))).use { server ->
+            val completed = assertIs<StreamUpdate.Completed>(outcome(profile(server, CUSTOM_DIALECT_OPENAI_CHAT)))
+            assertEquals("partial${AiProviderEngine.OUTPUT_LIMIT_NOTICE}", completed.fullContent)
+            assertEquals("partial", AiProviderEngine.stripInlineErrorNotices(completed.fullContent))
+        }
+    }
+
+    @Test fun aPausedAnthropicTurnContinuesWithItsServerBlocksIntact() {
+        val search = """{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}"""
+        val query = """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"x\"}"}}"""
+        val paused = """{"type":"message_delta","delta":{"stop_reason":"pause_turn"}}"""
+        val finished = """{"type":"message_stop"}"""
+        Server(listOf(Reply(sse(search, query, paused, finished)), Reply(sse(anthropicText, finished)))).use { server ->
+            assertEquals("partial", assertIs<StreamUpdate.Completed>(outcome(profile(server, CUSTOM_DIALECT_ANTHROPIC))).fullContent)
+            val replayed = Json.parseToJsonElement(server.requests[1]).jsonObject["messages"]!!.jsonArray.last().jsonObject
+            assertEquals("assistant", replayed["role"]!!.jsonPrimitive.content)
+            val block = replayed["content"]!!.jsonArray.single().jsonObject
+            assertEquals("server_tool_use", block["type"]!!.jsonPrimitive.content)
+            assertEquals("x", block["input"]!!.jsonObject["query"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test fun anthropicToolStepsMarkTheNewestTurnForCaching() {
+        val call = """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"fs_read","input":{"path":"x"}}}"""
+        Server(listOf(Reply(sse(call, """{"type":"message_stop"}""")), Reply(sse(anthropicText, """{"type":"message_stop"}""")))).use { server ->
+            assertIs<StreamUpdate.Completed>(outcome(profile(server, CUSTOM_DIALECT_ANTHROPIC)))
+            val last = Json.parseToJsonElement(server.requests[1]).jsonObject["messages"]!!.jsonArray.last().jsonObject
+            assertNotNull(last["content"]!!.jsonArray.last().jsonObject["cache_control"], "The newest tool result must carry the marker")
+        }
+    }
+
+    private fun videoProfile(server: Server) = ProviderProfile(
+        "video", "Video", ProviderProtocol.OPENAI_RESPONSES, baseUrl = server.baseUrl, endpointPathOverride = "/v1/videos/generations",
+        defaultModel = "fixture-model", thinkingEffort = "none", customModelSpecs = mapOf("fixture-model" to ModelPricingSpec("fixture-model"))
+    )
+
+    private fun runVideo(server: Server, resumeTask: String) = runBlocking {
+        val video = videoProfile(server)
+        withTimeout(30_000) {
+            runCatching {
+                AiProviderEngine.streamGeneration(
+                    profile = video, session = ChatSession("chat", "Fixture", 1L, 1L, video.id),
+                    historyNodes = listOf(MessageNode("user", MessageRole.USER, listOf(MessageVariant("variant", content = "A short clip")))),
+                    resumeMediaTask = resumeTask
+                ).toList()
+            }
+        }
+    }
+
+    @Test fun anAcceptedVideoJobResumesInsteadOfBeingCreatedAgain() {
+        val finished = """{"id":"task-1","status":"succeeded","video_url":"http://127.0.0.1:1/x.mp4"}"""
+        Server(listOf(Reply(finished))).use { server ->
+            runVideo(server, "video-task:0:task-1")
+            assertEquals(0, server.requests.count { it.isNotEmpty() }, "Resuming must not create a job")
+            assertTrue(server.requests.isNotEmpty(), "It must check the existing job")
+        }
+    }
+
+    @Test fun aSavedVideoTaskCannotPointAnywhereElse() {
+        val created = """{"id":"fresh","status":"succeeded","video_url":"http://127.0.0.1:1/x.mp4"}"""
+        listOf("video-task:9:task-1", "video-task:0:../../evil", "https://evil.example/task").forEach { forged ->
+            Server(listOf(Reply(created))).use { server ->
+                runVideo(server, forged)
+                assertEquals(1, server.requests.count { it.isNotEmpty() }, "$forged must be ignored")
+            }
+        }
+    }
+
+    private fun limited(server: Server, before: Double, limit: Double) = runBlocking {
+        val priced = ModelPricingSpec("fixture-model", inputPricePerM = 1000.0, outputPricePerM = 1000.0)
+        val fixture = profile(server, CUSTOM_DIALECT_OPENAI_CHAT).copy(customModelSpecs = mapOf("fixture-model" to priced))
+        withTimeout(20_000) {
+            AiProviderEngine.streamGeneration(
+                profile = fixture, session = ChatSession("chat", "Fixture", 1L, 1L, fixture.id),
+                historyNodes = listOf(MessageNode("user", MessageRole.USER, listOf(MessageVariant("variant", content = "Hello")))),
+                spendLimitUsd = limit, spendBeforeRunUsd = before
+            ).toList()
+        }
+    }
+
+    @Test fun aChatAtItsSpendLimitSendsNothing() {
+        Server(listOf(Reply(sse(chatText, "[DONE]")))).use { server ->
+            val updates = limited(server, before = 1.0, limit = 1.0)
+            assertEquals(0, server.requests.size)
+            assertTrue("spend limit" in updates.filterIsInstance<StreamUpdate.Error>().single().message)
+        }
+    }
+
+    @Test fun aRunStopsBetweenStepsOnceItCrossesTheLimit() {
+        val step = """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"fs_read","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1000,"completion_tokens":1000}}"""
+        Server(listOf(Reply(sse(step, "[DONE]")))).use { server ->
+            val updates = limited(server, before = 0.0, limit = 1.0)
+            assertEquals(1, server.requests.size, "The next step must not be sent")
+            assertTrue("spend limit" in updates.filterIsInstance<StreamUpdate.Error>().single().message)
+        }
+    }
+
     @Test fun chatToolCallsWithoutAnIndexStaySeparate() {
         val first = """{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"fs_list","arguments":"{\"pa"}}]}}]}"""
         val rest = """{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"th\":\"x\"}"}}]}}]}"""

@@ -61,6 +61,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
     onContent: suspend (String) -> Unit,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
     onToolCall: suspend (ToolCallRecord) -> Unit,
+    onOutputLimit: suspend () -> Unit = {},
     onRawWire: suspend (String, String) -> Unit,
     onRequestStarted: UsageRequestStarter,
     onUsage: UsageReporter,
@@ -363,6 +364,8 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                                 }
                                 "response.completed", "response.incomplete" -> {
                                     streamFinished = true
+                                    val incomplete = ((evObj["response"] as? JsonObject)?.get("incomplete_details") as? JsonObject)
+                                    if (incomplete?.get("reason")?.jsonPrimitive?.contentOrNull == "max_output_tokens") onOutputLimit()
                                     val respSub = evObj["response"] as? JsonObject
                                     val id = respSub?.get("id")?.jsonPrimitive?.contentOrNull ?: currentPrevResponseId
                                     if (profile.useStatefulChaining && id.isNotBlank()) currentPrevResponseId = id

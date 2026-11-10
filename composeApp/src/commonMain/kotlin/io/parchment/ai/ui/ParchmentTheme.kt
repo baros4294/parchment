@@ -186,14 +186,14 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
         ),
         uiBodyStyle = TextStyle(
             fontFamily = uiFont,
-            fontSize = 13.5.sp,
-            lineHeight = 19.5.sp,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
             color = primaryInk
         ),
         uiLabelStyle = TextStyle(
             fontFamily = uiFont,
-            fontSize = 11.5.sp,
-            lineHeight = 15.5.sp,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
             letterSpacing = 0.08.sp,
             color = mutedInk,
             fontWeight = FontWeight.Medium
