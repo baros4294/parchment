@@ -10,8 +10,8 @@ import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ToolCallRecord
-import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.model.AgentPermissionResolver
+import io.parchment.ai.network.sanitizeGeminiThoughtSignature
 
 data class ContextCompactionPlan(
     val mutedNodeIds: Set<String>,
@@ -53,11 +53,6 @@ data class ContextCompactionPlan(
 
     val freeSpaceTokens: Int
         get() = if (contextLimitTokens > 0) (contextLimitTokens - totalUsedTokens).coerceAtLeast(0) else 0
-
-    val usageFraction: Float
-        get() = if (contextLimitTokens > 0) {
-            (totalUsedTokens.toFloat() / contextLimitTokens.toFloat()).coerceIn(0f, 1f)
-        } else 0.08f
 }
 
 object O200kTokenizer {

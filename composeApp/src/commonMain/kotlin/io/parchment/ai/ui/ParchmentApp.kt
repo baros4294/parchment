@@ -1,5 +1,9 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.hoverable
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -80,6 +84,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -104,6 +109,14 @@ import io.parchment.ai.model.QueuedPromptItem
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.harness.AgentToolRunContext
+import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
+import io.parchment.ai.network.appendSignatureChunkSafe
+import io.parchment.ai.network.cancelBackgroundInteraction
+import io.parchment.ai.network.fetchAvailableModels
+import io.parchment.ai.network.resolveModelModalityProfile
+import io.parchment.ai.network.stripInlineErrorNotices
+import io.parchment.ai.platform.MAX_INLINE_TEXT_ATTACHMENT_BYTES
+import io.parchment.ai.platform.inlineAttachmentText
 import io.parchment.ai.runtime.appRunLeases
 import io.parchment.ai.harness.ToolApprovalBroker
 import io.parchment.ai.harness.ToolAccessScope
@@ -121,8 +134,8 @@ import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
+import io.parchment.ai.network.updateBlockedReason
 import io.parchment.ai.model.ApiUsageRecord
-import io.parchment.ai.network.aggregateApiUsageRecords
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
@@ -135,7 +148,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -237,7 +249,6 @@ fun ParchmentApp(
     val streamingTargetNodeId = currentTabStream?.targetNodeId.orEmpty()
     val streamingStatus = currentTabStream?.statusText.orEmpty()
     val streamingInteractionId = currentTabStream?.interactionId.orEmpty()
-    val activeStreamJob = currentTabStream?.job
     val queuedPrompts = queuedPromptsBySession[activeSession.id].orEmpty()
 
     // Open Browser Tabs list (always includes activeSession.id)
@@ -289,6 +300,10 @@ fun ParchmentApp(
             }
             isSvg || att.textContent.isNotBlank() || mime.startsWith("text/") || mime == "application/json" -> {
                 val content = att.textContent.ifBlank {
+                    if (PlatformBridge.localFileSizeBytes(att.localFilePath) > MAX_TEXT_PREVIEW_BYTES) {
+                        bannerNotification = "${att.fileName} is too large to preview here."
+                        return
+                    }
                     PlatformBridge.readBinaryFileBytes(att.localFilePath)?.let {
                         runCatching { it.decodeToString() }.getOrNull()
                     }.orEmpty()
@@ -307,8 +322,13 @@ fun ParchmentApp(
     }
 
     fun attachPickedFiles(files: List<PickedBinaryFile>) {
-        if (files.isEmpty()) return
-        val newAtts = files.mapIndexed { idx, rawPicked ->
+        val (oversized, accepted) = files.partition { it.oversized }
+        if (oversized.isNotEmpty()) {
+            val limitMb = MAX_INLINE_ATTACHMENT_BYTES / (1024L * 1024L)
+            bannerNotification = "Too large to attach (limit $limitMb MB): ${oversized.joinToString { it.fileName }}"
+        }
+        if (accepted.isEmpty()) return
+        val newAtts = accepted.mapIndexed { idx, rawPicked ->
             val now = PlatformBridge.currentTimeMillis() + idx
             val picked = normalizePickedBinaryFile(
                 rawFileName = rawPicked.fileName,
@@ -384,23 +404,24 @@ fun ParchmentApp(
                     )
                 }
                 else -> {
-                    val decoded = runCatching { picked.bytes.decodeToString() }.getOrNull()
+                    val inlineText = inlineAttachmentText(picked.bytes)
                     val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
-                    if (decoded != null && !decoded.contains('\u0000')) {
+                    if (inlineText != null) {
                         PromptAttachment(
                             id = "att-$now",
                             fileName = picked.fileName,
                             mimeType = "text/plain",
-                            textContent = decoded,
+                            textContent = inlineText,
                             localFilePath = savedPath
                         )
                     } else {
+                        val fileKind = if (picked.bytes.size > MAX_INLINE_TEXT_ATTACHMENT_BYTES) "Large file" else "Binary file"
                         PromptAttachment(
                             id = "att-$now",
                             fileName = picked.fileName,
                             mimeType = "application/octet-stream",
                             localFilePath = savedPath,
-                            textContent = "[Binary file attached: ${picked.fileName} (${picked.bytes.size / 1024} KB)]"
+                            textContent = "[$fileKind attached: ${picked.fileName} (${picked.bytes.size / 1024} KB)]"
                         )
                     }
                 }
@@ -416,7 +437,9 @@ fun ParchmentApp(
             onFilesDropped = { dropped ->
                 uiScope.launch {
                     attachPickedFiles(dropped)
-                    bannerNotification = "Attached ${dropped.size} item(s): ${dropped.joinToString { it.fileName }}"
+                    if (dropped.none { it.oversized }) {
+                        bannerNotification = "Attached ${dropped.size} item(s): ${dropped.joinToString { it.fileName }}"
+                    }
                 }
             }
         )
@@ -587,12 +610,21 @@ fun ParchmentApp(
         }
     }
 
+    fun currentUpdateBlock(): String? = updateBlockedReason(
+        runningChats = activeStreamsBySession.size,
+        queuedPrompts = queuedPromptsBySession.values.sumOf { it.size }
+    )
+
     fun triggerOtaDownloadAndInstall(release: OtaReleaseInfo) {
         dismissOtaBanner = false
+        currentUpdateBlock()?.let { reason ->
+            bannerNotification = reason
+            return
+        }
         isSettingsOpen = false
         PlatformBridge.flushPendingStateNow()
         appProcessScope.launch {
-            OtaUpdateEngine.downloadAndInstall(release).collect { st ->
+            OtaUpdateEngine.downloadAndInstall(release, ::currentUpdateBlock).collect { st ->
                 otaState = st
             }
         }
@@ -1556,7 +1588,7 @@ fun ParchmentApp(
                                             providerInteractionId = update.providerInteractionId,
                                             pendingBackgroundInteractionId = "",
                                             isStreaming = false,
-                                            providerProtocol = effectiveProfileForApi.protocol,
+                                            providerProtocol = AiProviderEngine.resolveWireProtocol(effectiveProfileForApi),
                                             modelUsed = modelName,
                                             tokenMetrics = update.metrics,
                                             apiUsageRecords = update.apiUsageRecords,
@@ -1783,7 +1815,7 @@ fun ParchmentApp(
             id = assistantVarId,
             content = prefill,
             modelUsed = modelName,
-            providerProtocol = activeProfile.protocol,
+            providerProtocol = AiProviderEngine.resolveWireProtocol(activeProfile),
             isStreaming = true,
             createdAt = now + 1
         )
@@ -2298,7 +2330,7 @@ fun ParchmentApp(
                         id = newVarId,
                         content = "",
                         modelUsed = modelUsed,
-                        providerProtocol = curProf.protocol,
+                        providerProtocol = AiProviderEngine.resolveWireProtocol(curProf),
                         isStreaming = true,
                         createdAt = now
                     )
@@ -2319,7 +2351,7 @@ fun ParchmentApp(
                 id = newVarId,
                 content = "",
                 modelUsed = modelUsed,
-                providerProtocol = curProf.protocol,
+                providerProtocol = AiProviderEngine.resolveWireProtocol(curProf),
                 isStreaming = true,
                 createdAt = now
             )
@@ -2829,7 +2861,7 @@ fun ParchmentApp(
                         SepiaDivider()
 
                         // Desktop Browser-Style Multi-Tasking Tab Bar
-                        if (!isCompactScreen) {
+                        if (!isCompactScreen && openTabIds.size > 1) {
                             DesktopBrowserTabBar(
                                 appState = appState,
                                 openTabIds = openTabIds,
@@ -2865,19 +2897,20 @@ fun ParchmentApp(
                                     ) {
                                         KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 14.dp)
                                         BasicText(
-                                            text = "OTA Update Available: ${currentOta.release.tagName} ($sizeMb MB)",
-                                            style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
+                                            text = "Version ${currentOta.release.tagName.removePrefix("v")} is ready ($sizeMb MB)",
+                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium)
                                         )
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         SepiaButton(
-                                            text = "⬇ Update Now",
+                                            text = "Update",
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { triggerOtaDownloadAndInstall(currentOta.release) }
                                         )
                                         SepiaButton(
                                             text = "×",
+                                            contentDescription = "Dismiss update notice",
                                             compact = true,
                                             style = SepiaButtonStyle.GHOST,
                                             onClick = { dismissOtaBanner = true }
@@ -2975,7 +3008,7 @@ fun ParchmentApp(
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     BasicText(
-                                        text = "OTA Update Error: ${currentOta.message}",
+                                        text = "Update failed: ${currentOta.message}",
                                         style = p.uiBodyStyle.copy(color = p.danger, fontWeight = FontWeight.Medium),
                                         modifier = Modifier.weight(1f, fill = false).padding(top = 4.dp, end = 8.dp)
                                     )
@@ -2988,6 +3021,7 @@ fun ParchmentApp(
                                         )
                                         SepiaButton(
                                             text = "×",
+                                            contentDescription = "Dismiss update notice",
                                             compact = true,
                                             style = SepiaButtonStyle.GHOST,
                                             onClick = { dismissOtaBanner = true }
@@ -3208,7 +3242,7 @@ fun ParchmentApp(
                                     onCheckOtaNow = ::triggerOtaCheckManual,
                                     onInstallOtaRelease = ::triggerOtaDownloadAndInstall,
                                     onRestoreFullBackup = { importedSnapshot ->
-                                        val restored = importedSnapshot.withImportedPermissions()
+                                        val restored = importedSnapshot.withImportedPermissions(appState.otaGithubRepo)
                                         activeStreamsBySession.values.forEach { it.job?.cancel() }
                                         activeStreamsBySession = emptyMap()
                                         queuedPromptsBySession = emptyMap()
@@ -3387,7 +3421,9 @@ fun ParchmentApp(
                                         val pasted = PlatformBridge.readClipboardFiles()
                                         if (pasted.isNotEmpty()) {
                                             attachPickedFiles(pasted)
-                                            bannerNotification = "Attached ${pasted.size} clipboard item(s): ${pasted.joinToString { it.fileName }}"
+                                            if (pasted.none { it.oversized }) {
+                                                bannerNotification = "Attached ${pasted.size} clipboard item(s): ${pasted.joinToString { it.fileName }}"
+                                            }
                                             true
                                         } else {
                                             false
@@ -3480,10 +3516,10 @@ fun ParchmentApp(
                                             }
                                             if (hasLocalMedia) {
                                                 val zipName = buildExportZipFileNameForChat(activeSession)
-                                                val zipBytes = withContext(Dispatchers.Default) {
-                                                    encodeChatSessionsToZipBundleBytes(listOf(activeSession))
+                                                val saved = runCatching { exportChatSessionsBundle(zipName, listOf(activeSession)) }.getOrElse { error ->
+                                                    bannerNotification = "Chat export failed: ${error.message}"
+                                                    return@launch
                                                 }
-                                                val saved = PlatformBridge.saveFileForExport(zipName, zipBytes)
                                                 if (saved != null) bannerNotification = "Exported Chat Bundle (chat.json + media/) to $saved"
                                             } else {
                                                 val fileName = buildExportFileNameForChat(activeSession)
@@ -3637,7 +3673,7 @@ fun ParchmentApp(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .background(Color.Black.copy(alpha = 0.34f))
-                                            .clickable { showSidebar = false }
+                                            .dismissOnOutsideTap { showSidebar = false }
                                     )
                                 }
                             }
@@ -3653,7 +3689,7 @@ fun ParchmentApp(
                                             Modifier
                                                 .fillMaxWidth(0.86f)
                                                 .fillMaxHeight()
-                                                .clickable(enabled = false) {}
+                                                .blockTapThrough()
                                         )
                                         Box(
                                             modifier = Modifier
@@ -3676,7 +3712,7 @@ fun ParchmentApp(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .background(Color.Black.copy(alpha = 0.34f))
-                                            .clickable { showRightFilesSidebar = false }
+                                            .dismissOnOutsideTap { showRightFilesSidebar = false }
                                     )
                                 }
                             }
@@ -3718,7 +3754,7 @@ fun ParchmentApp(
                                             modifier = Modifier
                                                 .fillMaxWidth(0.86f)
                                                 .fillMaxHeight()
-                                                .clickable(enabled = false) {}
+                                                .blockTapThrough()
                                         )
                                     }
                                 }
@@ -3759,7 +3795,7 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(Color.Black.copy(alpha = 0.42f))
-                                    .clickable { pendingDeleteConfirmation = null },
+                                    .dismissOnOutsideTap { pendingDeleteConfirmation = null },
                                 contentAlignment = Alignment.Center
                             ) {
                                 val dialogTitle = when (confirmReq) {
@@ -3781,66 +3817,46 @@ fun ParchmentApp(
                                     is DeleteConfirmRequest.ClearCurrentMessages -> "🗑 Clear"
                                 }
 
-                                Column(
-                                    modifier = Modifier
-                                        .widthIn(max = 420.dp)
-                                        .fillMaxWidth(0.9f)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(p.cardBg)
-                                        .border(1.dp, p.border, RoundedCornerShape(14.dp))
-                                        .clickable(enabled = false) {}
-                                        .padding(18.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    BasicText(
-                                        text = dialogTitle,
-                                        style = p.uiHeaderStyle.copy(fontSize = 17.sp)
-                                    )
-                                    BasicText(
-                                        text = dialogBody,
-                                        style = p.uiBodyStyle.copy(color = p.narrationInk)
-                                    )
-                                    SepiaToggleRow(
-                                        title = "Ask for confirmation before deleting",
-                                        checked = appState.preferences.confirmBeforeDeletingChat,
-                                        onCheckedChange = { checked ->
-                                            persist(
-                                                appState.copy(
-                                                    preferences = appState.preferences.copy(confirmBeforeDeletingChat = checked)
-                                                ),
-                                                immediateFlush = true
-                                            )
-                                        }
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        SepiaButton(
-                                            text = "Cancel",
-                                            compact = true,
-                                            style = SepiaButtonStyle.OUTLINE,
-                                            onClick = { pendingDeleteConfirmation = null }
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        SepiaButton(
-                                            text = confirmBtnText,
-                                            compact = true,
-                                            style = SepiaButtonStyle.DANGER,
-                                            onClick = {
-                                                pendingDeleteConfirmation = null
-                                                when (confirmReq) {
-                                                    is DeleteConfirmRequest.SingleSession ->
-                                                        executeDeleteSingleSession(confirmReq.sessionId)
-                                                    is DeleteConfirmRequest.ClearAllSessions ->
-                                                        executeClearAllTopicsForAssistant()
-                                                    is DeleteConfirmRequest.ClearCurrentMessages ->
-                                                        clearCurrentChatMessages(activeSession.id)
-                                                }
+                                SepiaConfirmationCard(
+                                    title = dialogTitle,
+                                    body = dialogBody,
+                                    options = {
+                                        SepiaToggleRow(
+                                            title = "Ask for confirmation before deleting",
+                                            checked = appState.preferences.confirmBeforeDeletingChat,
+                                            onCheckedChange = { checked ->
+                                                persist(
+                                                    appState.copy(
+                                                        preferences = appState.preferences.copy(confirmBeforeDeletingChat = checked)
+                                                    ),
+                                                    immediateFlush = true
+                                                )
                                             }
                                         )
                                     }
+                                ) {
+                                    SepiaButton(
+                                        text = "Cancel",
+                                        compact = true,
+                                        style = SepiaButtonStyle.OUTLINE,
+                                        onClick = { pendingDeleteConfirmation = null }
+                                    )
+                                    SepiaButton(
+                                        text = confirmBtnText,
+                                        compact = true,
+                                        style = SepiaButtonStyle.DANGER,
+                                        onClick = {
+                                            pendingDeleteConfirmation = null
+                                            when (confirmReq) {
+                                                is DeleteConfirmRequest.SingleSession ->
+                                                    executeDeleteSingleSession(confirmReq.sessionId)
+                                                is DeleteConfirmRequest.ClearAllSessions ->
+                                                    executeClearAllTopicsForAssistant()
+                                                is DeleteConfirmRequest.ClearCurrentMessages ->
+                                                    clearCurrentChatMessages(activeSession.id)
+                                            }
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -3851,64 +3867,44 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(Color.Black.copy(alpha = 0.42f))
-                                    .clickable { pendingRegenerateConfirm = null },
+                                    .dismissOnOutsideTap { pendingRegenerateConfirm = null },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .widthIn(max = 420.dp)
-                                        .fillMaxWidth(0.9f)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(p.cardBg)
-                                        .border(1.dp, p.border, RoundedCornerShape(14.dp))
-                                        .clickable(enabled = false) {}
-                                        .padding(18.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    BasicText(
-                                        text = "Regenerate Reply?",
-                                        style = p.uiHeaderStyle.copy(fontSize = 17.sp)
-                                    )
-                                    BasicText(
-                                        text = if (appState.preferences.deletePreviousMessageWhenRegenerating) {
-                                            "This will replace the current reply in-place."
-                                        } else {
-                                            "This will generate a new version branch for this turn."
-                                        },
-                                        style = p.uiBodyStyle.copy(color = p.narrationInk)
-                                    )
-                                    SepiaToggleRow(
-                                        title = "Ask for confirmation before regenerating",
-                                        checked = appState.preferences.confirmBeforeRegenerating,
-                                        onCheckedChange = { checked ->
-                                            persist(
-                                                appState.copy(preferences = appState.preferences.copy(confirmBeforeRegenerating = checked)),
-                                                immediateFlush = true
-                                            )
-                                        }
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        SepiaButton(
-                                            text = "Cancel",
-                                            compact = true,
-                                            style = SepiaButtonStyle.OUTLINE,
-                                            onClick = { pendingRegenerateConfirm = null }
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        SepiaButton(
-                                            text = "↻ Regenerate",
-                                            compact = true,
-                                            style = SepiaButtonStyle.PRIMARY,
-                                            onClick = {
-                                                pendingRegenerateConfirm = null
-                                                executeRegenerateFromNode(regenReq.nodeIndex, regenReq.sessionId)
+                                SepiaConfirmationCard(
+                                    title = "Regenerate Reply?",
+                                    body = if (appState.preferences.deletePreviousMessageWhenRegenerating) {
+                                        "This will replace the current reply in-place."
+                                    } else {
+                                        "This will generate a new version branch for this turn."
+                                    },
+                                    options = {
+                                        SepiaToggleRow(
+                                            title = "Ask for confirmation before regenerating",
+                                            checked = appState.preferences.confirmBeforeRegenerating,
+                                            onCheckedChange = { checked ->
+                                                persist(
+                                                    appState.copy(preferences = appState.preferences.copy(confirmBeforeRegenerating = checked)),
+                                                    immediateFlush = true
+                                                )
                                             }
                                         )
                                     }
+                                ) {
+                                    SepiaButton(
+                                        text = "Cancel",
+                                        compact = true,
+                                        style = SepiaButtonStyle.OUTLINE,
+                                        onClick = { pendingRegenerateConfirm = null }
+                                    )
+                                    SepiaButton(
+                                        text = "↻ Regenerate",
+                                        compact = true,
+                                        style = SepiaButtonStyle.PRIMARY,
+                                        onClick = {
+                                            pendingRegenerateConfirm = null
+                                            executeRegenerateFromNode(regenReq.nodeIndex, regenReq.sessionId)
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -4239,6 +4235,7 @@ private fun ManuscriptViewport(
                             }
                             SepiaButton(
                                 text = "×",
+                                contentDescription = "Close session inspector",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onToggleSessionInspector
@@ -4345,7 +4342,7 @@ private fun ManuscriptViewport(
                     }
                     .padding(horizontal = if (win.isCompact) 12.dp else 18.dp),
                 verticalArrangement = Arrangement.spacedBy(
-                    if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else 18.dp
+                    if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else if (win.isCompact) 20.dp else 12.dp
                 )
             ) {
                 item { Spacer(Modifier.height(10.dp)) }
@@ -4360,21 +4357,20 @@ private fun ManuscriptViewport(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 36.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                .padding(top = 44.dp)
+                                .rubricMark(p.accent)
+                                .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            SepiaAvatarCircle(
-                                symbol = activeAssistant.iconEmoji,
-                                selected = true,
-                                sizeDp = 46.dp
+                            if (activeAssistant.iconEmoji != "💬") {
+                                SepiaAvatarCircle(symbol = activeAssistant.iconEmoji, selected = true, sizeDp = 40.dp)
+                            }
+                            BasicText(
+                                text = if (displayName == "Default Assistant") "Start with a question, a draft or a file." else displayName,
+                                style = p.uiHeaderStyle.copy(fontSize = 21.sp, lineHeight = 28.sp)
                             )
                             BasicText(
-                                text = displayName,
-                                style = p.uiHeaderStyle.copy(fontSize = 19.sp)
-                            )
-                            BasicText(
-                                text = "${activeProfile.name} • ${activeModel.ifBlank { "Select a model in Settings" }}",
+                                text = activeModel.ifBlank { "Choose a model in Settings" },
                                 style = p.uiLabelStyle.copy(color = p.mutedInk)
                             )
                             if (card != null && card.firstMessage.isNotBlank()) {
@@ -4417,6 +4413,7 @@ private fun ManuscriptViewport(
                     MessageTurnItem(
                         node = node,
                         nodeIndex = index,
+                        isLatestTurn = index >= activeSession.messages.lastIndex - 1,
                         viewMode = preferences.defaultViewMode,
                         preferences = preferences,
                         userName = activeSession.userName,
@@ -4596,13 +4593,13 @@ private fun ManuscriptViewport(
                                 ) {
                                     KissVectorIcon(
                                         icon = KissIcon.MIC,
-                                        tint = if (isVoiceListening) Color(0xFFFAF6EB) else p.primaryInk,
+                                        tint = if (isVoiceListening) onFillInk(p.accent) else p.primaryInk,
                                         size = 11.5.dp
                                     )
                                     BasicText(
                                         text = if (isVoiceListening) "Pause Mic" else "Speak",
                                         style = p.uiLabelStyle.copy(
-                                            color = if (isVoiceListening) Color(0xFFFAF6EB) else p.primaryInk,
+                                            color = if (isVoiceListening) onFillInk(p.accent) else p.primaryInk,
                                             fontWeight = FontWeight.SemiBold,
                                             fontSize = 11.sp
                                         )
@@ -4726,17 +4723,17 @@ private fun ManuscriptViewport(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             if (isStreaming) {
-                                KissStreamingPulseDot(color = Color(0xFFFAF6EB))
+                                KissStreamingPulseDot(color = onFillInk(p.accent))
                             }
                             KissVectorIcon(
                                 icon = KissIcon.ARROW_DOWN,
-                                tint = Color(0xFFFAF6EB),
+                                tint = onFillInk(p.accent),
                                 size = 12.5.dp
                             )
                             BasicText(
                                 text = "Latest",
                                 style = p.uiLabelStyle.copy(
-                                    color = Color(0xFFFAF6EB),
+                                    color = onFillInk(p.accent),
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp
                                 )
@@ -4806,6 +4803,7 @@ private fun ManuscriptViewport(
                                 }
                                 SepiaButton(
                                     text = "×",
+                                    contentDescription = "Close conversation map",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { showMinimapTreeModal = false }
@@ -4879,7 +4877,7 @@ private fun ManuscriptViewport(
                                                                 text = "v${vIdx + 1}",
                                                                 style = p.uiLabelStyle.copy(
                                                                     fontSize = 9.5.sp,
-                                                                    color = if (vSel) Color(0xFFFAF6EB) else p.narrationInk,
+                                                                    color = if (vSel) onFillInk(p.accent) else p.narrationInk,
                                                                     fontWeight = FontWeight.Bold
                                                                 )
                                                             )
@@ -4913,6 +4911,7 @@ private fun ManuscriptViewport(
                         // Extreme Jump Top
                         SepiaButton(
                             text = "⤒",
+                            contentDescription = "Jump to first message",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -4923,6 +4922,7 @@ private fun ManuscriptViewport(
                         // Jump Previous Message
                         SepiaButton(
                             text = "↑",
+                            contentDescription = "Previous message",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -4936,6 +4936,7 @@ private fun ManuscriptViewport(
                         // Toggle Tree & Swipe Map
                         SepiaButton(
                             text = "🗺",
+                            contentDescription = "Conversation map",
                             compact = true,
                             style = if (showMinimapTreeModal) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.GHOST,
                             onClick = {
@@ -4946,6 +4947,7 @@ private fun ManuscriptViewport(
                         // Jump Next Message
                         SepiaButton(
                             text = "↓",
+                            contentDescription = "Next message",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -4959,6 +4961,7 @@ private fun ManuscriptViewport(
                         // Extreme Jump Bottom
                         SepiaButton(
                             text = "⤓",
+                            contentDescription = "Jump to latest message",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -5031,7 +5034,7 @@ private fun ManuscriptViewport(
                             .clip(RoundedCornerShape(8.dp))
                             .background(p.sheetBg.copy(alpha = 0.78f))
                             .border(0.65.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                            .clickable { statusExpanded = !statusExpanded }
+                            .clickable(role = Role.Button, onClickLabel = if (statusExpanded) "Collapse status" else "Expand status") { statusExpanded = !statusExpanded }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
@@ -5119,6 +5122,7 @@ private fun ManuscriptViewport(
                                     )
                                     SepiaButton(
                                         text = "×",
+                                        contentDescription = "Remove queued prompt",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { onRemoveQueuedPrompt(qItem.id) }
@@ -5374,7 +5378,7 @@ private fun ManuscriptViewport(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(p.cardBg)
                                     .border(0.85.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                                    .clickable { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(horizontal = 6.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -5405,6 +5409,7 @@ private fun ManuscriptViewport(
                                 )
                                 SepiaButton(
                                     text = "×",
+                                    contentDescription = "Remove attachment",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onRemoveAttachment(att.id) }
@@ -5909,7 +5914,7 @@ private fun ManuscriptViewport(
 
                 val rawEffort = activeProfile.thinkingEffort.ifBlank { "default" }.lowercase()
                 val thinkingLabel = if (preferences.showReasoningLevelOnButton) {
-                    "🧠 ${rawEffort.uppercase()}"
+                    "🧠 ${rawEffort.replaceFirstChar { it.uppercase() }}"
                 } else {
                     "🧠"
                 }
@@ -5946,11 +5951,13 @@ private fun ManuscriptViewport(
                     ) {
                         SepiaChip(
                             label = "📎",
+                            contentDescription = "Attach files",
                             selected = pendingAttachments.isNotEmpty(),
                             onClick = onAddAttachment
                         )
                         SepiaChip(
                             label = "🎙",
+                            contentDescription = "Voice input",
                             selected = isVoiceListening || isLiveVoiceMode,
                             onClick = onTriggerVoiceInput
                         )
@@ -6055,6 +6062,7 @@ private fun ManuscriptViewport(
                         }
                         SepiaChip(
                             label = toolsChipLabel,
+                            contentDescription = "Tools",
                             selected = showComposerToolsDrawer || hasActiveTools,
                             onClick = { onComposerToolsDrawerChange(!showComposerToolsDrawer) }
                         )
@@ -6189,6 +6197,7 @@ private fun ManuscriptViewport(
 private fun MessageTurnItem(
     node: MessageNode,
     nodeIndex: Int,
+    isLatestTurn: Boolean = false,
     viewMode: ViewMode,
     preferences: PreferencesConfig,
     userName: String,
@@ -6242,6 +6251,8 @@ private fun MessageTurnItem(
     }
     val isLivePeekOnly = isActivelyThinkingThisNode && manualThinkingToggle == false
 
+    // The stock assistant name says nothing the model name does not; characters keep theirs.
+    val namedCharacter = characterName.takeUnless { it == "Default Assistant" }.orEmpty()
     val speakerTitle = if (isAssistant) {
         characterName.ifBlank { activeVar.modelUsed.ifBlank { "Assistant" } }
     } else {
@@ -6249,6 +6260,13 @@ private fun MessageTurnItem(
     }
 
     var variantSwipeDelta by remember(node.id, node.activeVariantIndex) { mutableStateOf(0f) }
+
+    // On pointer devices the quiet footer appears with the turn being read; touch has no hover, so it stays.
+    val turnHoverSource = remember { MutableInteractionSource() }
+    val turnHovered by turnHoverSource.collectIsHoveredAsState()
+    var footerHasFocus by remember { mutableStateOf(false) }
+    val footerVisible = win.isCompact || turnHovered || footerHasFocus || showMoreActions || activeVar.isStreaming
+    val footerAlpha by animateFloatAsState(if (footerVisible) 1f else 0f, tween(120))
 
     // Disable outer `.animateContentSize` while `activeVar.isStreaming` is true so 60/120fps VSync character
     // streaming never fights a lagging spring height animation on every wrapped line!
@@ -6265,19 +6283,15 @@ private fun MessageTurnItem(
             )
             .padding(vertical = 6.dp)
     } else {
-        val shape = RoundedCornerShape(12.dp)
-        val bg = if (isAssistant) p.cardBg else p.elevatedBg.copy(alpha = 0.56f)
-        val borderCol = if (isAssistant) p.border.copy(alpha = 0.45f) else p.border.copy(alpha = 0.38f)
+        // The page itself is the container: replies sit on it, and prompts carry a lapis rule.
         Modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(bg)
-            .border(0.65.dp, borderCol, shape)
+            .hoverable(turnHoverSource)
+            .then(if (!node.includedInContext) Modifier.alpha(0.62f) else Modifier)
             .then(
                 if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
                 else Modifier
             )
-            .padding(horizontal = 15.dp, vertical = 14.dp)
     }
     val containerModifier = if (node.variants.size > 1 && !isEditing) {
         baseContainerModifier.pointerInput(node.id, node.activeVariantIndex, node.variants.size, isEditing) {
@@ -6300,7 +6314,9 @@ private fun MessageTurnItem(
 
     Column(modifier = containerModifier) {
         // Turn Header & Branch/Swipe Bar (FlowRow so Speaker/Model and Swipe/Thought pills never overlap on mobile!)
-        @OptIn(ExperimentalLayoutApi::class)
+        val showTurnHeader = isAssistant || preferences.showUserAvatar || preferences.showUserName ||
+            preferences.showUserTimestamp || node.variants.size > 1 || !node.includedInContext
+        if (showTurnHeader) @OptIn(ExperimentalLayoutApi::class)
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -6312,28 +6328,19 @@ private fun MessageTurnItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (isAssistant && preferences.showModelIcon) {
-                    if (characterName.isNotBlank() && assistantIconEmoji != "💬") {
+                    if (namedCharacter.isNotBlank() && assistantIconEmoji != "💬") {
                         SepiaAvatarCircle(
                             symbol = assistantIconEmoji,
                             selected = true,
                             sizeDp = 22.dp
                         )
                     } else {
-                        Box(
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(p.accent.copy(alpha = 0.14f))
-                                .border(0.8.dp, p.accent.copy(alpha = 0.55f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            ModelLabSvgIcon(
-                                modelOrProvider = activeVar.modelUsed.ifBlank { providerName },
-                                tint = p.accent,
-                                size = 13.dp,
-                                fallbackProtocolName = providerName
-                            )
-                        }
+                        ModelLabSvgIcon(
+                            modelOrProvider = activeVar.modelUsed.ifBlank { providerName },
+                            tint = p.mutedInk,
+                            size = 13.dp,
+                            fallbackProtocolName = providerName
+                        )
                     }
                 } else if (!isAssistant && preferences.showUserAvatar) {
                     Box(
@@ -6350,7 +6357,7 @@ private fun MessageTurnItem(
 
                 val showTurnTimestamp = (isAssistant && preferences.showModelTimestamp) || (!isAssistant && preferences.showUserTimestamp)
                 val timeSuffix = if (showTurnTimestamp && activeVar.createdAt > 0L) {
-                    " • ${formatCompactTimestamp(activeVar.createdAt)}"
+                    formatCompactTimestamp(activeVar.createdAt)
                 } else ""
 
                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -6359,9 +6366,9 @@ private fun MessageTurnItem(
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         if (isAssistant && preferences.showModelName) {
-                            val provSuffix = if (preferences.showProviderAfterModelName && characterName.isBlank()) " ($providerName)" else ""
-                            val primaryHeader = if (characterName.isNotBlank()) {
-                                characterName.uppercase()
+                            val provSuffix = if (preferences.showProviderAfterModelName && namedCharacter.isBlank()) " ($providerName)" else ""
+                            val primaryHeader = if (namedCharacter.isNotBlank()) {
+                                namedCharacter
                             } else {
                                 "${activeVar.modelUsed.ifBlank { "Assistant" }}$provSuffix"
                             }
@@ -6370,42 +6377,33 @@ private fun MessageTurnItem(
                                 maxLines = if (win.isCompact) 2 else 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false),
-                                style = p.uiLabelStyle.copy(
-                                    color = p.accent,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.5.sp,
-                                    letterSpacing = if (characterName.isNotBlank()) 0.6.sp else 0.sp
-                                )
+                                style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.Medium, fontSize = 12.sp)
                             )
                         } else if (!isAssistant && preferences.showUserName) {
                             BasicText(
-                                text = speakerTitle.uppercase(),
+                                text = speakerTitle,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false),
-                                style = p.uiLabelStyle.copy(
-                                    color = p.narrationInk,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.6.sp
-                                )
+                                style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.Medium, fontSize = 12.sp)
                             )
                         }
                         if (timeSuffix.isNotEmpty()) {
                             BasicText(
-                                text = timeSuffix.trimStart(),
+                                text = timeSuffix,
                                 maxLines = 1,
                                 style = p.uiLabelStyle.copy(fontSize = 10.5.sp, color = p.mutedInk)
                             )
                         }
                         if (!node.includedInContext) {
                             BasicText(
-                                text = "[Muted]",
+                                text = "Left out of context",
                                 style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold)
                             )
                         }
                     }
 
-                    if (isAssistant && preferences.showModelName && characterName.isNotBlank() && activeVar.modelUsed.isNotBlank()) {
+                    if (isAssistant && preferences.showModelName && namedCharacter.isNotBlank() && activeVar.modelUsed.isNotBlank()) {
                         val provSuffix = if (preferences.showProviderAfterModelName) " • $providerName" else ""
                         val modelDisplay = if (win.isCompact && activeVar.modelUsed.contains('/')) {
                             activeVar.modelUsed.substringAfterLast('/')
@@ -6416,7 +6414,7 @@ private fun MessageTurnItem(
                             text = "$modelDisplay$provSuffix",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                            style = p.uiLabelStyle.copy(fontSize = 11.sp)
                         )
                     }
                 }
@@ -6430,6 +6428,7 @@ private fun MessageTurnItem(
                 if (node.variants.size > 1) {
                     SepiaButton(
                         text = "←",
+                        contentDescription = "Previous version",
                         compact = true,
                         enabled = node.activeVariantIndex > 0,
                         style = SepiaButtonStyle.GHOST,
@@ -6441,6 +6440,7 @@ private fun MessageTurnItem(
                     )
                     SepiaButton(
                         text = "→",
+                        contentDescription = "Next version",
                         compact = true,
                         enabled = node.activeVariantIndex < node.variants.lastIndex,
                         style = SepiaButtonStyle.GHOST,
@@ -6454,8 +6454,12 @@ private fun MessageTurnItem(
                 val isCurrentlyToolStep = hasRunningToolInVar ||
                     (isActivelyThinkingThisNode && hasTools && activeVar.trailingThinking.isBlank())
                 if (hasThinking || hasTools) {
-                    val sec = if (activeVar.thinkingDurationMs > 0) " (${formatDurationFromMs(activeVar.thinkingDurationMs)})" else ""
-                    val toolBadge = if (hasTools) " • ${activeVar.toolCalls.size} tools" else ""
+                    val sec = if (activeVar.thinkingDurationMs > 0) " ${formatDurationFromMs(activeVar.thinkingDurationMs)}" else ""
+                    val toolBadge = if (hasTools) {
+                        val tools = activeVar.toolCalls.size
+                        val prefix = if (activeVar.thinkingSummary.isNotBlank()) ", " else " "
+                        "$prefix$tools tool${if (tools == 1) "" else "s"}"
+                    } else ""
                     val chipText = when {
                         isLivePeekOnly && isCurrentlyToolStep -> "🔧 Tool Peek$sec…"
                         isLivePeekOnly -> "🧠 Peek$sec…"
@@ -6464,9 +6468,10 @@ private fun MessageTurnItem(
                         isReasoningExpanded -> "▾ Thought$sec$toolBadge"
                         else -> "▸ Thought$sec$toolBadge"
                     }
-                    SepiaChip(
-                        label = chipText,
-                        selected = isReasoningExpanded || isLivePeekOnly || isActivelyThinkingThisNode,
+                    SepiaButton(
+                        text = chipText,
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
                         onClick = {
                             manualThinkingToggle = if (isActivelyThinkingThisNode) {
                                 if (isLivePeekOnly) true else false
@@ -6545,6 +6550,7 @@ private fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = if (isLivePeekOnly) "▾" else "▴",
+                        contentDescription = if (isLivePeekOnly) "Expand reasoning" else "Collapse reasoning",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -6695,7 +6701,7 @@ private fun MessageTurnItem(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .then(if (canExpandTool) Modifier.clickable { isToolResultExpanded = !isToolResultExpanded } else Modifier),
+                                .then(if (canExpandTool) Modifier.clickable(role = Role.Button, onClickLabel = if (isToolResultExpanded) "Collapse tool result" else "Expand tool result") { isToolResultExpanded = !isToolResultExpanded } else Modifier),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -6732,18 +6738,15 @@ private fun MessageTurnItem(
                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
                                         BasicText(
-                                            text = "RUNNING",
-                                            style = p.monoStyle.copy(
-                                                color = p.accent,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 9.5.sp
-                                            )
+                                            text = "Running",
+                                            style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                         )
                                     }
                                 }
                                 if (canExpandTool) {
                                     SepiaButton(
                                         text = if (effectiveExpanded) "▴" else "▾",
+                                        contentDescription = if (effectiveExpanded) "Collapse tool result" else "Expand tool result",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { isToolResultExpanded = !isToolResultExpanded }
@@ -6886,7 +6889,7 @@ private fun MessageTurnItem(
                             size = 12.dp
                         )
                         BasicText(
-                            text = "Thought Signature Verified (${activeVar.thinkingSignature.length} chars)",
+                            text = "Reasoning signature saved",
                             style = p.uiLabelStyle.copy(fontSize = 10.sp, fontFamily = p.codeFontFamily)
                         )
                     }
@@ -6907,9 +6910,9 @@ private fun MessageTurnItem(
                 else -> KissIcon.TARGET
             }
             val statusText = when {
-                goalTracker.isCompleted -> "COMPLETED ($doneCount/$totalCount)"
-                totalCount > 0 -> "IN PROGRESS ($doneCount/$totalCount)"
-                else -> "PLANNING GOAL"
+                goalTracker.isCompleted -> "Done, $doneCount of $totalCount"
+                totalCount > 0 -> "$doneCount of $totalCount done"
+                else -> "Planning"
             }
             Column(
                 modifier = Modifier
@@ -7011,6 +7014,7 @@ private fun MessageTurnItem(
         }
 
         // Main Prose Content OR In-Place Editor
+        Column(if (isAssistant) Modifier else Modifier.rubricMark(p.accent).padding(start = 14.dp, top = 2.dp, bottom = 2.dp)) {
         if (isEditing) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SepiaTextField(
@@ -7126,7 +7130,7 @@ private fun MessageTurnItem(
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(p.cardBg)
                                     .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
-                                    .clickable { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -7209,7 +7213,7 @@ private fun MessageTurnItem(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(p.cardBg)
                                     .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
-                                    .clickable { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(7.dp)
@@ -7261,7 +7265,7 @@ private fun MessageTurnItem(
                                             .fillMaxWidth()
                                             .heightIn(max = 520.dp)
                                             .clip(RoundedCornerShape(6.dp))
-                                            .clickable {
+                                            .clickable(role = Role.Button) {
                                                 onInspectGeneratedImage(media)
                                             }
                                     )
@@ -7396,6 +7400,8 @@ private fun MessageTurnItem(
             }
         }
 
+        }
+
         Spacer(Modifier.height(6.dp))
 
         // ========================================================================================
@@ -7404,7 +7410,7 @@ private fun MessageTurnItem(
         // ========================================================================================
         if (isAssistant || preferences.showUserMessageActions) {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().alpha(footerAlpha).onFocusChanged { footerHasFocus = it.hasFocus },
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 @OptIn(ExperimentalLayoutApi::class)
@@ -7415,7 +7421,8 @@ private fun MessageTurnItem(
                 ) {
                     var isSpeakingThisTurn by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
 
-                    // Show, Don't Tell: Icon-only primary turn actions (Copy, Speak/Stop, Redo, More)
+                    // On touch only the newest turns show every action; older ones open from the More button.
+                    if (!win.isCompact || isLatestTurn || showMoreActions) {
                     SepiaButton(
                         text = if (copiedBadge == "txt") "✓" else "📋",
                         compact = true,
@@ -7428,6 +7435,7 @@ private fun MessageTurnItem(
                     if (activeVar.content.isNotBlank()) {
                         SepiaButton(
                             text = if (isSpeakingThisTurn) "🔇" else "🔊",
+                            contentDescription = if (isSpeakingThisTurn) "Stop reading aloud" else "Read aloud",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -7446,13 +7454,16 @@ private fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = "↻",
+                        contentDescription = "Regenerate response",
                         compact = true,
                         enabled = !activeVar.isStreaming,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onRegenerate
                     )
+                    }
                     SepiaButton(
                         text = if (showMoreActions) "▴" else "⋯",
+                        contentDescription = if (showMoreActions) "Hide more actions" else "More actions",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showMoreActions = !showMoreActions }
@@ -7492,6 +7503,7 @@ private fun MessageTurnItem(
                         }
                         SepiaButton(
                             text = "✎",
+                            contentDescription = "Edit message",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -7502,6 +7514,7 @@ private fun MessageTurnItem(
                         if (activeVar.content.isNotBlank()) {
                             SepiaButton(
                                 text = "🌐",
+                                contentDescription = "Translate message",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onTranslate
@@ -7521,6 +7534,7 @@ private fun MessageTurnItem(
                         )
                         SepiaButton(
                             text = if (node.includedInContext) "🙈" else "👁",
+                            contentDescription = if (node.includedInContext) "Exclude from context" else "Include in context",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onToggleContextMute
@@ -7528,6 +7542,7 @@ private fun MessageTurnItem(
                         if (activeVar.rawRequestPreview.isNotBlank()) {
                             SepiaButton(
                                 text = "‹/›",
+                                contentDescription = "Raw request and response",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showRawWireDrawer = !showRawWireDrawer }
@@ -7542,6 +7557,7 @@ private fun MessageTurnItem(
                             )
                             SepiaButton(
                                 text = "🗑",
+                                contentDescription = "Delete message",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode
@@ -7549,6 +7565,7 @@ private fun MessageTurnItem(
                         } else {
                             SepiaButton(
                                 text = "🗑",
+                                contentDescription = "Delete message",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode
@@ -7559,7 +7576,7 @@ private fun MessageTurnItem(
 
                 // Clean, Scannable Pill Telemetry for Assistant Messages (Separates Output Prose Tokens from Tool Input Payloads!)
                 val m = activeVar.tokenMetrics
-                if (isAssistant && preferences.showTokenAndContextStats &&
+                if (isAssistant && preferences.showTokenAndContextStats && (!win.isCompact || showMoreActions) &&
                     (activeVar.content.isNotBlank() || activeVar.toolCalls.isNotEmpty() || m.outputTokens > 0)
                 ) {
                     val proseTokenKey = if (activeVar.isStreaming) activeVar.content.length / 64 else activeVar.content.hashCode()
@@ -7606,10 +7623,6 @@ private fun MessageTurnItem(
                         // Pill 1: Output Prose Tokens (+ Reasoning Tokens + Tool Payload Tokens clearly separated!)
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(5.dp))
-                                .background(p.elevatedBg.copy(alpha = 0.72f))
-                                .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
-                                .padding(horizontal = 7.dp, vertical = 2.5.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -7617,12 +7630,12 @@ private fun MessageTurnItem(
                             ) {
                                 BasicText(
                                     text = "~${formatCompactTokens(outProseTok)} tok",
-                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                                 if (thinkTok > 0) {
                                     BasicText(
                                         text = "•",
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     KissVectorIcon(
                                         icon = KissIcon.BRAIN,
@@ -7631,13 +7644,13 @@ private fun MessageTurnItem(
                                     )
                                     BasicText(
                                         text = formatCompactTokens(thinkTok),
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.narrationInk, fontWeight = FontWeight.Medium)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                                     )
                                 }
                                 if (toolPayloadTok > 0) {
                                     BasicText(
                                         text = "•",
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     KissVectorIcon(
                                         icon = KissIcon.WRENCH,
@@ -7646,7 +7659,7 @@ private fun MessageTurnItem(
                                     )
                                     BasicText(
                                         text = formatCompactTokens(toolPayloadTok),
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk, fontWeight = FontWeight.Medium)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk, fontWeight = FontWeight.Medium)
                                     )
                                 }
                             }
@@ -7665,10 +7678,6 @@ private fun MessageTurnItem(
                             }
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(p.elevatedBg.copy(alpha = 0.72f))
-                                    .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
-                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -7682,12 +7691,12 @@ private fun MessageTurnItem(
                                         )
                                         BasicText(
                                             text = "${m.tokensPerSec} tok/s$durationSuffix",
-                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     } else {
                                         BasicText(
                                             text = durationSuffix,
-                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     }
                                 }
@@ -7698,14 +7707,10 @@ private fun MessageTurnItem(
                         if (costVal > 0.0 || m.reportedRequests > 0) {
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(p.accent.copy(alpha = 0.12f))
-                                    .border(0.65.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(5.dp))
-                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
                                 BasicText(
                                     text = if (m.reportedRequests > 0) SessionSpendSummary(m, 0.0, 0).label else "~" + formatUsdCost(costVal),
-                                    style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                             }
                         }
@@ -7713,38 +7718,34 @@ private fun MessageTurnItem(
                         if ((showMoreActions || preferences.showTokensForEntireTurn) && (m.inputTokens > 0 || m.reportedRequests > 0)) {
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(p.elevatedBg.copy(alpha = 0.55f))
-                                    .border(0.65.dp, p.border.copy(alpha = 0.5f), RoundedCornerShape(5.dp))
-                                    .padding(horizontal = 7.dp, vertical = 2.5.dp)
                             ) {
                                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     BasicText(
                                         text = "${formatCompactTokens(m.inputTokens)} input • ${formatCompactTokens(m.outputTokens)} output",
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.cachedInputTokens > 0 || m.cacheCreationInputTokens > 0) {
                                         BasicText(
                                             text = "${formatCompactTokens(m.cachedInputTokens)} cache read • ${formatCompactTokens(m.cacheCreationInputTokens)} cache write",
-                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     }
                                     if (m.reportedRequests > 0) {
                                         BasicText(
                                             text = "${m.reportedRequests} request${if (m.reportedRequests == 1) "" else "s"}" +
                                                 if (!m.usageIsComplete || !m.costIsAvailable) " • partial" else if (m.reportedCostRequests == m.reportedRequests) " • reported cost" else " • estimate",
-                                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     }
                                     if (m.outputIncludesUnreportedReasoning) BasicText(
-                                        text = "Reasoning included in output", style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        text = "Reasoning included in output", style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.reportedRequests > 0 && !m.costIsAvailable && costVal == 0.0) BasicText(
-                                        text = "Cost unavailable", style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        text = "Cost unavailable", style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.unpricedCostComponents.isNotEmpty()) BasicText(
                                         text = "Unpriced: ${m.unpricedCostComponents.sorted().joinToString(", ")}",
-                                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk)
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                 }
                             }
@@ -7755,7 +7756,7 @@ private fun MessageTurnItem(
         }
 
         // Clean User Message Token & Price Pill Row (Shown below every User message when token stats are enabled)
-        if (!isAssistant && preferences.showTokenAndContextStats &&
+        if (!isAssistant && !win.isCompact && preferences.showTokenAndContextStats &&
             (activeVar.content.isNotBlank() || activeVar.attachments.isNotEmpty())
         ) {
             val userTok = remember(activeVar.content, activeVar.attachments) {
@@ -7764,7 +7765,7 @@ private fun MessageTurnItem(
             val userCost = (userTok / 1_000_000.0) * inputPricePerM
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).alpha(footerAlpha),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -7773,27 +7774,19 @@ private fun MessageTurnItem(
                 } else ""
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(p.elevatedBg.copy(alpha = 0.72f))
-                        .border(0.65.dp, p.border.copy(alpha = 0.6f), RoundedCornerShape(5.dp))
-                        .padding(horizontal = 7.dp, vertical = 2.5.dp)
                 ) {
                     BasicText(
                         text = "${formatCompactTokens(userTok)} tok$attSuffix",
-                        style = p.monoStyle.copy(fontSize = 10.sp, color = p.mutedInk, fontWeight = FontWeight.Medium)
+                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk, fontWeight = FontWeight.Medium)
                     )
                 }
                 if (userCost > 0.0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(5.dp))
-                            .background(p.accent.copy(alpha = 0.12f))
-                            .border(0.65.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 7.dp, vertical = 2.5.dp)
                     ) {
                         BasicText(
                             text = formatUsdCost(userCost),
-                            style = p.monoStyle.copy(fontSize = 10.sp, color = p.accent, fontWeight = FontWeight.SemiBold)
+                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                         )
                     }
                 }
@@ -7835,6 +7828,7 @@ private fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = "×",
+                        contentDescription = "Close sources",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -7871,11 +7865,11 @@ private fun MessageTurnItem(
                                     color = if (isSelectedLine) p.accent else p.border,
                                     shape = RoundedCornerShape(8.dp)
                                 )
-                                .clickable {
+                                .clickable(role = Role.Button) {
                                     if (firstGroundedLine.isNotBlank()) {
                                         highlightedSourceLineText = if (isSelectedLine) "" else firstGroundedLine
                                     } else {
-                                        PlatformBridge.openOrPlayMedia(src.url)
+                                        openWebLink(src.url)
                                     }
                                 }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -7924,9 +7918,10 @@ private fun MessageTurnItem(
                                 }
                                 SepiaButton(
                                     text = "↗",
+                                    contentDescription = "Open source",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { PlatformBridge.openOrPlayMedia(src.url) }
+                                    onClick = { openWebLink(src.url) }
                                 )
                             }
 

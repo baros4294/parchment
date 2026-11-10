@@ -7,6 +7,13 @@ import java.nio.file.Path
 
 /** Resolves existing ancestors too, so writes to missing files cannot cross a link/junction. */
 internal object WorkspacePathGuard {
+    /** Generated or tool-owned directories that listing and search skip. */
+    fun isIgnoredDirectory(name: String): Boolean {
+        val low = name.lowercase()
+        return low == ".git" || low == "build" || low == ".gradle" ||
+            low == "node_modules" || low == ".idea" || low == ".kotlin"
+    }
+
     fun root(workspaceRoot: String): Path {
         require(workspaceRoot.isNotBlank()) { "No workspace directory is mounted." }
         val root = realPathWithMissingSuffix(File(workspaceRoot).toPath().toAbsolutePath().normalize())

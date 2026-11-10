@@ -23,19 +23,21 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.platform.InterceptPlatformTextInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
+import androidx.lifecycle.lifecycleScope
 import io.parchment.ai.platform.PickedBinaryFile
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.ui.ParchmentApp
+import java.io.OutputStream
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
-    private var pendingImportDeferred: CompletableDeferred<PickedBinaryFile?>? = null
-    private var pendingMultiImportDeferred: CompletableDeferred<List<PickedBinaryFile>>? = null
-    private var pendingExportBytes: ByteArray? = null
-    private var pendingExportDeferred: CompletableDeferred<String?>? = null
-    private var pendingBatchExportFiles: List<Pair<String, ByteArray>>? = null
-    private var pendingBatchExportDeferred: CompletableDeferred<String?>? = null
+    private var pendingImportDeferred: CompletableDeferred<Uri?>? = null
+    private var pendingImportUrisDeferred: CompletableDeferred<List<Uri>>? = null
+    private var pendingExportDeferred: CompletableDeferred<Uri?>? = null
     private var pendingWorkspaceDirDeferred: CompletableDeferred<String?>? = null
     private var pendingWorkspaceInitialUri: Uri? = null
     private var pendingVoiceCallback: ((String) -> Unit)? = null
@@ -45,7 +47,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var openDocumentLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var openMultipleDocumentsLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var createDocumentLauncher: ActivityResultLauncher<String>
-    private lateinit var openDocumentTreeLauncher: ActivityResultLauncher<Uri?>
     private lateinit var pickWorkspaceTreeLauncher: ActivityResultLauncher<Uri?>
     private lateinit var manageAllFilesLauncher: ActivityResultLauncher<Intent>
     private lateinit var voiceRecognizerLauncher: ActivityResultLauncher<Intent>
@@ -62,72 +63,19 @@ class MainActivity : ComponentActivity() {
         openDocumentLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
             val deferred = pendingImportDeferred
             pendingImportDeferred = null
-            if (uri == null || deferred == null) {
-                deferred?.complete(null)
-                return@registerForActivityResult
-            }
-            val result = PlatformBridge.readUriAsPickedFile(uri)
-            deferred.complete(result)
+            deferred?.complete(uri)
         }
 
         openMultipleDocumentsLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
-            val deferred = pendingMultiImportDeferred
-            pendingMultiImportDeferred = null
-            if (uris.isEmpty() || deferred == null) {
-                deferred?.complete(emptyList())
-                return@registerForActivityResult
-            }
-            val results = uris.mapNotNull { PlatformBridge.readUriAsPickedFile(it) }
-            deferred.complete(results)
+            val deferred = pendingImportUrisDeferred
+            pendingImportUrisDeferred = null
+            deferred?.complete(uris)
         }
 
         createDocumentLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri: Uri? ->
             val deferred = pendingExportDeferred
-            val bytes = pendingExportBytes
             pendingExportDeferred = null
-            pendingExportBytes = null
-            if (uri == null || bytes == null || deferred == null) {
-                deferred?.complete(null)
-                return@registerForActivityResult
-            }
-            val pathResult = runCatching {
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(bytes)
-                    out.flush()
-                }
-                uri.toString()
-            }.getOrNull()
-            deferred.complete(pathResult)
-        }
-
-        openDocumentTreeLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
-            val deferred = pendingBatchExportDeferred
-            val files = pendingBatchExportFiles
-            pendingBatchExportDeferred = null
-            pendingBatchExportFiles = null
-            if (treeUri == null || files.isNullOrEmpty() || deferred == null) {
-                deferred?.complete(null)
-                return@registerForActivityResult
-            }
-            val summary = runCatching {
-                val docId = DocumentsContract.getTreeDocumentId(treeUri)
-                val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                var written = 0
-                for ((fileName, bytes) in files) {
-                    val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "chat-${written + 1}.json" }
-                    val mime = if (safeName.endsWith(".json", ignoreCase = true)) "application/json" else "text/plain"
-                    val childUri = DocumentsContract.createDocument(contentResolver, parentUri, mime, safeName)
-                    if (childUri != null) {
-                        contentResolver.openOutputStream(childUri)?.use { out ->
-                            out.write(bytes)
-                            out.flush()
-                        }
-                        written++
-                    }
-                }
-                "$written file(s) exported"
-            }.getOrNull()
-            deferred.complete(summary)
+            deferred?.complete(uri)
         }
 
         pickWorkspaceTreeLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
@@ -253,11 +201,7 @@ class MainActivity : ComponentActivity() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
                 }
-                if (uri != null) {
-                    PlatformBridge.readUriAsPickedFile(uri, mime)?.let {
-                        PlatformBridge.deliverRichContentFiles(listOf(it))
-                    }
-                }
+                if (uri != null) deliverSharedUris(listOf(uri), mime)
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 val uris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -266,11 +210,15 @@ class MainActivity : ComponentActivity() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
                 }
-                val picked = uris?.mapNotNull { PlatformBridge.readUriAsPickedFile(it, mime) }.orEmpty()
-                if (picked.isNotEmpty()) {
-                    PlatformBridge.deliverRichContentFiles(picked)
-                }
+                deliverSharedUris(uris.orEmpty(), mime)
             }
+        }
+    }
+
+    private fun deliverSharedUris(uris: List<Uri>, mime: String) {
+        if (uris.isEmpty()) return
+        lifecycleScope.launch(Dispatchers.IO) {
+            PlatformBridge.deliverRichContentFiles(uris.mapNotNull { PlatformBridge.readUriAsPickedFile(it, mime) })
         }
     }
 
@@ -284,54 +232,57 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    suspend fun requestImportFile(mimeTypes: Array<String>): PickedBinaryFile? {
-        val deferred = CompletableDeferred<PickedBinaryFile?>()
+    /** Reads off the main thread, so a large selection cannot freeze the interface. */
+    suspend fun requestImportFile(mimeTypes: Array<String>, maxBytes: Long): PickedBinaryFile? {
+        val deferred = CompletableDeferred<Uri?>()
         pendingImportDeferred = deferred
         runCatching {
             openDocumentLauncher.launch(mimeTypes)
         }.onFailure {
             deferred.complete(null)
         }
-        return deferred.await()
+        val uri = deferred.await() ?: return null
+        return withContext(Dispatchers.IO) { PlatformBridge.readUriAsPickedFile(uri, maxBytes = maxBytes) }
     }
 
-    suspend fun requestImportMultipleFiles(mimeTypes: Array<String>): List<PickedBinaryFile> {
-        val deferred = CompletableDeferred<List<PickedBinaryFile>>()
-        pendingMultiImportDeferred = deferred
+    /** Returns the chosen documents without reading them, so callers can stream them off the main thread. */
+    suspend fun requestImportDocumentUris(mimeTypes: Array<String>): List<Uri> {
+        val deferred = CompletableDeferred<List<Uri>>()
+        pendingImportUrisDeferred = deferred
         runCatching {
             openMultipleDocumentsLauncher.launch(mimeTypes)
         }.onFailure {
+            pendingImportUrisDeferred = null
             deferred.complete(emptyList())
         }
         return deferred.await()
     }
 
-    suspend fun requestExportFile(defaultFileName: String, bytes: ByteArray): String? {
-        val deferred = CompletableDeferred<String?>()
-        pendingExportBytes = bytes
+    suspend fun requestExportFile(defaultFileName: String, bytes: ByteArray): String? =
+        runCatching { requestExportStream(defaultFileName) { it.write(bytes) } }.getOrNull()
+
+    /** Writes off the main thread. A failed export removes the partial document it created. */
+    suspend fun requestExportStream(defaultFileName: String, write: (OutputStream) -> Unit): String? {
+        val deferred = CompletableDeferred<Uri?>()
         pendingExportDeferred = deferred
         runCatching {
             createDocumentLauncher.launch(defaultFileName)
         }.onFailure {
             deferred.complete(null)
         }
-        return deferred.await()
-    }
-
-    suspend fun requestExportMultipleFilesToTree(files: List<Pair<String, ByteArray>>): String? {
-        if (files.isEmpty()) return null
-        if (files.size == 1) {
-            return requestExportFile(files.first().first, files.first().second)
+        val uri = deferred.await() ?: return null
+        return withContext(Dispatchers.IO) {
+            try {
+                checkNotNull(contentResolver.openOutputStream(uri, "wt")) { "Unable to open the export destination." }.use { output ->
+                    write(output)
+                    output.flush()
+                }
+                uri.toString()
+            } catch (error: Exception) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }
+                throw error
+            }
         }
-        val deferred = CompletableDeferred<String?>()
-        pendingBatchExportFiles = files
-        pendingBatchExportDeferred = deferred
-        runCatching {
-            openDocumentTreeLauncher.launch(null)
-        }.onFailure {
-            deferred.complete(null)
-        }
-        return deferred.await()
     }
 
     suspend fun requestPickWorkspaceDirectory(currentPath: String): String? {

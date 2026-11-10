@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
@@ -36,6 +37,11 @@ class AgentPermissionUiTest {
     private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
         fun flatten(node: SemanticsNode): List<SemanticsNode> = listOf(node) + node.children.flatMap(::flatten)
         return scene.semanticsOwners.flatMap { flatten(it.rootSemanticsNode) }
+    }
+    /** Publishes state written outside composition before rendering, so one frame observes it. */
+    private fun settle(scene: ImageComposeScene, frameNanos: Long) {
+        Snapshot.sendApplyNotifications()
+        scene.render(frameNanos).close()
     }
     private fun text(node: SemanticsNode): String = node.config.getOrNull(SemanticsProperties.Text).orEmpty().joinToString(" ") { it.text }
     private fun click(node: SemanticsNode) = assertTrue(requireNotNull(node.config.getOrNull(SemanticsActions.OnClick)?.action).invoke())
@@ -73,12 +79,12 @@ class AgentPermissionUiTest {
         }
         assertTrue(checked > 0, "$context: no single-line input layouts checked")
     }
-    private fun save(scene: ImageComposeScene, name: String) {
+    private fun save(scene: ImageComposeScene, name: String, frameTimeNanos: Long = 1_000_000_000L) {
         val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }
             .first { File(it, "PARCHMENT_TODO.md").isFile }
         val file = File(repo, ".parchment-local/verification/permissions/$name.png")
         file.parentFile.mkdirs()
-        scene.render(1_000_000_000L).use { image -> file.writeBytes(requireNotNull(image.encodeToData()).bytes) }
+        scene.render(frameTimeNanos).use { image -> file.writeBytes(requireNotNull(image.encodeToData()).bytes) }
     }
 
     @Test fun editorChoicesWrapAndRetainInheritanceAcrossNarrowAndLargeFonts() {
@@ -102,13 +108,13 @@ class AgentPermissionUiTest {
                         }
                     }
                 }
-                scene.render(0L).close()
+                settle(scene, 0L)
                 val radios = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton }
                 assertEquals(ToolApprovalMode.entries.size + WorkspaceMode.entries.size + ShellAccess.entries.size, radios.size)
                 click(radios.single { text(it).contains("Read and edit files") })
                 assertEquals(WorkspaceMode.READ_WRITE, overrides.value.workspaceMode)
                 assertNull(overrides.value.shellAccess)
-                scene.render(0L).close()
+                settle(scene, 0L)
                 click(nodes(scene).single { text(it) == "Follow assistant defaults" && it.config.contains(SemanticsActions.OnClick) })
                 assertEquals(AgentPermissionOverrides(), overrides.value)
                 save(scene, name)
@@ -127,7 +133,7 @@ class AgentPermissionUiTest {
                     AgentToolRegistry(overrides.value.applyTo(defaults), overrides.value, { overrides.value = it })
                 }
             }
-            scene.render(0L).close()
+            settle(scene, 0L)
             val name = WorkspaceHarness.allTools().first().name
             val first = nodes(scene).single { it.config.getOrNull(SemanticsProperties.Role) == Role.Switch && text(it).startsWith(name) }
             assertEquals(ToggleableState.On, first.config[SemanticsProperties.ToggleableState])
@@ -136,10 +142,10 @@ class AgentPermissionUiTest {
             assertNull(overrides.value.toolsEnabled)
             assertNull(overrides.value.workspaceMode)
             assertNull(overrides.value.shellAccess)
-            scene.render(0L).close()
+            settle(scene, 0L)
             val search = nodes(scene).single { it.config.contains(SemanticsActions.SetText) }
             assertTrue(requireNotNull(search.config[SemanticsActions.SetText].action).invoke(AnnotatedString("web_fetch")))
-            scene.render(0L).close()
+            settle(scene, 0L)
             val switches = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.Switch }
             assertEquals(1, switches.size)
             assertTrue(text(switches.single()).contains("web_fetch"))
@@ -157,14 +163,14 @@ class AgentPermissionUiTest {
         val scene = ImageComposeScene(320, 720, density = Density(1f, 1.8f), coroutineContext = Dispatchers.Unconfined)
         try {
             scene.setContent { ToolApprovalPanel(broker, "Owning chat with a long project title") }
-            scene.render(0L).close()
+            settle(scene, 0L)
             val actions = nodes(scene).filter { it.config.contains(SemanticsActions.OnClick) }
             assertEquals(4, actions.count { text(it) in listOf("Allow once", "Allow this exact action for this run", "Deny", "Stop run") })
             save(scene, "approval-large-font")
             assertTextFits(scene, "approval")
             val scroll = nodes(scene).first { it.config.contains(SemanticsActions.ScrollBy) }
             assertTrue(requireNotNull(scroll.config[SemanticsActions.ScrollBy].action).invoke(0f, 2_000f))
-            repeat(12) { scene.render(1_100_000_000L + it * 100_000_000L).close() }
+            repeat(12) { settle(scene, 1_100_000_000L + it * 100_000_000L) }
             val stop = nodes(scene).single { text(it) == "Stop run" && it.config.contains(SemanticsActions.OnClick) }
             assertTrue(stop.boundsInRoot.height >= 48f, "Stop action is not reachable by scrolling")
             click(stop)
@@ -201,14 +207,16 @@ class AgentPermissionUiTest {
                             }
                         }
                     }
-                    scene.render(0L).close()
+                    settle(scene, 0L)
                     if (page == "assistant") {
                         click(nodes(scene).single { text(it).startsWith(assistant.name) && it.config.contains(SemanticsActions.OnClick) })
-                        scene.render(0L).close()
+                        settle(scene, 0L)
                     }
                     val first = if (page == "fonts") "Prose Font Size (" else "Temperature ("
                     val second = if (page == "fonts") "Code Font Size (" else "Top-P ("
-                    val fieldNodes = nodes(scene).filter { node -> labels.any { text(node).startsWith(it) } }
+                    val fieldNodes = nodes(scene).filter { node ->
+                        !node.config.contains(SemanticsActions.SetText) && labels.any { text(node).startsWith(it) }
+                    }
                     val firstNode = fieldNodes.single { text(it).startsWith(first) }
                     val secondNode = fieldNodes.single { text(it).startsWith(second) }
                     assertTrue(secondNode.positionInRoot.y > firstNode.positionInRoot.y, "$page fields are still side by side")
@@ -218,19 +226,116 @@ class AgentPermissionUiTest {
                     assertSingleLineInputsFitVertically(scene, "$page at $width / $scale")
                     save(scene, "settings-$page-$width")
                     if (page == "fonts") {
-                        val choices = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton }
+                        val radios = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton }
+                        val (choices, swatches) = radios.partition { text(it).isNotEmpty() }
                         assertEquals(presetLabels.toSet(), choices.map(::text).toSet())
                         choices.forEach { assertTrue(it.size.height >= 48, "Theme choice target is too short") }
+                        assertEquals(8, swatches.size)
+                        swatches.forEach {
+                            assertTrue(it.size.width >= 48 && it.size.height >= 48, "Accent swatch target is too small")
+                            assertTrue(it.config[SemanticsProperties.ContentDescription].single().endsWith(" accent"))
+                        }
                         click(choices.single { text(it) == presetLabels.last() })
                         assertEquals(ThemeConfig.PRESETS.last(), selectedTheme.value)
-                        scene.render(1_100_000_000L).close()
+                        settle(scene, 1_100_000_000L)
                         assertEquals(presetLabels.last(), text(nodes(scene).single {
-                            it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton &&
+                            it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton && text(it).isNotEmpty() &&
                                 it.config.getOrNull(SemanticsProperties.Selected) == true
                         }))
                     }
                 } finally { scene.close() }
             }
+        }
+    }
+
+    @Test fun providerChoicesWrapAndPreserveExplicitSettings() {
+        val labels = ProviderProtocol.entries.map { it.displayName } + CUSTOM_DIALECTS.map(::customDialectLabel) +
+            AuthHeaderMode.entries.map { it.label }
+        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
+            val profile = mutableStateOf(ProviderProfile("fixture", "Fixture", ProviderProtocol.CUSTOM,
+                customDialect = CUSTOM_DIALECTS.first(), baseUrl = "https://example.invalid/exact-endpoint"))
+            val scene = ImageComposeScene(width, 3_800, density = Density(1f, scale), coroutineContext = Dispatchers.Unconfined)
+            try {
+                scene.setContent {
+                    CompositionLocalProvider(LocalParchmentWindowSize provides ParchmentWindowSize(width.dp, 720.dp)) {
+                        Column(Modifier.fillMaxSize().background(LocalParchmentPalette.current.canvasBg)
+                            .verticalScroll(rememberScrollState()).padding(12.dp)) {
+                            ProviderProtocolSubpage(profile.value, { profile.value = it(profile.value) }, {}, {})
+                        }
+                    }
+                }
+                settle(scene, 0L)
+                fun radios() = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton }
+                assertEquals(labels.toSet(), radios().map(::text).toSet())
+                radios().forEach { assertTrue(it.size.height >= 48, "Provider choice target is too short") }
+                assertEquals(3, radios().count { it.config.getOrNull(SemanticsProperties.Selected) == true })
+                click(radios().single { text(it) == customDialectLabel(CUSTOM_DIALECTS.last()) })
+                assertEquals(CUSTOM_DIALECTS.last(), profile.value.customDialect)
+                settle(scene, 0L)
+                click(radios().single { text(it) == AuthHeaderMode.QUERY_PARAM.label })
+                assertEquals(AuthHeaderMode.QUERY_PARAM, profile.value.authHeaderMode)
+                assertEquals("https://example.invalid/exact-endpoint", profile.value.baseUrl)
+                settle(scene, 0L)
+                assertTextFits(scene, "Provider choices at $width / $scale") { it in labels }
+                save(scene, "provider-choices-$width")
+                click(radios().single { text(it) == ProviderProtocol.OPENAI_RESPONSES.displayName })
+                assertEquals(ProviderProtocol.OPENAI_RESPONSES, profile.value.protocol)
+                assertEquals(ProviderProtocol.OPENAI_RESPONSES.defaultBaseUrl, profile.value.baseUrl)
+                assertEquals(CUSTOM_DIALECTS.last(), profile.value.customDialect)
+                assertEquals(AuthHeaderMode.QUERY_PARAM, profile.value.authHeaderMode)
+            } finally { scene.close() }
+        }
+    }
+
+    @Test fun sharedSettingsSwitchesHaveOneLabelledTargetAndExposeState() {
+        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
+            val rowState = mutableStateOf(false)
+            val standaloneState = mutableStateOf(false)
+            var rowChanges = 0
+            var standaloneChanges = 0
+            val title = "Auto-fetch models when the saved provider model list is empty"
+            val label = "Enable provider fixture"
+            val scene = ImageComposeScene(width, 720, density = Density(1f, scale), coroutineContext = Dispatchers.Unconfined)
+            try {
+                scene.setContent {
+                    CompositionLocalProvider(LocalParchmentWindowSize provides ParchmentWindowSize(width.dp, 720.dp)) {
+                        Column(Modifier.fillMaxSize().background(LocalParchmentPalette.current.canvasBg).padding(12.dp)) {
+                            SepiaToggleRow(title, rowState.value, { rowChanges++; rowState.value = it },
+                                subtitle = "A setting with a wrapping description at enlarged font sizes.")
+                            SepiaToggleSwitch(standaloneState.value, { standaloneChanges++; standaloneState.value = it }, label)
+                        }
+                    }
+                }
+                settle(scene, 0L)
+                fun switches() = nodes(scene).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.Switch }
+                fun row() = switches().single { text(it).startsWith(title) }
+                fun standalone() = switches().single { label in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty() }
+                assertEquals(2, switches().size)
+                assertEquals(2, nodes(scene).count { it.config.contains(SemanticsActions.OnClick) }, "Nested click targets remain")
+                switches().forEach {
+                    assertTrue(it.size.width >= 48 && it.size.height >= 48, "Switch target is too small")
+                    assertEquals(ToggleableState.Off, it.config[SemanticsProperties.ToggleableState])
+                }
+                click(row())
+                assertEquals(1, rowChanges)
+                assertTrue(rowState.value)
+                assertEquals(0, standaloneChanges)
+                settle(scene, 0L)
+                assertEquals(ToggleableState.On, row().config[SemanticsProperties.ToggleableState])
+                click(standalone())
+                assertEquals(1, standaloneChanges)
+                assertTrue(standaloneState.value)
+                settle(scene, 0L)
+                click(row())
+                assertEquals(2, rowChanges)
+                assertFalse(rowState.value)
+                settle(scene, 0L)
+                assertEquals(ToggleableState.Off, row().config[SemanticsProperties.ToggleableState])
+                assertEquals(ToggleableState.On, standalone().config[SemanticsProperties.ToggleableState])
+                assertTextFits(scene, "Shared switches at $width / $scale")
+                settle(scene, 1_000_000_000L)
+                save(scene, "settings-switches-$width", frameTimeNanos = 2_000_000_000L)
+            } finally { scene.close() }
         }
     }
 }

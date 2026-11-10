@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -936,9 +936,7 @@ internal fun styleLiteraryParagraph(
                             url = linkUrl,
                             styles = TextLinkStyles(style = linkStyle),
                             linkInteractionListener = {
-                                if (linkUrl.isNotBlank()) {
-                                    PlatformBridge.openOrPlayMedia(linkUrl)
-                                }
+                                openWebLink(linkUrl)
                             }
                         )
                     )

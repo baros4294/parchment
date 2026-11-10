@@ -1,4 +1,4 @@
-﻿package io.parchment.ai
+package io.parchment.ai
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -58,7 +58,6 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.WindowScope
-import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.parchment.ai.platform.PlatformBridge

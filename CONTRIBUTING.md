@@ -20,21 +20,21 @@ Thank you for your interest in contributing to **Parchment**!
 ### Prerequisites
 * **JDK 21** (Temurin recommended)
 * **Android SDK** (API 36)
+* **Python 3.10+** (standard library only)
 
 ### Build & Test Commands
 
-Use the short [agent workflow](AGENTS.md). Read TODO's current batch first; consult MEMORY's contracts only where relevant. Repository instructions follow the official [AGENTS.md mechanism](https://developers.openai.com/codex/guides/agents-md).
+Follow [AGENTS.md](AGENTS.md), the single workflow for people and every agent tool. `scripts/verify.py` runs from any shell, finds the local JDK and SDK, and remembers what is already verified.
 
-The Windows helper uses the local Temurin 21/Android SDK paths, stable verification version 2.0.64/264, incremental outputs, quiet logs and at most two compiler workers. It restores process environment variables when finished.
-
-| Change/check | Command |
+| Need | Command |
 |---|---|
-| Docs, copy, simple styling; review a finished diff | `.\scripts\verify.ps1` |
-| Focused behavior regressions | `.\scripts\verify.ps1 -Mode Test -Tests '*SessionSpendTest','*UsageChargesTest'` |
-| Android/platform changes or shared subsystem checkpoint | `.\scripts\verify.ps1 -Mode Android` |
-| Inspect any command without executing it | Add `-Preview` |
-| Final desktop tests, Android compile/release and desktop package | Load the private signer, then `.\scripts\verify.ps1 -Mode Final` |
+| See what to do next and what is verified | `python scripts/verify.py status` |
+| After any change | `python scripts/verify.py affected` |
+| Docs-only review, no build | `python scripts/verify.py review` |
+| Chosen tests while iterating | `python scripts/verify.py test '*SessionSpendTest'` |
+| Android Kotlin compile | `python scripts/verify.py android` |
+| Final desktop, Android and package gate | `. .\scripts\load-private-signer.ps1`, then `python scripts/verify.py final` |
 
-Test mode requires explicit class/method filters. Add a regression when it covers a demonstrated failure mode; use existing coverage where sufficient. Docs/copy/styling changes do not require new unit tests or a Gradle build. Check layout visually when fit/interaction is affected. Review signatures, enum names, callers and fallback paths before the first compile. After a failure, rerun affected checks and retain unaffected passes. Full tests/platform/device verification remain required at TODO 10.3.
+Add `--dry-run` to see what a build command would run. Failures print compiler errors and failed tests; full logs are in `.parchment-local/verification/`.
 
-Override `-AppVersion` and `-AppVersionCode` together only when deliberately changing the verification build. Release signing uses `. .\scripts\load-private-signer.ps1`; see [signing guidance](docs/RELEASE_SIGNING.md). The final helper covers Gradle tasks; actual desktop/device runtime checks are separate. Do not clean/rebuild outputs or run multiple Gradle processes routinely.
+`scripts/quality.py` enforces encoding, unused imports, dead code, file-size limits, banned patterns, documentation budgets and tracked secrets. Don't raise a limit in `scripts/quality-baseline.json` to get a pass. Release signing is covered in [docs/RELEASE_SIGNING.md](docs/RELEASE_SIGNING.md).

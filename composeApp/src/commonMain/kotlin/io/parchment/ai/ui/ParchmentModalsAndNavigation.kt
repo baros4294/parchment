@@ -1,5 +1,6 @@
 package io.parchment.ai.ui
 
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -53,6 +54,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -98,9 +100,6 @@ internal fun DesktopBrowserTabBar(
     val assistantsById = remember(appState.assistants) {
         appState.assistants.associateBy { it.id }
     }
-    val profilesById = remember(appState.profiles) {
-        appState.profiles.associateBy { it.id }
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -122,12 +121,6 @@ internal fun DesktopBrowserTabBar(
                 val isTabStreaming = activeStreamsBySession.containsKey(tabId)
                 val tabAsst = assistantsById[sess.assistantId]
                     ?: appState.assistants.firstOrNull()
-                val tabProf = profilesById[sess.profileId]
-                    ?: appState.profiles.firstOrNull()
-                val tabModelShort = sess.modelOverride.ifBlank { tabProf?.defaultModel.orEmpty() }
-                    .substringAfterLast('/')
-                    .take(22)
-                val asstName = tabAsst?.name?.takeIf { it.isNotBlank() } ?: "Default Assistant"
                 val cardName = (sess.activeCard ?: tabAsst?.activeCard)?.name?.takeIf { it.isNotBlank() }
                 val rawTitle = sess.title.ifBlank { "New Chat" }
                 val primaryTitle = if (rawTitle == "New Chat" && cardName != null) {
@@ -135,37 +128,20 @@ internal fun DesktopBrowserTabBar(
                 } else {
                     rawTitle
                 }
-                val contextDetail = when {
-                    isTabStreaming -> "Streaming…"
-                    sess.messages.isNotEmpty() -> "${sess.messages.size} msgs"
-                    tabModelShort.isNotBlank() -> tabModelShort
-                    else -> "Empty"
-                }
-                val subtitleText = "$asstName • $contextDetail"
                 val tabShape = RoundedCornerShape(8.dp)
 
                 Row(
                     modifier = Modifier
                         .clip(tabShape)
-                        .background(if (isSelected) p.cardBg else p.elevatedBg.copy(alpha = 0.55f))
-                        .border(
-                            width = if (isSelected) 1.2.dp else 0.75.dp,
-                            color = if (isSelected) p.accent else p.border.copy(alpha = 0.65f),
-                            shape = tabShape
-                        )
-                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
-                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                        .background(if (isSelected) p.cardBg else Color.Transparent)
+                        .then(if (isSelected) Modifier.rubricMark(p.accent, verticalInset = 7.dp) else Modifier)
+                        .kissClickable(pressScale = 0.98f, role = Role.Tab, selected = isSelected) { onSelectTab(tabId) }
+                        .padding(horizontal = 11.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     if (isTabStreaming) {
                         KissStreamingPulseDot(color = p.accent)
-                    } else {
-                        SepiaAvatarCircle(
-                            symbol = tabAsst?.iconEmoji ?: "💬",
-                            selected = isSelected,
-                            sizeDp = 22.dp
-                        )
                     }
                     Column(
                         modifier = Modifier.widthIn(max = 185.dp),
@@ -177,18 +153,8 @@ internal fun DesktopBrowserTabBar(
                             overflow = TextOverflow.Ellipsis,
                             style = p.uiLabelStyle.copy(
                                 color = if (isSelected) p.primaryInk else p.narrationInk,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 11.5.sp
-                            )
-                        )
-                        BasicText(
-                            text = subtitleText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(
-                                color = if (isSelected) p.accent else p.mutedInk,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                fontSize = 9.5.sp
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.5.sp
                             )
                         )
                     }
@@ -210,6 +176,7 @@ internal fun DesktopBrowserTabBar(
 
             SepiaButton(
                 text = "+",
+                contentDescription = "New tab",
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = onNewTab
@@ -244,7 +211,6 @@ internal fun MobileTabSwitcherModal(
     val runningTotal = activeStreamsBySession.size
     val win = LocalParchmentWindowSize.current
     val columns = if (isCompactScreen && win.isVeryNarrow) 1 else 2
-    val dismissInteractionSource = remember { MutableInteractionSource() }
     var tabFilterQuery by remember { mutableStateOf("") }
     val emptyTabsCount = remember(openTabIds, appState.sessions, activeStreamsBySession) {
         openTabIds.count { tabId ->
@@ -268,7 +234,7 @@ internal fun MobileTabSwitcherModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(interactionSource = dismissInteractionSource, indication = null) { onCloseModal() },
+            .dismissOnOutsideTap(onCloseModal),
         contentAlignment = if (isCompactScreen) Alignment.BottomCenter else Alignment.Center
     ) {
         val sheetShape = if (isCompactScreen) {
@@ -283,7 +249,7 @@ internal fun MobileTabSwitcherModal(
                 .clip(sheetShape)
                 .background(p.canvasBg)
                 .border(1.dp, p.border, sheetShape)
-                .pointerInput(Unit) { detectTapGestures(onTap = {}) }
+                .blockTapThrough()
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -321,6 +287,7 @@ internal fun MobileTabSwitcherModal(
                     )
                     SepiaButton(
                         text = "×",
+                        contentDescription = "Close tab overview",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onCloseModal
@@ -379,7 +346,7 @@ internal fun MobileTabSwitcherModal(
                                             color = if (isSel) p.accent else p.border,
                                             shape = RoundedCornerShape(12.dp)
                                         )
-                                        .kissClickable(pressScale = 0.98f) { onSelectTab(tabId) }
+                                        .kissClickable(pressScale = 0.98f, role = Role.Tab, selected = isSel) { onSelectTab(tabId) }
                                         .padding(10.dp),
                                     verticalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -518,7 +485,7 @@ internal fun TopEditorialBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(p.sheetBg)
+            .background(p.canvasBg)
             .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -535,8 +502,9 @@ internal fun TopEditorialBar(
             ) {
                 SepiaButton(
                     text = if (showSidebar) "◂" else "☰",
+                    contentDescription = if (showSidebar) "Close sidebar" else "Open sidebar",
                     compact = true,
-                    style = if (showSidebar) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
+                    style = SepiaButtonStyle.GHOST,
                     onClick = onToggleSidebar
                 )
 
@@ -545,7 +513,7 @@ internal fun TopEditorialBar(
                         symbol = activeAssistant.iconEmoji,
                         selected = true,
                         sizeDp = 28.dp,
-                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }
+                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }.accessibilityLabel("Assistant settings")
                     )
                 }
 
@@ -578,23 +546,17 @@ internal fun TopEditorialBar(
                         ) {
                             BasicText(
                                 text = activeSession.title,
-                                maxLines = if (isCompactScreen) 2 else 1,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = p.uiHeaderStyle.copy(fontSize = 14.5.sp),
-                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }
+                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }.accessibilityLabel("Edit title: ${activeSession.title}")
                             )
-                            KissVectorIcon(
-                                icon = KissIcon.EDIT,
-                                tint = p.mutedInk,
-                                size = 12.dp,
-                                modifier = Modifier.kissClickable { isEditingTitle = true }
-                            )
-                            if (activeSession.messages.isNotEmpty()) {
+                            if (!isCompactScreen && activeSession.messages.isNotEmpty()) {
                                 KissVectorIcon(
                                     icon = KissIcon.SPARKLES,
-                                    tint = p.accent,
-                                    size = 13.dp,
-                                    modifier = Modifier.kissClickable { onRegenerateTitleAi() }
+                                    tint = p.mutedInk,
+                                    size = 12.dp,
+                                    modifier = Modifier.kissClickable { onRegenerateTitleAi() }.accessibilityLabel("Regenerate title")
                                 )
                             }
                         }
@@ -605,11 +567,10 @@ internal fun TopEditorialBar(
                     } else {
                         modelLabel
                     }
-                    val asstSuffix = if (activeAssistant.id.isNotBlank() && !isCompactScreen) " • ${activeAssistant.name}" else ""
-                    val capsuleText = if (appState.preferences.showProviderInModelCapsule) {
-                        "$shortModelLabel • ${activeProfile.name}$asstSuffix"
+                    val capsuleText = if (appState.preferences.showProviderInModelCapsule && !isCompactScreen) {
+                        "$shortModelLabel on ${activeProfile.name}"
                     } else {
-                        "$shortModelLabel$asstSuffix"
+                        shortModelLabel
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -620,12 +581,12 @@ internal fun TopEditorialBar(
                             text = capsuleText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = p.uiLabelStyle.copy(color = p.accent, fontSize = 11.sp),
+                            style = p.uiLabelStyle.copy(fontSize = 11.5.sp),
                             modifier = Modifier.weight(1f, fill = false)
                         )
                         KissVectorIcon(
                             icon = if (showQuickModelPopover) KissIcon.CHEVRON_UP else KissIcon.CHEVRON_DOWN,
-                            tint = p.accent,
+                            tint = p.mutedInk,
                             size = 11.dp
                         )
                     }
@@ -642,20 +603,21 @@ internal fun TopEditorialBar(
                 val hasChatNotes = activeSession.systemPrompt.isNotBlank() ||
                     activeSession.authorsNote.isNotBlank() ||
                     activeSession.storySummary.isNotBlank()
-                if (win.isCompact) {
+                if (win.isCompact && (openTabCount > 1 || backgroundStreamingCount > 0)) {
                     val tabBadgeShape = RoundedCornerShape(6.dp)
                     Box(
                         modifier = Modifier
-                            .height(27.dp)
+                            .heightIn(min = 27.dp)
                             .widthIn(min = 27.dp)
                             .clip(tabBadgeShape)
                             .background(if (backgroundStreamingCount > 0) p.accent.copy(alpha = 0.16f) else p.cardBg)
                             .border(
                                 width = if (backgroundStreamingCount > 0) 1.2.dp else 1.dp,
-                                color = if (backgroundStreamingCount > 0) p.accent else p.narrationInk.copy(alpha = 0.8f),
+                                color = if (backgroundStreamingCount > 0) p.accent else p.border,
                                 shape = tabBadgeShape
                             )
                             .kissClickable { onOpenMobileTabSwitcher() }
+                            .accessibilityLabel("Open tabs: $openTabCount")
                             .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -677,22 +639,31 @@ internal fun TopEditorialBar(
                         }
                     }
                 }
-                SepiaChip(
-                    label = if (chatArtifactsCount > 0) "📁 $chatArtifactsCount" else "📁",
-                    selected = showRightFilesSidebar,
-                    onClick = onToggleRightFilesSidebar
-                )
-                SepiaChip(
-                    label = "✎",
-                    selected = showSessionInspector || hasChatNotes,
+                if (chatArtifactsCount > 0 || showRightFilesSidebar) {
+                    SepiaButton(
+                        text = "📁 $chatArtifactsCount",
+                        contentDescription = "Files in this chat: $chatArtifactsCount",
+                        compact = true,
+                        style = if (showRightFilesSidebar) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
+                        onClick = onToggleRightFilesSidebar
+                    )
+                }
+                SepiaButton(
+                    text = "✎",
+                    contentDescription = "Chat notes",
+                    compact = true,
+                    style = if (showSessionInspector || hasChatNotes) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
                     onClick = onToggleSessionInspector
                 )
-                SepiaButton(
-                    text = "⚙",
-                    compact = true,
-                    style = SepiaButtonStyle.OUTLINE,
-                    onClick = { onOpenSettings(null) }
-                )
+                if (!win.isCompact) {
+                    SepiaButton(
+                        text = "⚙",
+                        contentDescription = "Settings",
+                        compact = true,
+                        style = SepiaButtonStyle.GHOST,
+                        onClick = { onOpenSettings(null) }
+                    )
+                }
             }
         }
 
@@ -710,7 +681,7 @@ internal fun TopEditorialBar(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(p.cardBg)
-                    .border(0.95.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .border(0.85.dp, p.border, RoundedCornerShape(10.dp))
                     .padding(11.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -727,7 +698,7 @@ internal fun TopEditorialBar(
                     ) {
                         KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
                         BasicText(
-                            text = "Quick Switch Model",
+                            text = "Choose a model",
                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                         )
                         BasicText(
@@ -750,6 +721,7 @@ internal fun TopEditorialBar(
                         )
                         SepiaButton(
                             text = "×",
+                            contentDescription = "Close model picker",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onToggleQuickModelPopover
@@ -798,7 +770,7 @@ internal fun ParchmentSidebar(
 
     Column(
         modifier = modifier
-            .background(p.sheetBg.copy(alpha = if (isCompactScreen) 0.98f else 0.65f))
+            .background(p.sheetBg)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -816,6 +788,7 @@ internal fun ParchmentSidebar(
             )
             SepiaButton(
                 text = "+",
+                contentDescription = if (selectedTab == SidebarTab.ASSISTANTS) "New assistant" else "New chat",
                 compact = true,
                 style = SepiaButtonStyle.PRIMARY,
                 onClick = {
@@ -844,6 +817,8 @@ internal fun ParchmentSidebar(
                             pressScale = 0.96f,
                             hoverScale = 1.01f,
                             interactionSource = tabInteraction,
+                            role = Role.Tab,
+                            selected = isSel,
                             onClick = { onSelectTab(tab) }
                         )
                         .clip(RoundedCornerShape(999.dp))
@@ -904,6 +879,7 @@ internal fun ParchmentSidebar(
                                 pressScale = 0.98f,
                                 hoverScale = 1.01f,
                                 interactionSource = rowInteraction,
+                                selected = isSel,
                                 onClick = { onSelectAssistant(asst) }
                             )
                             .clip(shape)
@@ -942,6 +918,7 @@ internal fun ParchmentSidebar(
                         }
                         SepiaButton(
                             text = "⚙",
+                            contentDescription = "Edit assistant",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { onEditAssistantInSettings(asst.id) }
@@ -1001,23 +978,26 @@ internal fun ParchmentSidebar(
                 }
             }
 
+            var touchActionsChatId by remember { mutableStateOf<String?>(null) }
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 itemsIndexed(assistantTopics, key = { _, s -> s.id }) { _, sess ->
                     val selected = sess.id == activeSession.id
-                    val shape = RoundedCornerShape(10.dp)
+                    val shape = RoundedCornerShape(8.dp)
                     val rowInteraction = remember { MutableInteractionSource() }
+                    var rowHasFocus by remember { mutableStateOf(false) }
                     val rowHovered by rowInteraction.collectIsHoveredAsState()
                     val rowPressed by rowInteraction.collectIsPressedAsState()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onFocusChanged { rowHasFocus = it.hasFocus }
                             .kissClickable(
                                 pressScale = 0.98f,
-                                hoverScale = 1.008f,
                                 interactionSource = rowInteraction,
+                                selected = selected,
                                 onClick = { onSelectSession(sess.id) }
                             )
                             .clip(shape)
@@ -1025,16 +1005,12 @@ internal fun ParchmentSidebar(
                                 when {
                                     selected -> p.cardBg
                                     rowPressed -> p.accent.copy(alpha = 0.14f)
-                                    rowHovered -> p.accent.copy(alpha = 0.08f)
-                                    else -> p.elevatedBg.copy(alpha = 0.35f)
+                                    rowHovered -> p.accent.copy(alpha = 0.06f)
+                                    else -> Color.Transparent
                                 }
                             )
-                            .border(
-                                0.85.dp,
-                                if (selected || rowHovered) p.accent.copy(alpha = if (selected) 1f else 0.55f) else Color.Transparent,
-                                shape
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .then(if (selected) Modifier.rubricMark(p.accent, verticalInset = 9.dp) else Modifier)
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1048,30 +1024,36 @@ internal fun ParchmentSidebar(
                                 }
                                 BasicText(
                                     text = sess.title,
-                                    maxLines = 2,
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(
                                         fontSize = 13.5.sp,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (selected || rowHovered) p.accent else p.primaryInk
+                                        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
                                     )
                                 )
                             }
-                            val msgCountLabel = if (sess.messages.isNotEmpty()) "${sess.messages.size} messages" else "Empty chat"
                             val dateLabel = if (appState.preferences.showChatListDates && sess.updatedAt > 0L) {
                                 formatCompactTimestamp(sess.updatedAt)
                             } else ""
-                            val combinedSub = if (dateLabel.isNotEmpty()) "$msgCountLabel • $dateLabel" else if (sess.messages.isNotEmpty()) msgCountLabel else ""
-                            if (combinedSub.isNotEmpty()) {
-                                BasicText(
-                                    text = combinedSub,
-                                    style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
-                                )
+                            if (dateLabel.isNotEmpty()) {
+                                BasicText(text = dateLabel, style = p.uiLabelStyle.copy(fontSize = 11.sp))
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // Row actions appear on hover or focus; touch opens them with one explicit button.
+                        val showRowActions = if (isCompactScreen) touchActionsChatId == sess.id else rowHovered || rowHasFocus
+                        if (isCompactScreen) {
+                            SepiaButton(
+                                text = if (showRowActions) "×" else "⋯",
+                                contentDescription = if (showRowActions) "Hide chat actions" else "Chat actions",
+                                compact = true,
+                                style = SepiaButtonStyle.GHOST,
+                                onClick = { touchActionsChatId = if (showRowActions) null else sess.id }
+                            )
+                        }
+                        if (showRowActions) Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                             SepiaButton(
                                 text = "📌",
+                                contentDescription = if (sess.isPinned) "Unpin chat" else "Pin chat",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { onTogglePinSession(sess.id) }
@@ -1079,6 +1061,7 @@ internal fun ParchmentSidebar(
                             if (sess.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "✦",
+                                    contentDescription = "Regenerate title",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onRegenerateSessionTitle(sess.id) }
@@ -1086,6 +1069,7 @@ internal fun ParchmentSidebar(
                             }
                             SepiaButton(
                                 text = "×",
+                                contentDescription = "Delete chat",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { onDeleteSession(sess.id) }
@@ -1100,8 +1084,8 @@ internal fun ParchmentSidebar(
             SepiaDivider()
 
             SepiaButton(
-                text = "⚙ Settings & Providers",
-                style = SepiaButtonStyle.OUTLINE,
+                text = "⚙ Settings",
+                style = SepiaButtonStyle.GHOST,
                 modifier = Modifier.fillMaxWidth(),
                 onClick = onOpenSettings
             )
@@ -1126,11 +1110,7 @@ internal fun ParchmentAttachmentViewerModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClose
-            ),
+            .dismissOnOutsideTap(onClose),
         contentAlignment = Alignment.Center
     ) {
         when (item) {
@@ -1150,7 +1130,7 @@ internal fun ParchmentAttachmentViewerModal(
                         .clip(RoundedCornerShape(14.dp))
                         .background(p.cardBg)
                         .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
-                        .clickable(enabled = false) {}
+                        .blockTapThrough()
                         .padding(14.dp),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1192,6 +1172,7 @@ internal fun ParchmentAttachmentViewerModal(
                         ) {
                             SepiaButton(
                                 text = "🔍−",
+                                contentDescription = "Zoom out",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1214,6 +1195,7 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                             SepiaButton(
                                 text = "🔍+",
+                                contentDescription = "Zoom in",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1224,6 +1206,7 @@ internal fun ParchmentAttachmentViewerModal(
                             if (openTarget.isNotBlank()) {
                                 SepiaButton(
                                     text = "📂",
+                                    contentDescription = "Open file",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
@@ -1232,12 +1215,15 @@ internal fun ParchmentAttachmentViewerModal(
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
                                     text = "📥",
+                                    contentDescription = "Save file",
                                     compact = true,
                                     style = SepiaButtonStyle.SECONDARY,
                                     onClick = {
                                         scope.launch {
-                                            val bytes = PlatformBridge.readBinaryFileBytes(item.localFilePath) ?: return@launch
-                                            val saved = PlatformBridge.saveFileForExport(item.title, bytes)
+                                            val saved = runCatching { PlatformBridge.exportLocalFile(item.title, item.localFilePath) }.getOrElse { error ->
+                                                onNotify("Save failed: ${error.message}")
+                                                return@launch
+                                            }
                                             if (saved != null) onNotify("Saved image to $saved")
                                         }
                                     }
@@ -1245,6 +1231,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             SepiaButton(
                                 text = "✕",
+                                contentDescription = "Close",
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose
@@ -1353,7 +1340,7 @@ internal fun ParchmentAttachmentViewerModal(
                         .clip(RoundedCornerShape(14.dp))
                         .background(p.cardBg)
                         .border(1.3.dp, p.accent, RoundedCornerShape(14.dp))
-                        .clickable(enabled = false) {}
+                        .blockTapThrough()
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1390,6 +1377,7 @@ internal fun ParchmentAttachmentViewerModal(
                             if (isSvgContent || isMarkdownContent) {
                                 SepiaButton(
                                     text = if (showRenderedPreview) "‹/›" else "👁",
+                                    contentDescription = if (showRenderedPreview) "Show source" else "Show preview",
                                     compact = true,
                                     style = if (showRenderedPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
                                     onClick = { showRenderedPreview = !showRenderedPreview }
@@ -1397,6 +1385,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             SepiaButton(
                                 text = if (copied) "✓" else "📋",
+                                contentDescription = if (copied) "Copied" else "Copy",
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1406,6 +1395,7 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                             SepiaButton(
                                 text = "📥",
+                                contentDescription = "Save file",
                                 compact = true,
                                 style = SepiaButtonStyle.SECONDARY,
                                 onClick = {
@@ -1419,6 +1409,7 @@ internal fun ParchmentAttachmentViewerModal(
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
                                     text = "📂",
+                                    contentDescription = "Open file",
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
@@ -1426,6 +1417,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             SepiaButton(
                                 text = "✕",
+                                contentDescription = "Close",
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose
@@ -1714,6 +1706,7 @@ internal fun ParchmentRightFilesSidebar(
             }
             SepiaButton(
                 text = "×",
+                contentDescription = "Close",
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = onClose
@@ -1817,7 +1810,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
                                         .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                                        .clickable {
+                                        .clickable(role = Role.Button) {
                                             val wsRoot = activeSession.workspacePath
                                             val liveText = if (wsRoot.isNotBlank()) {
                                                 PlatformBridge.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
@@ -1904,7 +1897,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
                                         .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                                        .clickable {
+                                        .clickable(role = Role.Button) {
                                             if (isVideo) {
                                                 val target = media.localFilePath.ifBlank { media.remoteUrl }
                                                 if (target.isNotBlank()) PlatformBridge.openOrPlayMedia(target)
@@ -1976,7 +1969,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(p.cardBg)
                                         .border(0.9.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                                        .clickable {
+                                        .clickable(role = Role.Button) {
                                             onInspectAttachment(
                                                 PromptAttachment(
                                                     id = "ai-code-${item.turnNumber}-${item.fileName}",
@@ -2091,7 +2084,7 @@ internal fun ParchmentRightFilesSidebar(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(p.cardBg)
                                 .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
-                                .clickable { onInspectAttachment(att) }
+                                .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
@@ -2147,6 +2140,7 @@ internal fun ParchmentRightFilesSidebar(
                                 if (entry.turnNumber > 0) {
                                     SepiaButton(
                                         text = "@",
+                                        contentDescription = "Reattach to composer",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { onReattachAttachment(att) }
@@ -2188,7 +2182,7 @@ internal fun ParchmentRightFilesSidebar(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(p.cardBg)
                                 .border(0.85.dp, p.border, RoundedCornerShape(8.dp))
-                                .clickable { PlatformBridge.openOrPlayMedia(src.url) }
+                                .clickable(role = Role.Button, onClickLabel = "Open source") { openWebLink(src.url) }
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
@@ -2358,6 +2352,7 @@ internal fun ContextWindowBreakdownPopover(
             }
             SepiaButton(
                 text = "×",
+                contentDescription = "Close",
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = onClose

@@ -17,7 +17,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -455,16 +454,6 @@ object WorkspaceHarness {
     )
 
     fun allTools(): List<ToolDefinition> = ALL_TOOLS
-
-    fun extractParameterSignature(tool: ToolDefinition): String {
-        val props = tool.parametersSchema["properties"] as? JsonObject ?: return "${tool.name}()"
-        val reqSet = (tool.parametersSchema["required"] as? JsonArray)
-            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-            ?.toSet()
-            .orEmpty()
-        val params = props.keys.joinToString(", ") { k -> if (k in reqSet) k else "$k?" }
-        return "${tool.name}($params)"
-    }
 
     private data class CachedWorkspaceContext(
         val timestampMs: Long,

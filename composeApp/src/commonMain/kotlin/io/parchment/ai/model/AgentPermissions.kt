@@ -80,16 +80,18 @@ object AgentPermissionResolver {
         (session.permissionOverrides ?: legacyOverrides(session, profile)).applyTo(defaults(assistant))
 }
 
-fun ChatSession.withPermissionOverrides(overrides: AgentPermissionOverrides): ChatSession = copy(permissionOverrides = overrides)
-
 fun AgentPermissionPolicy.asOverrides(): AgentPermissionOverrides = AgentPermissionOverrides(
     approvalMode, workspacePath, workspaceMode, toolsEnabled, toolOverrides, shellAccess, webAccess
 )
 
-fun AppStateSnapshot.withImportedPermissions(): AppStateSnapshot = copy(
+fun AppStateSnapshot.withImportedPermissions(
+    currentUpdateRepo: String = AppStateSnapshot().otaGithubRepo
+): AppStateSnapshot = copy(
+    otaGithubRepo = currentUpdateRepo, // An imported file must not choose which installers run here.
     assistants = assistants.map { it.withImportedPermissions() },
     sessions = sessions.map { it.withImportedPermissions() },
-    profiles = profiles.map { it.copy(allowShellExecution = false) }
+    profiles = profiles.map { it.copy(allowShellExecution = false) },
+    theme = theme.withoutNetworkFontPaths()
 )
 
 /** Compatibility for existing folder controls, including an explicit Off or unmount action. */
@@ -103,7 +105,7 @@ fun ChatSession.withLegacyWorkspaceChangeFrom(previous: ChatSession): ChatSessio
 }
 
 /** Imports carry content and configuration, never local execution authority or machine paths. */
-fun ChatSession.withImportedPermissions(): ChatSession = copy(
+fun ChatSession.withImportedPermissions(): ChatSession = withPortableImportedMedia().copy(
     workspacePath = "", workspaceMode = WorkspaceMode.OFF,
     permissionOverrides = AgentPermissionOverrides(
         approvalMode = ToolApprovalMode.ASK_EVERY_TOOL,

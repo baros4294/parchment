@@ -53,6 +53,7 @@ jobs:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           python3 .github/scripts/test_stage_android_signing.py
           python3 .github/scripts/stage_android_signing.py
@@ -139,6 +140,10 @@ jobs:
           if ($appVer -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version" }
           $appCode = 200 + [int]$env:GITHUB_RUN_NUMBER
           python .github/scripts/test_run_gradle.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test_workflow_tools.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/quality.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/run_gradle.py -- :composeApp:desktopTest :composeApp:createDistributable `
             "-PappVersion=$appVer" `

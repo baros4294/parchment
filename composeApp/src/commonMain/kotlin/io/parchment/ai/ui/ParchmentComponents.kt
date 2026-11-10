@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -33,15 +34,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import io.parchment.ai.model.ProviderProfile
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
@@ -52,6 +63,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -70,6 +85,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -77,6 +95,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.parchment.ai.model.isWebLink
+import io.parchment.ai.platform.PlatformBridge
 
 /**
  * Adaptive Window Size Breakpoints (WindowSizeClass pattern for Mobile Portrait vs Tablet vs Desktop).
@@ -87,8 +107,6 @@ data class ParchmentWindowSize(
 ) {
     val isCompact: Boolean get() = widthDp < 600.dp
     val isVeryNarrow: Boolean get() = widthDp < 410.dp
-    val isMedium: Boolean get() = widthDp in 600.dp..840.dp
-    val isExpanded: Boolean get() = widthDp > 840.dp
 }
 
 val LocalParchmentWindowSize = compositionLocalOf { ParchmentWindowSize() }
@@ -159,11 +177,15 @@ fun Modifier.kissClickable(
     hoverScale: Float = 1.018f,
     strongHaptic: Boolean = false,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    role: Role? = Role.Button,
+    selected: Boolean? = null,
     onClick: () -> Unit
 ): Modifier {
     val haptics = LocalHapticFeedback.current
+    val focusColor = LocalParchmentPalette.current.accent
     val isPressed by interactionSource.collectIsPressedAsState()
     val isHovered by interactionSource.collectIsHoveredAsState()
+    val isFocused by interactionSource.collectIsFocusedAsState()
     val targetScale = when {
         !enabled -> 1f
         isPressed -> pressScale
@@ -185,10 +207,13 @@ fun Modifier.kissClickable(
             scaleY = scale
             translationY = liftY
         }
+        .then(if (selected != null) Modifier.semantics { this.selected = selected } else Modifier)
+        .sepiaFocusRing(isFocused, focusColor)
         .clickable(
             interactionSource = interactionSource,
             indication = null,
             enabled = enabled,
+            role = role,
             onClick = {
                 runCatching {
                     haptics.performHapticFeedback(
@@ -200,6 +225,28 @@ fun Modifier.kissClickable(
         )
 }
 
+private fun Modifier.sepiaFocusRing(focused: Boolean, color: Color): Modifier =
+    if (focused) border(2.dp, color, REGULAR_BTN_SHAPE) else this
+
+/** Links from model output and imported chats may only open in a browser, never as local files. */
+internal fun openWebLink(target: String) {
+    if (isWebLink(target)) PlatformBridge.openOrPlayMedia(target.trim())
+}
+
+/** Names a control that has no visible text. */
+fun Modifier.accessibilityLabel(label: String?): Modifier =
+    if (label == null) this else semantics { contentDescription = label }
+
+/** Dismisses from a scrim by pointer only, so it adds no reader target and absorbs no dialog text. */
+@Composable
+fun Modifier.dismissOnOutsideTap(onDismiss: () -> Unit): Modifier {
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    return pointerInput(Unit) { detectTapGestures(onTap = { currentOnDismiss() }) }
+}
+
+/** Stops taps inside a sheet from reaching its scrim without merging the sheet's semantics. */
+fun Modifier.blockTapThrough(): Modifier = pointerInput(Unit) { detectTapGestures(onTap = {}) }
+
 @Composable
 fun SepiaButton(
     text: String,
@@ -208,7 +255,8 @@ fun SepiaButton(
     style: SepiaButtonStyle = SepiaButtonStyle.OUTLINE,
     enabled: Boolean = true,
     compact: Boolean = false,
-    wrapText: Boolean = false
+    wrapText: Boolean = false,
+    contentDescription: String? = null
 ) {
     val p = LocalParchmentPalette.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -241,7 +289,7 @@ fun SepiaButton(
 
     val textColor = when (style) {
         SepiaButtonStyle.PRIMARY, SepiaButtonStyle.SECONDARY, SepiaButtonStyle.DANGER ->
-            if (enabled) Color(0xFFFAF6EB) else p.mutedInk
+            if (enabled) onFillInk(baseBg) else p.mutedInk
         SepiaButtonStyle.OUTLINE -> when {
             !enabled -> p.mutedInk.copy(alpha = 0.6f)
             isPressed || isHovered -> p.accent
@@ -290,6 +338,7 @@ fun SepiaButton(
                 interactionSource = interactionSource,
                 onClick = onClick
             )
+            .accessibilityLabel(contentDescription ?: parsed.iconOnlyName())
             .clip(shape)
             .background(bgColor)
             .then(
@@ -347,7 +396,8 @@ fun SepiaChip(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null
 ) {
     val p = LocalParchmentPalette.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -372,7 +422,8 @@ fun SepiaChip(
 
     Box(
         modifier = modifier
-            .kissClickable(interactionSource = interactionSource, onClick = onClick)
+            .kissClickable(interactionSource = interactionSource, selected = selected, onClick = onClick)
+            .accessibilityLabel(contentDescription ?: parsed.iconOnlyName())
             .clip(shape)
             .background(bg)
             .border(if (selected || isHovered) 0.9.dp else 0.65.dp, borderCol, shape)
@@ -410,6 +461,108 @@ fun SepiaChip(
                 )
             }
         }
+    }
+}
+
+/** A small preview of a theme: its page color with its accent at the center. */
+@Composable
+fun ThemeSwatch(canvas: Color, accent: Color) {
+    Box(
+        Modifier.size(22.dp).clip(CircleShape).background(canvas).border(1.dp, LocalParchmentPalette.current.border, CircleShape),
+        contentAlignment = Alignment.Center
+    ) { Box(Modifier.size(9.dp).clip(CircleShape).background(accent)) }
+}
+
+/** The lapis rule that marks prompts on the page and the current item in lists. */
+fun Modifier.rubricMark(color: Color, verticalInset: Dp = 0.dp): Modifier = drawBehind {
+    val inset = verticalInset.toPx()
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(0f, inset),
+        size = Size(2.5.dp.toPx(), size.height - inset * 2),
+        cornerRadius = CornerRadius(2.dp.toPx())
+    )
+}
+
+/** A wrapping choice with one radio target and room for enlarged text. */
+@Composable
+fun SepiaChoiceRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    leading: (@Composable () -> Unit)? = null
+) {
+    val p = LocalParchmentPalette.current
+    Row(
+        modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .selectable(selected, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        leading?.invoke()
+        BasicText(label, modifier = Modifier.weight(1f), style = p.uiBodyStyle)
+        KissVectorIcon(if (selected) KissIcon.CIRCLE_DOT else KissIcon.CIRCLE_EMPTY,
+            tint = if (selected) p.accent else p.mutedInk, size = 20.dp)
+    }
+}
+
+/** A confirmation whose message scrolls, so long text cannot push its actions off screen. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SepiaConfirmationCard(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    options: @Composable ColumnScope.() -> Unit = {},
+    actions: @Composable () -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    val win = LocalParchmentWindowSize.current
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier
+            .widthIn(max = 420.dp)
+            .fillMaxWidth(0.9f)
+            .heightIn(max = win.heightDp * 0.9f)
+            .clip(shape)
+            .background(p.cardBg)
+            .border(1.dp, p.border, shape)
+            .blockTapThrough()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(
+            Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            BasicText(title, style = p.uiHeaderStyle.copy(fontSize = 17.sp))
+            BasicText(body, style = p.uiBodyStyle.copy(color = p.narrationInk))
+            options()
+        }
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) { actions() }
+    }
+}
+
+/** One accent choice: a 48dp target around a smaller visual swatch. */
+@Composable
+fun SepiaAccentSwatch(color: Color, name: String, selected: Boolean, onClick: () -> Unit) {
+    val p = LocalParchmentPalette.current
+    Box(
+        Modifier.size(48.dp)
+            .selectable(selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = name },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier.size(24.dp).clip(CircleShape).background(color)
+                .border(if (selected) 2.dp else 0.8.dp, if (selected) p.primaryInk else p.border, CircleShape)
+        )
     }
 }
 
@@ -460,6 +613,8 @@ fun SepiaTextField(
         if (label.isNotBlank()) {
             BasicText(
                 text = label,
+                // The input carries this label below; readers should announce it only once.
+                modifier = Modifier.semantics { hideFromAccessibility() },
                 style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
             )
             Spacer(Modifier.height(4.dp))
@@ -564,6 +719,10 @@ fun SepiaTextField(
                         ),
                     contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
                 ) {
+                    if (label.isNotBlank()) {
+                        // Merges into the input's semantics, naming it without replacing its value.
+                        Box(Modifier.semantics { text = AnnotatedString(label) })
+                    }
                     val parsedPlaceholder = remember(placeholder) { parseKissLabelIcons(placeholder) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -759,8 +918,27 @@ fun SepiaAvatarCircle(
 fun SepiaToggleSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    label: String,
     modifier: Modifier = Modifier
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val focusColor = LocalParchmentPalette.current.accent
+    Box(
+        modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .sepiaFocusRing(isFocused, focusColor)
+            .toggleable(checked, interactionSource = interactionSource, indication = null,
+                role = Role.Switch, onValueChange = onCheckedChange)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center
+    ) {
+        SepiaToggleTrack(checked)
+    }
+}
+
+@Composable
+private fun SepiaToggleTrack(checked: Boolean) {
     val p = LocalParchmentPalette.current
     val trackColor by animateColorAsState(
         targetValue = if (checked) p.accent else p.border.copy(alpha = 0.7f),
@@ -775,10 +953,9 @@ fun SepiaToggleSwitch(
     )
 
     Box(
-        modifier = modifier
+        modifier = Modifier
             .width(42.dp)
             .height(24.dp)
-            .kissClickable(pressScale = 0.94f) { onCheckedChange(!checked) }
             .clip(RoundedCornerShape(999.dp))
             .background(trackColor)
             .padding(3.dp),
@@ -820,17 +997,17 @@ fun SepiaToggleRow(
         animationSpec = spring(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
     )
     val shape = RoundedCornerShape(7.dp)
+    val isFocused by interactionSource.collectIsFocusedAsState()
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clip(shape)
             .background(rowBg)
-            .kissClickable(
-                pressScale = 0.99f,
-                hoverScale = 1f,
-                interactionSource = interactionSource,
-                onClick = { onCheckedChange(!checked) }
-            )
+            .sepiaFocusRing(isFocused, p.accent)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .toggleable(checked, interactionSource = interactionSource, indication = null,
+                role = Role.Switch, onValueChange = onCheckedChange)
             .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -852,7 +1029,7 @@ fun SepiaToggleRow(
                 )
             }
         }
-        SepiaToggleSwitch(checked = checked, onCheckedChange = onCheckedChange)
+        SepiaToggleTrack(checked)
     }
 }
 
@@ -977,12 +1154,7 @@ fun SepiaContextGaugeRing(
             maxLines = 1,
             softWrap = false,
             overflow = TextOverflow.Ellipsis,
-            style = p.uiLabelStyle.copy(
-                fontFamily = p.codeFontFamily,
-                fontSize = 10.sp,
-                color = p.narrationInk,
-                fontWeight = FontWeight.Medium
-            )
+            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk)
         )
     }
 }
@@ -1141,6 +1313,7 @@ fun SepiaSearchableModelPicker(
             if (searchQuery.isNotEmpty() || selectedProviderFilter.isNotEmpty() || selectedVendorFilter.isNotEmpty()) {
                 SepiaButton(
                     text = "×",
+                    contentDescription = "Clear search",
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = {
@@ -1252,6 +1425,7 @@ fun SepiaSearchableModelPicker(
                                 pressScale = 0.99f,
                                 hoverScale = 1.005f,
                                 interactionSource = rowInteraction,
+                                selected = isSel,
                                 onClick = { onSelectModel(opt.profileId, opt.modelId) }
                             )
                             .clip(rowShape)
@@ -1291,7 +1465,7 @@ fun SepiaSearchableModelPicker(
                                 text = opt.modelId,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                style = p.monoStyle.copy(
+                                style = p.uiBodyStyle.copy(
                                     fontSize = 12.sp,
                                     fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isSel || isHovered) p.accent else p.primaryInk
@@ -1483,7 +1657,7 @@ fun SepiaDiffLinesList(
     modifier: Modifier = Modifier
 ) {
     val p = LocalParchmentPalette.current
-    val addedColor = Color(0xFF2E7D32)
+    val addedColor = p.success
     val removedColor = p.danger
 
     Column(
@@ -1597,7 +1771,7 @@ fun SepiaFileDiffCard(
     val addedCount = remember(diffLines) { diffLines.count { it.kind == DiffLineKind.ADDED } }
     val removedCount = remember(diffLines) { diffLines.count { it.kind == DiffLineKind.REMOVED } }
     var showDiffBody by remember { mutableStateOf(true) }
-    val addedGreen = Color(0xFF2E7D32)
+    val addedGreen = p.success
     val shape = RoundedCornerShape(8.dp)
 
     Column(
@@ -1693,6 +1867,7 @@ fun SepiaFileDiffCard(
                 if (diffLines.isNotEmpty()) {
                     SepiaButton(
                         text = if (showDiffBody) "▴" else "▾",
+                        contentDescription = if (showDiffBody) "Hide changes" else "Show changes",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showDiffBody = !showDiffBody }

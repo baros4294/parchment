@@ -49,6 +49,16 @@ def main():
         if result.returncode != 0 or "Entry type: PrivateKeyEntry" not in result.stdout:
             raise ValueError("Private release signer validation failed")
         fingerprint = certificate_fingerprint(result.stdout)
+        key_environment = os.environ.copy()
+        key_environment["ANDROID_KEYSTORE_PATH"] = str(target)
+        key_password = key_environment.get("ANDROID_KEY_PASSWORD", "")
+        if not key_password.strip():
+            key_environment["ANDROID_KEY_PASSWORD"] = key_environment["ANDROID_KEYSTORE_PASSWORD"]
+        result = subprocess.run([
+            "java", str(Path(__file__).with_name("ValidateAndroidSigningKey.java")),
+        ], env=key_environment, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError("Private release key could not be decrypted; check the key password and alias")
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as destination:
             destination.write(f"ANDROID_KEYSTORE_PATH={target}\n")
         print(f"Private release signer verified: SHA-256 {fingerprint}")

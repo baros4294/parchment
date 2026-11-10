@@ -1,4 +1,4 @@
-﻿package io.parchment.ai
+package io.parchment.ai
 
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.CharacterOrScenarioCard
@@ -18,6 +18,29 @@ import io.parchment.ai.model.MediaKind
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.OtaUpdateEngine
+import io.parchment.ai.network.appendSignatureChunkSafe
+import io.parchment.ai.network.applyCrossProviderReasoningHandoff
+import io.parchment.ai.network.bindSourcesToMessageLines
+import io.parchment.ai.network.buildAnthropicBaseMessages
+import io.parchment.ai.network.buildEffectiveHistoryAndPrefix
+import io.parchment.ai.network.buildGeminiGenerateContentContents
+import io.parchment.ai.network.buildGeminiInteractionsTurnsArray
+import io.parchment.ai.network.buildOpenAiChatCompletionsMessages
+import io.parchment.ai.network.buildOpenAiResponsesInputArray
+import io.parchment.ai.network.compactHistoryNodesOnOverflow
+import io.parchment.ai.network.detectMediaEndpointRedirectFromError
+import io.parchment.ai.network.extractCitationsFromToolCall
+import io.parchment.ai.network.extractCleanApiErrorSummary
+import io.parchment.ai.network.isContextLengthExceededError
+import io.parchment.ai.network.isGeminiServerSideToolSignature
+import io.parchment.ai.network.isTransientOrProxyTimeoutError
+import io.parchment.ai.network.parseModelsListJson
+import io.parchment.ai.network.resolveKnownOutputModalities
+import io.parchment.ai.network.resolveModelModalityProfile
+import io.parchment.ai.network.sanitizeContextNodes
+import io.parchment.ai.network.sanitizeGeminiThoughtSignature
+import io.parchment.ai.network.shouldFallbackToLegacyProtocol
+import io.parchment.ai.network.stripInlineErrorNotices
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
@@ -42,7 +65,6 @@ import io.parchment.ai.ui.extractSessionVaultItems
 import io.parchment.ai.ui.parseKissLabelIcons
 import io.parchment.ai.ui.resolveToolKissIcon
 import io.parchment.ai.ui.saveSingleChatSessionToDisk
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -893,8 +915,6 @@ class ParchmentProtocolAndHarnessTest {
         // 24. Verify Complete 17-Tool Harness Registry & Parameter Signatures
         val allHarnessTools = WorkspaceHarness.allTools()
         assertEquals(17, allHarnessTools.size, "WorkspaceHarness must expose all 17 built-in tools")
-        assertTrue(WorkspaceHarness.extractParameterSignature(allHarnessTools.first { it.name == "fs_edit" }).contains("old_text"))
-        assertTrue(WorkspaceHarness.extractParameterSignature(allHarnessTools.first { it.name == "shell_exec" }).contains("command"))
 
         // 25. Verify Split Storage Architecture (parchment-settings.json + per-chat files in chats/) & Standalone Chat JSON Import/Export
         val chatA = vaultSession.copy(id = "sess-split-a", title = "Architecture Notes", updatedAt = 1000L)
@@ -1117,8 +1137,6 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(!rec.isError, "Expected shell_exec to succeed: ${rec.resultText}")
         assertTrue(rec.resultText.contains("parchment_live_stream_ok"))
         assertTrue(deltas.any { it.contains("parchment_live_stream_ok") })
-        // Ensure killActiveShellProcesses is safe to call when idle
-        io.parchment.ai.platform.PlatformBridge.killActiveShellProcesses()
     }
 
     @Test
@@ -1659,14 +1677,6 @@ class ParchmentProtocolAndHarnessTest {
             ),
             ProviderProtocol.entries.toList()
         )
-        assertEquals(
-            listOf(
-                ProviderProtocol.GEMINI_INTERACTIONS,
-                ProviderProtocol.OPENAI_RESPONSES,
-                ProviderProtocol.ANTHROPIC_MESSAGES
-            ),
-            ProviderProtocol.bigThree
-        )
         val legacyJson = """{"profiles":[{"id":"p-bd","name":"Ark","protocol":"BYTEDANCE_ARK","baseUrl":"https://ark.ap-southeast.bytepluses.com/api/v3"}]}"""
         val migratedState = io.parchment.ai.ui.recoverAppStateFromPartialJson(legacyJson)
         val migratedProfile = migratedState.profiles.first { it.id == "p-bd" }
@@ -1785,14 +1795,6 @@ class ParchmentProtocolAndHarnessTest {
 
     @Test
     fun testV2053CustomProtocolReasoningHandoffAndMigrations() {
-        // 1. Effort normalization: `xhigh` is an official tier and must pass through verbatim.
-        assertEquals("xhigh", io.parchment.ai.ui.normalizeThinkingEffort("xhigh"))
-        assertEquals("max", io.parchment.ai.ui.normalizeThinkingEffort("max"))
-        assertEquals("low", io.parchment.ai.ui.normalizeThinkingEffort("minimal"))
-        assertEquals("adaptive", io.parchment.ai.ui.normalizeThinkingEffort("adaptive"))
-        assertEquals("auto", io.parchment.ai.ui.normalizeThinkingEffort("auto"))
-        assertEquals("", io.parchment.ai.ui.normalizeThinkingEffort("   "))
-
         // 2. One-shot typeface migration only rewrites the OLD defaults.
         val legacyTheme = io.parchment.ai.model.ThemeConfig(proseFontSizeSp = 16.5f, codeFontSizeSp = 12.5f)
         val migratedTheme = io.parchment.ai.ui.migrateThemeTypefaceDefaults(legacyTheme)

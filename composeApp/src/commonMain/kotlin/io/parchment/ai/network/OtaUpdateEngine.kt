@@ -1,6 +1,5 @@
-﻿package io.parchment.ai.network
+package io.parchment.ai.network
 
-import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
@@ -11,6 +10,7 @@ import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import io.parchment.ai.ParchmentBuildConfig
 import io.parchment.ai.platform.PlatformBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -35,8 +35,22 @@ data class OtaReleaseInfo(
     val assetName: String,
     val assetDownloadUrl: String,
     val assetSizeBytes: Long,
-    val isNewerThanCurrent: Boolean
+    val isNewerThanCurrent: Boolean,
+    val assetSha256: String = ""
 )
+
+/** One downloaded installer, staged on disk until it is verified and handed to the platform. */
+interface OtaStagedDownload {
+    fun write(buffer: ByteArray, count: Int)
+
+    /** Throws unless the complete download matches the published size and checksum. */
+    fun finish(expectedBytes: Long, expectedSha256: String)
+
+    fun install(): Result<String>
+
+    /** Removes the staged file unless the platform installer now owns it. */
+    fun discard()
+}
 
 sealed class OtaUpdateState {
     data object Idle : OtaUpdateState()
@@ -50,6 +64,20 @@ sealed class OtaUpdateState {
     data class Installing(val message: String) : OtaUpdateState()
     data class Error(val message: String) : OtaUpdateState()
 }
+
+private val GITHUB_REPO_NAME = Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+private val SHA256_HEX = Regex("[0-9a-f]{64}")
+
+/** Reads GitHub's nullable `sha256:<hex>` asset digest; anything else counts as not published. */
+/** An update closes the app, so it must wait until no chat is running and no prompt is queued. */
+internal fun updateBlockedReason(runningChats: Int, queuedPrompts: Int): String? = when {
+    runningChats > 0 -> "Finish or stop $runningChats running chat(s) before updating, so no work is interrupted."
+    queuedPrompts > 0 -> "Send or clear $queuedPrompts queued message(s) before updating, so they are not lost."
+    else -> null
+}
+
+internal fun sha256FromAssetDigest(rawDigest: String?): String =
+    rawDigest.orEmpty().trim().removePrefix("sha256:").lowercase().takeIf(SHA256_HEX::matches).orEmpty()
 
 object OtaUpdateEngine {
 
@@ -76,6 +104,7 @@ object OtaUpdateEngine {
             .removePrefix("http://github.com/")
             .trim('/')
             .ifBlank { ParchmentBuildConfig.DEFAULT_GITHUB_REPO }
+        check(GITHUB_REPO_NAME.matches(cleanRepo)) { "The update repository must be in owner/name form." }
 
         // Try /releases/latest first, then fallback to /releases?per_page=5
         val latestUrl = "https://api.github.com/repos/$cleanRepo/releases/latest"
@@ -137,18 +166,26 @@ object OtaUpdateEngine {
             assetName = assetName,
             assetDownloadUrl = downloadUrl,
             assetSizeBytes = sizeBytes,
-            isNewerThanCurrent = isNewer
+            isNewerThanCurrent = isNewer,
+            assetSha256 = sha256FromAssetDigest(matchingAsset["digest"]?.jsonPrimitive?.contentOrNull)
         )
     }
 
     /**
-     * Streams the `.apk` or `.exe` binary directly in-app and triggers native silent/1-tap installation.
+     * Streams the `.apk` or `.exe` to an owned staged file, verifies the complete download,
+     * and only then starts the platform installer. A cancelled or failed download installs nothing.
      */
-    fun downloadAndInstall(release: OtaReleaseInfo): Flow<OtaUpdateState> = flow {
+    fun downloadAndInstall(
+        release: OtaReleaseInfo,
+        installBlockedReason: () -> String? = { null },
+        stage: (assetName: String) -> OtaStagedDownload = PlatformBridge::createOtaStagedDownload
+    ): Flow<OtaUpdateState> = flow {
         emit(OtaUpdateState.Downloading(release, 0L, release.assetSizeBytes))
 
+        var staged: OtaStagedDownload? = null
         try {
-            var downloadedBytesArray = ByteArray(0)
+            val download = stage(release.assetName).also { staged = it }
+            var expectedBytes = release.assetSizeBytes
 
             httpClient.prepareGet(release.assetDownloadUrl) {
                 header("User-Agent", "Parchment-OTA-Updater/${ParchmentBuildConfig.APP_VERSION}")
@@ -156,11 +193,11 @@ object OtaUpdateEngine {
                 if (!response.status.isSuccess()) {
                     error("Failed to download ${release.assetName}: HTTP ${response.status.value}")
                 }
+                if (expectedBytes <= 0L) expectedBytes = response.contentLength() ?: 0L
+                check(expectedBytes > 0L) { "The update size is unknown, so the update was not installed." }
 
-                val total = (response.contentLength() ?: release.assetSizeBytes).coerceAtLeast(release.assetSizeBytes)
                 val channel = response.bodyAsChannel()
                 val buffer = ByteArray(64 * 1024)
-                val outList = ArrayList<ByteArray>()
                 var totalRead = 0L
                 var lastEmittedPercent = -1
                 var lastEmitTimeMs = 0L
@@ -168,41 +205,36 @@ object OtaUpdateEngine {
                 while (!channel.isClosedForRead) {
                     val read = channel.readAvailable(buffer, 0, buffer.size)
                     if (read <= 0) break
-                    val chunk = buffer.copyOf(read)
-                    outList.add(chunk)
                     totalRead += read
+                    check(totalRead <= expectedBytes) { "The download is larger than the published update." }
+                    download.write(buffer, read)
                     val now = PlatformBridge.currentTimeMillis()
-                    val pct = if (total > 0L) ((totalRead * 100L) / total).toInt().coerceIn(0, 100) else 0
-                    if (pct != lastEmittedPercent || now - lastEmitTimeMs >= 80L || totalRead >= total) {
+                    val pct = ((totalRead * 100L) / expectedBytes).toInt().coerceIn(0, 100)
+                    if (pct != lastEmittedPercent || now - lastEmitTimeMs >= 80L || totalRead >= expectedBytes) {
                         lastEmittedPercent = pct
                         lastEmitTimeMs = now
-                        emit(OtaUpdateState.Downloading(release, totalRead, total))
+                        emit(OtaUpdateState.Downloading(release, totalRead, expectedBytes))
                     }
                 }
-
-                emit(OtaUpdateState.Downloading(release, totalRead, total.coerceAtLeast(totalRead)))
-
-                val combined = ByteArray(totalRead.toInt())
-                var offset = 0
-                for (chunk in outList) {
-                    chunk.copyInto(combined, offset)
-                    offset += chunk.size
-                }
-                downloadedBytesArray = combined
             }
 
+            download.finish(expectedBytes, release.assetSha256)
+            // Downloads take time, so work may have started since the update was requested.
+            installBlockedReason()?.let { reason ->
+                emit(OtaUpdateState.Error(reason))
+                return@flow
+            }
             emit(OtaUpdateState.Installing("Applying update (${release.tagName})…"))
-            val installResult = PlatformBridge.installOtaUpdate(release.assetName, downloadedBytesArray)
-            installResult.fold(
-                onSuccess = { msg ->
-                    emit(OtaUpdateState.Installing(msg))
-                },
-                onFailure = { err ->
-                    emit(OtaUpdateState.Error("Install error: ${err.message}"))
-                }
+            download.install().fold(
+                onSuccess = { msg -> emit(OtaUpdateState.Installing(msg)) },
+                onFailure = { err -> emit(OtaUpdateState.Error("Install error: ${err.message}")) }
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             emit(OtaUpdateState.Error(t.message ?: t::class.simpleName ?: "OTA update failed"))
+        } finally {
+            staged?.discard()
         }
     }.flowOn(Dispatchers.Default)
 

@@ -28,21 +28,15 @@ enum class ProviderProtocol(val displayName: String, val defaultBaseUrl: String,
     );
 
     val isCustomWire: Boolean get() = this == CUSTOM
-
-    companion object {
-        /** The Big Three: fully-managed protocol dialects with auto-resolved endpoint tails. */
-        val bigThree: List<ProviderProtocol> = listOf(
-            GEMINI_INTERACTIONS,
-            OPENAI_RESPONSES,
-            ANTHROPIC_MESSAGES
-        )
-    }
 }
 
 const val CUSTOM_DIALECT_OPENAI_CHAT = "openai_chat"
 const val CUSTOM_DIALECT_OPENAI_RESPONSES = "openai_responses"
 const val CUSTOM_DIALECT_ANTHROPIC = "anthropic_messages"
 const val CUSTOM_DIALECT_GEMINI = "gemini_interactions"
+
+/** Chaining depends on stored responses, so it implies storage; storage alone does not chain. */
+val ProviderProfile.keepsProviderState: Boolean get() = storeServerSide || useStatefulChaining
 
 val CUSTOM_DIALECTS: List<String> = listOf(
     CUSTOM_DIALECT_OPENAI_CHAT,
@@ -152,7 +146,7 @@ data class ProviderProfile(
     val videoGenerateAudio: Boolean = true,
     val audioVoice: String = "alloy",
     val audioSpeed: Double = 1.0,
-    val thinkingEffort: String = "high",
+    val thinkingEffort: String = "none",
     // Nullable numeric parameters: null = omitted/stripped from outgoing JSON; 0 = unlimited where applicable
     val thinkingBudgetTokens: Int? = null,
     val temperature: Double? = null,
@@ -202,7 +196,9 @@ data class ToolCallRecord(
     val isRunning: Boolean = false,
     val durationMs: Long = 0L,
     val thoughtSignature: String = "",
-    val precedingThinking: String = ""
+    val precedingThinking: String = "",
+    /** First call of a model step, so history keeps sequential steps apart from parallel calls. */
+    val startsToolStep: Boolean = false
 )
 
 @Immutable
@@ -534,7 +530,6 @@ data class PreferencesConfig(
     val autoFollowBottom: Boolean = true,
     val autoCompactWhenNearContextLimit: Boolean = true,
     val chatBackgroundOverlayOpacityPercent: Int = 100,
-    val inputBoxBackgroundOpacityPercent: Int = 95
 )
 
 @Immutable
@@ -590,35 +585,61 @@ data class ChatSession(
 @Immutable
 @Serializable
 data class ThemeConfig(
-    val name: String = "Parchment & Espresso Ink (Sepia)",
+    val name: String = "Lapis on Vellum",
     val colorMode: String = "Sepia", // Sepia, Light, Dark
-    val canvasBgHex: String = "#F4ECD8",
-    val sheetBgHex: String = "#EBE0C5",
-    val cardBgHex: String = "#FAF6EB",
-    val elevatedBgHex: String = "#EFE5CC",
-    val borderHex: String = "#D5C4A1",
-    val primaryInkHex: String = "#261C14",
-    val dialogueInkHex: String = "#4A2511",
-    val narrationInkHex: String = "#5C4938",
-    val mutedInkHex: String = "#826F5C",
-    val accentHex: String = "#8B5A2B",
-    val accentSecondaryHex: String = "#B57C2E",
-    val dangerHex: String = "#A62B2B",
+    val canvasBgHex: String = "#EFEEE3",
+    val sheetBgHex: String = "#E6E5D8",
+    val cardBgHex: String = "#F8F7EF",
+    val elevatedBgHex: String = "#E9E8DB",
+    val borderHex: String = "#D4D3C2",
+    val primaryInkHex: String = "#1D2230",
+    val dialogueInkHex: String = "#24345F",
+    val narrationInkHex: String = "#4A4F5C",
+    val mutedInkHex: String = "#666A72",
+    val accentHex: String = "#2A4A9E",
+    val accentSecondaryHex: String = "#8F6A12",
+    val dangerHex: String = "#B3261E",
     val proseFontFamily: String = "Inter",
     val customProseFontPath: String = "",
     val codeFontFamily: String = "JetBrainsMono Nerd",
     val customCodeFontPath: String = "",
     val proseFontSizeSp: Float = 14.0f,
     val codeFontSizeSp: Float = 14.0f,
-    val proseLineHeightMultiplier: Float = 1.54f,
+    val proseLineHeightMultiplier: Float = 1.6f,
     val paragraphSpacingDp: Float = 18f,
     val firstLineIndentChars: Int = 0,
-    val maxReadingWidthDp: Float = 820f,
+    val maxReadingWidthDp: Float = 700f,
     val highlightDialogueAndNarration: Boolean = true
 ) {
     companion object {
+        /** The default look before Lapis on Vellum; an unchanged copy of it moves to the new default once. */
+        val CLASSIC_SEPIA = ThemeConfig(
+            name = "Parchment & Espresso Ink (Sepia)",
+            canvasBgHex = "#F4ECD8", sheetBgHex = "#EBE0C5", cardBgHex = "#FAF6EB", elevatedBgHex = "#EFE5CC",
+            borderHex = "#D5C4A1", primaryInkHex = "#261C14", dialogueInkHex = "#4A2511", narrationInkHex = "#5C4938",
+            mutedInkHex = "#826F5C", accentHex = "#8B5A2B", accentSecondaryHex = "#B57C2E", dangerHex = "#A62B2B",
+            proseLineHeightMultiplier = 1.54f, maxReadingWidthDp = 820f
+        )
+
         val PRESETS: List<ThemeConfig> = listOf(
             ThemeConfig(),
+            ThemeConfig(
+                name = "Lapis at Night",
+                colorMode = "Dark",
+                canvasBgHex = "#12151C",
+                sheetBgHex = "#0E1117",
+                cardBgHex = "#191D26",
+                elevatedBgHex = "#222733",
+                borderHex = "#2C3240",
+                primaryInkHex = "#E6E4D8",
+                dialogueInkHex = "#B9C6EC",
+                narrationInkHex = "#A9ACB3",
+                mutedInkHex = "#8A8F99",
+                accentHex = "#8FA6E8",
+                accentSecondaryHex = "#D4B25A",
+                dangerHex = "#F0857A"
+            ),
+            CLASSIC_SEPIA,
             ThemeConfig(
                 name = "Parchment Warm Ivory (Light)",
                 colorMode = "Light",
@@ -731,7 +752,11 @@ data class AppStateSnapshot(
     val globalWorldBook: List<ContextFragment> = emptyList(),
     val theme: ThemeConfig = ThemeConfig(),
     val otaGithubRepo: String = "baros4294/parchment",
-    val autoCheckOtaOnStartup: Boolean = true
+    val autoCheckOtaOnStartup: Boolean = true,
+    /** Present in saved settings once the one-time built-in profile storage reset has run. */
+    val providerStorageReset: Boolean = true,
+    /** False in settings saved before the page design; those move to its defaults once on load. */
+    val designDefaultsApplied: Boolean = false
 )
 
 enum class StorageFileCategory(val label: String) {

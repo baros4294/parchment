@@ -49,7 +49,7 @@ internal object AndroidOwnedShell {
         val exitCode = AtomicInteger(-1)
         val failure = AtomicReference<Throwable?>(null)
         val cleanupFailure = AtomicReference<Throwable?>(null)
-        val output = StringBuilder()
+        val output = BoundedTextCapture(headLimit = 24_000, tailLimit = 24_000)
 
         fun terminateOwnedSession() {
             // Never signal 0, -1, the app's group, or a numeric identity after its supervisor exits.
@@ -68,15 +68,12 @@ internal object AndroidOwnedShell {
                     while (true) {
                         val count = reader.read(buffer)
                         if (count < 0) break
-                        val snapshot = synchronized(output) {
-                            if (output.length < 48_000) output.append(buffer, 0, minOf(count, 48_000 - output.length))
-                            val now = System.nanoTime()
-                            if (onOutput != null && now - lastEmit >= TimeUnit.MILLISECONDS.toNanos(100)) {
-                                lastEmit = now
-                                output.toString()
-                            } else null
+                        output.append(buffer, count)
+                        val now = System.nanoTime()
+                        if (onOutput != null && now - lastEmit >= TimeUnit.MILLISECONDS.toNanos(100)) {
+                            lastEmit = now
+                            runCatching { onOutput.invoke(output.snapshot()) }
                         }
-                        if (snapshot != null) runCatching { onOutput?.invoke(snapshot) }
                     }
                 }
             }.onFailure { failure.compareAndSet(null, it) }
@@ -106,11 +103,11 @@ internal object AndroidOwnedShell {
             terminateOwnedSession()
             cleanupFailure.get()?.let { throw IllegalStateException("Command finished (exit code ${exitCode.get()}) but the OS could not terminate the owned Shell session.", it) }
             outputReader.join(1500)
-            val text = synchronized(output) { output.toString().trim() }
+            val text = output.snapshot().trim()
             if (text.isNotEmpty()) runCatching { onOutput?.invoke(text) }
-            "Exit Code: ${exitCode.get()}\n${text.take(6000)}"
+            "Exit Code: ${exitCode.get()}\n${output.snapshot(6000).trim()}"
         } catch (error: Throwable) {
-            val partial = synchronized(output) { output.toString().trim().take(3000) }
+            val partial = output.snapshot(3000).trim()
             throw IllegalStateException((error.message ?: "Shell execution failed.") +
                 if (partial.isEmpty()) "" else "\nPartial output:\n$partial", error)
         } finally {

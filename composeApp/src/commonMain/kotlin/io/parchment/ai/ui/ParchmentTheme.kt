@@ -8,6 +8,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -32,6 +34,7 @@ data class ParchmentPalette(
     val accent: Color,
     val accentSecondary: Color,
     val danger: Color,
+    val success: Color,
     val proseFontFamily: FontFamily,
     val codeFontFamily: FontFamily,
     val mathFontFamily: FontFamily,
@@ -44,6 +47,35 @@ data class ParchmentPalette(
     val paragraphSpacing: Dp,
     val maxReadingWidth: Dp
 )
+
+private const val READABLE_TEXT_CONTRAST = 4.5f
+private val WARM_FILL_INK = Color(0xFFFAF6EB)
+
+/** WCAG contrast ratio between two opaque colors. */
+fun contrastRatio(first: Color, second: Color): Float {
+    val a = first.luminance()
+    val b = second.luminance()
+    return (maxOf(a, b) + 0.05f) / (minOf(a, b) + 0.05f)
+}
+
+/** Moves [ink] toward black or white only as far as needed to stay readable on every surface. */
+internal fun readableInk(ink: Color, surfaces: List<Color>): Color {
+    fun worst(color: Color) = surfaces.minOf { contrastRatio(color, it) }
+    if (worst(ink) >= READABLE_TEXT_CONTRAST) return ink
+    val target = if (worst(Color.White) >= worst(Color.Black)) Color.White else Color.Black
+    for (step in 1..20) {
+        val candidate = lerp(ink, target, step / 20f)
+        if (worst(candidate) >= READABLE_TEXT_CONTRAST) return candidate
+    }
+    return target
+}
+
+/** Readable text and icon color for content drawn on a solid [fill]. */
+fun onFillInk(fill: Color): Color = when {
+    contrastRatio(WARM_FILL_INK, fill) >= READABLE_TEXT_CONTRAST -> WARM_FILL_INK
+    contrastRatio(Color.White, fill) >= contrastRatio(Color.Black, fill) -> Color.White
+    else -> Color.Black
+}
 
 val LocalParchmentPalette = staticCompositionLocalOf {
     buildPaletteFromConfig(ThemeConfig())
@@ -75,10 +107,12 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     val primaryInk = parseHexColor(config.primaryInkHex, Color(0xFF261C14))
     val dialogueInk = parseHexColor(config.dialogueInkHex, Color(0xFF4A2511))
     val narrationInk = parseHexColor(config.narrationInkHex, Color(0xFF5C4938))
-    val mutedInk = parseHexColor(config.mutedInkHex, Color(0xFF826F5C))
+    val readableSurfaces = listOf(canvasBg, sheetBg, cardBg, elevatedBg)
+    val mutedInk = readableInk(parseHexColor(config.mutedInkHex, Color(0xFF826F5C)), readableSurfaces)
     val accent = parseHexColor(config.accentHex, Color(0xFF9E4730))
     val accentSecondary = parseHexColor(config.accentSecondaryHex, Color(0xFFB57C2E))
-    val danger = parseHexColor(config.dangerHex, Color(0xFFA62B2B))
+    val danger = readableInk(parseHexColor(config.dangerHex, Color(0xFFA62B2B)), readableSurfaces)
+    val success = readableInk(Color(0xFF2E7D32), readableSurfaces)
 
     val customProseLoaded = if (config.customProseFontPath.isNotBlank()) {
         PlatformBridge.loadCustomFontFamily(config.customProseFontPath)
@@ -131,6 +165,7 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
         accent = accent,
         accentSecondary = accentSecondary,
         danger = danger,
+        success = success,
         proseFontFamily = proseFont,
         codeFontFamily = codeFont,
         mathFontFamily = mathFont,

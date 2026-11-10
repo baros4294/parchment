@@ -3,6 +3,8 @@ package io.parchment.ai.platform
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.OutputStream
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.AccessDeniedException
@@ -39,6 +41,38 @@ internal object AtomicFileStorage {
             copy(target, previousBackup)
         }
         commit(staged.toPath(), target.toPath())
+    }
+
+    fun writeBytes(target: File, bytes: ByteArray, commit: (Path, Path) -> Unit = ::commitExport) =
+        writeStream(target, commit) { it.write(bytes) }
+
+    /**
+     * Replaces a user-chosen export only after the new file is complete; a failure leaves the old one.
+     * Deliberately unsynchronized: a long export must not block app state saves.
+     */
+    fun writeStream(target: File, commit: (Path, Path) -> Unit = ::commitExport, write: (OutputStream) -> Unit) {
+        val parent = checkNotNull(target.absoluteFile.parentFile) { "Export target has no parent directory." }
+        val staged = File(parent, target.name + ".tmp")
+        try {
+            FileOutputStream(staged).use { stream ->
+                write(stream)
+                stream.flush()
+                stream.fd.sync()
+            }
+            commit(staged.toPath(), target.toPath())
+        } catch (error: Exception) {
+            staged.delete()
+            throw error
+        }
+    }
+
+    // Exports can target network or removable volumes where atomic rename is unavailable.
+    private fun commitExport(source: Path, target: Path) {
+        try {
+            commitAtomically(source, target)
+        } catch (unsupported: AtomicMoveNotSupportedException) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 
     @Synchronized

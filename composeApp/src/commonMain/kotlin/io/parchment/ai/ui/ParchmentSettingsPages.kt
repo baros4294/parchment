@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -26,8 +26,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,6 +46,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,6 +68,7 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.CUSTOM_DIALECTS
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.customDialectLabel
+import io.parchment.ai.model.keepsProviderState
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
@@ -80,6 +83,7 @@ import io.parchment.ai.network.ModelsDevClient
 import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
+import io.parchment.ai.network.fetchAvailableModels
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
@@ -91,8 +95,11 @@ enum class SettingsCategory(val icon: String, val label: String) {
     DEFAULT_MODEL("♡", "Default Model"),
     WORKSPACE("📂", "Workspace"),
     WORLD_BOOK("📖", "World Book & Cards"),
-    BACKUP_OTA("☁", "Storage & OTA")
+    BACKUP_OTA("☁", "Storage & Updates")
 }
+
+private const val PROVIDER_STORAGE_TITLE = "Keep Responses on Provider Servers"
+private const val PROVIDER_STORAGE_SUBTITLE = "Off by default. Stateful chaining and stream recovery need it; turning it off also ends chaining."
 
 @Composable
 fun ParchmentSettingsScreen(
@@ -179,6 +186,7 @@ fun ParchmentSettingsScreen(
                         if (settingsSearchQuery.isNotEmpty()) {
                             SepiaButton(
                                 text = "×",
+                                contentDescription = "Clear search",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { settingsSearchQuery = "" }
@@ -211,6 +219,7 @@ fun ParchmentSettingsScreen(
                                     pressScale = 0.97f,
                                     hoverScale = 1.01f,
                                     interactionSource = interactionSource,
+                                    selected = isSelected,
                                     onClick = {
                                         selectedCategory = cat
                                         settingsSearchQuery = ""
@@ -219,13 +228,14 @@ fun ParchmentSettingsScreen(
                                 .clip(shape)
                                 .background(
                                     when {
-                                        isSelected -> p.accent.copy(alpha = 0.16f)
+                                        isSelected -> p.cardBg
                                         isHighlightedBySearch -> p.accent.copy(alpha = 0.10f)
                                         isPressed -> p.accent.copy(alpha = 0.12f)
                                         isHovered -> p.accent.copy(alpha = 0.08f)
                                         else -> Color.Transparent
                                     }
                                 )
+                                .then(if (isSelected) Modifier.rubricMark(p.accent, verticalInset = 9.dp) else Modifier)
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
@@ -237,14 +247,13 @@ fun ParchmentSettingsScreen(
                             ) {
                                 KissVectorIcon(
                                     icon = catIcon,
-                                    tint = if (isSelected || isHovered || isPressed || isHighlightedBySearch) p.accent else p.narrationInk,
+                                    tint = if (isSelected || isHovered || isPressed || isHighlightedBySearch) p.accent else p.mutedInk,
                                     size = 15.dp
                                 )
                                 BasicText(
                                     text = cat.label,
                                     style = p.uiBodyStyle.copy(
-                                        color = if (isSelected || isHovered || isPressed || isHighlightedBySearch) p.accent else p.primaryInk,
-                                        fontWeight = if (isSelected || isHighlightedBySearch) FontWeight.SemiBold else FontWeight.Normal,
+                                        fontWeight = if (isSelected || isHighlightedBySearch) FontWeight.Medium else FontWeight.Normal,
                                         fontSize = 13.5.sp
                                     )
                                 )
@@ -279,6 +288,7 @@ fun ParchmentSettingsScreen(
                     animationSpec = tween(160),
                     modifier = Modifier.weight(1f).fillMaxHeight()
                 ) { cat ->
+                    Box(Modifier.fillMaxHeight().widthIn(max = 780.dp)) {
                     SettingsSubpageContent(
                         category = cat,
                         searchQuery = settingsSearchQuery,
@@ -314,6 +324,7 @@ fun ParchmentSettingsScreen(
                         onInspectAttachment = onInspectAttachment,
                         onNotify = onNotify
                     )
+                    }
                 }
             }
         } else {
@@ -353,7 +364,7 @@ fun ParchmentSettingsScreen(
                 }
                 SettingsCategory.WORKSPACE -> "Agent approvals, file access, web and shell controls"
                 SettingsCategory.WORLD_BOOK -> "Character cards (PNG/JSON) & ${appState.globalWorldBook.size + activeSession.fragments.size} lore fragment(s)"
-                SettingsCategory.BACKUP_OTA -> "Storage manager, v${OtaUpdateEngine.currentAppVersion} OTA & JSON backups"
+                SettingsCategory.BACKUP_OTA -> "Storage, backups and app updates (v${OtaUpdateEngine.currentAppVersion})"
             }
 
             Column(
@@ -430,7 +441,7 @@ fun ParchmentSettingsScreen(
                         SepiaButton(
                             text = "← Chat",
                             compact = true,
-                            style = SepiaButtonStyle.PRIMARY,
+                            style = SepiaButtonStyle.GHOST,
                             onClick = onClose
                         )
                     }
@@ -451,6 +462,7 @@ fun ParchmentSettingsScreen(
                             if (settingsSearchQuery.isNotEmpty()) {
                                 SepiaButton(
                                     text = "×",
+                                    contentDescription = "Clear search",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { settingsSearchQuery = "" }
@@ -707,6 +719,23 @@ private fun SettingsSubpageContent(
 // ============================================================================================
 // SUBPAGE 1: PREFERENCES
 // ============================================================================================
+private val ACCENT_SWATCHES = listOf(
+    "#8B5A2B" to "Brown", "#9E4730" to "Rust", "#3B5998" to "Blue", "#1F6F54" to "Green",
+    "#5E4B8B" to "Purple", "#7A5216" to "Bronze", "#8C3823" to "Brick", "#2D3748" to "Slate"
+)
+
+@Composable
+private fun AccentSwatches(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit) {
+    ACCENT_SWATCHES.forEach { (hex, name) ->
+        SepiaAccentSwatch(
+            color = parseHexColor(hex),
+            name = "$name accent",
+            selected = theme.accentHex.equals(hex, ignoreCase = true),
+            onClick = { onUpdateTheme(theme.copy(name = "Custom Theme", accentHex = hex)) }
+        )
+    }
+}
+
 @Composable
 private fun ThemePresetChoices(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit) {
     val p = LocalParchmentPalette.current
@@ -714,18 +743,9 @@ private fun ThemePresetChoices(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) 
         BasicText("Color Mode & Preset", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
         Column(Modifier.fillMaxWidth().selectableGroup()) {
             ThemeConfig.PRESETS.forEach { preset ->
-                val selected = theme.name == preset.name
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .selectable(selected, role = Role.RadioButton, onClick = { onUpdateTheme(preset) })
-                        .padding(horizontal = 6.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    BasicText(preset.name.substringBefore(" ("), modifier = Modifier.weight(1f), style = p.uiBodyStyle)
-                    KissVectorIcon(if (selected) KissIcon.CIRCLE_DOT else KissIcon.CIRCLE_EMPTY,
-                        tint = if (selected) p.accent else p.mutedInk, size = 20.dp)
-                }
+                SepiaChoiceRow(preset.name.substringBefore(" ("), theme.name == preset.name,
+                    onClick = { onUpdateTheme(preset) },
+                    leading = { ThemeSwatch(parseHexColor(preset.canvasBgHex), parseHexColor(preset.accentHex)) })
             }
         }
     }
@@ -773,26 +793,8 @@ internal fun PreferencesSubpage(
                     // Theme Swatches + Custom Hex Toggle (FlowRow so swatches & Hex button never clip on mobile!)
                     SepiaAdaptiveRow(label = "Accent Color") {
                         @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val accentSwatches = listOf(
-                                "#8B5A2B", "#9E4730", "#3B5998", "#1F6F54",
-                                "#5E4B8B", "#7A5216", "#8C3823", "#2D3748"
-                            )
-                            accentSwatches.forEach { hex ->
-                                val col = parseHexColor(hex)
-                                val isSel = theme.accentHex.equals(hex, ignoreCase = true)
-                                Box(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(col)
-                                        .border(if (isSel) 2.dp else 0.8.dp, if (isSel) p.primaryInk else p.border, CircleShape)
-                                        .clickable { onUpdateTheme(theme.copy(name = "Custom Theme", accentHex = hex)) }
-                                )
-                            }
+                        FlowRow(Modifier.selectableGroup(), itemVerticalAlignment = Alignment.CenterVertically) {
+                            AccentSwatches(theme, onUpdateTheme)
                             SepiaButton(
                                 text = if (showCustomColorHexDrawer) "▾ Hex" else "✎ Hex",
                                 compact = true,
@@ -1373,7 +1375,8 @@ private fun ProvidersSubpage(
                                     .clip(shape)
                                     .background(if (isSel) p.cardBg else Color.Transparent)
                                     .border(0.8.dp, if (isSel) p.border else Color.Transparent, shape)
-                                    .clickable { onSelectProfile(prof.id) }
+                                    .clickable(role = Role.Button) { onSelectProfile(prof.id) }
+                                    .semantics { selected = isSel }
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -1412,7 +1415,7 @@ private fun ProvidersSubpage(
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(6.dp))
-                                        .background(if (statusOn) Color(0xFF2E7D32).copy(alpha = 0.14f) else p.accentSecondary.copy(alpha = 0.14f))
+                                        .background(if (statusOn) p.success.copy(alpha = 0.14f) else p.accentSecondary.copy(alpha = 0.14f))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     BasicText(
@@ -1420,7 +1423,7 @@ private fun ProvidersSubpage(
                                         style = p.uiLabelStyle.copy(
                                             fontSize = 9.5.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (statusOn) Color(0xFF2E7D32) else p.accentSecondary
+                                            color = if (statusOn) p.success else p.accentSecondary
                                         )
                                     )
                                 }
@@ -1442,7 +1445,7 @@ private fun ProvidersSubpage(
                                     text = "+ ${proto.displayName.substringBefore(" API")}",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
                                     onClick = {
                                         onAddProfile(proto)
                                         showAddProviderMenu = false
@@ -1487,7 +1490,7 @@ private fun ProvidersSubpage(
                                         color = if (isSel) p.accent else p.border,
                                         shape = shape
                                     )
-                                    .kissClickable(pressScale = 0.985f) {
+                                    .kissClickable(pressScale = 0.985f, selected = isSel) {
                                         onSelectProfile(prof.id)
                                         mobileEditingProfileId = prof.id
                                     }
@@ -1539,7 +1542,7 @@ private fun ProvidersSubpage(
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(6.dp))
-                                            .background(if (statusOn) Color(0xFF2E7D32).copy(alpha = 0.14f) else p.accentSecondary.copy(alpha = 0.14f))
+                                            .background(if (statusOn) p.success.copy(alpha = 0.14f) else p.accentSecondary.copy(alpha = 0.14f))
                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
                                         BasicText(
@@ -1547,7 +1550,7 @@ private fun ProvidersSubpage(
                                             style = p.uiLabelStyle.copy(
                                                 fontSize = 9.5.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (statusOn) Color(0xFF2E7D32) else p.accentSecondary
+                                                color = if (statusOn) p.success else p.accentSecondary
                                             )
                                         )
                                     }
@@ -1569,7 +1572,7 @@ private fun ProvidersSubpage(
                                         text = "+ ${proto.displayName.substringBefore(" API")}",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
                                         onClick = {
                                             onAddProfile(proto)
                                             showAddProviderMenu = false
@@ -1696,6 +1699,7 @@ private fun ProvidersSubpage(
                         if (appState.profiles.size > 1) {
                             SepiaButton(
                                 text = "🗑",
+                                contentDescription = "Delete provider",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -1707,6 +1711,7 @@ private fun ProvidersSubpage(
                     }
                     SepiaToggleSwitch(
                         checked = activeProfile.enabled,
+                        label = "Enable provider ${activeProfile.name}",
                         onCheckedChange = { en -> onUpdateProfileById(activeProfile.id) { it.copy(enabled = en) } }
                     )
                 }
@@ -1722,6 +1727,7 @@ private fun ProvidersSubpage(
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             SepiaButton(
                                 text = if (showApiKey) "🙈" else "👁",
+                                contentDescription = if (showApiKey) "Hide API key" else "Show API key",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showApiKey = !showApiKey }
@@ -1813,13 +1819,9 @@ private fun ProvidersSubpage(
                             style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                         )
                         Spacer(Modifier.height(4.dp))
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                        Column(Modifier.fillMaxWidth().selectableGroup()) {
                             CUSTOM_DIALECTS.forEach { dialect ->
-                                SepiaChip(
+                                SepiaChoiceRow(
                                     label = customDialectLabel(dialect),
                                     selected = activeProfile.customDialect == dialect,
                                     onClick = {
@@ -1867,6 +1869,7 @@ private fun ProvidersSubpage(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         SepiaButton(
                             text = "+",
+                            contentDescription = "Add model",
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = { showAddModelBox = !showAddModelBox }
@@ -1874,6 +1877,7 @@ private fun ProvidersSubpage(
                         if (activeProfile.savedModels.isNotEmpty()) {
                             SepiaButton(
                                 text = "🗑",
+                                contentDescription = "Remove all saved models",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -1971,6 +1975,7 @@ private fun ProvidersSubpage(
                         if (modelSearch.isNotEmpty() || selectedVendorFamily.isNotEmpty()) {
                             SepiaButton(
                                 text = "×",
+                                contentDescription = "Clear search",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -2056,6 +2061,7 @@ private fun ProvidersSubpage(
                                         pressScale = 0.985f,
                                         hoverScale = 1.008f,
                                         interactionSource = rowInteraction,
+                                        selected = isSelectedModel,
                                         onClick = {
                                             onUpdateProfile { it.copy(defaultModel = modelId) }
                                             onUpdateSession { it.copy(modelOverride = modelId, profileId = activeProfile.id) }
@@ -2120,12 +2126,14 @@ private fun ProvidersSubpage(
                                     }
                                     SepiaButton(
                                         text = "⚙",
+                                        contentDescription = "Model settings",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { selectedModelForConfigSubpage = modelId }
                                     )
                                     SepiaButton(
                                         text = "—",
+                                        contentDescription = "Remove model",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = {
@@ -2186,10 +2194,9 @@ internal fun ProviderProtocolSubpage(
                     label = "Provider Display Name",
                     modifier = Modifier.fillMaxWidth()
                 )
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.fillMaxWidth().selectableGroup()) {
                     ProviderProtocol.entries.forEach { proto ->
-                        SepiaChip(
+                        SepiaChoiceRow(
                             label = proto.displayName,
                             selected = profile.protocol == proto,
                             onClick = { onUpdateProfile { it.copy(protocol = proto, baseUrl = proto.defaultBaseUrl) } }
@@ -2209,10 +2216,9 @@ internal fun ProviderProtocolSubpage(
                         text = "Wire Dialect",
                         style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold)
                     )
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(Modifier.fillMaxWidth().selectableGroup()) {
                         CUSTOM_DIALECTS.forEach { dialect ->
-                            SepiaChip(
+                            SepiaChoiceRow(
                                 label = customDialectLabel(dialect),
                                 selected = profile.customDialect == dialect,
                                 onClick = { onUpdateProfile { it.copy(customDialect = dialect) } }
@@ -2220,10 +2226,9 @@ internal fun ProviderProtocolSubpage(
                         }
                     }
                 }
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.fillMaxWidth().selectableGroup()) {
                     AuthHeaderMode.entries.forEach { mode ->
-                        SepiaChip(
+                        SepiaChoiceRow(
                             label = mode.label,
                             selected = profile.authHeaderMode == mode,
                             onClick = { onUpdateProfile { it.copy(authHeaderMode = mode) } }
@@ -2237,6 +2242,12 @@ internal fun ProviderProtocolSubpage(
                 )
                 if (profile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                     SepiaToggleRow(
+                        title = PROVIDER_STORAGE_TITLE,
+                        subtitle = PROVIDER_STORAGE_SUBTITLE,
+                        checked = profile.keepsProviderState,
+                        onCheckedChange = { store -> onUpdateProfile { it.copy(storeServerSide = store, useStatefulChaining = it.useStatefulChaining && store) } }
+                    )
+                    SepiaToggleRow(
                         title = "Stateful Chain (previous_interaction_id)",
                         subtitle = "Off by default: full history is sent locally and nothing is stored provider-side.",
                         checked = profile.useStatefulChaining,
@@ -2244,6 +2255,7 @@ internal fun ProviderProtocolSubpage(
                     )
                     SepiaToggleRow(
                         title = "Background Poll & Stream Recovery",
+                        subtitle = "Recovers a dropped stream. Needs provider storage.",
                         checked = profile.useBackgroundLongDecode,
                         onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
                     )
@@ -2849,7 +2861,8 @@ internal fun AssistantsSubpage(
                     .clip(shape)
                     .background(p.cardBg)
                     .border(if (isSelected) 1.2.dp else 0.85.dp, if (isSelected) p.accent else p.border.copy(alpha = 0.75f), shape)
-                    .clickable { editingAssistantId = asst.id }
+                    .clickable(role = Role.Button, onClickLabel = "Edit assistant") { editingAssistantId = asst.id }
+                    .semantics { selected = isSelected }
                     .padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -2881,6 +2894,7 @@ internal fun AssistantsSubpage(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     SepiaButton(
                         text = "📋",
+                        contentDescription = "Duplicate assistant",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -2892,6 +2906,7 @@ internal fun AssistantsSubpage(
                     )
                     SepiaButton(
                         text = "🗑",
+                        contentDescription = "Delete assistant",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -3205,6 +3220,10 @@ private fun WorldBookAndCardsSubpage(
                     onClick = {
                         scope.launch {
                             val picked = PlatformBridge.pickFileForImport(listOf("png", "json")) ?: return@launch
+                            if (picked.oversized) {
+                                onNotify("${picked.fileName} is too large to import.")
+                                return@launch
+                            }
                             CardAndPromptCodec.importFromBytes(picked.fileName, picked.bytes).fold(
                                 onSuccess = { res ->
                                     when (res) {
@@ -3390,6 +3409,7 @@ private fun WorldBookAndCardsSubpage(
                                 )
                                 SepiaButton(
                                     text = "×",
+                                    contentDescription = "Delete preset",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onDeletePresetFromLibrary(preset.id) }
@@ -3493,6 +3513,7 @@ private fun WorldBookAndCardsSubpage(
                             )
                             SepiaButton(
                                 text = "×",
+                                contentDescription = "Remove lore entry",
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -3637,7 +3658,7 @@ private fun BackupAndOtaSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        BasicText(text = "Storage, Backup & OTA Updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = "Storage, Backup & Updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         // Card 1: Storage & File Manager (Inspect & delete Chats, Media Uploads, AI Media, Backups, & Temp files!)
         SepiaSectionCard(
@@ -3653,6 +3674,7 @@ private fun BackupAndOtaSubpage(
                     )
                     SepiaButton(
                         text = "↻",
+                        contentDescription = "Refresh storage usage",
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { storageRefreshTick++ }
@@ -3770,6 +3792,7 @@ private fun BackupAndOtaSubpage(
                     if (storageSearchQuery.isNotEmpty()) {
                         SepiaButton(
                             text = "×",
+                            contentDescription = "Clear search",
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { storageSearchQuery = "" }
@@ -3856,6 +3879,7 @@ private fun BackupAndOtaSubpage(
                             ) {
                                 SepiaButton(
                                     text = "👁",
+                                    contentDescription = "Preview file",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = {
@@ -3883,6 +3907,7 @@ private fun BackupAndOtaSubpage(
                                 )
                                 SepiaButton(
                                     text = "📂",
+                                    contentDescription = "Open file",
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.fullPath) }
@@ -3890,6 +3915,7 @@ private fun BackupAndOtaSubpage(
                                 if (!isPrimarySettingsFile) {
                                     SepiaButton(
                                         text = "🗑",
+                                        contentDescription = "Delete file",
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = {
@@ -3912,7 +3938,7 @@ private fun BackupAndOtaSubpage(
         }
 
         SepiaSectionCard(
-            title = "In-App OTA Updates (Android .APK & Windows .EXE)",
+            title = "App Updates",
             subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformBridge.platformName}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3924,7 +3950,7 @@ private fun BackupAndOtaSubpage(
                     modifier = Modifier.fillMaxWidth()
                 )
                 SepiaToggleRow(
-                    title = "Auto-Check for OTA Updates on Launch",
+                    title = "Check for Updates at Launch",
                     checked = appState.autoCheckOtaOnStartup,
                     onCheckedChange = { onUpdateOtaSettings(appState.otaGithubRepo, it) }
                 )
@@ -3988,7 +4014,7 @@ private fun BackupAndOtaSubpage(
                         BasicText(text = otaState.message, style = p.uiBodyStyle.copy(color = p.accentSecondary))
                     }
                     is OtaUpdateState.Error -> {
-                        BasicText(text = "OTA Error: ${otaState.message}", style = p.uiBodyStyle.copy(color = p.danger))
+                        BasicText(text = "Update failed: ${otaState.message}", style = p.uiBodyStyle.copy(color = p.danger))
                     }
                     else -> {}
                 }
@@ -4008,10 +4034,12 @@ private fun BackupAndOtaSubpage(
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
                             scope.launch {
-                                val zipBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    encodeChatSessionsToZipBundleBytes(appState.sessions)
+                                val saved = runCatching {
+                                    exportChatSessionsBundle("parchment-chats-backup.zip", appState.sessions)
+                                }.getOrElse { error ->
+                                    onNotify("Chat export failed: ${error.message}")
+                                    return@launch
                                 }
-                                val saved = PlatformBridge.saveFileForExport("parchment-chats-backup.zip", zipBytes)
                                 if (saved != null) {
                                     onNotify("Exported ${appState.sessions.size} chat(s) + media to $saved")
                                 }
@@ -4024,10 +4052,10 @@ private fun BackupAndOtaSubpage(
                         onClick = {
                             scope.launch {
                                 val zipName = buildExportZipFileNameForChat(activeSession)
-                                val zipBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    encodeChatSessionsToZipBundleBytes(listOf(activeSession))
+                                val saved = runCatching { exportChatSessionsBundle(zipName, listOf(activeSession)) }.getOrElse { error ->
+                                    onNotify("Chat export failed: ${error.message}")
+                                    return@launch
                                 }
-                                val saved = PlatformBridge.saveFileForExport(zipName, zipBytes)
                                 if (saved != null) onNotify("Exported chat bundle (chat.json + media/) to $saved")
                             }
                         }
@@ -4056,17 +4084,18 @@ private fun BackupAndOtaSubpage(
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
                             scope.launch {
-                                val pickedFiles = PlatformBridge.pickFilesForImport(listOf("zip", "json"))
-                                if (pickedFiles.isEmpty()) return@launch
-                                val importedChats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    pickedFiles.flatMap { picked ->
-                                        runCatching { decodeChatSessionsFromPickedFile(picked.fileName, picked.bytes) }.getOrDefault(emptyList())
-                                    }
+                                val outcomes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    pickAndDecodeChatImports()
                                 }
-                                if (importedChats.isNotEmpty()) {
-                                    onImportChatSessions(importedChats)
-                                } else {
-                                    onNotify("No valid chat sessions found in selected .zip / .json file(s).")
+                                if (outcomes.isEmpty()) return@launch
+                                val importFailures = outcomes.mapNotNull { outcome ->
+                                    outcome.result.exceptionOrNull()?.let { "${outcome.fileName}: ${it.message.orEmpty().take(160)}" }
+                                }
+                                val importedChats = outcomes.flatMap { it.result.getOrDefault(emptyList()) }
+                                if (importedChats.isNotEmpty()) onImportChatSessions(importedChats)
+                                when {
+                                    importFailures.isNotEmpty() -> onNotify("Import failed for ${importFailures.joinToString("; ")}")
+                                    importedChats.isEmpty() -> onNotify("No valid chat sessions found in selected .zip / .json file(s).")
                                 }
                             }
                         }
@@ -4101,6 +4130,10 @@ private fun BackupAndOtaSubpage(
                         onClick = {
                             scope.launch {
                                 val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
+                                if (picked.oversized) {
+                                    onNotify("${picked.fileName} is too large to import.")
+                                    return@launch
+                                }
                                 runCatching {
                                     CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(picked.bytes.decodeToString())
                                 }.fold(
@@ -4248,8 +4281,8 @@ private fun countCategorySearchMatches(
         }
         SettingsCategory.BACKUP_OTA -> {
             listOf(
-                hit("Auto-Check for OTA Updates on Launch", "GitHub Release Repository", "Check for Update Now", "Backup & OTA", "version"),
-                hit("Export Full Backup JSON", "Restore Backup JSON", "Wipe All Local Data", "Backup & OTA", "storage")
+                hit("Check for Updates at Launch", "GitHub Release Repository", "Check for Update Now", "Backup & Updates", "OTA", "version"),
+                hit("Export Full Backup JSON", "Restore Backup JSON", "Wipe All Local Data", "Backup & Updates", "OTA", "storage")
             ).count { it }
         }
     }
@@ -4349,7 +4382,7 @@ private fun GlobalSettingsSearchResultsSubpage(
     // 2. PROVIDERS & MODELS MATCHES
     val hitApiKey = hit("API Key", "Providers", "token", "auth", "bearer", "credential", activeProfile.name)
     val hitBaseUrl = hit("Base URL", "Endpoint Path Override", "Providers", "proxy", "host", activeProfile.baseUrl)
-    val hitStateful = hit("Stateful Interaction Chaining", "previous_interaction_id", "previous_response_id", "cache", "Providers")
+    val hitStateful = hit("Stateful Interaction Chaining", "previous_interaction_id", "previous_response_id", "cache", "Providers", PROVIDER_STORAGE_TITLE)
     val hitLongDecode = hit("Background Poll & Stream Recovery", "long decode", "timeout", "poll", "Providers")
     val hitLegacyFallback = hit("Smart Legacy Endpoint Fallback", "useLegacyFallbackEndpoint", "generateContent", "chat/completions", "legacy", "fallback", "Providers")
     val hitSampling = hit("Temperature", "Top-P", "Max Output Tokens", "Thinking Effort", "sampling", "budget", "Providers")
@@ -4388,7 +4421,7 @@ private fun GlobalSettingsSearchResultsSubpage(
         }
     }
     val hitWorldBookGeneral = hit("World Book", "Lorebook", "Character Card", "PNG", "JSON", "chara", "ccv3", "System Prompt Preset")
-    val hitOtaBackup = hit("Backup & OTA", "Auto-Check for OTA Updates on Launch", "GitHub Release", "Update", "Export Backup", "Restore Backup", "Wipe All Local Data", "storage")
+    val hitOtaBackup = hit("Backup & Updates", "OTA", "Check for Updates at Launch", "GitHub Release", "Update", "Export Backup", "Restore Backup", "Wipe All Local Data", "storage")
 
     val hasAnyResult = anyPrefMatch || anyProviderMatch || anyWorkspaceMatch || anyDefaultModelMatch ||
         matchingAssistants.isNotEmpty() || matchingLore.isNotEmpty() || hitWorldBookGeneral || hitOtaBackup
@@ -4445,21 +4478,7 @@ private fun GlobalSettingsSearchResultsSubpage(
                     if (hitAccentColor) {
                         SepiaAdaptiveRow(label = "Accent Color") {
                             @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val accentSwatches = listOf("#8B5A2B", "#9E4730", "#3B5998", "#1F6F54", "#5E4B8B", "#7A5216", "#8C3823", "#2D3748")
-                                accentSwatches.forEach { hex ->
-                                    val col = parseHexColor(hex)
-                                    val isSel = theme.accentHex.equals(hex, ignoreCase = true)
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .background(col)
-                                            .border(if (isSel) 2.dp else 0.8.dp, if (isSel) p.primaryInk else p.border, CircleShape)
-                                            .clickable { onUpdateTheme(theme.copy(name = "Custom Theme", accentHex = hex)) }
-                                    )
-                                }
-                            }
+                            FlowRow(Modifier.selectableGroup()) { AccentSwatches(theme, onUpdateTheme) }
                         }
                     }
                     if (hitAppFont) {
@@ -4875,6 +4894,12 @@ private fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (hitStateful) {
                         SepiaToggleRow(
+                            title = PROVIDER_STORAGE_TITLE,
+                            subtitle = PROVIDER_STORAGE_SUBTITLE,
+                            checked = activeProfile.keepsProviderState,
+                            onCheckedChange = { store -> onUpdateProfile { it.copy(storeServerSide = store, useStatefulChaining = it.useStatefulChaining && store) } }
+                        )
+                        SepiaToggleRow(
                             title = "Stateful Interaction Chaining (previous_interaction_id / previous_response_id)",
                             checked = activeProfile.useStatefulChaining,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useStatefulChaining = v) } }
@@ -5102,11 +5127,11 @@ private fun GlobalSettingsSearchResultsSubpage(
 
         if (hitOtaBackup) {
             SepiaSectionCard(
-                title = "Backup & In-App OTA Updates",
+                title = "Backup & Updates",
                 subtitle = "Installed v${OtaUpdateEngine.currentAppVersion} • Portable JSON backups & GitHub release updater",
                 headerAction = {
                     SepiaButton(
-                        text = "Open Backup & OTA →",
+                        text = "Open Backup & Updates",
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.BACKUP_OTA) }
@@ -5115,7 +5140,7 @@ private fun GlobalSettingsSearchResultsSubpage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SepiaToggleRow(
-                        title = "Auto-Check for OTA Updates on Launch",
+                        title = "Check for Updates at Launch",
                         checked = appState.autoCheckOtaOnStartup,
                         onCheckedChange = { onUpdateOtaSettings(appState.otaGithubRepo, it) }
                     )

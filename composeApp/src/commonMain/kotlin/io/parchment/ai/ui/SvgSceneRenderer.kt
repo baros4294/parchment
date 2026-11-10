@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background

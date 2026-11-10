@@ -3,18 +3,41 @@ package io.parchment.ai.platform
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import io.parchment.ai.model.StoredAppFileItem
+import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
+import io.parchment.ai.network.OtaStagedDownload
 
 data class PickedBinaryFile(
     val fileName: String,
     val bytes: ByteArray,
-    val mimeType: String = ""
+    val mimeType: String = "",
+    /** The file exceeded its limit and was not read; [bytes] is empty. */
+    val oversized: Boolean = false
 )
+
+private const val MAX_IMPORTED_DOCUMENT_BYTES = 256L * 1024L * 1024L
+internal const val MAX_INLINE_TEXT_ATTACHMENT_BYTES = 8L * 1024L * 1024L
+
+/** Attachments must fit in a request; card and settings files only need to fit in memory. */
+fun maxPickedFileBytes(allowedExtensions: List<String>): Long =
+    if (allowedExtensions.isEmpty() || "*" in allowedExtensions) MAX_INLINE_ATTACHMENT_BYTES else MAX_IMPORTED_DOCUMENT_BYTES
+
+/** Text to place in the request, or null when the file is binary or too large to inline. */
+internal fun inlineAttachmentText(bytes: ByteArray): String? {
+    if (bytes.size > MAX_INLINE_TEXT_ATTACHMENT_BYTES) return null
+    return runCatching { bytes.decodeToString() }.getOrNull()?.takeUnless { '\u0000' in it }
+}
 
 /**
  * Inspects binary magic headers, explicit MIME type hints, and file extensions to accurately
  * classify images (PNG, GIF, WebP, JPEG, BMP), videos (MP4, WebM, MOV), audio, and PDFs—even
  * when Android Gboard Emoji Kitchen, GIF pickers, or clipboard providers supply extensionless URIs.
  */
+/** One file chosen for chat import, with what decoding it produced. */
+class ChatImportOutcome<T>(val fileName: String, val result: Result<T>)
+
+/** One chat in an export bundle: its JSON entry and the local media files to include with it. */
+class ChatBundleEntry(val jsonPath: String, val json: ByteArray, val mediaFiles: List<Pair<String, String>>)
+
 fun normalizePickedBinaryFile(
     rawFileName: String,
     bytes: ByteArray,
@@ -176,9 +199,13 @@ expect object PlatformBridge {
 
     // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?
-    suspend fun pickFilesForImport(allowedExtensions: List<String>): List<PickedBinaryFile>
+    /** Lets the user choose chat exports and imports each one, streaming archives instead of loading them into memory. */
+    suspend fun <T> pickAndImportChatFiles(decode: (chatJsons: List<String>) -> T): List<ChatImportOutcome<T>>
     suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String?
-    suspend fun exportMultipleFilesToDirectory(files: List<Pair<String, ByteArray>>): String?
+    /** Streams a chat bundle to a chosen file, reading [chats] one at a time. Null means the user cancelled. */
+    suspend fun exportChatBundle(defaultFileName: String, chats: Sequence<ChatBundleEntry>): String?
+    /** Copies a local media file to a chosen location without loading it into memory. Null means cancelled or missing. */
+    suspend fun exportLocalFile(defaultFileName: String, filePath: String): String?
     suspend fun pickWorkspaceDirectory(currentPath: String): String?
     suspend fun pickFontFile(dialogTitle: String = "Select .TTF or .OTF Font"): String?
     fun loadCustomFontFamily(fontPath: String): FontFamily?
@@ -206,14 +233,13 @@ expect object PlatformBridge {
         onOutputDelta: ((String) -> Unit)? = null,
         isCancelled: (() -> Boolean)? = null
     ): Result<String>
-    fun killActiveShellProcesses()
     fun fetchUrlText(url: String, maxChars: Int = 24000, isCancelled: (() -> Boolean)? = null): Result<String>
     // Process-owned run snapshots include preparation, tools, compaction and approval waits.
     fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
 
     // In-App Zero-Browser OTA Update Installer
-    fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String>
+    fun createOtaStagedDownload(assetName: String): OtaStagedDownload
 
     // Generated Image & Video Media Storage, Per-Chat Media Bundling, and Native Playback
     fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String = ""): String
@@ -222,8 +248,11 @@ expect object PlatformBridge {
         entries: List<Pair<String, ByteArray>>,
         fileEntries: List<Pair<String, String>> = emptyList()
     ): ByteArray
-    fun extractZipArchiveToChatStorage(zipBytes: ByteArray): List<String>
+    /** Validates a chat bundle and commits its media only if [decode] accepts its chats; failures change nothing. */
+    fun <T> extractZipArchiveToChatStorage(zipBytes: ByteArray, decode: (chatJsons: List<String>) -> T): T
     fun readBinaryFileBytes(filePath: String): ByteArray?
+    /** Size of a resolvable local media file, or -1 when it does not exist. */
+    fun localFileSizeBytes(filePath: String): Long
     fun isReadableLocalFile(filePath: String): Boolean
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)
@@ -238,7 +267,6 @@ expect object PlatformBridge {
     // Native Text-to-Speech (TTS) & Live Voice Input (STT)
     fun speakTextAloud(text: String, onFinished: () -> Unit = {})
     fun stopSpeakingAloud()
-    fun isSpeakingAloud(): Boolean
     fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit = {})
     fun stopVoiceInput()
 }

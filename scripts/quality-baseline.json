@@ -1,0 +1,11 @@
+{
+  "longFiles": {
+    "composeApp/src/commonMain/kotlin/io/parchment/ai/ui/ParchmentApp.kt": 8090,
+    "composeApp/src/commonMain/kotlin/io/parchment/ai/ui/ParchmentSettingsPages.kt": 5160
+  },
+  "testOnly": [
+    "exportSystemPromptToPngBytes",
+    "encodeChatSessionsToZipBundleBytes",
+    "decodeChatSessionsFromPickedFile"
+  ]
+}

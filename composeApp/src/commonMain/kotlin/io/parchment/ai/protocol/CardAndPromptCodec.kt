@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.protocol
+package io.parchment.ai.protocol
 
 import io.parchment.ai.model.CharacterOrScenarioCard
 import io.parchment.ai.model.ContextFragment
@@ -13,7 +13,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -326,7 +325,7 @@ object CardAndPromptCodec {
         var offset = 8 // Skip PNG signature
         while (offset + 8 <= bytes.size) {
             val length = readIntBigEndian(bytes, offset)
-            if (length < 0 || offset + 12 + length > bytes.size) break
+            if (length < 0 || length > bytes.size - offset - 12) break
             val type = bytes.decodeToString(offset + 4, offset + 8)
             val dataStart = offset + 8
             val dataEnd = dataStart + length
@@ -374,7 +373,7 @@ object CardAndPromptCodec {
 
         while (offset + 8 <= pngBytes.size) {
             val length = readIntBigEndian(pngBytes, offset)
-            if (length < 0 || offset + 12 + length > pngBytes.size) break
+            if (length < 0 || length > pngBytes.size - offset - 12) break
             val type = pngBytes.decodeToString(offset + 4, offset + 8)
             val dataStart = offset + 8
             val dataEnd = dataStart + length

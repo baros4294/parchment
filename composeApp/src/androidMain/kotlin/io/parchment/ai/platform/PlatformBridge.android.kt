@@ -32,19 +32,16 @@ import io.parchment.ai.LongDecodeForegroundService
 import io.parchment.ai.MainActivity
 import io.parchment.ai.OtaInstallReceiver
 import io.parchment.ai.ParchmentFileProvider
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
+import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
+import io.parchment.ai.network.OtaStagedDownload
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.lang.ref.WeakReference
-import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalEncodingApi::class)
 actual object PlatformBridge {
@@ -73,8 +70,6 @@ actual object PlatformBridge {
     @Volatile
     private var ttsReady: Boolean = false
     @Volatile
-    private var isCurrentlySpeaking: Boolean = false
-    @Volatile
     private var pendingTtsFinishedCallback: (() -> Unit)? = null
     @Volatile
     private var pendingUtteranceToSpeak: String? = null
@@ -87,7 +82,6 @@ actual object PlatformBridge {
     private var backHandlerCallback: (() -> Boolean)? = null
     @Volatile
     private var filesDroppedCallback: ((List<PickedBinaryFile>) -> Unit)? = null
-    private val activeShellProcesses: MutableSet<Process> = java.util.Collections.synchronizedSet(HashSet())
 
     fun initAndroid(context: Context, activity: MainActivity) {
         appContext = context.applicationContext
@@ -109,11 +103,9 @@ actual object PlatformBridge {
                     }
                     ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
-                            isCurrentlySpeaking = true
                         }
                         override fun onDone(utteranceId: String?) {
                             if (utteranceId?.endsWith("-last") == true) {
-                                isCurrentlySpeaking = false
                                 val cb = pendingTtsFinishedCallback
                                 pendingTtsFinishedCallback = null
                                 cb?.invoke()
@@ -121,7 +113,6 @@ actual object PlatformBridge {
                         }
                         @Suppress("OVERRIDE_DEPRECATION")
                         override fun onError(utteranceId: String?) {
-                            isCurrentlySpeaking = false
                             val cb = pendingTtsFinishedCallback
                             pendingTtsFinishedCallback = null
                             cb?.invoke()
@@ -134,7 +125,6 @@ actual object PlatformBridge {
                     }
                 } else {
                     ttsReady = false
-                    isCurrentlySpeaking = false
                     val cb = pendingTtsFinishedCallback
                     pendingTtsFinishedCallback = null
                     cb?.invoke()
@@ -174,10 +164,6 @@ actual object PlatformBridge {
 
     actual fun getChatsStorageDirectoryPath(): String = chatsDir().absolutePath
 
-    private val SAFE_SESSION_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
-
-    private fun sanitizeSessionFileName(sessionId: String): String =
-        sessionId.trim().replace(SAFE_SESSION_NAME_REGEX, "_").ifBlank { "session" }
 
     private fun chatSessionFolder(sessionId: String): File =
         snapshotStorage.chatDirectory(sessionId)
@@ -288,19 +274,38 @@ actual object PlatformBridge {
 
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? {
         val act = mainActivityRef?.get() ?: return null
-        return act.requestImportFile(arrayOf("image/png", "application/json", "text/plain", "*/*"))
+        return act.requestImportFile(arrayOf("image/png", "application/json", "text/plain", "*/*"), maxPickedFileBytes(allowedExtensions))
     }
 
-    actual suspend fun pickFilesForImport(allowedExtensions: List<String>): List<PickedBinaryFile> {
+    actual suspend fun <T> pickAndImportChatFiles(decode: (chatJsons: List<String>) -> T): List<ChatImportOutcome<T>> {
         val act = mainActivityRef?.get() ?: return emptyList()
-        val hasZip = allowedExtensions.any { it.equals("zip", ignoreCase = true) }
-        val hasJson = allowedExtensions.any { it.equals("json", ignoreCase = true) }
-        val mimes = when {
-            hasZip && hasJson -> arrayOf("application/zip", "application/x-zip-compressed", "application/json", "text/plain", "*/*")
-            hasJson && allowedExtensions.size == 1 -> arrayOf("application/json", "text/plain", "*/*")
-            else -> arrayOf("image/png", "application/json", "application/zip", "text/plain", "*/*")
+        val ctx = appContext ?: return emptyList()
+        val mimes = arrayOf("application/zip", "application/x-zip-compressed", "application/json", "text/plain", "*/*")
+        val uris = act.requestImportDocumentUris(mimes)
+        return withContext(Dispatchers.IO) {
+            uris.map { uri ->
+                val name = uriDisplayName(ctx, uri)
+                ChatImportOutcome(name, runCatching {
+                    val source = checkNotNull(ctx.contentResolver.openInputStream(uri)) { "Unable to open the selected file." }
+                    ChatArchiveExtractor.importChatFile(name, source, resolveStorageDir(), decode = decode)
+                })
+            }
         }
-        return act.requestImportMultipleFiles(mimes)
+    }
+
+    private fun uriDisplayName(ctx: Context, uri: Uri): String {
+        var displayName = ""
+        runCatching {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        displayName = cursor.getString(idx) ?: ""
+                    }
+                }
+            }
+        }
+        return displayName.ifBlank { uri.lastPathSegment?.substringAfterLast('/') ?: "" }
     }
 
     actual suspend fun saveFileForExport(defaultFileName: String, bytes: ByteArray): String? {
@@ -308,9 +313,15 @@ actual object PlatformBridge {
         return act.requestExportFile(defaultFileName, bytes)
     }
 
-    actual suspend fun exportMultipleFilesToDirectory(files: List<Pair<String, ByteArray>>): String? {
+    actual suspend fun exportChatBundle(defaultFileName: String, chats: Sequence<ChatBundleEntry>): String? {
         val act = mainActivityRef?.get() ?: return null
-        return act.requestExportMultipleFilesToTree(files)
+        return act.requestExportStream(defaultFileName) { ChatArchiveWriter.writeBundle(it, chats, ::resolveLocalMediaFile) }
+    }
+
+    actual suspend fun exportLocalFile(defaultFileName: String, filePath: String): String? {
+        val act = mainActivityRef?.get() ?: return null
+        val source = resolveLocalMediaFile(filePath) ?: return null
+        return act.requestExportStream(defaultFileName) { output -> FileInputStream(source).use { it.copyTo(output, 64 * 1024) } }
     }
 
     actual suspend fun pickWorkspaceDirectory(currentPath: String): String? {
@@ -371,8 +382,10 @@ actual object PlatformBridge {
 
     actual suspend fun pickFontFile(dialogTitle: String): String? {
         val act = mainActivityRef?.get() ?: return null
-        val picked = act.requestImportFile(arrayOf("font/ttf", "font/otf", "application/x-font-ttf", "application/octet-stream", "*/*"))
-            ?: return null
+        val picked = act.requestImportFile(
+            arrayOf("font/ttf", "font/otf", "application/x-font-ttf", "application/octet-stream", "*/*"),
+            maxPickedFileBytes(listOf("ttf", "otf"))
+        )?.takeUnless { it.oversized } ?: return null
         return runCatching {
             val fontsDir = File(resolveStorageDir(), "fonts")
             if (!fontsDir.exists()) fontsDir.mkdirs()
@@ -462,24 +475,15 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
-    private fun resolveSandboxedPath(workspaceRoot: String, relativePath: String): Path =
-        WorkspacePathGuard.resolve(workspaceRoot, relativePath)
-
-    private fun isIgnoredWorkspaceDir(name: String): Boolean {
-        val low = name.lowercase()
-        return low == ".git" || low == "build" || low == ".gradle" ||
-            low == "node_modules" || low == ".idea" || low == ".kotlin"
-    }
-
     actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
+        val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath).toFile()
         val rootPath = WorkspacePathGuard.root(workspaceRoot).toFile().toPath().normalize()
         require(target.exists() && target.isDirectory) { "Directory not found: $relativePath" }
         val entries = if (recursive) {
             target.walkTopDown()
-                .onEnter { d -> (d == target || !isIgnoredWorkspaceDir(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
+                .onEnter { d -> (d == target || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
                 .maxDepth(24)
-                .filter { it != target && !isIgnoredWorkspaceDir(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
+                .filter { it != target && !WorkspacePathGuard.isIgnoredDirectory(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
                 .take(400)
                 .map { f ->
                     val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
@@ -534,9 +538,9 @@ actual object PlatformBridge {
         }
         val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
         val matches = rootFile.walkTopDown()
-            .onEnter { d -> (d == rootFile || !isIgnoredWorkspaceDir(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
+            .onEnter { d -> (d == rootFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
             .maxDepth(24)
-            .filter { f -> f != rootFile && !isIgnoredWorkspaceDir(f.name) && WorkspacePathGuard.canTraverse(rootPath, f.toPath()) }
+            .filter { f -> f != rootFile && !WorkspacePathGuard.isIgnoredDirectory(f.name) && WorkspacePathGuard.canTraverse(rootPath, f.toPath()) }
             .mapNotNull { f ->
                 val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
                 val matchTarget = if (!cleanPat.contains('/')) f.name else rel
@@ -550,49 +554,17 @@ actual object PlatformBridge {
     }
 
     actual fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int, maxLines: Int): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
+        val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath).toFile()
         require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        val reqStart = (startLine - 1).coerceAtLeast(0)
-        val reqMax = maxLines.coerceIn(1, 10_000)
-        val sliced = ArrayList<String>(reqMax.coerceAtMost(512))
-        var totalLines = 0
-        var accumulatedChars = 0
-        val maxTotalChars = 200_000
-        target.useLines(Charsets.UTF_8) { seq ->
-            for (line in seq) {
-                if (totalLines >= reqStart && sliced.size < reqMax && accumulatedChars < maxTotalChars) {
-                    val safeLine = if (line.length > 4000) line.substring(0, 4000) + " … [line truncated]" else line
-                    sliced.add(safeLine)
-                    accumulatedChars += safeLine.length
-                }
-                totalLines++
-            }
-        }
-        if (totalLines == 0) {
-            return@runCatching "File: $relativePath (Lines 1..0 of 0)"
-        }
-        val actualStart = reqStart.coerceAtMost((totalLines - 1).coerceAtLeast(0))
-        val actualEnd = (actualStart + sliced.size).coerceAtMost(totalLines)
-        buildString(accumulatedChars + 128) {
-            appendLine("File: $relativePath (Lines ${actualStart + 1}..$actualEnd of $totalLines)")
-            sliced.forEachIndexed { idx, line ->
-                appendLine("${actualStart + idx + 1}: $line")
-            }
-        }.trimEnd()
+        WorkspaceTextReader.read(target, relativePath, startLine, maxLines, maxTotalChars = 200_000)
     }
 
     actual fun workspaceWrite(workspaceRoot: String, relativePath: String, content: String): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        target.parentFile?.mkdirs()
-        target.writeText(content, Charsets.UTF_8)
-        "Successfully wrote ${content.length} chars to '$relativePath'."
+        WorkspaceFileEditor.write(workspaceRoot, relativePath, content)
     }
 
     actual fun workspaceAppend(workspaceRoot: String, relativePath: String, content: String): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        target.parentFile?.mkdirs()
-        target.appendText(content, Charsets.UTF_8)
-        "Successfully appended ${content.length} chars to '$relativePath'."
+        WorkspaceFileEditor.append(workspaceRoot, relativePath, content)
     }
 
     actual fun workspaceEdit(
@@ -602,22 +574,7 @@ actual object PlatformBridge {
         newText: String,
         replaceAll: Boolean
     ): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        val existingRaw = target.readText(Charsets.UTF_8)
-        val usesCrlf = existingRaw.contains("\r\n")
-        val existingLf = existingRaw.replace("\r\n", "\n")
-        val editRes = io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
-            existingLf = existingLf,
-            rawOldText = oldText,
-            rawNewText = newText,
-            replaceAll = replaceAll,
-            relativePath = relativePath
-        )
-        val finalContent = if (usesCrlf) editRes.updatedLf.replace("\n", "\r\n") else editRes.updatedLf
-        target.writeText(finalContent, Charsets.UTF_8)
-        val fuzzyNote = if (editRes.usedFuzzyWhitespace) " (fuzzy whitespace self-healed)" else ""
-        "Edited '$relativePath' (+${editRes.addedLines} / -${editRes.removedLines} lines)$fuzzyNote."
+        WorkspaceFileEditor.edit(workspaceRoot, relativePath, oldText, newText, replaceAll)
     }
 
     actual fun workspaceMultiEdit(
@@ -625,63 +582,15 @@ actual object PlatformBridge {
         relativePath: String,
         edits: List<Triple<String, String, Boolean>>
     ): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        require(target.exists() && target.isFile) { "File not found: $relativePath" }
-        require(edits.isNotEmpty()) { "edits list must not be empty." }
-        val existingRaw = target.readText(Charsets.UTF_8)
-        val usesCrlf = existingRaw.contains("\r\n")
-        var currentLf = existingRaw.replace("\r\n", "\n")
-        var totalAdded = 0
-        var totalRemoved = 0
-
-        edits.forEachIndexed { idx, (oldText, newText, replaceAll) ->
-            require(oldText.isNotEmpty()) { "Edit #${idx + 1}: old_text must not be empty." }
-            val stepRes = runCatching {
-                io.parchment.ai.harness.WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
-                    existingLf = currentLf,
-                    rawOldText = oldText,
-                    rawNewText = newText,
-                    replaceAll = replaceAll,
-                    relativePath = relativePath
-                )
-            }.getOrElse { err ->
-                error("Edit #${idx + 1} failed (rolled back all edits): ${err.message}")
-            }
-            currentLf = stepRes.updatedLf
-            totalRemoved += stepRes.removedLines
-            totalAdded += stepRes.addedLines
-        }
-
-        val finalContent = if (usesCrlf) currentLf.replace("\n", "\r\n") else currentLf
-        target.writeText(finalContent, Charsets.UTF_8)
-        "Applied ${edits.size} edit(s) atomically to '$relativePath' (+$totalAdded / -$totalRemoved lines)."
+        WorkspaceFileEditor.multiEdit(workspaceRoot, relativePath, edits)
     }
 
     actual fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String> = runCatching {
-        val srcFile = resolveSandboxedPath(workspaceRoot, sourceRelativePath).toFile()
-        val dstFile = resolveSandboxedPath(workspaceRoot, destRelativePath).toFile()
-        val guardedRoot = WorkspacePathGuard.root(workspaceRoot)
-        require(srcFile.toPath() != guardedRoot && dstFile.toPath() != guardedRoot) { "Cannot move or replace the workspace root." }
-        WorkspacePathGuard.requireUnlinkedTree(guardedRoot, srcFile)
-        require(srcFile.exists()) { "Source path does not exist: $sourceRelativePath" }
-        dstFile.parentFile?.mkdirs()
-        java.nio.file.Files.move(
-            srcFile.toPath(),
-            dstFile.toPath(),
-            java.nio.file.StandardCopyOption.REPLACE_EXISTING
-        )
-        "Moved '$sourceRelativePath' -> '$destRelativePath'."
+        WorkspaceFileEditor.move(workspaceRoot, sourceRelativePath, destRelativePath)
     }
 
     actual fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String> = runCatching {
-        val target = resolveSandboxedPath(workspaceRoot, relativePath).toFile()
-        val rootCanon = WorkspacePathGuard.root(workspaceRoot).toFile()
-        require(target.canonicalFile != rootCanon) { "Cannot delete workspace root directory." }
-        require(target.exists()) { "Path does not exist: $relativePath" }
-        WorkspacePathGuard.requireUnlinkedTree(rootCanon.toPath(), target)
-        val deleted = if (target.isDirectory) target.deleteRecursively() else target.delete()
-        require(deleted) { "Failed to delete '$relativePath'." }
-        "Deleted '$relativePath'."
+        WorkspaceFileEditor.delete(workspaceRoot, relativePath)
     }
     actual fun workspaceShellExec(
         workspaceRoot: String,
@@ -695,18 +604,6 @@ actual object PlatformBridge {
         return AndroidOwnedShell.execute(root, command, timeoutSeconds, onOutputDelta, isCancelled)
     }
 
-    actual fun killActiveShellProcesses() {
-        val snapshot = synchronized(activeShellProcesses) {
-            val list = activeShellProcesses.toList()
-            activeShellProcesses.clear()
-            list
-        }
-        for (proc in snapshot) {
-            runCatching { proc.destroyForcibly() }
-            runCatching { proc.inputStream.close() }
-        }
-    }
-
     actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
         val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
         val rootPath = rootFile.toPath().normalize()
@@ -715,11 +612,11 @@ actual object PlatformBridge {
         val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
         val matches = mutableListOf<String>()
         rootFile.walkTopDown()
-            .onEnter { d -> (d == rootFile || !isIgnoredWorkspaceDir(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
+            .onEnter { d -> (d == rootFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
             .maxDepth(24)
             .filter { f ->
                 f.isFile && WorkspacePathGuard.canTraverse(rootPath, f.toPath()) &&
-                    !isIgnoredWorkspaceDir(f.name) &&
+                    !WorkspacePathGuard.isIgnoredDirectory(f.name) &&
                     f.length() < 1_500_000L &&
                     (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
             }
@@ -792,7 +689,13 @@ actual object PlatformBridge {
         mainActivityRef?.get()?.requestNotificationPermission()
     }
 
-    actual fun installOtaUpdate(fileName: String, bytes: ByteArray): Result<String> = runCatching {
+    actual fun createOtaStagedDownload(assetName: String): OtaStagedDownload {
+        val ctx = appContext ?: error("Android application context is not initialized.")
+        // Android verifies the APK signature against the installed app before updating it.
+        return OtaStagedFile(File(File(ctx.cacheDir, "ota"), "update.apk"), requireDigest = false, installer = ::installOtaApk)
+    }
+
+    private fun installOtaApk(apk: File): Result<String> = runCatching {
         // Flush any pending in-memory state to disk BEFORE starting the Android OTA package installer!
         flushPendingStateNow()
 
@@ -816,8 +719,8 @@ actual object PlatformBridge {
         val sessionId = packageInstaller.createSession(params)
         val session = packageInstaller.openSession(sessionId)
         session.use { activeSession ->
-            activeSession.openWrite("parchment_ota.apk", 0L, bytes.size.toLong()).use { out ->
-                out.write(bytes)
+            activeSession.openWrite("parchment_ota.apk", 0L, apk.length()).use { out ->
+                FileInputStream(apk).use { input -> input.copyTo(out, 64 * 1024) }
                 activeSession.fsync(out)
             }
 
@@ -833,172 +736,34 @@ actual object PlatformBridge {
             activeSession.commit(pendingIntent.intentSender)
         }
 
-        "Android PackageInstaller session committed (${bytes.size / 1024} KB). Confirm the system prompt if shown."
+        val committedKb = apk.length() / 1024
+        apk.delete() // The installer session now holds its own copy.
+        "Android PackageInstaller session committed ($committedKb KB). Confirm the system prompt if shown."
     }
 
-    private fun resolveLocalMediaFile(filePath: String): File? {
-        val trimmed = filePath.trim()
-        if (trimmed.isEmpty()) return null
-        val direct = File(trimmed)
-        if (direct.isAbsolute && direct.exists() && direct.isFile) return direct
-        val root = resolveStorageDir()
-        val relCandidate = File(root, trimmed.replace('\\', '/'))
-        if (relCandidate.exists() && relCandidate.isFile) return relCandidate
-        val norm = trimmed.replace('\\', '/')
-        val chatsIdx = norm.indexOf("chats/")
-        if (chatsIdx >= 0) {
-            val fromChats = File(root, norm.substring(chatsIdx))
-            if (fromChats.exists() && fromChats.isFile) return fromChats
-        }
-        val mediaIdx = norm.lastIndexOf("/media/")
-        if (mediaIdx >= 0) {
-            val fileNameOnly = norm.substring(mediaIdx + 7)
-            val legacyMedia = File(File(root, "media"), fileNameOnly)
-            if (legacyMedia.exists() && legacyMedia.isFile) return legacyMedia
-        }
-        return null
+    private val mediaStore by lazy {
+        LocalMediaStore(::resolveStorageDir, ::chatSessionFolder) { key -> synchronized(imageCache) { imageCache.remove(key) } }
     }
 
-    actual fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String): String {
-        val mediaDir = if (sessionId.isNotBlank()) {
-            File(chatSessionFolder(sessionId), "media")
-        } else {
-            File(resolveStorageDir(), "media")
-        }
-        if (!mediaDir.exists()) mediaDir.mkdirs()
-        val safeName = fileName.replace(SAFE_SESSION_NAME_REGEX, "_")
-        val outFile = File(mediaDir, safeName)
-        outFile.writeBytes(bytes)
-        synchronized(imageCache) {
-            imageCache.remove(outFile.absolutePath)
-            imageCache.remove(fileName)
-        }
-        return outFile.absolutePath
-    }
+    private fun resolveLocalMediaFile(filePath: String): File? = mediaStore.resolve(filePath)
 
-    actual fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String {
-        if (filePath.isBlank() || sessionId.isBlank()) return filePath
-        val resolved = resolveLocalMediaFile(filePath) ?: return filePath
-        val safeSessionId = sanitizeSessionFileName(sessionId)
-        val targetMediaDir = File(chatSessionFolder(safeSessionId), "media")
-        val resolvedNorm = resolved.absolutePath.replace('\\', '/')
-        val targetDirNorm = targetMediaDir.absolutePath.replace('\\', '/')
-        if (resolvedNorm.startsWith("$targetDirNorm/")) {
-            return resolved.absolutePath
-        }
-        return runCatching {
-            if (!targetMediaDir.exists()) targetMediaDir.mkdirs()
-            val targetFile = File(targetMediaDir, resolved.name)
-            if (!targetFile.exists() || targetFile.length() != resolved.length()) {
-                resolved.copyTo(targetFile, overwrite = true)
-            }
-            val legacyRootMediaDir = File(resolveStorageDir(), "media").canonicalFile
-            if (resolved.canonicalFile.parentFile == legacyRootMediaDir) {
-                runCatching { resolved.delete() }
-            }
-            targetFile.absolutePath
-        }.getOrDefault(resolved.absolutePath)
-    }
+    actual fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String): String =
+        mediaStore.save(fileName, bytes, sessionId)
+
+    actual fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String =
+        mediaStore.relocateToChatFolder(filePath, sessionId)
 
     actual fun createZipArchive(
         entries: List<Pair<String, ByteArray>>,
         fileEntries: List<Pair<String, String>>
-    ): ByteArray {
-        val baos = ByteArrayOutputStream(maxOf(4096, entries.sumOf { it.second.size }))
-        val seenNames = HashSet<String>()
-        val copyBuf = ByteArray(8192)
-        ZipOutputStream(baos).use { zos ->
-            for ((rawEntryPath, data) in entries) {
-                val cleanEntry = rawEntryPath.replace('\\', '/').trimStart('/')
-                if (cleanEntry.isEmpty() || cleanEntry.contains("..") || !seenNames.add(cleanEntry)) continue
-                zos.putNextEntry(ZipEntry(cleanEntry))
-                zos.write(data)
-                zos.closeEntry()
-            }
-            for ((rawEntryPath, localPath) in fileEntries) {
-                val cleanEntry = rawEntryPath.replace('\\', '/').trimStart('/')
-                if (cleanEntry.isEmpty() || cleanEntry.contains("..") || !seenNames.add(cleanEntry)) continue
-                val f = resolveLocalMediaFile(localPath) ?: continue
-                zos.putNextEntry(ZipEntry(cleanEntry))
-                FileInputStream(f).use { fis ->
-                    while (true) {
-                        val n = fis.read(copyBuf)
-                        if (n <= 0) break
-                        zos.write(copyBuf, 0, n)
-                    }
-                }
-                zos.closeEntry()
-            }
-        }
-        return baos.toByteArray()
-    }
+    ): ByteArray = ChatArchiveWriter.toByteArray(entries, fileEntries, ::resolveLocalMediaFile)
 
-    actual fun extractZipArchiveToChatStorage(zipBytes: ByteArray): List<String> = runCatching {
-        val extractedChatJsons = mutableListOf<String>()
-        val copyBuf = ByteArray(8192)
-        val chatsRoot = chatsDir().canonicalFile
-        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
-            while (true) {
-                val entry = zis.nextEntry ?: break
-                if (entry.isDirectory) {
-                    zis.closeEntry()
-                    continue
-                }
-                val normName = entry.name.replace('\\', '/').trimStart('/')
-                if (normName.isEmpty() || normName.split('/').any { it == ".." }) {
-                    zis.closeEntry()
-                    continue
-                }
-                val lowerName = normName.lowercase()
-                if (lowerName.endsWith(".json")) {
-                    val out = ByteArrayOutputStream()
-                    var total = 0
-                    while (total < 20_000_000) {
-                        val n = zis.read(copyBuf)
-                        if (n <= 0) break
-                        out.write(copyBuf, 0, n)
-                        total += n
-                    }
-                    val jsonStr = out.toByteArray().decodeToString()
-                    if (jsonStr.isNotBlank()) extractedChatJsons.add(jsonStr)
-                } else if (lowerName.contains("/media/") || lowerName.startsWith("media/")) {
-                    val relUnderChats = when {
-                        normName.startsWith("chats/", ignoreCase = true) -> normName.substring(6)
-                        else -> normName
-                    }
-                    val parts = relUnderChats.split('/').filter { it.isNotEmpty() }
-                    val targetFile = if (parts.size >= 3 && parts[1].equals("media", ignoreCase = true)) {
-                        val safeSess = sanitizeSessionFileName(parts[0])
-                        val safeMediaName = parts.last().replace(SAFE_SESSION_NAME_REGEX, "_")
-                        File(File(chatsRoot, "$safeSess/media"), safeMediaName)
-                    } else {
-                        val safeMediaName = parts.last().replace(SAFE_SESSION_NAME_REGEX, "_")
-                        File(File(resolveStorageDir(), "media"), safeMediaName)
-                    }
-                    val canonicalTarget = targetFile.canonicalFile
-                    if (canonicalTarget.toPath().normalize().startsWith(resolveStorageDir().canonicalFile.toPath().normalize())) {
-                        canonicalTarget.parentFile?.mkdirs()
-                        FileOutputStream(canonicalTarget).use { fos ->
-                            var total = 0L
-                            while (total < 150_000_000L) {
-                                val n = zis.read(copyBuf)
-                                if (n <= 0) break
-                                fos.write(copyBuf, 0, n)
-                                total += n
-                            }
-                        }
-                    }
-                }
-                zis.closeEntry()
-            }
-        }
-        extractedChatJsons
-    }.getOrDefault(emptyList())
+    actual fun <T> extractZipArchiveToChatStorage(zipBytes: ByteArray, decode: (chatJsons: List<String>) -> T): T =
+        ChatArchiveExtractor.extract(zipBytes, resolveStorageDir(), decode = decode)
 
-    actual fun readBinaryFileBytes(filePath: String): ByteArray? = runCatching {
-        val f = resolveLocalMediaFile(filePath) ?: return null
-        if (f.exists() && f.isFile) f.readBytes() else null
-    }.getOrNull()
+    actual fun localFileSizeBytes(filePath: String): Long = mediaStore.sizeOf(filePath)
+
+    actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)
 
     actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
         if (filePath.isBlank()) return null
@@ -1016,14 +781,17 @@ actual object PlatformBridge {
             }
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
             val bmp = BitmapFactory.decodeFile(f.absolutePath, decodeOpts)?.asImageBitmap() ?: return null
-            synchronized(imageCache) {
-                if (imageCache.size >= 16) {
-                    imageCache.keys.firstOrNull()?.let { imageCache.remove(it) }
-                }
-                imageCache[filePath] = bmp
-            }
+            rememberImage(filePath, bmp)
             bmp
         }.getOrNull()
+    }
+
+    private fun rememberImage(key: String, bitmap: ImageBitmap) = synchronized(imageCache) {
+        imageCache[key] = bitmap
+        while (imageCache.size > 16 || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > 96L * 1024L * 1024L) {
+            val eldest = imageCache.keys.firstOrNull()?.takeIf { it != key } ?: break
+            imageCache.remove(eldest)
+        }
     }
 
     actual fun openOrPlayMedia(localFilePathOrUrl: String) {
@@ -1051,28 +819,21 @@ actual object PlatformBridge {
         }
     }
 
-    fun readUriAsPickedFile(uri: Uri, hintMimeType: String = ""): PickedBinaryFile? = runCatching {
+    fun readUriAsPickedFile(
+        uri: Uri,
+        hintMimeType: String = "",
+        maxBytes: Long = MAX_INLINE_ATTACHMENT_BYTES
+    ): PickedBinaryFile? = runCatching {
         val ctx = appContext ?: return@runCatching null
-        val bytes = when (uri.scheme?.lowercase()) {
-            "file" -> uri.path?.let { File(it).takeIf { f -> f.exists() && f.isFile }?.readBytes() }
-            else -> ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        val displayName = uriDisplayName(ctx, uri)
+        val stream = when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let { File(it).takeIf { f -> f.exists() && f.isFile }?.inputStream() }
+            else -> ctx.contentResolver.openInputStream(uri)
         } ?: return@runCatching null
+        val bytes = stream.use { readAtMost(it, maxBytes) }
+            ?: return@runCatching PickedBinaryFile(displayName, ByteArray(0), oversized = true)
         if (bytes.isEmpty()) return@runCatching null
 
-        var displayName = ""
-        runCatching {
-            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) {
-                        displayName = cursor.getString(idx) ?: ""
-                    }
-                }
-            }
-        }
-        if (displayName.isBlank()) {
-            displayName = uri.lastPathSegment?.substringAfterLast('/') ?: ""
-        }
         val resolverMime = runCatching { ctx.contentResolver.getType(uri) }.getOrNull().orEmpty()
         val effectiveMime = resolverMime.ifBlank { hintMimeType }
 
@@ -1249,7 +1010,6 @@ actual object PlatformBridge {
             // Reset any prior speaking turn's callback before starting the new utterance
             pendingTtsFinishedCallback?.invoke()
             pendingTtsFinishedCallback = onFinished
-            isCurrentlySpeaking = true
             val ctx = appContext
             if (ttsEngine == null || !ttsReady) {
                 pendingUtteranceToSpeak = cleaned
@@ -1258,14 +1018,12 @@ actual object PlatformBridge {
                 dispatchTtsChunks(cleaned)
             }
         }.onFailure {
-            isCurrentlySpeaking = false
             onFinished()
         }
     }
 
     actual fun stopSpeakingAloud() {
         runCatching {
-            isCurrentlySpeaking = false
             pendingUtteranceToSpeak = null
             val cb = pendingTtsFinishedCallback
             pendingTtsFinishedCallback = null
@@ -1274,7 +1032,6 @@ actual object PlatformBridge {
         }
     }
 
-    actual fun isSpeakingAloud(): Boolean = isCurrentlySpeaking || (runCatching { ttsEngine?.isSpeaking == true }.getOrDefault(false))
 
     actual fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit) {
         val act = mainActivityRef?.get()

@@ -2,6 +2,7 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.PrivateKey
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -43,6 +44,9 @@ val generateBuildConfig by tasks.registering {
     }
 }
 
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+
 val validatePrivateReleaseSigner by tasks.registering {
     doLast {
         val location = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
@@ -59,9 +63,18 @@ val validatePrivateReleaseSigner by tasks.registering {
         require(fingerprint != "ed96a0a733e9e6d38633f04a6a182c997fe60d480d9e33e5f078faa2536d26eb") {
             "The exposed repository key cannot sign a release. Use the private signer and migration plan."
         }
+        val keyPassword = requireNotNull(releaseKeyPassword).toCharArray()
+        try {
+            require(store.getKey(alias, keyPassword) is PrivateKey) {
+                "Release signer alias must contain a readable private key."
+            }
+        } finally {
+            keyPassword.fill('\u0000')
+        }
     }
 }
-tasks.matching { it.name == "validateSigningRelease" }.configureEach { dependsOn(validatePrivateReleaseSigner) }
+tasks.matching { it.name == "preReleaseBuild" || it.name == "validateSigningRelease" }
+    .configureEach { dependsOn(validatePrivateReleaseSigner) }
 
 kotlin {
     compilerOptions {
@@ -92,7 +105,6 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.ui)
-            implementation(compose.components.resources)
 
             // Coroutines & JSON Serialization
             implementation(libs.kotlinx.coroutines.core)
@@ -146,7 +158,7 @@ android {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyPassword = releaseKeyPassword
             }
         }
     }

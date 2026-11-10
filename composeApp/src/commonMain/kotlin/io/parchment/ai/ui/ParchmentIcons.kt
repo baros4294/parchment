@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
@@ -27,6 +27,7 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.parchment.ai.network.AiProviderEngine
+import io.parchment.ai.network.getDiscoveredVendorForModel
 
 /**
  * Pure Compose Foundation Lucide-Inspired KISS Vector Icon Pack (24x24 coordinate grid).
@@ -141,6 +142,11 @@ data class ParsedLabelWithIcons(
     val cleanText: String,
     val trailingIcon: KissIcon?
 )
+
+/** Reader fallback for an icon-only label; callers should pass a more specific action name. */
+fun ParsedLabelWithIcons.iconOnlyName(): String? =
+    if (cleanText.isNotEmpty()) null
+    else (leadingIcon ?: trailingIcon)?.name?.lowercase()?.replace('_', ' ')?.replaceFirstChar { it.titlecase() }
 
 private val PREFIX_ICON_MAPPINGS = listOf(
     "☰ " to KissIcon.MENU,

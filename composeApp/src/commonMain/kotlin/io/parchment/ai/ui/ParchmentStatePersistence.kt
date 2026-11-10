@@ -1,4 +1,4 @@
-﻿package io.parchment.ai.ui
+package io.parchment.ai.ui
 
 import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AgentPermissionOverrides
@@ -21,6 +21,10 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.mapProtocolToDialect
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
+import io.parchment.ai.network.isGeminiServerSideToolSignature
+import io.parchment.ai.network.sanitizeGeminiThoughtSignature
+import io.parchment.ai.platform.ChatBundleEntry
+import io.parchment.ai.platform.ChatImportOutcome
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -149,18 +153,6 @@ internal fun normalizeOpenTabs(tabs: List<String>, activeId: String): List<Strin
     return keep
 }
 
-/** Official Anthropic effort tiers (pass-through), plus legacy/custom escape values. */
-internal fun normalizeThinkingEffort(raw: String): String {
-    val v = raw.trim()
-    if (v.isEmpty()) return ""
-    return when (v.lowercase()) {
-        "off", "disabled", "false" -> "none"
-        // `minimal` is not an official tier; the closest legal value is `low`.
-        "minimal" -> "low"
-        else -> v
-    }
-}
-
 /**
  * One-shot, idempotent migration of legacy typeface defaults (16.5 / 12.5) to the
  * v2.0.53 baseline (14 / 14). Only rewrites values that still equal the OLD defaults,
@@ -181,7 +173,10 @@ internal fun migrateThemeTypefaceDefaults(theme: ThemeConfig): ThemeConfig {
  *  - `BYTEDANCE_ARK` -> `OPENAI_RESPONSES`
  *  - `useExactEndpointUrl = true` -> `protocol = CUSTOM` (verbatim URL, dialect preserved)
  *  - legacy unsurfaced `useStatefulChaining = true` -> stateless/privacy-first defaults
+ *  - settings saved before `providerStorageReset` -> built-in profiles reset to stateless once
  */
+private val BUILT_IN_STORAGE_RESET_PROFILES = setOf("prof-gemini-interactions", "prof-openai-responses")
+
 internal fun migrateLegacyProviderJson(raw: String): String {
     val preprocessed = raw.replace("\"BYTEDANCE_ARK\"", "\"OPENAI_RESPONSES\"")
     if (!preprocessed.contains("useExactEndpointUrl") && !preprocessed.contains("\"useStatefulChaining\"")) {
@@ -190,6 +185,7 @@ internal fun migrateLegacyProviderJson(raw: String): String {
     val root = runCatching { compactStateJson.parseToJsonElement(preprocessed) as? JsonObject }.getOrNull()
         ?: return preprocessed
     val profiles = root["profiles"] as? JsonArray ?: return preprocessed
+    val resetBuiltInStorage = !root.containsKey("providerStorageReset")
     var mutated = false
     val migratedProfiles = profiles.map { elem ->
         val obj = elem as? JsonObject ?: return@map elem
@@ -197,6 +193,10 @@ internal fun migrateLegacyProviderJson(raw: String): String {
         val exactUrl = obj["useExactEndpointUrl"]?.jsonPrimitive?.booleanOrNull == true
         val hadStoreKey = obj.containsKey("storeServerSide")
         val legacyChain = obj["useStatefulChaining"]?.jsonPrimitive?.booleanOrNull == true
+        val stored = obj["storeServerSide"]?.jsonPrimitive?.booleanOrNull == true
+        // These profiles once shipped with storage on, which users never chose.
+        val resetStorage = resetBuiltInStorage && (legacyChain || stored) &&
+            obj["id"]?.jsonPrimitive?.contentOrNull in BUILT_IN_STORAGE_RESET_PROFILES
         val withoutLegacy = JsonObject(
             obj.filterKeys { it != "useExactEndpointUrl" }.mapValues { (_, v) -> v } +
                 buildMap {
@@ -207,14 +207,14 @@ internal fun migrateLegacyProviderJson(raw: String): String {
                             put("customDialect", kotlinx.serialization.json.JsonPrimitive(mapProtocolToDialect(legacyProtocol)))
                         }
                     }
-                    if (legacyChain && !hadStoreKey) {
+                    if ((legacyChain && !hadStoreKey) || resetStorage) {
                         // Previously an unsurfaced default; reset to privacy-first stateless.
                         put("useStatefulChaining", kotlinx.serialization.json.JsonPrimitive(false))
                         put("storeServerSide", kotlinx.serialization.json.JsonPrimitive(false))
                     }
                 }
         )
-        if (exactUrl || (legacyChain && !hadStoreKey)) mutated = true
+        if (exactUrl || (legacyChain && !hadStoreKey) || resetStorage) mutated = true
         withoutLegacy
     }
     if (!mutated) return preprocessed
@@ -314,6 +314,7 @@ private val THOUGHT_BLOCK_SPLIT_REGEX = Regex("(?m)(?=^\\*\\*[^*\\n]+\\*\\*\\s*$
 private val HEADING_HASH_PREFIX_REGEX = Regex("^#{1,4}\\s+")
 private val PERSISTENCE_WHITESPACE_REGEX = Regex("\\s+")
 private val EXPORT_UNSAFE_CHAR_REGEX = Regex("[^a-zA-Z0-9._-]")
+internal const val MAX_TEXT_PREVIEW_BYTES = 4L * 1024L * 1024L
 private val MULTIPLE_UNDERSCORES_REGEX = Regex("_+")
 private val EXPORT_SHORT_ID_REGEX = Regex("[^a-zA-Z0-9_-]")
 
@@ -740,58 +741,75 @@ internal fun encodeChatSessionJsonForExport(session: ChatSession): ByteArray {
  * subfolder (`<sessionId>/chat.json` + `<sessionId>/media/<fileName>`) and portable relative media paths.
  */
 internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): ByteArray {
-    val jsonEntries = mutableListOf<Pair<String, ByteArray>>()
+    val chats = sessions.map(::chatBundleEntry)
+    return PlatformBridge.createZipArchive(
+        entries = chats.map { it.jsonPath to it.json },
+        fileEntries = chats.flatMap { it.mediaFiles }
+    )
+}
+
+/** Streams [sessions] to a chosen file, hydrating one chat at a time. Null means the user cancelled. */
+internal suspend fun exportChatSessionsBundle(fileName: String, sessions: List<ChatSession>): String? =
+    PlatformBridge.exportChatBundle(fileName, sessions.asSequence().map(::chatBundleEntry))
+
+private fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
     val mediaFileEntries = mutableListOf<Pair<String, String>>()
     val prettyJson = io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
-
-    for (rawSession in sessions) {
-        val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
-        check(!fullSession.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
-        val safeSessId = fullSession.id.trim().replace(EXPORT_UNSAFE_CHAR_REGEX, "_").ifBlank { "session" }
-        val portableMessages = fullSession.messages.map { node ->
-            node.copy(
-                variants = node.variants.map { v ->
-                    val portableAtts = v.attachments.map { att ->
-                        if (att.localFilePath.isNotBlank()) {
-                            val mediaName = att.localFilePath.replace('\\', '/').substringAfterLast('/')
-                                .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
-                            if (mediaName.isNotEmpty()) {
-                                val zipEntryPath = "$safeSessId/media/$mediaName"
-                                mediaFileEntries.add(zipEntryPath to att.localFilePath)
-                                att.copy(localFilePath = "chats/$zipEntryPath", base64Data = "")
-                            } else att
+    val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
+    check(!fullSession.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
+    val safeSessId = fullSession.id.trim().replace(EXPORT_UNSAFE_CHAR_REGEX, "_").ifBlank { "session" }
+    val portableMessages = fullSession.messages.map { node ->
+        node.copy(
+            variants = node.variants.map { v ->
+                val portableAtts = v.attachments.map { att ->
+                    if (att.localFilePath.isNotBlank()) {
+                        val mediaName = att.localFilePath.replace('\\', '/').substringAfterLast('/')
+                            .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
+                        if (mediaName.isNotEmpty()) {
+                            val zipEntryPath = "$safeSessId/media/$mediaName"
+                            mediaFileEntries.add(zipEntryPath to att.localFilePath)
+                            att.copy(localFilePath = "chats/$zipEntryPath", base64Data = "")
                         } else att
-                    }
-                    val portableMedia = v.mediaItems.map { m ->
-                        if (m.localFilePath.isNotBlank()) {
-                            val mediaName = m.localFilePath.replace('\\', '/').substringAfterLast('/')
-                                .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
-                            if (mediaName.isNotEmpty()) {
-                                val zipEntryPath = "$safeSessId/media/$mediaName"
-                                mediaFileEntries.add(zipEntryPath to m.localFilePath)
-                                m.copy(localFilePath = "chats/$zipEntryPath")
-                            } else m
-                        } else m
-                    }
-                    v.copy(
-                        isStreaming = false,
-                        attachments = portableAtts,
-                        mediaItems = portableMedia
-                    )
+                    } else att
                 }
-            )
-        }
-        val portableSession = fullSession.copy(messages = portableMessages)
-        val chatJsonBytes = prettyJson.encodeToString(ChatSession.serializer(), portableSession).encodeToByteArray()
-        jsonEntries.add("$safeSessId/chat.json" to chatJsonBytes)
+                val portableMedia = v.mediaItems.map { m ->
+                    if (m.localFilePath.isNotBlank()) {
+                        val mediaName = m.localFilePath.replace('\\', '/').substringAfterLast('/')
+                            .replace(EXPORT_UNSAFE_CHAR_REGEX, "_")
+                        if (mediaName.isNotEmpty()) {
+                            val zipEntryPath = "$safeSessId/media/$mediaName"
+                            mediaFileEntries.add(zipEntryPath to m.localFilePath)
+                            m.copy(localFilePath = "chats/$zipEntryPath")
+                        } else m
+                    } else m
+                }
+                v.copy(
+                    isStreaming = false,
+                    attachments = portableAtts,
+                    mediaItems = portableMedia
+                )
+            }
+        )
+    }
+    val portableSession = fullSession.copy(messages = portableMessages)
+    val chatJsonBytes = prettyJson.encodeToString(ChatSession.serializer(), portableSession).encodeToByteArray()
+    return ChatBundleEntry("$safeSessId/chat.json", chatJsonBytes, mediaFileEntries)
+}
+
+private fun decodeImportedChats(rawJsons: List<String>): List<ChatSession> =
+    rawJsons.flatMap(::decodeChatSessionsFromRawJson).also {
+        check(it.isNotEmpty()) { "No valid chats were found." }
     }
 
-    return PlatformBridge.createZipArchive(entries = jsonEntries, fileEntries = mediaFileEntries)
-}
+/** Lets the user choose chat exports and decodes each one, reporting per-file success or failure. */
+internal suspend fun pickAndDecodeChatImports(): List<ChatImportOutcome<List<ChatSession>>> =
+    PlatformBridge.pickAndImportChatFiles(::decodeImportedChats).map { outcome ->
+        ChatImportOutcome(outcome.fileName, outcome.result.mapCatching { chats -> chats.map(::stripRedundantAttachmentBase64) })
+    }
 
 /**
  * Decodes one or more `ChatSession`s from either a `.zip` chat bundle (streaming its `media/` files directly
- * into `chats/<sessionId>/media/` on disk) or a `.json` chat file.
+ * into `chats/<sessionId>/media/` on disk, all-or-nothing) or a `.json` chat file.
  */
 internal fun decodeChatSessionsFromPickedFile(
     fileName: String,
@@ -800,14 +818,12 @@ internal fun decodeChatSessionsFromPickedFile(
     if (bytes.isEmpty()) return emptyList()
     val isZip = fileName.endsWith(".zip", ignoreCase = true) ||
         (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())
-    val rawJsons = if (isZip) {
-        PlatformBridge.extractZipArchiveToChatStorage(bytes)
+    val sessions = if (isZip) {
+        PlatformBridge.extractZipArchiveToChatStorage(bytes, ::decodeImportedChats)
     } else {
-        listOfNotNull(runCatching { bytes.decodeToString() }.getOrNull())
+        runCatching { bytes.decodeToString() }.getOrNull()?.let(::decodeChatSessionsFromRawJson).orEmpty()
     }
-    return rawJsons.flatMap { raw ->
-        decodeChatSessionsFromRawJson(raw).map { stripRedundantAttachmentBase64(it) }
-    }
+    return sessions.map { stripRedundantAttachmentBase64(it) }
 }
 
 /**
@@ -931,7 +947,26 @@ internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
     return fresh
 }
 
-internal fun sanitizeLoadedSnapshot(loaded: AppStateSnapshot): AppStateSnapshot {
+/** Moves settings the user never changed to the page design. Every choice stays available in Settings. */
+private fun applyDesignDefaultsOnce(saved: AppStateSnapshot): AppStateSnapshot {
+    if (saved.designDefaultsApplied) return saved
+    val theme = if (saved.theme.copy(name = "") == ThemeConfig.CLASSIC_SEPIA.copy(name = "")) ThemeConfig() else saved.theme
+    val builtInProfiles = setOf("prof-gemini-interactions", "prof-openai-responses", "prof-anthropic-messages")
+    return saved.copy(
+        theme = theme,
+        designDefaultsApplied = true,
+        profiles = saved.profiles.map {
+            if (it.id in builtInProfiles && it.thinkingEffort == "high") it.copy(thinkingEffort = "none") else it
+        },
+        preferences = saved.preferences.copy(
+            showUserAvatar = false, showUserName = false, showUserTimestamp = false,
+            showProviderAfterModelName = false, showAssistantAvatarInTitleBar = false
+        )
+    )
+}
+
+internal fun sanitizeLoadedSnapshot(saved: AppStateSnapshot): AppStateSnapshot {
+    val loaded = applyDesignDefaultsOnce(saved)
     val defaultFallback = createDefaultAppState()
     val safeProfiles = (if (loaded.profiles.isNotEmpty()) loaded.profiles else defaultFallback.profiles)
         .map { if (it.allowShellExecution) it.copy(allowShellExecution = false) else it }
@@ -1071,15 +1106,12 @@ internal fun createDefaultAppState(): AppStateSnapshot {
     val geminiProfile = ProviderProfile(
         id = "prof-gemini-interactions",
         name = "Google Gemini",
-        protocol = ProviderProtocol.GEMINI_INTERACTIONS,
-        useStatefulChaining = true,
-        useBackgroundLongDecode = true
+        protocol = ProviderProtocol.GEMINI_INTERACTIONS
     )
     val openAiProfile = ProviderProfile(
         id = "prof-openai-responses",
         name = "OpenAI",
-        protocol = ProviderProtocol.OPENAI_RESPONSES,
-        useStatefulChaining = true
+        protocol = ProviderProtocol.OPENAI_RESPONSES
     )
     val anthropicProfile = ProviderProfile(
         id = "prof-anthropic-messages",
@@ -1111,6 +1143,11 @@ internal fun createDefaultAppState(): AppStateSnapshot {
         sessions = listOf(initialSession),
         activeSessionId = initialSession.id,
         openTabSessionIds = listOf(initialSession.id),
-        theme = ThemeConfig()
+        theme = ThemeConfig(),
+        designDefaultsApplied = true,
+        preferences = PreferencesConfig(
+            showUserAvatar = false, showUserName = false, showUserTimestamp = false,
+            showProviderAfterModelName = false, showAssistantAvatarInTitleBar = false
+        )
     )
 }
