@@ -36,6 +36,7 @@ object AgentPermissionGate {
             if (action.lowercase() != "read" && policy.workspaceMode != WorkspaceMode.READ_WRITE) return "Workspace is in Read-Only mode. Memory writes are disabled."
         }
         if (name in setOf("web_search", "web_fetch") && !policy.webAccess) return "Web access is disabled by the current policy."
+        if (name == ComputerUse.TOOL_NAME && !policy.computerAccess) return "Computer control is turned off for this chat."
         if (WorkspaceHarness.activeToolsForMode(
                 policy.workspaceMode, policy.workspacePath, policy.allowShell,
                 scope.goalModeActive, policy.webAccess, scope.includeLocalWebSearchTool, policy
@@ -52,10 +53,13 @@ object AgentPermissionGate {
             (name == "todo_write" && scope.policy.hasWorkspace && scope.policy.workspaceMode == WorkspaceMode.READ_WRITE)
         val changesState = name in setOf("todo_write", "goal_complete")
         val usesWeb = name in setOf("web_search", "web_fetch")
+        val external = McpRegistry.isMcpTool(name) // What another app's tool does cannot be known from here.
         return ToolEffect(
-            requiresApproval = when (scope.policy.approvalMode) {
+            // Asking the person is itself the check, so it never needs its own approval.
+            // Control of the whole device always asks, whatever the setting for other tools.
+            requiresApproval = name == ComputerUse.TOOL_NAME || name != "ask_user" && when (scope.policy.approvalMode) {
                 ToolApprovalMode.ASK_EVERY_TOOL -> true
-                ToolApprovalMode.ASK_FOR_CHANGES -> changesFiles || changesState || usesWeb
+                ToolApprovalMode.ASK_FOR_CHANGES -> changesFiles || changesState || usesWeb || external
                 ToolApprovalMode.NEVER -> false
             },
             changesFiles = changesFiles

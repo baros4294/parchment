@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -130,6 +130,10 @@ fun resolveToolKissIcon(toolName: String): KissIcon = when (toolName.lowercase()
     "shell_exec" -> KissIcon.TERMINAL
     "todo_write" -> KissIcon.TARGET
     "goal_complete" -> KissIcon.CHECK
+    "ask_user" -> KissIcon.USER
+    "skill_load" -> KissIcon.BOOK_OPEN
+    "agent_delegate" -> KissIcon.SPARKLES
+    "computer_use" -> KissIcon.WRENCH
     "agent_memory" -> KissIcon.BOOK_OPEN
     "dice_roll" -> KissIcon.DICE
     else -> KissIcon.WRENCH
@@ -163,7 +167,7 @@ private val PREFIX_ICON_MAPPINGS = listOf(
     "- " to KissIcon.MINUS,
     "🗑 " to KissIcon.TRASH,
     "🗑️ " to KissIcon.TRASH,
-    "📋 MD" to KissIcon.MARKDOWN,
+    "📋 Markdown" to KissIcon.MARKDOWN,
     "📋 " to KissIcon.COPY,
     "✎ " to KissIcon.EDIT,
     "✏️ " to KissIcon.EDIT,
@@ -382,7 +386,7 @@ fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     for ((prefix, icon) in PREFIX_ICON_MAPPINGS) {
         if (working.startsWith(prefix)) {
             leading = icon
-            working = if (prefix == "📋 MD") "MD" else working.removePrefix(prefix).trimStart()
+            working = if (prefix == "📋 Markdown") "MD" else working.removePrefix(prefix).trimStart()
             break
         }
     }
@@ -430,7 +434,9 @@ fun KissVectorIcon(
 // ============================================================================================
 private val LOBE_ICONS_HTTP_CLIENT
     get() = AiProviderEngine.httpClient
-private val DYNAMIC_LOBE_SVG_CACHE = mutableMapOf<String, List<String>>()
+private val DYNAMIC_LOBE_SVG_CACHE = mutableStateMapOf<String, List<String>>()
+private val MISSING_LOBE_SVG_SLUGS = mutableSetOf<String>()
+private val LOADING_LOBE_SVG_SLUGS = mutableSetOf<String>()
 private val PARSED_LAB_SVG_PATH_CACHE = mutableMapOf<String, List<Path>>()
 
 internal val BUILTIN_LAB_SVG_PATHS: Map<String, List<String>> = mapOf(
@@ -677,23 +683,24 @@ fun ModelLabSvgIcon(
     val slug = remember(modelOrProvider, fallbackProtocolName) {
         resolveLabSlugForModelOrProvider(modelOrProvider, fallbackProtocolName)
     }
-    var rawPaths by remember(slug) {
-        mutableStateOf(BUILTIN_LAB_SVG_PATHS[slug] ?: DYNAMIC_LOBE_SVG_CACHE[slug])
-    }
+    val rawPaths = BUILTIN_LAB_SVG_PATHS[slug] ?: DYNAMIC_LOBE_SVG_CACHE[slug]
 
     LaunchedEffect(slug) {
-        if (rawPaths == null) {
-            runCatching {
-                val url = "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/$slug.svg"
-                val resp = LOBE_ICONS_HTTP_CLIENT.get(url)
-                if (resp.status.isSuccess()) {
-                    val svgText = resp.bodyAsText()
-                    val extracted = SVG_PATH_D_REGEX.findAll(svgText).map { it.groupValues[1] }.toList()
-                    if (extracted.isNotEmpty()) {
-                        DYNAMIC_LOBE_SVG_CACHE[slug] = extracted
-                        rawPaths = extracted
+        if (rawPaths == null && slug !in MISSING_LOBE_SVG_SLUGS && LOADING_LOBE_SVG_SLUGS.add(slug)) {
+            try {
+                runCatching {
+                    val url = "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/$slug.svg"
+                    val resp = LOBE_ICONS_HTTP_CLIENT.get(url)
+                    if (resp.status.isSuccess()) {
+                        val svgText = resp.bodyAsText()
+                        val extracted = SVG_PATH_D_REGEX.findAll(svgText).map { it.groupValues[1] }.toList()
+                        if (extracted.isNotEmpty()) DYNAMIC_LOBE_SVG_CACHE[slug] = extracted else MISSING_LOBE_SVG_SLUGS += slug
+                    } else if (resp.status.value == 404) {
+                        MISSING_LOBE_SVG_SLUGS += slug
                     }
                 }
+            } finally {
+                LOADING_LOBE_SVG_SLUGS.remove(slug)
             }
         }
     }

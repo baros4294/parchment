@@ -12,6 +12,37 @@ class ToolApprovalBrokerTest {
     ))
     private val arguments = """{"path":"notes.md"}"""
 
+    private val quiet = ToolAccessScope(policy.policy.copy(approvalMode = ToolApprovalMode.NEVER))
+
+    @Test fun aQuestionWaitsForItsAnswerAndAnEveryToolPolicyDoesNotGateIt() = runBlocking {
+        assertFalse(AgentPermissionGate.effect(policy, "ask_user", "{}").requiresApproval)
+        val broker = ToolApprovalBroker("run", "chat", { quiet })
+        val waiting = async { broker.askUser("call", "Which one?", listOf("A", "B")) }
+        val question = withTimeout(2000) { broker.questions.first { it.isNotEmpty() }.single() }
+        assertEquals(listOf("A", "B"), question.options)
+        assertFalse(broker.answerQuestion("not-this-one", "A"))
+        assertFalse(waiting.isCompleted)
+        assertTrue(broker.answerQuestion(question.requestId, "B"))
+        assertEquals("B", waiting.await())
+        assertTrue(withTimeout(2000) { broker.questions.first { it.isEmpty() } }.isEmpty())
+    }
+
+    @Test fun stoppingOrChangingPermissionsWithdrawsAQuestion() = runBlocking {
+        var current = quiet
+        val broker = ToolApprovalBroker("run", "chat", { current })
+        val changed = async { broker.askUser("call", "Still there?", emptyList()) }
+        val first = withTimeout(2000) { broker.questions.first { it.isNotEmpty() }.single() }
+        current = current.copy(policy = current.policy.copy(workspaceMode = WorkspaceMode.OFF))
+        broker.refreshPolicy()
+        assertNull(changed.await())
+        assertFalse(broker.answerQuestion(first.requestId, "late"))
+        val ended = async { broker.askUser("call", "Again?", emptyList()) }
+        withTimeout(2000) { broker.questions.first { it.isNotEmpty() } }
+        broker.close()
+        assertNull(ended.await())
+        assertNull(broker.askUser("call", "After the end?", emptyList()))
+    }
+
     @Test fun oncePermitMatchesExactActionAndIsConsumed() = runBlocking {
         val broker = ToolApprovalBroker("run", "chat", { policy })
         val waiting = async { broker.authorize("call", "fs_read", arguments) }

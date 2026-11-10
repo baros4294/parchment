@@ -1254,6 +1254,41 @@ fun countWordsFast(text: CharSequence): Int {
     return count
 }
 
+/** Each new frame of a long reply copies all its text, so very long replies refresh a little less often. */
+internal fun visibleTextCopyIntervalMs(length: Int): Long = when {
+    length < 32_000 -> 0L
+    length < 128_000 -> 48L
+    else -> 96L
+}
+
+/** Counts like [countWordsFast] but scans only what was appended since the last call. */
+internal class StreamWordCounter {
+    private var scanned = 0
+    private var inWord = false
+    private var total = 0
+
+    fun count(text: CharSequence): Int {
+        if (text.length < scanned) reset()
+        for (i in scanned until text.length) {
+            if (text[i].isWhitespace()) {
+                inWord = false
+            } else if (!inWord) {
+                inWord = true
+                total++
+            }
+        }
+        scanned = text.length
+        return total
+    }
+
+    /** Call when the buffer is replaced rather than appended to. */
+    fun reset() {
+        scanned = 0
+        inWord = false
+        total = 0
+    }
+}
+
 fun formatCompactTokens(tokens: Int): String = formatCompactTokens(tokens.toLong())
 
 fun formatCompactTokens(tokens: Long): String = when {

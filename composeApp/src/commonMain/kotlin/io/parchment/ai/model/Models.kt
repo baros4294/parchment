@@ -197,6 +197,12 @@ data class ToolCallRecord(
     val durationMs: Long = 0L,
     val thoughtSignature: String = "",
     val precedingThinking: String = "",
+    /** Text the model wrote after the previous tool and before this one. */
+    val precedingText: String = "",
+    /** Sent once with the next request and never saved, so screens stay out of chat files. */
+    @Transient val screenshotJpegBase64: String = "",
+    /** The provider labelled this turn's messages as commentary or final answer. */
+    val messagePhases: Boolean = false,
     /** First call of a model step, so history keeps sequential steps apart from parallel calls. */
     val startsToolStep: Boolean = false
 )
@@ -362,7 +368,9 @@ data class CharacterOrScenarioCard(
     val creatorNotes: String = "",
     val tags: List<String> = emptyList(),
     val embeddedFragments: List<ContextFragment> = emptyList(),
-    val sourceFormat: String = "parchment-v1"
+    val sourceFormat: String = "parchment-v1",
+    /** The imported card's own `data` object, so fields Parchment does not edit survive export. */
+    val sourceData: String = ""
 ) {
     fun buildCompiledInstructions(userName: String = "User"): String {
         val sb = StringBuilder()
@@ -479,6 +487,18 @@ enum class SendShortcutMode(val label: String) {
 /**
  * Parchment Granular Display, Rendering, and Behavior Preferences.
  */
+/** A server is reached by [url], or on desktop by running [command]. */
+@Immutable
+@Serializable
+data class McpServerConfig(
+    val id: String = "",
+    val name: String = "",
+    val url: String = "",
+    val command: String = "",
+    val bearerToken: String = "",
+    val enabled: Boolean = false
+)
+
 @Immutable
 @Serializable
 data class PreferencesConfig(
@@ -486,6 +506,7 @@ data class PreferencesConfig(
     val defaultViewMode: ViewMode = ViewMode.EDITORIAL_TURNS,
     val showProviderInModelCapsule: Boolean = true,
     val reduceMotion: Boolean = false,
+    val mcpServers: List<McpServerConfig> = emptyList(),
     val chatSpendLimitUsd: Double = 0.0,
     val profileName: String = "",
     val profilePicturePath: String = "",

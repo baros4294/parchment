@@ -929,6 +929,12 @@ internal fun ParchmentSidebar(
                 }
             }
         } else {
+            val storedChatIds = remember(appState.sessions.size, activeSession.id, activeAssistant.id, searchQuery.isBlank()) {
+                if (searchQuery.isBlank()) emptyList() else appState.sessions
+                    .filter { it.isCompactStub && (it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId }) }
+                    .map { it.id }
+            }
+            val historySearch = rememberHistorySearch(storedChatIds, searchQuery)
             val topicsStructuralKey = remember(
                 appState.sessions.size,
                 activeSession.id,
@@ -936,15 +942,16 @@ internal fun ParchmentSidebar(
                 activeSession.isPinned,
                 activeSession.messages.size,
                 activeAssistant.id,
-                searchQuery
+                searchQuery,
+                historySearch.matchingIds
             ) {
-                "${appState.sessions.size}:${activeSession.id}:${activeSession.title}:${activeSession.isPinned}:${activeSession.messages.size}:${activeAssistant.id}:$searchQuery"
+                "${appState.sessions.size}:${activeSession.id}:${activeSession.title}:${activeSession.isPinned}:${activeSession.messages.size}:${activeAssistant.id}:$searchQuery:${historySearch.matchingIds.size}"
             }
             val assistantTopics = remember(topicsStructuralKey) {
                 val q = searchQuery.trim()
                 val forAsst = appState.sessions.filter { it.assistantId == activeAssistant.id || appState.assistants.none { a -> a.id == it.assistantId } }
                 val searched = if (q.isEmpty()) forAsst else forAsst.filter { s ->
-                    s.title.contains(q, ignoreCase = true) || s.messages.any { n -> n.activeVariant.content.contains(q, ignoreCase = true) }
+                    s.title.contains(q, ignoreCase = true) || chatMessagesContain(s, q) || s.id in historySearch.matchingIds
                 }
                 searched.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
             }
@@ -964,7 +971,7 @@ internal fun ParchmentSidebar(
                     }
                     KissVectorIcon(icon = hdrIcon, tint = p.accent, size = 13.dp)
                     BasicText(
-                        text = "${activeAssistant.name} (${assistantTopics.size})",
+                        text = if (historySearch.inProgress) "Searching full history…" else "${activeAssistant.name} (${assistantTopics.size})",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
@@ -1119,9 +1126,8 @@ internal fun ParchmentAttachmentViewerModal(
     ) {
         when (item) {
             is ActiveMediaViewerItem.ImageViewer -> {
-                val bmp = remember(item.localFilePath) {
-                    PlatformBridge.loadImageBitmapFromFile(item.localFilePath)
-                }
+                val fileImage = rememberFileImage(item.localFilePath)
+                val bmp = fileImage.bitmap
                 var scale by remember(item) { mutableStateOf(1f) }
                 var offsetX by remember(item) { mutableStateOf(0f) }
                 var offsetY by remember(item) { mutableStateOf(0f) }
@@ -1311,7 +1317,7 @@ internal fun ParchmentAttachmentViewerModal(
                                         translationY = offsetY
                                     )
                             )
-                        } else {
+                        } else if (!fileImage.isLoading) {
                             BasicText(
                                 text = "Unable to decode image preview (${item.localFilePath.ifBlank { item.remoteUrl }})",
                                 style = p.uiHeaderStyle.copy(color = p.narrationInk)
@@ -2307,7 +2313,7 @@ internal fun ContextWindowBreakdownPopover(
 
     val historyLabel = buildString {
         append("Chat History (${breakdown.activeTurnsCount} active")
-        if (breakdown.mutedTurnsCount > 0) append(", ${breakdown.mutedTurnsCount} muted")
+        if (breakdown.mutedTurnsCount > 0) append(", ${breakdown.mutedTurnsCount} left out")
         append(")")
     }
 
@@ -2343,7 +2349,7 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 BasicText(
-                    text = "Context window breakdown",
+                    text = "What fills this conversation",
                     style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                 )
                 val limitText = if (isUnlimited) "∞" else formatCompactTokens(breakdown.contextLimitTokens)
@@ -2420,7 +2426,7 @@ internal fun ContextWindowBreakdownPopover(
                         )
                     }
                     BasicText(
-                        text = "${formatCompactTokens(slice.tokens)} tok ($slicePct%)",
+                        text = "${formatCompactTokens(slice.tokens)} tokens ($slicePct%)",
                         style = p.monoStyle.copy(
                             fontSize = 11.sp,
                             fontWeight = if (slice.isFreeSpace || slice.tokens > 0) FontWeight.SemiBold else FontWeight.Normal,
@@ -2444,7 +2450,7 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             if (canCompact) {
                 SepiaButton(
-                    text = if (isStreaming) "⚡ Compact & Resume" else "⚡ Compact Context",
+                    text = if (isStreaming) "⚡ Shorten and continue" else "⚡ Shorten conversation",
                     compact = true,
                     enabled = true,
                     style = SepiaButtonStyle.SECONDARY,

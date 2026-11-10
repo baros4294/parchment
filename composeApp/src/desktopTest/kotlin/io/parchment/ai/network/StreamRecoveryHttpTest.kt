@@ -96,6 +96,73 @@ class StreamRecoveryHttpTest {
         defaultModel = "fixture-model", thinkingEffort = "none", customModelSpecs = mapOf("fixture-model" to ModelPricingSpec("fixture-model"))
     )
 
+    private fun steppedTurn(content: String = "Step one. Step two. Final answer.", phases: Boolean = false) = MessageNode("reply", MessageRole.ASSISTANT, listOf(MessageVariant(
+        "reply-v", content = content, toolCalls = listOf(
+            ToolCallRecord("c1", "fs_read", "{}", resultText = "result-a", precedingText = "Step one. ", messagePhases = phases),
+            ToolCallRecord("c2", "fs_read", "{}", resultText = "result-b", precedingText = "Step two. ", messagePhases = phases)
+        ))))
+
+    private fun requestAfter(turn: MessageNode, profile: ProviderProfile, server: Server): String {
+        runBlocking {
+            withTimeout(20_000) {
+                AiProviderEngine.streamGeneration(profile = profile, session = ChatSession("chat", "Fixture", 1L, 1L, profile.id), historyNodes = listOf(
+                    MessageNode("first", MessageRole.USER, listOf(MessageVariant("first-v", content = "Start"))), turn,
+                    MessageNode("next", MessageRole.USER, listOf(MessageVariant("next-v", content = "Carry on")))
+                )).first { it is StreamUpdate.Completed }
+            }
+        }
+        return server.requests.last()
+    }
+
+    private fun assertInOrder(body: String, wire: String) {
+        val marks = listOf("Step one.", "result-a", "Step two.", "result-b", "Final answer.").map { body.indexOf(it) }
+        assertTrue(marks.none { it < 0 } && marks == marks.sorted(), "$wire replayed the turn out of order: $marks in $body")
+    }
+
+    @Test fun textBetweenToolsReplaysInOrderOnEveryWire() {
+        for ((dialect, body) in finishedStreams) Server(listOf(Reply(body))).use { server ->
+            assertInOrder(requestAfter(steppedTurn(), profile(server, dialect), server), dialect)
+        }
+        val missing = Reply("""{"error":{"message":"missing"}}""", 404)
+        val done = """{"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"STOP"}]}"""
+        Server(listOf(missing, Reply(sse(done)))).use { server ->
+            assertInOrder(requestAfter(steppedTurn(), geminiProfile(server), server), "generateContent")
+        }
+    }
+
+    @Test fun responsesReplayKeepsMessagePhasesOnlyWhenTheProviderSentThem() {
+        val body = finishedStreams.getValue(CUSTOM_DIALECT_OPENAI_RESPONSES)
+        Server(listOf(Reply(body))).use { server ->
+            val sent = requestAfter(steppedTurn(phases = true), profile(server, CUSTOM_DIALECT_OPENAI_RESPONSES), server)
+            assertEquals(2, Regex(""""phase":"commentary"""").findAll(sent).count(), sent)
+            assertEquals(1, Regex(""""phase":"final_answer"""").findAll(sent).count(), sent)
+        }
+        Server(listOf(Reply(body))).use { server ->
+            assertFalse("phase" in requestAfter(steppedTurn(), profile(server, CUSTOM_DIALECT_OPENAI_RESPONSES), server))
+        }
+    }
+
+    @Test fun aReplyEditedAfterTheRunIsSentAsWrittenWithoutStaleSteps() {
+        Server(listOf(Reply(finishedStreams.getValue(CUSTOM_DIALECT_OPENAI_RESPONSES)))).use { server ->
+            val sent = requestAfter(steppedTurn(content = "My own rewrite."), profile(server, CUSTOM_DIALECT_OPENAI_RESPONSES), server)
+            assertTrue("My own rewrite." in sent)
+            assertFalse("Step one." in sent, sent)
+        }
+    }
+
+    @Test fun phasesOnStreamedMessagesTravelWithTheToolThatFollows() {
+        val added = """{"type":"response.output_item.added","item":{"type":"message","phase":"commentary","content":[]}}"""
+        val text = """{"type":"response.output_text.delta","delta":"Checking."}"""
+        val call = """{"type":"response.output_item.done","item":{"type":"function_call","id":"f1","call_id":"c1","name":"fs_read","arguments":"{}","status":"completed"}}"""
+        val done = """{"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}"""
+        Server(listOf(Reply(sse(added, text, call, done)), Reply(finishedStreams.getValue(CUSTOM_DIALECT_OPENAI_RESPONSES)))).use { server ->
+            val fixture = profile(server, CUSTOM_DIALECT_OPENAI_RESPONSES)
+            val updates = runBlocking { withTimeout(20_000) { updates(fixture).toList() } }
+            assertTrue(updates.filterIsInstance<StreamUpdate.ToolCallEvent>().all { it.toolCall.messagePhases })
+            assertTrue(""""phase":"commentary"""" in server.requests[1], server.requests[1])
+        }
+    }
+
     @Test fun generateContentNeedsAFinishReason() {
         val missing = Reply("""{"error":{"message":"missing"}}""", 404)
         Server(listOf(missing, Reply(sse(generateText)))).use { assertResumes(outcome(geminiProfile(it))) }

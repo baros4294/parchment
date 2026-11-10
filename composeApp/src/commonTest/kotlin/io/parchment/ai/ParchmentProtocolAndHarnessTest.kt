@@ -914,7 +914,7 @@ class ParchmentProtocolAndHarnessTest {
 
         // 24. Verify Complete 17-Tool Harness Registry & Parameter Signatures
         val allHarnessTools = WorkspaceHarness.allTools()
-        assertEquals(17, allHarnessTools.size, "WorkspaceHarness must expose all 17 built-in tools")
+        assertEquals(21, allHarnessTools.size, "WorkspaceHarness must expose all 21 built-in tools")
 
         // 25. Verify Split Storage Architecture (parchment-settings.json + per-chat files in chats/) & Standalone Chat JSON Import/Export
         val chatA = vaultSession.copy(id = "sess-split-a", title = "Architecture Notes", updatedAt = 1000L)
@@ -1440,10 +1440,10 @@ class ParchmentProtocolAndHarnessTest {
         // 6. Verify countLinesFast and cached parseKissLabelIcons
         assertEquals(1, io.parchment.ai.ui.countLinesFast(""))
         assertEquals(3, io.parchment.ai.ui.countLinesFast("a\nb\nc"))
-        val iconA = io.parchment.ai.ui.parseKissLabelIcons("⚡ Compact Context")
-        val iconB = io.parchment.ai.ui.parseKissLabelIcons("⚡ Compact Context")
+        val iconA = io.parchment.ai.ui.parseKissLabelIcons("⚡ Shorten conversation")
+        val iconB = io.parchment.ai.ui.parseKissLabelIcons("⚡ Shorten conversation")
         assertEquals(iconA, iconB)
-        assertEquals("Compact Context", iconA.cleanText)
+        assertEquals("Shorten conversation", iconA.cleanText)
     }
 
     @Test
@@ -1870,36 +1870,4 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("", freshProfile.customDialect)
     }
 
-    @Test
-    fun presetCyclingWrapsAndRecoversFromFreeFormValues() {
-        val presets = listOf("1:1", "16:9", "9:16")
-
-        // Wraps at the end of the list rather than sticking on the last entry.
-        assertEquals("16:9", io.parchment.ai.ui.nextPreset(presets, "1:1"))
-        assertEquals("1:1", io.parchment.ai.ui.nextPreset(presets, "9:16"))
-
-        // A free-form value typed in the Tools drawer falls back to the first preset,
-        // so the chip stays usable instead of becoming a no-op.
-        assertEquals("1:1", io.parchment.ai.ui.nextPreset(presets, "21:9"))
-        assertEquals("medium", io.parchment.ai.ui.nextPreset(presets, "custom", fallback = "medium"))
-
-        // Voice presets match case-insensitively because providers report mixed casing.
-        val voices = listOf("alloy", "nova", "Puck")
-        assertEquals(
-            "nova",
-            io.parchment.ai.ui.nextPreset(
-                voices,
-                "ALLOY",
-                matches = { a, b -> a.equals(b, ignoreCase = true) }
-            )
-        )
-        assertEquals(
-            "alloy",
-            io.parchment.ai.ui.nextPreset(
-                voices,
-                "PUCK",
-                matches = { a, b -> a.equals(b, ignoreCase = true) }
-            )
-        )
-    }
 }

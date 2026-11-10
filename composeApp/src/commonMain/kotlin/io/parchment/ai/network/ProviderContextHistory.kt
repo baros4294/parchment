@@ -137,8 +137,7 @@ internal fun AiProviderEngine.buildEffectiveHistoryAndPrefix(
  * Condenses the oldest 50% of active unmuted conversation turns into a compact Continuity Digest
  * while keeping the newest turns in full verbatim fidelity.
  */
-private fun ChatSession.triggeredKeywordFragments(): List<ContextFragment> {
-    val recent = messages.takeLast(8).joinToString("\n") { it.activeVariant.content }
+private fun ChatSession.triggeredKeywordFragments(recent: String): List<ContextFragment> {
     return (fragments + activeCard?.embeddedFragments.orEmpty()).filter { frag ->
         frag.mode == FragmentActivationMode.KEYWORD &&
             frag.keywords.any { it.isNotBlank() && recent.contains(it.trim(), ignoreCase = true) }
@@ -335,7 +334,9 @@ internal fun AiProviderEngine.injectAuthorsNoteIntoHistory(
         if (session.authorsNote.isNotBlank()) appendLine(session.authorsNote.trim())
     }.trim()
 
-    val triggeredKnowledge = session.triggeredKeywordFragments().joinToString("\n\n") { "#### ${it.title}\n${it.content.trim()}" }
+    // Matches what is being sent: after a rewind or regenerate the saved chat holds later messages too.
+    val recentlySent = baseList.takeLast(8).joinToString("\n") { it.second }
+    val triggeredKnowledge = session.triggeredKeywordFragments(recentlySent).joinToString("\n\n") { "#### ${it.title}\n${it.content.trim()}" }
     if ((combinedNote.isBlank() && triggeredKnowledge.isBlank()) || baseList.isEmpty()) return baseList
 
     val depth = session.authorsNoteDepth.coerceIn(0, baseList.size)

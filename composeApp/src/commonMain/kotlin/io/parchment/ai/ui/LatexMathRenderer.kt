@@ -345,7 +345,10 @@ object LatexMathRenderer {
      * Parses a display math expression into top-level runs, stacked `\frac{num}{den}` fractions,
      * and `\begin{pmatrix|bmatrix|matrix|cases}...\end{...}` matrices.
      */
-    private fun parseDisplayMathNodes(latex: String, palette: ParchmentPalette): List<DisplayMathNode> {
+    internal fun parseDisplayMathNodes(latex: String, palette: ParchmentPalette): List<DisplayMathNode> {
+        if (!latexWithinLimits(latex)) {
+            return listOf(DisplayMathNode.TextRun(formatInlineLatexToAnnotatedString(latex, palette)))
+        }
         val nodes = mutableListOf<DisplayMathNode>()
         var i = 0
         val n = latex.length
@@ -436,9 +439,30 @@ object LatexMathRenderer {
             color = palette.primaryInk
         )
         pushStyle(baseMathSpan)
-        appendLatexSegment(this, latex.trim(), palette, scaleFactor = 1.0f)
+        if (latexWithinLimits(latex)) {
+            appendLatexSegment(this, latex.trim(), palette, scaleFactor = 1.0f)
+        } else {
+            append(latex.trim())
+        }
         pop()
     }
+
+    /** Every recursive step opens a brace, so counting braces bounds both depth and repeated scans. */
+    private fun latexWithinLimits(latex: String): Boolean {
+        if (latex.length > MAX_LATEX_CHARS) return false
+        var open = 0
+        for (ch in latex) {
+            if (ch == '{') {
+                if (++open > MAX_LATEX_NESTING) return false
+            } else if (ch == '}' && open > 0) {
+                open--
+            }
+        }
+        return true
+    }
+
+    private const val MAX_LATEX_CHARS = 10_000
+    private const val MAX_LATEX_NESTING = 32
 
     private fun appendLatexSegment(
         builder: AnnotatedString.Builder,

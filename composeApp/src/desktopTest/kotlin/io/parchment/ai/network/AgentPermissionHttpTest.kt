@@ -114,6 +114,90 @@ class AgentPermissionHttpTest {
         }
     }
 
+    @Test fun aHelperWorksInItsOwnContextAndOnlyItsFindingsReturn() = runBlocking {
+        Fixture(listOf("agent_delegate" to buildJsonObject { put("task", "Find the config file") })).use { fixture ->
+            val broker = ToolApprovalBroker("run", "chat", { ToolAccessScope(fixture.policy) })
+            val updates = async(AgentToolRunContext(broker)) { withTimeout(12_000) { fixture.updates(fixture.policy).toList() } }.await()
+            assertIs<StreamUpdate.Completed>(updates.last())
+            assertEquals(3, fixture.requests.size, "Parent step, helper, parent step")
+            val helper = fixture.requests[1]
+            assertTrue("Find the config file" in helper.toString())
+            assertFalse("Perform the task" in helper.toString(), "A helper must not see the parent conversation")
+            val offered = helper.getValue("tools").jsonArray.map { it.jsonObject.getValue("name").jsonPrimitive.content }
+            assertTrue("fs_read" in offered, offered.toString())
+            listOf("fs_write", "fs_edit", "fs_delete", "shell_exec", "ask_user", "agent_delegate").forEach { assertFalse(it in offered, it) }
+            assertTrue("Done." in fixture.requests[2].toString(), "The findings return to the parent")
+            val purposes = updates.filterIsInstance<StreamUpdate.UsageUpdated>().map { it.record.purpose }
+            assertTrue(SUBAGENT_PURPOSE in purposes, "A helper's requests count toward this run")
+            broker.close()
+        }
+    }
+
+    @Test fun aHelperCannotWriteRunCommandsOrSpawnAnother() {
+        val parent = AgentPermissionPolicy(workspacePath = "workspace", workspaceMode = WorkspaceMode.READ_WRITE, shellAccess = ShellAccess.FULL_ACCESS,
+            webAccess = true, approvalMode = ToolApprovalMode.ASK_FOR_CHANGES, toolOverrides = mapOf("fs_glob" to false))
+        val policy = subagentPolicy(parent)
+        val scope = ToolAccessScope(policy)
+        listOf("fs_write", "fs_delete", "shell_exec", "agent_delegate", "ask_user", "web_search", "fs_glob").forEach {
+            assertNotNull(AgentPermissionGate.denial(scope, it, "{}"), "$it must be refused")
+        }
+        assertNull(AgentPermissionGate.denial(scope, "fs_read", "{}"))
+        assertEquals(WorkspaceMode.READ_ONLY, policy.workspaceMode)
+        listOf("code_execution", "image_generation", "video_generation").forEach { assertFalse(policy.allowsTool(it), "$it runs on the provider and is not read-only") }
+        assertFalse(AgentPermissionGate.effect(ToolAccessScope(parent), "agent_delegate", "{}").requiresApproval, "It can only read")
+        assertTrue(AgentPermissionGate.effect(ToolAccessScope(parent.copy(approvalMode = ToolApprovalMode.ASK_EVERY_TOOL)), "agent_delegate", "{}").requiresApproval)
+        assertTrue(subagentPolicy(parent.copy(approvalMode = ToolApprovalMode.NEVER)).webAccess, "Web use needs a parent that runs without asking")
+    }
+
+    @Test fun aRunWithoutAnApprovalInterfaceCannotStartAHelper() = runBlocking {
+        Fixture(listOf("agent_delegate" to buildJsonObject { put("task", "Anything") })).use { fixture ->
+            withTimeout(12_000) { fixture.updates(fixture.policy).toList() }
+            assertEquals(2, fixture.requests.size)
+            assertTrue("Helpers are not available" in fixture.requests[1].toString())
+        }
+    }
+
+    private fun question(text: String) = buildJsonObject { put("question", text); putJsonArray("options") { add("Red"); add("Blue") } }
+
+    @Test fun aRunPausesForTheUsersAnswerAndSendsItToTheModel() = runBlocking {
+        Fixture(listOf("ask_user" to question("Which colour?"))).use { fixture ->
+            val strict = fixture.policy.copy(approvalMode = ToolApprovalMode.ASK_EVERY_TOOL)
+            val broker = ToolApprovalBroker("run", "chat", { ToolAccessScope(strict) })
+            val result = async(AgentToolRunContext(broker)) { withTimeout(12_000) { fixture.updates(strict).toList() } }
+            val asked = withTimeout(8000) { broker.questions.first { it.isNotEmpty() }.single() }
+            assertEquals("Which colour?", asked.question)
+            assertEquals(listOf("Red", "Blue"), asked.options)
+            assertEquals(1, fixture.requests.size, "The model must wait for the answer")
+            assertTrue(broker.requests.value.isEmpty())
+            assertTrue(broker.answerQuestion(asked.requestId, "Blue"))
+            assertIs<StreamUpdate.Completed>(result.await().last())
+            assertEquals(2, fixture.requests.size)
+            assertTrue("The user answered: Blue" in fixture.requests[1].toString())
+            broker.close()
+        }
+    }
+
+    @Test fun aRunWithNobodyToAskCarriesOnWithAnError() = runBlocking {
+        Fixture(listOf("ask_user" to question("Anyone?"))).use { fixture ->
+            val updates = withTimeout(12_000) { fixture.updates(fixture.policy).toList() }
+            assertIs<StreamUpdate.Completed>(updates.last())
+            assertTrue("No one is available" in fixture.requests[1].toString())
+        }
+    }
+
+    @Test fun stoppingWhileAQuestionIsOpenEndsTheRunWithoutAnotherRequest() = runBlocking {
+        Fixture(listOf("ask_user" to question("Which?"))).use { fixture ->
+            val broker = ToolApprovalBroker("run", "chat", { ToolAccessScope(fixture.policy) })
+            val result = async(AgentToolRunContext(broker)) { withTimeout(12_000) { fixture.updates(fixture.policy).toList() } }
+            withTimeout(8000) { broker.questions.first { it.isNotEmpty() } }
+            result.cancel()
+            broker.close()
+            result.join()
+            assertTrue(result.isCancelled)
+            assertEquals(1, fixture.requests.size)
+        }
+    }
+
     @Test fun pendingRevocationPreventsEffectsAndTheNextProviderRequest() = runBlocking {
         Fixture(listOf("fs_write" to writeArguments())).use { fixture ->
             var current = ToolAccessScope(fixture.policy)

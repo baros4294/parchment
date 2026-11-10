@@ -92,6 +92,19 @@
                 android:value="Continuous AI agent inference and tool execution that must survive screen-off and app switching for the duration of a user-initiated turn." />
         </service>
 
+        <!-- Off until the user turns it on in Accessibility settings; used only for approved agent actions. -->
+        <service
+            android:name=".ParchmentAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_config" />
+        </service>
+
         <receiver
             android:name=".OtaInstallReceiver"
             android:exported="false" />

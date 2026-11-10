@@ -1,5 +1,10 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.runtime.AppForeground
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -145,7 +150,13 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onStatus: suspend (String) -> Unit
     ) {
         val cleanReason = extractCleanApiErrorSummary(reasonSummary)
+        if (STREAM_CUT_WHILE_AWAY in reasonSummary) { // Nothing to back off from: the provider never failed.
+            onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
+            return
+        }
+        val resumedAtStart = AppForeground.resumedAt.value
         for (remaining in waitSeconds downTo 1) {
+            if (AppForeground.resumedAt.value != resumedAtStart) break // Someone is back and waiting; a connection may work again.
             val statusMsg = if (cleanReason.isNotBlank()) {
                 "Auto-retrying ($attempt/$maxAttempts in ${remaining}s)\n$cleanReason"
             } else {
@@ -156,6 +167,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
         onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
     }
+
+    private const val RETURN_GRACE_MS = 3_000L
+    private const val STREAM_CUT_WHILE_AWAY = "SSE stream timed out while the app was in the background."
 
     internal val json = Json {
         ignoreUnknownKeys = true
@@ -337,6 +351,18 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
         }
 
+        var helperCount = 0
+        currentCoroutineContext()[AgentToolRunContext]?.broker?.takeIf { usagePurpose != SUBAGENT_PURPOSE }?.let { broker ->
+            broker.subagentRunner = { task, onProgress ->
+                val spent = spendBeforeRunUsd + spendTowardLimit(usageLedger.snapshots()) - ledgerSpendAtStart
+                runSubagent(profile, session, broker, ++helperCount, task, spendLimitUsd, spent, onProgress) { record ->
+                    usageLedger.adopt(record)
+                    latestUsageMetrics = usageLedger.metrics()
+                    emit(StreamUpdate.UsageUpdated(record, latestUsageMetrics))
+                }
+            }
+        }
+
         suspend fun recordGeneratedMedia(item: GeneratedMediaItem) {
             recordTokenActivity()
             usageLedger.observeChargeComponent("output_${item.kind.name.lowercase()}")?.let { record ->
@@ -373,7 +399,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 emit(StreamUpdate.WebSourcesUpdated(bound))
             }
         }
-        suspend fun upsertToolCallAndEmit(tc: ToolCallRecord) {
+        suspend fun upsertToolCallAndEmit(reported: ToolCallRecord) {
+            val tc = reported.copy(screenshotJpegBase64 = "") // Screens go to the provider, not into the chat's state.
             closeCurrentDecodeBurst()
             val existingIdx = executedTools.indexOfFirst { it.id == tc.id && tc.id.isNotBlank() }
             val enriched = if (existingIdx >= 0) {
@@ -453,304 +480,164 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 try {
                     when (resolveWireProtocol(effectiveProfileForPass)) {
                         ProviderProtocol.GEMINI_INTERACTIONS -> {
-                            suspend fun runLegacyGeminiGenerateContent(
-                                targetHistoryNodes: List<MessageNode>,
-                                targetContinuePrefix: String
-                            ) {
-                                executeGeminiGenerateContentLoop(
-                                    profile = effectiveProfileForPass,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = targetHistoryNodes,
-                                    continuePrefix = targetContinuePrefix,
-                                    circuitBreaker = circuitBreaker,
-                                    onStatus = { statusMsg ->
-                                        emit(StreamUpdate.Status(statusMsg, lastInteractionId))
-                                    },
-                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta, sig ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        currentStepThinkingBuilder.append(delta)
-                                        val uniqueSig = appendSignatureIfUnique(sig)
-                                        if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
-                                            emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
-                                        }
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordGeneratedMedia(item)
-                                    },
-                                    onOutputLimit = { reachedOutputLimit = true },
-                                    onToolCall = { tc ->
-                                        upsertToolCallAndEmit(tc)
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onRequestStarted = ::beginUsageRequest,
-                                    onUsage = ::recordRequestUsage,
-                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
-                                )
-                            }
-                            // Always attempt the newer /v1beta/interactions protocol first; if it errors out
-                            // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
-                            // hand off any accumulated thoughts/tools/prose to :streamGenerateContent!
-                            if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
-                                runLegacyGeminiGenerateContent(effectiveHistoryNodes, effectiveContinuePrefix)
-                            } else {
-                            try {
-                                executeGeminiInteractionsLoop(
-                                    profile = effectiveProfileForPass,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = effectiveHistoryNodes,
-                                    continuePrefix = effectiveContinuePrefix,
-                                    circuitBreaker = circuitBreaker,
-                                    onStatus = { statusMsg, id ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        emit(StreamUpdate.Status(statusMsg, lastInteractionId))
-                                    },
-                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta, sig ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        currentStepThinkingBuilder.append(delta)
-                                        val uniqueSig = appendSignatureIfUnique(sig)
-                                        if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
-                                            emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
-                                        }
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordGeneratedMedia(item)
-                                    },
-                                    onOutputLimit = { reachedOutputLimit = true },
-                                    onToolCall = { tc ->
-                                        upsertToolCallAndEmit(tc)
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onRequestStarted = ::beginUsageRequest,
-                                    onUsage = ::recordRequestUsage,
-                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
-                                )
-                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                throw e
-                            } catch (e: Throwable) {
-                                if (profile.protocol != ProviderProtocol.CUSTOM && shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
-                                    val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
-                                    val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
-                                    emit(
-                                        StreamUpdate.Status(
-                                            "Primary /v1beta/interactions failed — falling back to :streamGenerateContent…\n$reasonClean",
-                                            lastInteractionId
-                                        )
-                                    )
-                                    val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
-                                        baseHistoryNodes = activeBaseHistoryNodes,
-                                        continuePrefix = contentBuilder.toString(),
-                                        thinkingText = thinkingBuilder.toString(),
-                                        trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
-                                        signatureText = signatureBuilder.toString(),
-                                        executedTools = executedTools.toList(),
-                                        generatedMedia = generatedMedia.toList(),
-                                        protocol = profile.protocol,
+                            // Each branch is its own function: one coroutine this large aborted Android 17 when a run was stopped.
+                            suspend fun runGeminiPass() {
+                                suspend fun runLegacyGeminiGenerateContent(
+                                    targetHistoryNodes: List<MessageNode>,
+                                    targetContinuePrefix: String
+                                ) {
+                                    executeGeminiGenerateContentLoop(
+                                        profile = effectiveProfileForPass,
                                         model = model,
-                                        passTag = "fallback-gemini-$continuationPass"
+                                        session = session,
+                                        historyNodes = targetHistoryNodes,
+                                        continuePrefix = targetContinuePrefix,
+                                        circuitBreaker = circuitBreaker,
+                                        onStatus = { statusMsg ->
+                                            emit(StreamUpdate.Status(statusMsg, lastInteractionId))
+                                        },
+                                        onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                        onFirstToken = { recordTokenActivity() },
+                                        onThinking = { delta, sig ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            thinkingBuilder.append(delta)
+                                            currentStepThinkingBuilder.append(delta)
+                                            val uniqueSig = appendSignatureIfUnique(sig)
+                                            if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
+                                                emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
+                                            }
+                                        },
+                                        onContent = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            contentBuilder.append(delta)
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                            val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
+                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onMedia = { item ->
+                                            recordGeneratedMedia(item)
+                                        },
+                                        onOutputLimit = { reachedOutputLimit = true },
+                                        onToolCall = { tc ->
+                                            upsertToolCallAndEmit(tc)
+                                        },
+                                        onRawWire = { req, resp ->
+                                            recordRawWireBounded(req, resp)
+                                        },
+                                        onRequestStarted = ::beginUsageRequest,
+                                        onUsage = ::recordRequestUsage,
+                                        onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
-                                    runLegacyGeminiGenerateContent(fbNodes, fbPrefix)
-                                } else {
-                                    throw e
                                 }
-                            }
-                            }
-                        }
-
-                        ProviderProtocol.OPENAI_RESPONSES -> {
-                            val modalityProfile = resolveModelModalityProfileAsync(effectiveProfileForPass, model)
-                            val isExplicitVideoPath = profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
-                                profile.endpointPathOverride.contains("videos/generations", ignoreCase = true) ||
-                                profile.endpointPathOverride.contains("video/generations", ignoreCase = true)
-                            val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
-                                profile.endpointPathOverride.contains("images/edits", ignoreCase = true) ||
-                                modalityProfile.isDedicatedImage
-                            val isDirectAudioEndpoint = profile.endpointPathOverride.contains("audio/speech", ignoreCase = true) ||
-                                modalityProfile.isDedicatedAudioTts
-                            suspend fun runLegacyOpenAiChatCompletions(
-                                targetHistoryNodes: List<MessageNode>,
-                                targetContinuePrefix: String
-                            ) {
-                                executeOpenAiChatCompletionsLoop(
-                                    profile = effectiveProfileForPass,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = targetHistoryNodes,
-                                    continuePrefix = targetContinuePrefix,
-                                    circuitBreaker = circuitBreaker,
-                                    onStatus = { st -> emit(StreamUpdate.Status(st)) },
-                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        currentStepThinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordGeneratedMedia(item)
-                                    },
-                                    onOutputLimit = { reachedOutputLimit = true },
-                                    onToolCall = { tc ->
-                                        upsertToolCallAndEmit(tc)
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onRequestStarted = ::beginUsageRequest,
-                                    onUsage = ::recordRequestUsage,
-                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
-                                )
-                            }
-
-                            suspend fun runUniversalMediaGeneration(forceVideo: Boolean) {
-                                executeByteDanceArkGeneration(
-                                    resumeTask = resumeMediaTask,
-                                    profile = profile,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = historyNodes,
-                                    circuitBreaker = circuitBreaker,
-                                    forceVideoMode = forceVideo,
-                                    onStatus = { st, id ->
-                                        if (id.isNotBlank()) lastInteractionId = id
-                                        emit(StreamUpdate.Status(st, lastInteractionId))
-                                    },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onThinking = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        thinkingBuilder.append(delta)
-                                        emit(StreamUpdate.ThinkingDelta(delta))
-                                    },
-                                    onMedia = { item ->
-                                        recordGeneratedMedia(item)
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onRequestStarted = ::beginUsageRequest,
-                                    onUsage = ::recordRequestUsage,
-                                    onMediaRequestStarted = ::beginMediaUsage
-                                )
-                            }
-
-                            suspend fun runUniversalAudioSpeechGeneration() {
-                                executeOpenAiAudioSpeechEndpoint(
-                                    profile = profile,
-                                    model = model,
-                                    session = session,
-                                    historyNodes = historyNodes,
-                                    circuitBreaker = circuitBreaker,
-                                    onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
-                                    onFirstToken = { recordTokenActivity() },
-                                    onMedia = { item ->
-                                        recordGeneratedMedia(item)
-                                    },
-                                    onContent = { delta ->
-                                        if (delta.isNotEmpty()) recordTokenActivity()
-                                        contentBuilder.append(delta)
-                                        emit(StreamUpdate.ContentDelta(delta))
-                                    },
-                                    onRawWire = { req, resp ->
-                                        recordRawWireBounded(req, resp)
-                                    },
-                                    onRequestStarted = { beginMediaUsage("openai_audio_speech", "output_audio") }
-                                )
-                            }
-
-                            val customProfile = profile.protocol == ProviderProtocol.CUSTOM
-                            val explicitChat = customProfile && profile.customDialect.trim().lowercase() == CUSTOM_DIALECT_OPENAI_CHAT
-                            if (explicitChat) {
-                                runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
-                            } else if (!customProfile && (modalityProfile.isDedicatedVideo || isExplicitVideoPath)) {
-                                try {
-                                    runUniversalMediaGeneration(forceVideo = true)
-                                } catch (videoErr: Throwable) {
-                                    if (videoErr is kotlinx.coroutines.CancellationException || videoErr is NoRetryException) throw videoErr
-                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
-                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
-                                    } else {
-                                        throw videoErr
-                                    }
-                                }
-                            } else if (!customProfile && isDirectImagesEndpoint) {
-                                try {
-                                    runUniversalMediaGeneration(forceVideo = false)
-                                } catch (imgErr: Throwable) {
-                                    if (imgErr is kotlinx.coroutines.CancellationException) throw imgErr
-                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
-                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
-                                    } else {
-                                        throw imgErr
-                                    }
-                                }
-                            } else if (!customProfile && isDirectAudioEndpoint) {
-                                try {
-                                    runUniversalAudioSpeechGeneration()
-                                } catch (audErr: Throwable) {
-                                    if (audErr is kotlinx.coroutines.CancellationException) throw audErr
-                                    if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
-                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
-                                    } else {
-                                        throw audErr
-                                    }
-                                }
-                            } else {
-                                // Always attempt the newer /v1/responses protocol first; if it errors out
+                                // Always attempt the newer /v1beta/interactions protocol first; if it errors out
                                 // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
-                                // hand off any accumulated thoughts/tools/prose to /v1/chat/completions!
+                                // hand off any accumulated thoughts/tools/prose to :streamGenerateContent!
                                 if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
-                                    runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                    runLegacyGeminiGenerateContent(effectiveHistoryNodes, effectiveContinuePrefix)
                                 } else {
                                 try {
-                                    executeOpenAiResponsesLoop(
+                                    executeGeminiInteractionsLoop(
                                         profile = effectiveProfileForPass,
                                         model = model,
                                         session = session,
                                         historyNodes = effectiveHistoryNodes,
                                         continuePrefix = effectiveContinuePrefix,
                                         circuitBreaker = circuitBreaker,
-                                        onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                        onStatus = { statusMsg, id ->
+                                            if (id.isNotBlank()) lastInteractionId = id
+                                            emit(StreamUpdate.Status(statusMsg, lastInteractionId))
+                                        },
+                                        onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                        onFirstToken = { recordTokenActivity() },
+                                        onThinking = { delta, sig ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            thinkingBuilder.append(delta)
+                                            currentStepThinkingBuilder.append(delta)
+                                            val uniqueSig = appendSignatureIfUnique(sig)
+                                            if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
+                                                emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
+                                            }
+                                        },
+                                        onContent = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            contentBuilder.append(delta)
+                                            val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                            val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
+                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onMedia = { item ->
+                                            recordGeneratedMedia(item)
+                                        },
+                                        onOutputLimit = { reachedOutputLimit = true },
+                                        onToolCall = { tc ->
+                                            upsertToolCallAndEmit(tc)
+                                        },
+                                        onRawWire = { req, resp ->
+                                            recordRawWireBounded(req, resp)
+                                        },
+                                        onRequestStarted = ::beginUsageRequest,
+                                        onUsage = ::recordRequestUsage,
+                                        onCitation = { cit -> recordRawCitationAndEmit(cit) }
+                                    )
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Throwable) {
+                                    if (profile.protocol != ProviderProtocol.CUSTOM && shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
+                                        val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
+                                        val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
+                                        emit(
+                                            StreamUpdate.Status(
+                                                "Primary /v1beta/interactions failed — falling back to :streamGenerateContent…\n$reasonClean",
+                                                lastInteractionId
+                                            )
+                                        )
+                                        val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
+                                            baseHistoryNodes = activeBaseHistoryNodes,
+                                            continuePrefix = contentBuilder.toString(),
+                                            thinkingText = thinkingBuilder.toString(),
+                                            trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
+                                            signatureText = signatureBuilder.toString(),
+                                            executedTools = executedTools.toList(),
+                                            generatedMedia = generatedMedia.toList(),
+                                            protocol = profile.protocol,
+                                            model = model,
+                                            passTag = "fallback-gemini-$continuationPass"
+                                        )
+                                        runLegacyGeminiGenerateContent(fbNodes, fbPrefix)
+                                    } else {
+                                        throw e
+                                    }
+                                }
+                                }
+                            }
+                            runGeminiPass()
+                        }
+
+                        ProviderProtocol.OPENAI_RESPONSES -> {
+                            suspend fun runOpenAiResponsesPass() {
+                                val modalityProfile = resolveModelModalityProfileAsync(effectiveProfileForPass, model)
+                                val isExplicitVideoPath = profile.endpointPathOverride.contains("contents/generations/tasks", ignoreCase = true) ||
+                                    profile.endpointPathOverride.contains("videos/generations", ignoreCase = true) ||
+                                    profile.endpointPathOverride.contains("video/generations", ignoreCase = true)
+                                val isDirectImagesEndpoint = profile.endpointPathOverride.contains("images/generations", ignoreCase = true) ||
+                                    profile.endpointPathOverride.contains("images/edits", ignoreCase = true) ||
+                                    modalityProfile.isDedicatedImage
+                                val isDirectAudioEndpoint = profile.endpointPathOverride.contains("audio/speech", ignoreCase = true) ||
+                                    modalityProfile.isDedicatedAudioTts
+                                suspend fun runLegacyOpenAiChatCompletions(
+                                    targetHistoryNodes: List<MessageNode>,
+                                    targetContinuePrefix: String
+                                ) {
+                                    executeOpenAiChatCompletionsLoop(
+                                        profile = effectiveProfileForPass,
+                                        model = model,
+                                        session = session,
+                                        historyNodes = targetHistoryNodes,
+                                        continuePrefix = targetContinuePrefix,
+                                        circuitBreaker = circuitBreaker,
+                                        onStatus = { st -> emit(StreamUpdate.Status(st)) },
                                         onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
                                         onFirstToken = { recordTokenActivity() },
                                         onThinking = { delta ->
@@ -781,110 +668,260 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onUsage = ::recordRequestUsage,
                                         onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
-                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                    throw e
-                                } catch (e: Throwable) {
-                                    // A Custom profile declares its URL and dialect, so no failure may reroute it.
-                                    if (profile.protocol == ProviderProtocol.CUSTOM) throw e
-                                    val routeHint = detectMediaEndpointRedirectFromError(e)
-                                    if (routeHint == "image") {
-                                        recordDiscoveredModality(model, listOf("image"))
-                                        emit(StreamUpdate.Status("Model requires Image Generation endpoint — routing automatically…", lastInteractionId))
-                                        runUniversalMediaGeneration(forceVideo = false)
-                                    } else if (routeHint == "video") {
-                                        recordDiscoveredModality(model, listOf("video"))
-                                        emit(StreamUpdate.Status("Model requires Video Generation endpoint — routing automatically…", lastInteractionId))
+                                }
+
+                                suspend fun runUniversalMediaGeneration(forceVideo: Boolean) {
+                                    executeByteDanceArkGeneration(
+                                        resumeTask = resumeMediaTask,
+                                        profile = profile,
+                                        model = model,
+                                        session = session,
+                                        historyNodes = historyNodes,
+                                        circuitBreaker = circuitBreaker,
+                                        forceVideoMode = forceVideo,
+                                        onStatus = { st, id ->
+                                            if (id.isNotBlank()) lastInteractionId = id
+                                            emit(StreamUpdate.Status(st, lastInteractionId))
+                                        },
+                                        onFirstToken = { recordTokenActivity() },
+                                        onThinking = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            thinkingBuilder.append(delta)
+                                            emit(StreamUpdate.ThinkingDelta(delta))
+                                        },
+                                        onMedia = { item ->
+                                            recordGeneratedMedia(item)
+                                        },
+                                        onContent = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            contentBuilder.append(delta)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onRawWire = { req, resp ->
+                                            recordRawWireBounded(req, resp)
+                                        },
+                                        onRequestStarted = ::beginUsageRequest,
+                                        onUsage = ::recordRequestUsage,
+                                        onMediaRequestStarted = ::beginMediaUsage
+                                    )
+                                }
+
+                                suspend fun runUniversalAudioSpeechGeneration() {
+                                    executeOpenAiAudioSpeechEndpoint(
+                                        profile = profile,
+                                        model = model,
+                                        session = session,
+                                        historyNodes = historyNodes,
+                                        circuitBreaker = circuitBreaker,
+                                        onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                        onFirstToken = { recordTokenActivity() },
+                                        onMedia = { item ->
+                                            recordGeneratedMedia(item)
+                                        },
+                                        onContent = { delta ->
+                                            if (delta.isNotEmpty()) recordTokenActivity()
+                                            contentBuilder.append(delta)
+                                            emit(StreamUpdate.ContentDelta(delta))
+                                        },
+                                        onRawWire = { req, resp ->
+                                            recordRawWireBounded(req, resp)
+                                        },
+                                        onRequestStarted = { beginMediaUsage("openai_audio_speech", "output_audio") }
+                                    )
+                                }
+
+                                val customProfile = profile.protocol == ProviderProtocol.CUSTOM
+                                val explicitChat = customProfile && profile.customDialect.trim().lowercase() == CUSTOM_DIALECT_OPENAI_CHAT
+                                if (explicitChat) {
+                                    runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                } else if (!customProfile && (modalityProfile.isDedicatedVideo || isExplicitVideoPath)) {
+                                    try {
                                         runUniversalMediaGeneration(forceVideo = true)
-                                    } else if (routeHint == "audio") {
-                                        recordDiscoveredModality(model, listOf("audio"))
-                                        emit(StreamUpdate.Status("Model requires Audio Speech endpoint — routing automatically…", lastInteractionId))
-                                        runUniversalAudioSpeechGeneration()
-                                    } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
-                                        val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
-                                        val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
-                                        emit(
-                                            StreamUpdate.Status(
-                                                "Primary /v1/responses failed — falling back to /v1/chat/completions…\n$reasonClean",
-                                                lastInteractionId
-                                            )
-                                        )
-                                        val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
-                                            baseHistoryNodes = activeBaseHistoryNodes,
-                                            continuePrefix = contentBuilder.toString(),
-                                            thinkingText = thinkingBuilder.toString(),
-                                            trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
-                                            signatureText = signatureBuilder.toString(),
-                                            executedTools = executedTools.toList(),
-                                            generatedMedia = generatedMedia.toList(),
-                                            protocol = profile.protocol,
-                                            model = model,
-                                            passTag = "fallback-openai-$continuationPass"
-                                        )
-                                        try {
-                                            runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
-                                        } catch (chatErr: Throwable) {
-                                            if (chatErr is kotlinx.coroutines.CancellationException) throw chatErr
-                                            val chatHint = detectMediaEndpointRedirectFromError(chatErr)
-                                            if (chatHint == "image" || modalityProfile.isInterleavedImage) {
-                                                recordDiscoveredModality(model, listOf("image"))
-                                                runUniversalMediaGeneration(forceVideo = false)
-                                            } else if (chatHint == "video") {
-                                                recordDiscoveredModality(model, listOf("video"))
-                                                runUniversalMediaGeneration(forceVideo = true)
-                                            } else if (chatHint == "audio") {
-                                                recordDiscoveredModality(model, listOf("audio"))
-                                                runUniversalAudioSpeechGeneration()
-                                            } else {
-                                                throw chatErr
-                                            }
+                                    } catch (videoErr: Throwable) {
+                                        if (videoErr is kotlinx.coroutines.CancellationException || videoErr is NoRetryException) throw videoErr
+                                        if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                            runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                        } else {
+                                            throw videoErr
                                         }
+                                    }
+                                } else if (!customProfile && isDirectImagesEndpoint) {
+                                    try {
+                                        runUniversalMediaGeneration(forceVideo = false)
+                                    } catch (imgErr: Throwable) {
+                                        if (imgErr is kotlinx.coroutines.CancellationException) throw imgErr
+                                        if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                            runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                        } else {
+                                            throw imgErr
+                                        }
+                                    }
+                                } else if (!customProfile && isDirectAudioEndpoint) {
+                                    try {
+                                        runUniversalAudioSpeechGeneration()
+                                    } catch (audErr: Throwable) {
+                                        if (audErr is kotlinx.coroutines.CancellationException) throw audErr
+                                        if (generatedMedia.isEmpty() && contentBuilder.isEmpty() && profile.useLegacyFallbackEndpoint) {
+                                            runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
+                                        } else {
+                                            throw audErr
+                                        }
+                                    }
+                                } else {
+                                    // Always attempt the newer /v1/responses protocol first; if it errors out
+                                    // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
+                                    // hand off any accumulated thoughts/tools/prose to /v1/chat/completions!
+                                    if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
+                                        runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
                                     } else {
+                                    try {
+                                        executeOpenAiResponsesLoop(
+                                            profile = effectiveProfileForPass,
+                                            model = model,
+                                            session = session,
+                                            historyNodes = effectiveHistoryNodes,
+                                            continuePrefix = effectiveContinuePrefix,
+                                            circuitBreaker = circuitBreaker,
+                                            onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                            onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                            onFirstToken = { recordTokenActivity() },
+                                            onThinking = { delta ->
+                                                if (delta.isNotEmpty()) recordTokenActivity()
+                                                thinkingBuilder.append(delta)
+                                                currentStepThinkingBuilder.append(delta)
+                                                emit(StreamUpdate.ThinkingDelta(delta))
+                                            },
+                                            onContent = { delta ->
+                                                if (delta.isNotEmpty()) recordTokenActivity()
+                                                contentBuilder.append(delta)
+                                                val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                                val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
+                                                PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                                emit(StreamUpdate.ContentDelta(delta))
+                                            },
+                                            onMedia = { item ->
+                                                recordGeneratedMedia(item)
+                                            },
+                                            onOutputLimit = { reachedOutputLimit = true },
+                                            onToolCall = { tc ->
+                                                upsertToolCallAndEmit(tc)
+                                            },
+                                            onRawWire = { req, resp ->
+                                                recordRawWireBounded(req, resp)
+                                            },
+                                            onRequestStarted = ::beginUsageRequest,
+                                            onUsage = ::recordRequestUsage,
+                                            onCitation = { cit -> recordRawCitationAndEmit(cit) }
+                                        )
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
                                         throw e
+                                    } catch (e: Throwable) {
+                                        // A Custom profile declares its URL and dialect, so no failure may reroute it.
+                                        if (profile.protocol == ProviderProtocol.CUSTOM) throw e
+                                        val routeHint = detectMediaEndpointRedirectFromError(e)
+                                        if (routeHint == "image") {
+                                            recordDiscoveredModality(model, listOf("image"))
+                                            emit(StreamUpdate.Status("Model requires Image Generation endpoint — routing automatically…", lastInteractionId))
+                                            runUniversalMediaGeneration(forceVideo = false)
+                                        } else if (routeHint == "video") {
+                                            recordDiscoveredModality(model, listOf("video"))
+                                            emit(StreamUpdate.Status("Model requires Video Generation endpoint — routing automatically…", lastInteractionId))
+                                            runUniversalMediaGeneration(forceVideo = true)
+                                        } else if (routeHint == "audio") {
+                                            recordDiscoveredModality(model, listOf("audio"))
+                                            emit(StreamUpdate.Status("Model requires Audio Speech endpoint — routing automatically…", lastInteractionId))
+                                            runUniversalAudioSpeechGeneration()
+                                        } else if (shouldFallbackToLegacyProtocol(e, profile.useLegacyFallbackEndpoint)) {
+                                            val actualCause = if (e is StepRetriesExhaustedException && e.cause != null) e.cause!! else e
+                                            val reasonClean = extractCleanApiErrorSummary(actualCause.message ?: "endpoint error")
+                                            emit(
+                                                StreamUpdate.Status(
+                                                    "Primary /v1/responses failed — falling back to /v1/chat/completions…\n$reasonClean",
+                                                    lastInteractionId
+                                                )
+                                            )
+                                            val (fbNodes, fbPrefix) = buildEffectiveHistoryAndPrefix(
+                                                baseHistoryNodes = activeBaseHistoryNodes,
+                                                continuePrefix = contentBuilder.toString(),
+                                                thinkingText = thinkingBuilder.toString(),
+                                                trailingThinkingText = currentStepThinkingBuilder.toString().trim(),
+                                                signatureText = signatureBuilder.toString(),
+                                                executedTools = executedTools.toList(),
+                                                generatedMedia = generatedMedia.toList(),
+                                                protocol = profile.protocol,
+                                                model = model,
+                                                passTag = "fallback-openai-$continuationPass"
+                                            )
+                                            try {
+                                                runLegacyOpenAiChatCompletions(fbNodes, fbPrefix)
+                                            } catch (chatErr: Throwable) {
+                                                if (chatErr is kotlinx.coroutines.CancellationException) throw chatErr
+                                                val chatHint = detectMediaEndpointRedirectFromError(chatErr)
+                                                if (chatHint == "image" || modalityProfile.isInterleavedImage) {
+                                                    recordDiscoveredModality(model, listOf("image"))
+                                                    runUniversalMediaGeneration(forceVideo = false)
+                                                } else if (chatHint == "video") {
+                                                    recordDiscoveredModality(model, listOf("video"))
+                                                    runUniversalMediaGeneration(forceVideo = true)
+                                                } else if (chatHint == "audio") {
+                                                    recordDiscoveredModality(model, listOf("audio"))
+                                                    runUniversalAudioSpeechGeneration()
+                                                } else {
+                                                    throw chatErr
+                                                }
+                                            }
+                                        } else {
+                                            throw e
+                                        }
+                                    }
                                     }
                                 }
-                                }
                             }
+                            runOpenAiResponsesPass()
                         }
 
                         ProviderProtocol.ANTHROPIC_MESSAGES -> {
-                            executeAnthropicMessagesLoop(
-                                profile = effectiveProfileForPass,
-                                model = model,
-                                session = session,
-                                historyNodes = effectiveHistoryNodes,
-                                continuePrefix = effectiveContinuePrefix,
-                                circuitBreaker = circuitBreaker,
-                                onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
-                                onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
-                                onFirstToken = { recordTokenActivity() },
-                                onThinking = { delta, sig ->
-                                    if (delta.isNotEmpty()) recordTokenActivity()
-                                    thinkingBuilder.append(delta)
-                                    currentStepThinkingBuilder.append(delta)
-                                    val uniqueSig = appendSignatureIfUnique(sig)
-                                    if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
-                                        emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
-                                    }
-                                },
-                                onContent = { delta ->
-                                    if (delta.isNotEmpty()) recordTokenActivity()
-                                    contentBuilder.append(delta)
-                                    val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                                    val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                    PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
-                                    emit(StreamUpdate.ContentDelta(delta))
-                                },
-                                onOutputLimit = { reachedOutputLimit = true },
-                                onToolCall = { tc ->
-                                    upsertToolCallAndEmit(tc)
-                                },
-                                onRawWire = { req, resp ->
-                                    recordRawWireBounded(req, resp)
-                                },
-                                onRequestStarted = ::beginUsageRequest,
-                                onUsage = ::recordRequestUsage,
-                                onCitation = { cit -> recordRawCitationAndEmit(cit) }
-                            )
+                            suspend fun runAnthropicPass() {
+                                executeAnthropicMessagesLoop(
+                                    profile = effectiveProfileForPass,
+                                    model = model,
+                                    session = session,
+                                    historyNodes = effectiveHistoryNodes,
+                                    continuePrefix = effectiveContinuePrefix,
+                                    circuitBreaker = circuitBreaker,
+                                    onStatus = { st -> emit(StreamUpdate.Status(st, lastInteractionId)) },
+                                    onGoalProgress = { gs -> emit(StreamUpdate.GoalProgress(gs)) },
+                                    onFirstToken = { recordTokenActivity() },
+                                    onThinking = { delta, sig ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
+                                        thinkingBuilder.append(delta)
+                                        currentStepThinkingBuilder.append(delta)
+                                        val uniqueSig = appendSignatureIfUnique(sig)
+                                        if (delta.isNotEmpty() || uniqueSig.isNotEmpty()) {
+                                            emit(StreamUpdate.ThinkingDelta(delta, uniqueSig))
+                                        }
+                                    },
+                                    onContent = { delta ->
+                                        if (delta.isNotEmpty()) recordTokenActivity()
+                                        contentBuilder.append(delta)
+                                        val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                                        val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
+                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                        emit(StreamUpdate.ContentDelta(delta))
+                                    },
+                                    onOutputLimit = { reachedOutputLimit = true },
+                                    onToolCall = { tc ->
+                                        upsertToolCallAndEmit(tc)
+                                    },
+                                    onRawWire = { req, resp ->
+                                        recordRawWireBounded(req, resp)
+                                    },
+                                    onRequestStarted = ::beginUsageRequest,
+                                    onUsage = ::recordRequestUsage,
+                                    onCitation = { cit -> recordRawCitationAndEmit(cit) }
+                                )
+                            }
+                            runAnthropicPass()
                         }
                         ProviderProtocol.CUSTOM -> {
                             // Unresolved dialect must never silently guess a wire shape.
@@ -893,11 +930,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                             )
                         }
                     }
-                    // Foolproof 3-Stage Zero-Answer Auto-Continuation Engine:
-                    // Sometimes an upstream model or proxy finishes its reasoning (`thinkingBuilder` / `signatureBuilder`)
-                    // or finishes executing tool calls (`executedTools`), and then closes the SSE stream cleanly (`[DONE]`)
-                    // with ZERO final answer prose (`contentBuilder.isBlank()`).
-                    // Instead of stopping and forcing the user to manually click '→ Continue', automatically nudge the model!
+                    // Empty-answer nudge, up to three passes: a model or proxy can finish its reasoning or tool calls
+                    // and close the stream cleanly with no answer text. Nudge it to answer instead of stopping.
                     val hasNoFinalAnswer = contentBuilder.toString().isBlank() && generatedMedia.isEmpty()
                     val hasThoughtsOrTools = thinkingBuilder.isNotBlank() || signatureBuilder.isNotBlank() || executedTools.isNotEmpty()
                     val isBreakerTripped = circuitBreaker.checkTripped() != null
@@ -985,76 +1019,79 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 }
             }
 
-            closeCurrentDecodeBurst()
-            val endTime = activity.elapsedMs
-            val totalDurationMs = (endTime - startTime + initialElapsedMs.coerceAtLeast(0L)).coerceAtLeast(1L)
-            val ttftMs = if (firstTokenTime >= startTime) (firstTokenTime - startTime) else totalDurationMs
-            val reportedUsage = usageLedger.metrics()
-            val fallbackInTokens = if (usageLedger.hasReportedInput) {
-                reportedUsage.inputTokens
-            } else {
-                val sysTok = O200kTokenizer.countTokens(buildCompiledSystemPrompt(session, circuitBreaker.goalState))
-                val histTok = historyNodes.filter { it.includedInContext }.sumOf {
-                    O200kTokenizer.countMessageVariantTokens(it.role, it.activeVariant, includeReasoningAndTools = false)
+            suspend fun reportCompletedRun() {
+                closeCurrentDecodeBurst()
+                val endTime = activity.elapsedMs
+                val totalDurationMs = (endTime - startTime + initialElapsedMs.coerceAtLeast(0L)).coerceAtLeast(1L)
+                val ttftMs = if (firstTokenTime >= startTime) (firstTokenTime - startTime) else totalDurationMs
+                val reportedUsage = usageLedger.metrics()
+                val fallbackInTokens = if (usageLedger.hasReportedInput) {
+                    reportedUsage.inputTokens
+                } else {
+                    val sysTok = O200kTokenizer.countTokens(buildCompiledSystemPrompt(session, circuitBreaker.goalState))
+                    val histTok = historyNodes.filter { it.includedInContext }.sumOf {
+                        O200kTokenizer.countMessageVariantTokens(it.role, it.activeVariant, includeReasoningAndTools = false)
+                    }
+                    (sysTok.toLong() + histTok).coerceAtLeast(1L)
                 }
-                (sysTok.toLong() + histTok).coerceAtLeast(1L)
-            }
-            val rawMetrics = computeTurnTokenMetrics(
-                reportedInputTokens = reportedUsage.inputTokens,
-                reportedCachedTokens = reportedUsage.cachedInputTokens,
-                reportedReasoningTokens = reportedUsage.reasoningTokens,
-                reportedOutputTokens = reportedUsage.outputTokens,
-                fallbackInputTokens = fallbackInTokens,
-                contentText = contentBuilder.toString(),
-                thinkingText = thinkingBuilder.toString(),
-                executedTools = executedTools,
-                totalDurationMs = totalDurationMs,
-                ttftMs = ttftMs,
-                activeDecodeDurationMs = activeDecodeAccumulatedMs,
-                totalToolExecutionMs = activity.toolMs,
-                hasReportedInput = usageLedger.hasReportedInput,
-                hasReportedOutput = usageLedger.hasReportedOutput,
-                hasReportedReasoning = usageLedger.hasReportedReasoning
-            ).copy(cacheCreationInputTokens = reportedUsage.cacheCreationInputTokens,
-                cacheCreationCostUnits = reportedUsage.cacheCreationCostUnits, reportedRequests = reportedUsage.reportedRequests,
-                usageIsComplete = reportedUsage.usageIsComplete, costIsAvailable = reportedUsage.costIsAvailable,
-                estimatedCostUsd = reportedUsage.estimatedCostUsd,
-                outputIncludesUnreportedReasoning = reportedUsage.outputIncludesUnreportedReasoning,
-                unpricedCostComponents = reportedUsage.unpricedCostComponents,
-                reportedCostRequests = reportedUsage.reportedCostRequests)
+                val rawMetrics = computeTurnTokenMetrics(
+                    reportedInputTokens = reportedUsage.inputTokens,
+                    reportedCachedTokens = reportedUsage.cachedInputTokens,
+                    reportedReasoningTokens = reportedUsage.reasoningTokens,
+                    reportedOutputTokens = reportedUsage.outputTokens,
+                    fallbackInputTokens = fallbackInTokens,
+                    contentText = contentBuilder.toString(),
+                    thinkingText = thinkingBuilder.toString(),
+                    executedTools = executedTools,
+                    totalDurationMs = totalDurationMs,
+                    ttftMs = ttftMs,
+                    activeDecodeDurationMs = activeDecodeAccumulatedMs,
+                    totalToolExecutionMs = activity.toolMs,
+                    hasReportedInput = usageLedger.hasReportedInput,
+                    hasReportedOutput = usageLedger.hasReportedOutput,
+                    hasReportedReasoning = usageLedger.hasReportedReasoning
+                ).copy(cacheCreationInputTokens = reportedUsage.cacheCreationInputTokens,
+                    cacheCreationCostUnits = reportedUsage.cacheCreationCostUnits, reportedRequests = reportedUsage.reportedRequests,
+                    usageIsComplete = reportedUsage.usageIsComplete, costIsAvailable = reportedUsage.costIsAvailable,
+                    estimatedCostUsd = reportedUsage.estimatedCostUsd,
+                    outputIncludesUnreportedReasoning = reportedUsage.outputIncludesUnreportedReasoning,
+                    unpricedCostComponents = reportedUsage.unpricedCostComponents,
+                    reportedCostRequests = reportedUsage.reportedCostRequests)
 
-            // If web search or URL tools were active and the model included inline markdown citations, bind them too
-            if (profile.enableWebSearch || profile.enableUrlContext || executedTools.any {
-                it.name.equals("web_fetch", ignoreCase = true) || it.name.equals("web_search", ignoreCase = true)
-            }) {
-                extractMarkdownLinksAsCitations(contentBuilder.toString()).forEach { mdCit ->
-                    if (rawWebCitations.none { it.url.equals(mdCit.url, ignoreCase = true) }) {
-                        rawWebCitations.add(mdCit)
+                // If web search or URL tools were active and the model included inline markdown citations, bind them too
+                if (profile.enableWebSearch || profile.enableUrlContext || executedTools.any {
+                    it.name.equals("web_fetch", ignoreCase = true) || it.name.equals("web_search", ignoreCase = true)
+                }) {
+                    extractMarkdownLinksAsCitations(contentBuilder.toString()).forEach { mdCit ->
+                        if (rawWebCitations.none { it.url.equals(mdCit.url, ignoreCase = true) }) {
+                            rawWebCitations.add(mdCit)
+                        }
                     }
                 }
-            }
-            val finalWebSources = bindSourcesToMessageLines(contentBuilder.toString(), rawWebCitations)
-            if (finalWebSources.isNotEmpty()) {
-                emit(StreamUpdate.WebSourcesUpdated(finalWebSources))
-            }
+                val finalWebSources = bindSourcesToMessageLines(contentBuilder.toString(), rawWebCitations)
+                if (finalWebSources.isNotEmpty()) {
+                    emit(StreamUpdate.WebSourcesUpdated(finalWebSources))
+                }
 
-            emit(
-                StreamUpdate.Completed(
-                    fullContent = contentBuilder.toString() + if (reachedOutputLimit) OUTPUT_LIMIT_NOTICE else "",
-                    fullThinking = thinkingBuilder.toString(),
-                    trailingThinking = if (executedTools.isNotEmpty()) currentStepThinkingBuilder.toString().trim() else "",
-                    thinkingSignature = signatureBuilder.toString(),
-                    toolCalls = executedTools,
-                    goalTracker = circuitBreaker.goalState,
-                    mediaItems = generatedMedia,
-                    webSources = finalWebSources,
-                    providerInteractionId = lastInteractionId,
-                    metrics = rawMetrics,
-                    rawRequest = lastRawReq,
-                    rawResponse = lastRawResp,
-                    apiUsageRecords = usageLedger.snapshots()
+                emit(
+                    StreamUpdate.Completed(
+                        fullContent = contentBuilder.toString() + if (reachedOutputLimit) OUTPUT_LIMIT_NOTICE else "",
+                        fullThinking = thinkingBuilder.toString(),
+                        trailingThinking = if (executedTools.isNotEmpty()) currentStepThinkingBuilder.toString().trim() else "",
+                        thinkingSignature = signatureBuilder.toString(),
+                        toolCalls = executedTools,
+                        goalTracker = circuitBreaker.goalState,
+                        mediaItems = generatedMedia,
+                        webSources = finalWebSources,
+                        providerInteractionId = lastInteractionId,
+                        metrics = rawMetrics,
+                        rawRequest = lastRawReq,
+                        rawResponse = lastRawResp,
+                        apiUsageRecords = usageLedger.snapshots()
+                    )
                 )
-            )
+            }
+            reportCompletedRun()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -1296,7 +1333,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     internal data class ToolStepBatch(
         val thoughtSignature: String,
         val precedingThinking: String,
-        val calls: List<ToolCallRecord>
+        val calls: List<ToolCallRecord>,
+        val precedingText: String = ""
     )
 
     internal fun buildUrlWithAuthQuery(profile: ProviderProfile, rawUrl: String): String {
@@ -1392,81 +1430,97 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onSseEvent: suspend (eventType: String, data: String) -> Unit,
         onPlainJsonFallback: suspend (fullJson: String) -> Unit
     ) {
-        var currentEvent = ""
-        val dataLines = mutableListOf<String>()
-        val rawFallbackBuffer = StringBuilder()
-        var sawSseLine = false
-        var sawEvent = false
-        var sawDone = false
-        suspend fun deliver(eventType: String, data: String) {
-            if (data == "[DONE]") sawDone = true else sawEvent = true
-            onSseEvent(eventType, data)
-        }
-
-        while (!channel.isClosedForRead) {
-            // Adaptive per-line SSE idle watchdog:
-            // - 90 seconds once SSE lines have already started arriving (catches half-open proxy/CDN mid-sentence stalls!)
-            // - 300 seconds before the first SSE line arrives (allows deep pre-token reasoning on slow endpoints)
-            val perLineTimeoutMs = if (sawSseLine) 90_000L else 300_000L
-            val line = withTimeoutOrNull(perLineTimeoutMs) {
-                channel.readLine()
-            } ?: if (channel.isClosedForRead) {
-                break
-            } else {
-                error("SSE stream timed out waiting for next event after ${perLineTimeoutMs / 1000}s (connection stalled).")
-            }
-            when {
-                line.startsWith("event:") -> {
-                    sawSseLine = true
-                    if (dataLines.isNotEmpty()) {
-                        val combined = dataLines.joinToString("\n")
-                        dataLines.clear()
-                        deliver(currentEvent, combined)
+        var lastLineAt = PlatformBridge.monotonicTimeMillis()
+        var sawAnyData = false
+        coroutineScope {
+            val stallWatch = launch {
+                AppForeground.resumedAt.drop(1).collectLatest { resumedAt ->
+                    delay(RETURN_GRACE_MS)
+                    if (AppForeground.leftAt in 1..resumedAt && sawAnyData && lastLineAt <= resumedAt) {
+                        channel.cancel(IllegalStateException(STREAM_CUT_WHILE_AWAY))
                     }
-                    currentEvent = line.removePrefix("event:").trim()
                 }
-                line.startsWith("data:") -> {
-                    sawSseLine = true
-                    val dataVal = line.removePrefix("data:").trim()
-                    if (dataVal == "[DONE]") {
-                        if (dataLines.isNotEmpty()) {
-                            deliver(currentEvent, dataLines.joinToString("\n"))
-                            dataLines.clear()
-                        }
-                        deliver(currentEvent, "[DONE]")
-                        currentEvent = ""
-                    } else if (dataLines.isEmpty() && isCompleteJsonObject(dataVal)) {
-                        // Fast path: complete standalone JSON object on a single data: line — emit immediately
-                        // without waiting for a trailing blank line (prevents proxy buffering & adjacent-record drops!)
-                        deliver(currentEvent, dataVal)
-                        currentEvent = ""
+            }
+            try {
+                var currentEvent = ""
+                val dataLines = mutableListOf<String>()
+                val rawFallbackBuffer = StringBuilder()
+                var sawSseLine = false
+                var sawEvent = false
+                var sawDone = false
+                suspend fun deliver(eventType: String, data: String) {
+                    if (data == "[DONE]") sawDone = true else sawEvent = true
+                    onSseEvent(eventType, data)
+                }
+
+                while (!channel.isClosedForRead) {
+                    // Adaptive per-line SSE idle watchdog:
+                    // - 90 seconds once SSE lines have already started arriving (catches half-open proxy/CDN mid-sentence stalls!)
+                    // - 300 seconds before the first SSE line arrives (allows deep pre-token reasoning on slow endpoints)
+                    val perLineTimeoutMs = if (sawSseLine) 90_000L else 300_000L
+                    val line = withTimeoutOrNull(perLineTimeoutMs) {
+                        channel.readLine().also { if (it != null) lastLineAt = PlatformBridge.monotonicTimeMillis() }
+                    } ?: if (channel.isClosedForRead) {
+                        break
                     } else {
-                        dataLines.add(dataVal)
+                        error("SSE stream timed out waiting for next event after ${perLineTimeoutMs / 1000}s (connection stalled).")
+                    }
+                    when {
+                        line.startsWith("event:") -> {
+                            sawSseLine = true; sawAnyData = true
+                            if (dataLines.isNotEmpty()) {
+                                val combined = dataLines.joinToString("\n")
+                                dataLines.clear()
+                                deliver(currentEvent, combined)
+                            }
+                            currentEvent = line.removePrefix("event:").trim()
+                        }
+                        line.startsWith("data:") -> {
+                            sawSseLine = true; sawAnyData = true
+                            val dataVal = line.removePrefix("data:").trim()
+                            if (dataVal == "[DONE]") {
+                                if (dataLines.isNotEmpty()) {
+                                    deliver(currentEvent, dataLines.joinToString("\n"))
+                                    dataLines.clear()
+                                }
+                                deliver(currentEvent, "[DONE]")
+                                currentEvent = ""
+                            } else if (dataLines.isEmpty() && isCompleteJsonObject(dataVal)) {
+                                // Fast path: complete standalone JSON object on a single data: line — emit immediately
+                                // without waiting for a trailing blank line (prevents proxy buffering & adjacent-record drops!)
+                                deliver(currentEvent, dataVal)
+                                currentEvent = ""
+                            } else {
+                                dataLines.add(dataVal)
+                            }
+                        }
+                        line.isBlank() -> {
+                            if (dataLines.isNotEmpty()) {
+                                val combinedData = dataLines.joinToString("\n")
+                                dataLines.clear()
+                                deliver(currentEvent, combinedData)
+                                currentEvent = ""
+                            }
+                        }
+                        else -> {
+                            if (!sawSseLine) {
+                                rawFallbackBuffer.appendLine(line)
+                            }
+                        }
                     }
                 }
-                line.isBlank() -> {
-                    if (dataLines.isNotEmpty()) {
-                        val combinedData = dataLines.joinToString("\n")
-                        dataLines.clear()
-                        deliver(currentEvent, combinedData)
-                        currentEvent = ""
-                    }
+
+                if (dataLines.isNotEmpty()) {
+                    deliver(currentEvent, dataLines.joinToString("\n"))
+                } else if (!sawSseLine && rawFallbackBuffer.isNotBlank()) {
+                    onPlainJsonFallback(rawFallbackBuffer.toString().trim())
                 }
-                else -> {
-                    if (!sawSseLine) {
-                        rawFallbackBuffer.appendLine(line)
-                    }
-                }
+                // A clean close is not a finished answer: proxies can cut a stream without a socket error.
+                if (sawEvent && !sawDone && !streamFinished()) error("Stream ended before the provider finished its response.")
+                } finally {
+                stallWatch.cancel()
             }
         }
-
-        if (dataLines.isNotEmpty()) {
-            deliver(currentEvent, dataLines.joinToString("\n"))
-        } else if (!sawSseLine && rawFallbackBuffer.isNotBlank()) {
-            onPlainJsonFallback(rawFallbackBuffer.toString().trim())
-        }
-        // A clean close is not a finished answer: proxies can cut a stream without a socket error.
-        if (sawEvent && !sawDone && !streamFinished()) error("Stream ended before the provider finished its response.")
     }
 
     private fun isCompleteJsonObject(text: String): Boolean {

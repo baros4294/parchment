@@ -149,7 +149,8 @@ def shorten(text: str, limit: int = MAX_LINE) -> str:
 def compile_errors(log_text: str) -> list[str]:
     errors = []
     for line in log_text.splitlines():
-        if line.startswith("e: "):
+        # Kotlin logs this when it falls back to a full rebuild, which then succeeds.
+        if line.startswith("e: ") and not line.startswith("e: Incremental compilation failed"):
             errors.append(shorten(re.sub(r"file:///.*?/composeApp/src/", "", line[3:])))
     return errors
 

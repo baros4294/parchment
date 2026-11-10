@@ -26,7 +26,9 @@ data class AgentPermissionPolicy(
     val toolsEnabled: Boolean = true,
     val toolOverrides: Map<String, Boolean> = emptyMap(),
     val shellAccess: ShellAccess = ShellAccess.DISABLED,
-    val webAccess: Boolean = false
+    val webAccess: Boolean = false,
+    /** Lets the agent see the screen and control this device, one approved action at a time. */
+    val computerAccess: Boolean = false
 ) {
     val hasWorkspace: Boolean get() = workspaceMode != WorkspaceMode.OFF && workspacePath.isNotBlank()
     val allowShell: Boolean get() = shellAccess == ShellAccess.FULL_ACCESS
@@ -43,7 +45,8 @@ data class AgentPermissionOverrides(
     val toolsEnabled: Boolean? = null,
     val toolOverrides: Map<String, Boolean>? = null,
     val shellAccess: ShellAccess? = null,
-    val webAccess: Boolean? = null
+    val webAccess: Boolean? = null,
+    val computerAccess: Boolean? = null
 ) {
     fun applyTo(defaults: AgentPermissionPolicy): AgentPermissionPolicy = defaults.copy(
         approvalMode = approvalMode ?: defaults.approvalMode,
@@ -52,7 +55,8 @@ data class AgentPermissionOverrides(
         toolsEnabled = toolsEnabled ?: defaults.toolsEnabled,
         toolOverrides = defaults.toolOverrides + toolOverrides.orEmpty(),
         shellAccess = shellAccess ?: defaults.shellAccess,
-        webAccess = webAccess ?: defaults.webAccess
+        webAccess = webAccess ?: defaults.webAccess,
+        computerAccess = computerAccess ?: defaults.computerAccess
     )
 }
 
@@ -81,14 +85,17 @@ object AgentPermissionResolver {
 }
 
 fun AgentPermissionPolicy.asOverrides(): AgentPermissionOverrides = AgentPermissionOverrides(
-    approvalMode, workspacePath, workspaceMode, toolsEnabled, toolOverrides, shellAccess, webAccess
+    approvalMode, workspacePath, workspaceMode, toolsEnabled, toolOverrides, shellAccess, webAccess, computerAccess
 )
 
 fun AppStateSnapshot.withImportedPermissions(
     currentUpdateRepo: String = AppStateSnapshot().otaGithubRepo
 ): AppStateSnapshot = copy(
     otaGithubRepo = currentUpdateRepo, // An imported file must not choose which installers run here.
-    preferences = preferences.copy(profilePicturePath = ""), // Nor which local file gets opened.
+    preferences = preferences.copy(
+        profilePicturePath = "", // Nor which local file gets opened.
+        mcpServers = preferences.mcpServers.filter { it.command.isBlank() }.map { it.copy(enabled = false) } // Nor which programs run.
+    ),
     assistants = assistants.map { it.withImportedPermissions() },
     sessions = sessions.map { it.withImportedPermissions() },
     profiles = profiles.map { it.copy(allowShellExecution = false) },
@@ -111,7 +118,7 @@ fun ChatSession.withImportedPermissions(): ChatSession = withPortableImportedMed
     permissionOverrides = AgentPermissionOverrides(
         approvalMode = ToolApprovalMode.ASK_EVERY_TOOL,
         workspacePath = "", workspaceMode = WorkspaceMode.OFF,
-        toolsEnabled = false, toolOverrides = emptyMap(), shellAccess = ShellAccess.DISABLED, webAccess = false
+        toolsEnabled = false, toolOverrides = emptyMap(), shellAccess = ShellAccess.DISABLED, webAccess = false, computerAccess = false
     )
 )
 

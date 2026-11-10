@@ -27,8 +27,7 @@ data class ContextCompactionPlan(
  * Unified `o200k_base` Tokenizer & Context Window Breakdown Engine.
  *
  * Implements OpenAI's official `o200k_base` pre-tokenization regex pattern (`tiktoken_ext/openai_public.py`)
- * combined with UTF-8 subword BPE chunking so the Composer Context Ring, the Context Window Breakdown Popover,
- * User message token badges, and Assistant message token readouts are 100% unified and consistent.
+ * combined with UTF-8 subword BPE chunking, so the context ring, context breakdown and message token counts agree.
  */
     @androidx.compose.runtime.Immutable
     data class ContextWindowBreakdown(
@@ -89,7 +88,7 @@ object O200kTokenizer {
     }
 
     /**
-     * Ultra-fast $O(1)$ token estimator for actively streaming partial buffers so 120Hz VSync frames
+     * Constant-time token estimate for partial streaming buffers, so frames
      * never run regexes on transient substrings or evict completed turns from `tokenCache`.
      */
     fun estimateTokensFast(text: String): Int {

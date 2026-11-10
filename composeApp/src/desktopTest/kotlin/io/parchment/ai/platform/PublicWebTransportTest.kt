@@ -4,6 +4,15 @@ import java.net.InetAddress
 import kotlin.test.*
 
 class PublicWebTransportTest {
+    @Test fun mediaDownloadsRefusePrivateAddressesAndOversizedBodies() {
+        assertTrue(PublicWebTransport.fetchBytes("http://127.0.0.1:1/a.png", 1000, null).isFailure)
+        assertTrue(PublicWebTransport.fetchBytes("file:///etc/passwd", 1000, null).isFailure)
+        val body = ByteArray(200_000) { it.toByte() }
+        assertContentEquals(body, PublicWebTransport.readBounded(body.inputStream(), body.size, null))
+        assertFails { PublicWebTransport.readBounded(body.inputStream(), body.size - 1, null) }
+        assertFails { PublicWebTransport.readBounded(body.inputStream(), body.size) { true } }
+    }
+
     @Test fun privateReservedAndTransitionDestinationsAreRejected() {
         val blocked = listOf(
             "0.0.0.0", "10.1.2.3", "100.64.2.3", "127.0.0.1", "169.254.169.254", "172.31.255.255",

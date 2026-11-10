@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="computer_control_description">Lets the Parchment agent see your screen and tap, type and scroll for you. It acts only when you approve each step, and only in chats where you turned on device control.</string>
+</resources>

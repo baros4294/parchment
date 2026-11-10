@@ -12,6 +12,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
@@ -510,6 +511,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
             onToolCall = onToolCall,
             onGoalProgress = onGoalProgress
         )
+        if (batchRecords.any { it.hasScreenshot }) extraLoopContentTurns.dropOlderGeminiScreenshots()
         val responseParts = batchRecords.map { rec ->
             buildJsonObject {
                 putJsonObject("functionResponse") {
@@ -525,7 +527,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
         }
         extraLoopContentTurns.add(buildJsonObject {
             put("role", "user")
-            put("parts", JsonArray(responseParts))
+            put("parts", JsonArray(responseParts + batchRecords.filter { it.hasScreenshot }.map(::geminiScreenshotPart)))
         })
         val trippedReason = circuitBreaker.checkTripped()
         if (trippedReason != null) {
@@ -618,6 +620,8 @@ internal fun AiProviderEngine.buildGeminiGenerateContentContents(
             val savedSig = sanitizeGeminiThoughtSignature(rawSavedSig, forFunctionCall = false)
             val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
             val toolCalls = nodeVar?.toolCalls.orEmpty()
+            val turnText = turnTextLayout(text, toolCalls)
+            val finalText = stripInlineErrorNotices(turnText.finalText)
             val isOlderAssistantTurn = idx < lastAssistantIdx
             var emittedAny = false
 
@@ -650,6 +654,7 @@ internal fun AiProviderEngine.buildGeminiGenerateContentContents(
                 if (toolCalls.isNotEmpty()) {
                     val batches = groupToolCallsIntoStepBatches(
                         toolCalls = toolCalls,
+                        beforeTool = turnText.beforeTool,
                         fallbackTurnSignature = rawSavedSig,
                         fallbackTurnThinking = thinkSummary
                     )
@@ -665,6 +670,7 @@ internal fun AiProviderEngine.buildGeminiGenerateContentContents(
                                 put("text", batch.precedingThinking)
                             })
                         }
+                        if (batch.precedingText.isNotBlank()) modelStepParts.add(buildJsonObject { put("text", batch.precedingText) })
                         batch.calls.forEachIndexed { tcIdx, tc ->
                             val parsedArgs = runCatching { json.parseToJsonElement(tc.argumentsJson.ifBlank { "{}" }).jsonObject }
                                 .getOrElse { JsonObject(emptyMap()) }
@@ -708,9 +714,9 @@ internal fun AiProviderEngine.buildGeminiGenerateContentContents(
                     emittedAny = true
                 }
 
-                if (cleanText.isNotBlank() || !emittedAny) {
+                if (finalText.isNotBlank() || !emittedAny) {
                     val modelTextPart = buildJsonObject {
-                        put("text", cleanText.ifBlank { "..." })
+                        put("text", finalText.ifBlank { "..." })
                         if (savedSig.isNotBlank() && toolCalls.isEmpty()) {
                             put("thoughtSignature", savedSig)
                         }

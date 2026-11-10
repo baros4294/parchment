@@ -8,6 +8,7 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.ContentType
+import io.ktor.http.Url
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
@@ -23,7 +24,11 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.network.AiProviderEngine.ResolvedBinaryAttachment
 import io.parchment.ai.platform.PlatformBridge
 import kotlin.io.encoding.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -369,7 +374,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
                 onRequestStarted = onRequestStarted,
                 onUsage = onUsage
             )
-            extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id)
+            extractMarkdownVideosFromText(chatAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id, providerBaseUrl = profile.baseUrl)
             return
         }
 
@@ -684,6 +689,20 @@ internal suspend fun AiProviderEngine.downloadMediaBytes(url: String, maxBytes: 
         bytes.copyOf(size)
     }
 
+/** URLs written in model text are untrusted: they reach the public web, or this provider's own server. */
+private suspend fun AiProviderEngine.downloadModelTextMedia(url: String, maxBytes: Int, providerBaseUrl: String): ByteArray {
+    val fromProvider = providerBaseUrl.isNotBlank() && runCatching {
+        val target = Url(url)
+        val own = Url(providerBaseUrl)
+        target.host.equals(own.host, ignoreCase = true) && target.port == own.port
+    }.getOrDefault(false)
+    if (fromProvider) return downloadMediaBytes(url, maxBytes)
+    val job = currentCoroutineContext()[Job]
+    return withContext(Dispatchers.IO) {
+        PlatformBridge.fetchPublicBytes(url, maxBytes) { job?.isActive == false }.getOrThrow()
+    }
+}
+
 private const val MAX_VIDEO_POLL_FAILURES = 5
 
 internal val ResolvedBinaryAttachment.isDocument: Boolean
@@ -724,13 +743,14 @@ private suspend fun AiProviderEngine.extractMarkdownVideosFromText(
     text: String,
     aspectRatio: String,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
-    sessionId: String = ""
+    sessionId: String = "",
+    providerBaseUrl: String
 ) {
     val urlRegex = Regex("""https?://[^\s)"'>]+\.mp4(?:\?[^\s)"'>]*)?""", RegexOption.IGNORE_CASE)
     for (match in urlRegex.findAll(text)) {
         val videoUrl = match.value.trim()
         val now = PlatformBridge.currentTimeMillis()
-        val videoBytes = runCatching { downloadMediaBytes(videoUrl, MAX_DOWNLOADED_VIDEO_BYTES) }.getOrElse { ByteArray(0) }
+        val videoBytes = runCatching { downloadModelTextMedia(videoUrl, MAX_DOWNLOADED_VIDEO_BYTES, providerBaseUrl) }.getOrElse { ByteArray(0) }
         val localPath = if (videoBytes.isNotEmpty()) {
             PlatformBridge.saveGeneratedMediaFile("video-$now.mp4", videoBytes, sessionId = sessionId)
         } else ""
@@ -754,7 +774,8 @@ internal suspend fun AiProviderEngine.saveAndEmitImage(
     aspectRatio: String,
     revisedPrompt: String,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
-    sessionId: String = ""
+    sessionId: String = "",
+    download: (suspend (String, Int) -> ByteArray)? = null
 ) {
     val now = PlatformBridge.currentTimeMillis()
     val ext = when {
@@ -769,7 +790,7 @@ internal suspend fun AiProviderEngine.saveAndEmitImage(
             runCatching { Base64.decode(cleanB64) }.getOrElse { ByteArray(0) }
         }
         remoteUrl.startsWith("http://") || remoteUrl.startsWith("https://") -> {
-            runCatching { downloadMediaBytes(remoteUrl, MAX_DOWNLOADED_IMAGE_BYTES) }.getOrElse { ByteArray(0) }
+            runCatching { download?.invoke(remoteUrl, MAX_DOWNLOADED_IMAGE_BYTES) ?: downloadMediaBytes(remoteUrl, MAX_DOWNLOADED_IMAGE_BYTES) }.getOrElse { ByteArray(0) }
         }
         else -> ByteArray(0)
     }
@@ -797,7 +818,8 @@ internal suspend fun AiProviderEngine.extractMarkdownImagesFromText(
     text: String,
     aspectRatio: String,
     onMedia: suspend (GeneratedMediaItem) -> Unit,
-    sessionId: String = ""
+    sessionId: String = "",
+    providerBaseUrl: String
 ) {
     if (!text.contains("![")) return
     val regex = Regex("""!\[[^\]]*\]\(([^)]+)\)""")
@@ -808,7 +830,9 @@ internal suspend fun AiProviderEngine.extractMarkdownImagesFromText(
             val b64 = target.substringAfter("base64,")
             saveAndEmitImage(b64, "", mime, aspectRatio, "", onMedia, sessionId = sessionId)
         } else if (target.startsWith("http://") || target.startsWith("https://")) {
-            saveAndEmitImage("", target, "image/png", aspectRatio, "", onMedia, sessionId = sessionId)
+            saveAndEmitImage("", target, "image/png", aspectRatio, "", onMedia, sessionId = sessionId) { url, maxBytes ->
+                downloadModelTextMedia(url, maxBytes, providerBaseUrl)
+            }
         }
     }
 }

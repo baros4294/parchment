@@ -137,6 +137,9 @@ class FailureReporting(unittest.TestCase):
         log = "w: warning\ne: file:///C:/Users/me/parchment/composeApp/src/commonMain/kotlin/A.kt:3:1 Unresolved reference 'x'.\n"
         self.assertEqual(["commonMain/kotlin/A.kt:3:1 Unresolved reference 'x'."], verify.compile_errors(log))
 
+    def test_a_recovered_incremental_build_is_not_a_compile_error(self):
+        self.assertEqual([], verify.compile_errors("e: Incremental compilation failed: The following FqNames...\n"))
+
     def test_gradle_failure_reason_is_extracted(self):
         log = "noise\n* What went wrong:\nNo tests found for given includes.\n\n* Try:\n> Run with --stacktrace\n"
         self.assertEqual(["No tests found for given includes."], verify.gradle_message(log))

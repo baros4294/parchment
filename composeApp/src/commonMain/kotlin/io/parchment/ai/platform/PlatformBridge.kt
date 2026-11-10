@@ -169,6 +169,23 @@ fun normalizePickedBinaryFile(
     )
 }
 
+data class ComputerAction(val action: String, val x: Int?, val y: Int?, val text: String, val keys: String, val amount: Int)
+data class ComputerScreenshot(val jpegBase64: String, val width: Int, val height: Int)
+
+/** Blocking calls; [act] takes coordinates from the most recent screenshot. */
+interface ComputerControl {
+    val isAvailable: Boolean
+    fun screenshot(): Result<ComputerScreenshot>
+    fun act(action: ComputerAction): Result<String>
+}
+
+interface McpProcess {
+    fun writeLine(line: String)
+    /** Blocks for the next line; null means the process has ended. */
+    fun readLine(): String?
+    fun close()
+}
+
 expect object PlatformBridge {
     val platformName: String
     val isAndroid: Boolean
@@ -234,6 +251,12 @@ expect object PlatformBridge {
         isCancelled: (() -> Boolean)? = null
     ): Result<String>
     fun fetchUrlText(url: String, maxChars: Int = 24000, isCancelled: (() -> Boolean)? = null): Result<String>
+    /** Downloads from public internet addresses only, checking every redirect. */
+    fun fetchPublicBytes(url: String, maxBytes: Int, isCancelled: (() -> Boolean)? = null): Result<ByteArray>
+    val computerControl: ComputerControl
+    val supportsLocalMcpServers: Boolean
+    /** Starts a local MCP server, or returns null on platforms that cannot run one. */
+    fun startMcpProcess(command: String): McpProcess?
     // Process-owned run snapshots include preparation, tools, compaction and approval waits.
     fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
@@ -255,6 +278,8 @@ expect object PlatformBridge {
     fun localFileSizeBytes(filePath: String): Long
     fun isReadableLocalFile(filePath: String): Boolean
     fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
+    /** An already decoded image, without touching the disk. */
+    fun cachedImageBitmap(filePath: String): ImageBitmap?
     fun openOrPlayMedia(localFilePathOrUrl: String)
 
     // Clipboard Image/Video/File Paste & Native Drag-and-Drop Support

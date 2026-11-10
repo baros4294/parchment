@@ -12,6 +12,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
@@ -68,6 +69,8 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
     onCitation: suspend (RawWebCitation) -> Unit = {}
 ) {
     var usageRequestId: String? = null
+    var sawMessagePhase = false
+    val reportToolCall: suspend (ToolCallRecord) -> Unit = { onToolCall(it.copy(messagePhases = sawMessagePhase)) }
     val activeNodes = sanitizeContextNodes(historyNodes)
     val systemInstruction = buildCompiledSystemPrompt(session, circuitBreaker.goalState)
 
@@ -96,6 +99,14 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
         loopStep++
         val turnToolCalls = mutableListOf<Pair<String, Pair<String, String>>>()
         val roundTextBuilder = StringBuilder()
+        var roundPhase = ""
+        fun noteMessagePhase(item: JsonObject?) {
+            val phase = (item?.get("phase") as? JsonPrimitive)?.contentOrNull.orEmpty()
+            if (phase.isNotEmpty() && (item?.get("type") as? JsonPrimitive)?.contentOrNull == "message") {
+                roundPhase = phase
+                sawMessagePhase = true
+            }
+        }
         val roundReasoningBuilder = StringBuilder()
         var roundEncryptedReasoning = ""
         var stepEmittedOutput = false
@@ -157,6 +168,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                                 put("output", tr.resultText)
                             })
                         }
+                        pendingToolResults.filter { it.hasScreenshot }.forEach { add(responsesScreenshotMessage(it)) }
                     }
                 } else if (pendingStopHookPrompt.isNotBlank() && useChainedId) {
                     putJsonArray("input") {
@@ -300,6 +312,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                                 }
                                 "response.output_item.added" -> {
                                     val item = evObj["item"] as? JsonObject
+                                    noteMessagePhase(item)
                                     if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
                                         val itemId = item["id"]?.jsonPrimitive?.contentOrNull
                                             ?: item["call_id"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -327,6 +340,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                                 }
                                 "response.output_item.done" -> {
                                     val item = evObj["item"] as? JsonObject
+                                    noteMessagePhase(item)
                                     onUsage(usageRequestId, "", UsageDialect.OPENAI_RESPONSES,
                                         parseProviderUsage(UsageDialect.OPENAI_RESPONSES, null, response = evObj))
                                     val itemType = item?.get("type")?.jsonPrimitive?.contentOrNull
@@ -409,6 +423,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                                 val item = itemEl as? JsonObject ?: return@forEach
                                 when (item["type"]?.jsonPrimitive?.contentOrNull) {
                                     "message" -> {
+                                        noteMessagePhase(item)
                                         val contentArr = item["content"] as? JsonArray
                                         contentArr?.forEach { cEl ->
                                             val cObj = cEl as? JsonObject ?: return@forEach
@@ -546,6 +561,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                         put("type", "message")
                         put("role", "assistant")
                         put("status", "completed")
+                        if (roundPhase.isNotEmpty()) put("phase", roundPhase)
                         putJsonArray("content") {
                             add(buildJsonObject {
                                 put("type", "output_text")
@@ -585,6 +601,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                 put("type", "message")
                 put("role", "assistant")
                 put("status", "completed")
+                if (roundPhase.isNotEmpty()) put("phase", roundPhase)
                 putJsonArray("content") {
                     add(buildJsonObject {
                         put("type", "output_text")
@@ -617,7 +634,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
             firstPrecedingThinking = roundReasoningBuilder.toString().trim(),
             circuitBreaker = circuitBreaker,
             onStatus = onStatus,
-            onToolCall = onToolCall,
+            onToolCall = reportToolCall,
             onGoalProgress = onGoalProgress
         )
         for (rec in results) {
@@ -627,6 +644,8 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                 put("output", rec.resultText)
             })
         }
+        if (results.any { it.hasScreenshot }) extraResponsesLoopItems.dropOlderScreenshotEntries()
+        results.filter { it.hasScreenshot }.forEach { extraResponsesLoopItems.add(responsesScreenshotMessage(it)) }
         pendingToolResults = results
         val trippedReason = circuitBreaker.checkTripped()
         if (trippedReason != null) {
@@ -712,6 +731,8 @@ internal fun AiProviderEngine.buildOpenAiResponsesInputArray(
             val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
             val thinkSig = nodeVar?.thinkingSignature.orEmpty()
             val toolCalls = nodeVar?.toolCalls.orEmpty()
+            val turnText = turnTextLayout(text, toolCalls)
+            val finalText = stripInlineErrorNotices(turnText.finalText)
             val isOlderAssistantTurn = idx < lastAssistantIdx
             var emittedAny = false
 
@@ -732,6 +753,7 @@ internal fun AiProviderEngine.buildOpenAiResponsesInputArray(
                 if (toolCalls.isNotEmpty()) {
                     val batches = groupToolCallsIntoStepBatches(
                         toolCalls = toolCalls,
+                        beforeTool = turnText.beforeTool,
                         fallbackTurnSignature = thinkSig,
                         fallbackTurnThinking = thinkSummary
                     )
@@ -752,6 +774,21 @@ internal fun AiProviderEngine.buildOpenAiResponsesInputArray(
                                     }
                                 }
                                 put("encrypted_content", stepEnc)
+                            })
+                            emittedAny = true
+                        }
+                        if (batch.precedingText.isNotBlank()) {
+                            items.add(buildJsonObject {
+                                put("type", "message")
+                                put("role", "assistant")
+                                put("status", "completed")
+                                if (toolCalls.any { it.messagePhases }) put("phase", "commentary")
+                                putJsonArray("content") {
+                                    add(buildJsonObject {
+                                        put("type", "output_text")
+                                        put("text", batch.precedingText)
+                                    })
+                                }
                             })
                             emittedAny = true
                         }
@@ -784,7 +821,7 @@ internal fun AiProviderEngine.buildOpenAiResponsesInputArray(
                 }
 
                 val outputText = when {
-                    cleanText.isNotBlank() -> cleanText
+                    finalText.isNotBlank() -> finalText
                     thinkSummary.isNotBlank() && toolCalls.isEmpty() -> "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
                     !emittedAny -> "..."
                     else -> ""
@@ -794,6 +831,7 @@ internal fun AiProviderEngine.buildOpenAiResponsesInputArray(
                         put("type", "message")
                         put("role", "assistant")
                         put("status", "completed")
+                        if (toolCalls.any { it.messagePhases }) put("phase", "final_answer")
                         putJsonArray("content") {
                             add(buildJsonObject {
                                 put("type", "output_text")

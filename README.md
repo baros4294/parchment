@@ -1,83 +1,86 @@
 # Parchment
 
-**A native, zero-bloat literary & agent AI frontend for Windows and Android.**
+A native AI chat and agent app for Windows and Android. Bring your own provider and key; Parchment talks to it directly, keeps your chats on your device, and asks before any tool touches your files, the web or your screen.
 
-Built from the ground up with **Kotlin Multiplatform + Compose Foundation primitives** (`compose.runtime`, `compose.foundation`, `compose.ui` only—zero Electron/WebView, zero Material 3 or Fluent UI libraries, and zero OS emoji dependencies).
+Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView, no Material.
 
 [![Latest Release](installer/release-badge.svg)](https://github.com/baros4294/parchment/releases/latest)
 
-**Downloads:** [**Windows Setup (`.exe`)**](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Windows-x64-Setup.exe) · [**Android Universal (`.apk`)**](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Android-Universal.apk)
+**Download:** [Windows installer (`.exe`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Windows-x64-Setup.exe) · [Android (`.apk`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Android-Universal.apk)
 
----
+## What it does
 
-## Highlights
+**Chat and writing**
+- Messenger bubbles or a single continuous page, with Markdown, code, LaTeX and SVG rendering.
+- Attach images, PDFs, audio, video and code by picking, pasting or dropping files.
+- Reasoning, tool steps and text stay in the order they happened.
+- Branches, versions, rewind, story summaries, author notes and full-history search.
+- Character cards (V2/V3, PNG or JSON) and a World Book whose entries trigger on keywords.
+- Read aloud, dictation, and `/` commands such as `/goal`, `/compact` and `/continue`.
 
-### 1. Timeless 2020–2026 Editorial UI, "Show, Don't Tell" Iconography, & Hardware VSync Physics
-* **Pure Compose Foundation + Official AI Lab & Full-Spec SVG Engine (`ParchmentIcons.kt`, `SvgSceneRenderer.kt`):** Crisp 24×24 Canvas vector strokes, "Show, Don't Tell" icon-first toolbars, official `@lobehub/icons-static-svg` lab logos with automatic online `.svg` lookup, and a full-spec hierarchical W3C SVG 1.1/2.0 scene-graph renderer (`<defs>`, `<linearGradient>`, `<radialGradient>`, `<style>`, `<g transform="...">`, `<path>`, `<circle>`, `<ellipse>`, `<rect>`, `<line>`, `<polyline>`, `<polygon>`) across Sepia, Warm Ivory, Oxford, Candlelight, Midnight OLED, Paper & Graphite, and Linear Carbon themes.
-* **Vertical `/` Slash-Command & `@` File/Attachment/Lore Mention Palettes:** Type `/` for a vertical command palette (`/goal`, `/btw`, `/compact`, `/summarize`, `/continue`, `/rewind`, `/clear` with 1-tap instant execution) or `@` to reference and auto-attach mounted workspace files (`@file`), conversation attachments, or World Book lore fragments.
-* **Frameless KISS Desktop Window & Context-Rich Multi-Tasking Tabs:** Custom theme-synced desktop title bar (`WindowDraggableArea`, double-click maximize/restore, 8-edge resize frame, and taskbar-safe maximized work-area bounds), two-line Desktop tab pills, and an adaptive Tabs overview. Narrow mobile layouts use full-width cards in a compact vertical list; wider layouts retain the grid. The content-sized sheet preserves the reading surface without dismissal-layer dimming.
-* **Floating Notifications:** Softly rounded notification boxes appear above the page without shifting the conversation. Messages wrap at narrow widths and larger font sizes, with a clear dismiss control and quiet transitions.
-* **Hardware VSync at Any Refresh Rate (`60Hz–240Hz`) & Smart Bottom-Edge Auto-Scroll:** Frame-paced token streaming (`MonotonicFrameClock` delta-time scaling) with bottom-edge viewport pinning, instant user-scroll disengage + 5-second cooldown, and a live **Single-Thought Peek** mode when collapsing reasoning mid-stream.
-* **Rich Clipboard Paste, Gboard Emoji Kitchen / GIFs, & Drag-and-Drop:** Paste screenshots (`Win+Shift+S`), Gboard Emoji Kitchen stickers, animated GIFs, copied images, videos (`.mp4`, `.webm`, `.mov`), PDFs, audio, or code files directly into the composer, or drag-and-drop files onto the Windows app.
+**Providers**
+- OpenAI Responses and Chat Completions, Anthropic Messages, and Gemini Interactions and generateContent, plus any compatible service through a custom provider.
+- Models and their limits come from the provider and public registries; no model names are hardcoded.
+- Recovers from dropped streams, empty answers and context overflow without losing reasoning or tool results.
+- Per-request token and cost records, with an optional spend limit per chat.
 
-### 2. `omp`-Inspired Autonomous `/goal` Engine, Foolproof Zero-Answer Auto-Nudge, & 3-Layer Auto-Compaction
-* **Foolproof 3-Stage Zero-Answer Auto-Continuation Engine:** If an upstream model or proxy finishes its internal reasoning or tool calls and closes the stream with zero final answer prose, Parchment automatically nudges the model across up to 3 progressive stages (preserving all thoughts, cryptographic signatures, and completed tool calls) so you never have to manually click `Continue`.
-* **Chronological Interleaved Reasoning & Tool Timeline (`Thought #1 → Tool #1 → Thought #2 → Tool #2`):** Renders multi-step agent turns in exact chronological order with contextual vector tool badges and Git/GitHub-style **Green (`+`) & Red (`−`) Unified Line Diff Cards** (`SepiaFileDiffCard`) whenever the AI edits (`fs_edit`, `fs_multi_edit`), writes (`fs_write`), or outputs ` ```diff ` patches.
-* **3-Layer Automatic Context Window Compaction:** Proactively summarizes and mutes older turns into Rolling Continuity Memory when active context reaches $\ge 85\%$ of the model's context window, reactively self-heals `HTTP 400 / 413` `context_length_exceeded` errors mid-flight, and prunes stale tool outputs during long agent loops.
-* **Native Text-to-Speech (`🔊`), In-App Voice Dictation (`🎙`), Live Voice Mode, & `Steer` / `Queue`:** Read any response aloud (with Android 11+ `<queries>` and chunked utterance queueing), dictate via in-app `SpeechRecognizer` with system dialog fallback, redirect active streams mid-flight (`Steer`), or queue follow-up prompts (`Queue`).
+**Agent tools**
+- File tools in a folder you choose, web search and fetch, a calculator, a todo list and goals.
+- Ask-the-user questions, on-demand skills, read-only helper agents and MCP servers, browsable from the official registry.
+- Computer control on Windows and phone control on Android, both off by default.
+- Every action can require approval. Imported chats never bring tool access with them.
 
-### 3. Zero-Hardcoded-Models Universal Protocol Engine & Self-Healing Modality Cascade
-* **100% Model-Agnostic & Future-Proof (Zero Hardcoded Model Names):** Never hardcodes model IDs or version strings. Automatically discovers capabilities and output modalities (`text`, `image`, `video`, `audio`) from live `/v1/models`, `/v1beta/models`, and `models.dev` metadata, combined with a **bidirectional self-healing endpoint & parameter cascade** that works seamlessly with any future text, reasoning, image, or video model.
-* **Primary-First Smart Legacy Protocol Fallback & Cross-Protocol Signature Isolation:** Attempts `/v1beta/interactions` or `/v1/responses` first; preserves parallel and sequential tool-batch boundaries across all 5 protocols, automatically sanitizes multi-segment `thoughtSignature`s (filtering server-side `08 02` tool signatures), isolates provider signatures across model switches, and hands off accumulated state to `:streamGenerateContent` or `/v1/chat/completions` with zero data loss.
-* **Universal Pre-Token HTTP 400 Self-Healing & Nullable Parameter Stripping:** Leave any generation parameter (`Temperature`, `Top-P`, `Max Output Tokens`, `Thinking Budget`) blank (`null`) to strip it from outgoing JSON (`0 = Unlimited`); rejected sampling, thinking levels, mixed-tool modes, or historical tool/signature contexts automatically self-heal and retry.
+**Everyday reliability**
+- Atomic saves with backups, so a crash never leaves a half-written chat.
+- Long runs keep going while the app is in the background, within what the system allows.
+- In-app updates check size and SHA-256 before installing.
 
-### 4. 2026 Local Agent Harness, Deadlock-Free Shell Execution, Long-Horizon Execution, & Safe OTA Updates
-* **Shared Atomic Storage:** Android and desktop use the same validated, synced snapshot storage. Failed replacement preserves the prior file and staged content; valid backups recover corrupt primary files, and legacy migration retains its source until a complete destination commits.
-* **Lossless Chat Checkpoints:** Compact previews keep their own hydration marker, while full queued history survives tab switches and metadata edits. Background loading preserves concurrent edits and deletions; missing local attachments retain their inline bytes. One process-wide writer checkpoints dirty revisions, retries failed saves, and commits chat migrations before stripping embedded history from settings.
-* **Local Workspace & Utility Agent (`WorkspaceHarness.kt`):** Built-in `todo_write`, `goal_complete`, `fs_list`, `fs_glob`, `fs_read`, `fs_search`, `fs_write`, `fs_edit`, `fs_multi_edit` (atomic multi-hunk batch edits with rollback), `fs_move`, `fs_delete`, `web_fetch` (universal URL reader & HTML-to-Markdown extractor), `calc_eval` (deterministic scientific math evaluator), `dice_roll`, `agent_memory`, and opt-in `shell_exec`. Shell permission is checked at execution across every provider path; read/write mode alone does not authorize commands.
-* **Assistant and Chat Permissions:** Workspace and Tools share a vertical editor for approval, file access, web and Shell settings. Chats can inherit assistant defaults or explicitly turn access off. Approvals permit one exact action once or for the current run; changing permissions or the folder revokes pending requests and grants. Imports preserve content while clearing execution authority.
-* **Utility Usage:** Title, summary, compaction, translation and reply-draft requests retain their own chat/run usage records. The context drawer shows their breakdown. Failed requests are retained with unknown usage rather than silently treated as free.
-* **Cost Details:** Each request retains its model and pricing snapshot, including explicit free rates and context/cache tiers. Reported gateway costs replace estimates; supported search, request and audio fees use metadata with matching usage units. Missing tool/media fees and external BYOK billing are labeled as unpriced. Direct media attempts are recorded even when the provider rejects them or omits usage.
-* **Tool Boundaries:** File tools validate real ancestors and reject escaping links/junctions. Agent web requests validate public destinations and redirects through a separate transport. Shell is an explicit full-process-access option and requires a mounted folder with edit access; it has the app's OS permissions, including network access. Stop cancels the owning Shell worker. Android descendant cleanup and device verification remain tracked in TODO.
-* **`.png` & `.json` Card / Lorebook Codec & Libraries (`CardAndPromptCodec.kt`):** Pure-Kotlin PNG `tEXt`/`iTXt` chunk reader/writer (`chara`, `ccv3`, `parchment_prompt`) with Saved Character Cards Library, System Prompt Presets Library, and `[ This Chat | Global World Book ]` Lorebook management.
-* **Managed Power Requests & Safe In-App OTA:** Windows validates native keep-awake heartbeats, shares ownership across concurrent generations, and recovers failed helpers independently of token progress. Android provides foreground-service and CPU wake-lock support. Operating-system sleep and battery policies can still interrupt local execution. User-state backups are preserved across in-app Windows `.exe` and Android `.apk` OTA updates.
+## Status and limits
 
-The [production-quality plan](PARCHMENT_TODO.md) tracks the remaining approval, background-recovery, mobile-fit, performance and API-credit audits. Token-efficiency work includes every API round, cache reads/writes, reasoning/output usage, repeated prompt/tool context and utility requests; measured savings remain a verification requirement.
+- **Last full check (2026-11-11):** 385 desktop tests, the Android compile, a signed release APK and the Windows app image all pass.
+- **Run on real hardware:** Windows 11 and an Android 17 phone. Covered: chat switching, Stop, keyboard and rotation, background and return, process death, two chats at once, approval cards, and computer and phone control.
+- **Not yet checked on real hardware:** real provider round trips with API keys, an in-app update install, Android Shell descendant cleanup, compaction during a phone run, Doze, screen readers, system animation scale, denied notifications, and third-party MCP servers.
+- **Practical limits:** operating-system sleep and battery policy can suspend a run, and some Android phones cut the network soon after the app leaves the screen, so a run may pause until you return. Shell has the app's full OS permissions, is not sandboxed, and is outside the web-tool controls. Computer control needs Android's Accessibility permission and covers the main display on Windows.
 
-## Build from Source
+Open work is tracked in [PARCHMENT_TODO.md](PARCHMENT_TODO.md).
+
+## Build from source
+
+You need JDK 21, the Android SDK (API 36) and Python 3.10 or later.
 
 ```powershell
-# Set JDK 21 & Android SDK paths (Windows PowerShell)
+# Run the desktop app
 $env:JAVA_HOME = "$env:USERPROFILE\.jdks\temurin-21"
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-
-# Run Desktop App
 .\gradlew.bat :composeApp:run --no-daemon
 
-# Run Tests & Build Release Binaries (Windows App Image + Signed Android APK)
+# Run all checks and build both release apps (needs the private Android signer)
 . .\scripts\load-private-signer.ps1
-.\gradlew.bat :composeApp:desktopTest :composeApp:createDistributable :composeApp:assembleRelease --no-daemon
+python scripts/verify.py final
 ```
 
-Release builds accept `-PappVersion`, `-PappVersionCode`, and `-PgithubRepo`. Changes to these properties regenerate the runtime version and OTA configuration; unchanged values remain eligible for incremental builds.
+Android releases are signed with a private key; there is no repository key. See [release signing](docs/RELEASE_SIGNING.md) before building a signed APK or updating an older install.
 
-Signed Android releases require a private keystore; there is no repository-key fallback. See [release signing and legacy-install migration](docs/RELEASE_SIGNING.md) before creating the signer or updating an existing install.
+## Documentation
 
----
+| Read | For |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Principles, setup and how to submit a change |
+| [AGENTS.md](AGENTS.md) | The working rules for people and AI agents |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the code is laid out and where to change what |
+| [docs/DESIGN.md](docs/DESIGN.md) | The visual design, tokens, icons and wording |
+| [PARCHMENT_MEMORY.md](PARCHMENT_MEMORY.md) | Contracts that must not break |
+| [docs/FEATURE_COVERAGE.md](docs/FEATURE_COVERAGE.md) | What is implemented, partial or missing |
 
-## Acknowledgements & Design Inspirations
+## Acknowledgements
 
-Parchment stands on the shoulders of the open-source and design community:
-* **[Oh-My-Pi (`omp`)](https://github.com/can1357/oh-my-pi)** — Inspiration for long-horizon agentic orchestration, patient `10 × 60s` auto-retry resilience, live present-participle tool-intent telemetry, evidence-first verification gates, and lossless multi-turn `thought` + `signature` + `function_call`/`function_result` state reconstruction.
-* **[Kelivo](https://github.com/chevey339/kelivo)** — Inspiration for the multi-subpage Settings architecture, independent `[ Assistants | Chats ]` workflow, task-specific Default Models, wall-clock token throughput (`tok/s`) & per-request token usage accounting, and provider management ergonomics.
-* **[Anthropic Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) & [OpenAI Codex](https://github.com/openai/codex)** — Inspiration for autonomous `/goal` execution, `TodoWrite` checklist verification, stop-hook work-check gates, context compaction (`/compact`, `/btw`, `/rewind`), and live `Steer` / `Queue` controls.
-* **[iA Writer](https://ia.net/writer) & [Craft](https://www.craft.do/)** — Inspiration for the warm Sepia & Espresso editorial typography, distraction-free reading canvas, and dialogue/narration ink contrast.
-* **[Linear](https://linear.app/) & [Raycast](https://www.raycast.com/)** — Inspiration for keyboard-first command ergonomics, tactile spring-physics hover/press feedback, and high-refresh-rate responsiveness.
-* **[SillyTavern](https://github.com/SillyTavern/SillyTavern)** — Inspiration for `.png` Character Card V2/V3 (`chara` / `ccv3`) metadata compatibility, keyword-triggered World Book / Lorebook fragments, and co-writing helpers.
-* **[LobeHub Icons (`@lobehub/icons-static-svg`)](https://github.com/lobehub/lobe-icons)** — Open-source AI / LLM model and lab SVG vector logo collection.
-* **[models.dev](https://models.dev/)** — Live open model context-window and token-pricing registry.
----
+- [Oh-My-Pi](https://github.com/can1357/oh-my-pi): long-running agent loops and patient retries.
+- [Kelivo](https://github.com/chevey339/kelivo): settings structure, task-specific default models and usage accounting.
+- [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) and [OpenAI Codex](https://github.com/openai/codex): goals, todo checklists, compaction, and steering a running reply.
+- [iA Writer](https://ia.net/writer) and [Craft](https://www.craft.do/): the reading-first page.
+- [SillyTavern](https://github.com/SillyTavern/SillyTavern): character card and lorebook compatibility.
+- [LobeHub Icons](https://github.com/lobehub/lobe-icons): AI lab logos.
+- [models.dev](https://models.dev/): context window and pricing data.
 
 ## License
 
-Released under the [MIT License](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+[MIT](LICENSE).

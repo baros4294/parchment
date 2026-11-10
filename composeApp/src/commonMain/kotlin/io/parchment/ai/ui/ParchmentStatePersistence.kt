@@ -116,23 +116,12 @@ data class SlashCommandSpec(
 
 internal val BUILTIN_SLASH_COMMANDS = listOf(
     SlashCommandSpec("/goal", "🎯 /goal", "Autonomous multi-step goal & verification checklist", takesArgument = true),
-    SlashCommandSpec("/btw", "💬 /btw", "Side-question (auto-muted from context once answered)", takesArgument = true),
+    SlashCommandSpec("/btw", "💬 /btw", "Side question (left out of the chat once answered)", takesArgument = true),
     SlashCommandSpec("/compact", "⚡ /compact", "Summarize older turns into Memory & mute them", takesArgument = false),
     SlashCommandSpec("/summarize", "✦ /summarize", "Update rolling Story / Continuity Summary", takesArgument = false),
     SlashCommandSpec("/continue", "→ /continue", "Continue the last Assistant reply seamlessly", takesArgument = false),
     SlashCommandSpec("/rewind", "↺ /rewind", "Remove the last turn pair from this chat", takesArgument = false),
     SlashCommandSpec("/clear", "🗑 /clear", "Clear all messages in the current chat", takesArgument = false)
-)
-
-internal val THINKING_EFFORT_PRESETS = listOf(
-    "none",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "adaptive",
-    "auto"
 )
 
 /** Maximum number of simultaneously open chat tabs before MRU eviction kicks in. */
@@ -272,7 +261,7 @@ internal data class LiveAgentPeekInfo(
 
 /**
  * Extracts either the active/latest Tool Peek (`isToolPeek = true`) or the latest Thought Peek (`isToolPeek = false`)
- * when the user collapses the full Reasoning & Tool Timeline into Compact Peek mode while the agent is working.
+ * when the user collapses the full Thinking and tool steps into Compact Peek mode while the agent is working.
  */
 internal fun extractLatestAgentPeek(variant: MessageVariant): LiveAgentPeekInfo {
     val tools = variant.toolCalls
@@ -415,7 +404,6 @@ internal fun buildFreshSessionForAssistant(
 }
 
 private val EMPTY_STUB_VARIANT = MessageVariant(id = "stub-var", content = "")
-private val EMPTY_STUB_NODE = MessageNode(id = "stub-node", role = MessageRole.USER, variants = listOf(EMPTY_STUB_VARIANT))
 
 /**
  * Strips duplicate in-memory base64 strings from attachments when `localFilePath` is already persisted on disk,
@@ -563,7 +551,8 @@ internal fun dehydrateChatSessionToCompactStub(session: ChatSession): ChatSessio
     )
     val stubList = ArrayList<MessageNode>(msgCount)
     for (i in 0 until msgCount - 1) {
-        stubList.add(EMPTY_STUB_NODE)
+        // The chat list needs a unique id for each row, and a stub is on screen until the real chat loads.
+        stubList.add(MessageNode(id = "stub-node-$i", role = MessageRole.USER, variants = listOf(EMPTY_STUB_VARIANT)))
     }
     stubList.add(stubLastNode)
     return session.copy(
@@ -596,7 +585,7 @@ internal fun hydrateSessionFromDiskIfNeeded(session: ChatSession): ChatSession {
 }
 
 /**
- * Ensures the active session (and any actively streaming sessions) are 100% hydrated in RAM while
+ * Keeps the active session (and any streaming sessions) fully loaded in memory while
  * dehydrating inactive historical sessions to compact stubs after saving them to disk if needed.
  */
 internal fun ensureActiveSessionHydratedAndDehydrateOthers(
@@ -661,7 +650,7 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
         val fullDiskSession = pendingFull ?: raw?.let {
             runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull()
         }?.takeIf { it.id == session.id }
-        check(fullDiskSession != null) { "Complete chat data is unavailable; refusing to save a compact preview." }
+        check(fullDiskSession != null) { "This chat's full data isn't available, so it wasn't saved." }
         val merged = mergeSessionMetadata(fullDiskSession, session)
         val encoded = compactStateJson.encodeToString(ChatSession.serializer(), merged)
         PlatformBridge.saveChatSessionJson(merged.id, encoded)
@@ -724,7 +713,7 @@ internal fun buildExportZipFileNameForChat(session: ChatSession): String =
 
 internal fun encodeChatSessionJsonForExport(session: ChatSession): ByteArray {
     val full = hydrateSessionFromDiskIfNeeded(session)
-    check(!full.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
+    check(!full.isCompactStub) { "This chat's full data isn't available, so it wasn't exported." }
     return io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
         .encodeToString(ChatSession.serializer(), full).encodeToByteArray()
 }
@@ -749,7 +738,7 @@ private fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
     val mediaFileEntries = mutableListOf<Pair<String, String>>()
     val prettyJson = io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
     val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
-    check(!fullSession.isCompactStub) { "Complete chat data is unavailable; refusing to export a compact preview." }
+    check(!fullSession.isCompactStub) { "This chat's full data isn't available, so it wasn't exported." }
     val safeSessId = fullSession.id.trim().replace(EXPORT_UNSAFE_CHAR_REGEX, "_").ifBlank { "session" }
     val portableMessages = fullSession.messages.map { node ->
         node.copy(

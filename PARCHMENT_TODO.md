@@ -1,71 +1,68 @@
 # Parchment TODO
 
-Updated 2026-11-10. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and locally verified; 10.5 is the final Git lock.
+Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and locally verified; 10.5 is the final Git lock.
 
 ## Current status
 
-- **Source:** `main` (second user-requested lock, 2026-11-10; see `git log`) holds everything checked below, including the Parchment default, icon family, native Windows caption, UI sweep, contracts 4.1–4.4 and efficiency 5.2–5.4.
-- **Last verified:** all 303 desktop tests and the Android Kotlin compile pass at 2.0.64/264 (`verify.py status` shows the latest). Android pickers and export dialogs still need a real run at 10.3.
-- **Published:** v2.0.65/265 (run 42616265429) is verified off-device only. Each early source push needs a fresh user request; no device access. To rebuild only Windows, run the workflow with `reuse_android_run` set to the run whose APK to keep.
-- **Next action:** performance baselines 7.1, then the order below. Real Windows and Android review of the UI is at 10.3.
-- **Phone:** unplugged. Do source and local work only. At 10.3, stop and request reconnection and ADB authorization. Device-dependent items stay unchecked until then.
+- **Source:** `main` holds everything checked below (final commit 2026-11-11; see `git log`).
+- **Last verified:** final gate 2026-11-11: 385 desktop tests, Android compile, release APK and Windows distributable pass. The phone runs that 2.0.68 build.
+- **Published:** v2.0.67 (run 42787738614: Windows rebuilt, run 67's APK kept) is verified off-device only. Each early source push needs a fresh user request; no device access. To rebuild only Windows, run the workflow with `reuse_android_run` set to the run whose APK to keep.
+- **Next action:** the open items above, as the user chooses. The user runs 4.1 with keys; give them the steps. 6.3 can run once the next release is published.
+- **Phone:** scripted taps must confirm Parchment is in front. The user chose to stop device testing here (2026-11-11); unchecked device items below are untested, not passed.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Otherwise small, clear fixes come before long audits.
 
-1. **4.1, 2.5, 3.4:** what is left needs provider keys or the phone.
-2. **7.4:** split ParchmentApp and SettingsPages once state ownership is decided.
-3. **7.1–7.3, 7.5:** measured efficiency and work bounds.
-4. **9.2–9.5:** core gaps, complete workflows, skills and MCP, computer and phone use.
-5. **10.2–10.6, 3.5:** final audit, one platform and device matrix, docs, one commit and push, final cleanup.
+Remaining: the open items above, as the user chooses.
 
 ## Open tasks
 
 ### Access, process and recovery
 
-- [ ] **2.5 Shell ownership:** the owned-session protocol is proven under a real shell. Remaining: Android descendant cleanup on a device at 10.3.
-- [ ] **3.4 Android:** verify specialUse, visible foreground startup, application context, permission refresh and bounded liveness-based CPU leases; surface promotion and lock errors; no phantom notifications. Stash 7e1827538dd5e9bbf8ad836346bbeda62577104c is merged locally; keep it until device integration passes. Whole-run ownership, approval waits and device instrumentation remain.
-- [ ] **3.5 Device matrix:** app switch, screen off/Doze, denied notifications, compaction, two runs, approval waits, process death/recovery and cleanup on the Android 17 handset. Explain real sleep and battery limits.
+- [ ] **2.5 Shell ownership:** the owned-session protocol is proven under a real shell. Left: Android descendant cleanup on a device.
+- [ ] **3.4 Android:** verify specialUse, visible foreground startup, application context, permission refresh and bounded liveness-based CPU leases; surface promotion and lock errors; no phantom notifications. Whole-run ownership, approval waits and device instrumentation remain.
+- [ ] **3.5 Device matrix:** passed on the Android 17 handset: app switch, screen off, two runs, approval waits, process death, Stop and chat switching. Left: denied notifications (skipped), compaction, Doze. Explain real sleep and battery limits.
 
 ### Protocols
 
-- [ ] **4.1 Replay:** schema and isolation audit is done against current docs (4.1a). Remaining: a live round trip on each provider needs keys; the docs did not settle generateContent's per-part signature rules or whether Responses reasoning items need `id`; Anthropic redacted_thinking is not saved, so an interrupted tool turn relies on the fold retry.
-
-### Token efficiency
-
+- [ ] **4.1 Replay (user-tested):** schema and isolation audit is done against current docs (4.1a). The user runs the keyed round trips; give them the test steps at the end (decision, 2026-11-10). Open: the docs did not settle generateContent's per-part signature rules or whether Responses reasoning items need `id`; Anthropic redacted_thinking is not saved, so an interrupted tool turn relies on the fold retry.
 
 ### Updates
 
-- [ ] **6.3 OTA:** verified staging (6.3a) is done, and updates refuse to start or install while chats are running or prompts are queued (6.3b). Remaining: real silent-install and PackageInstaller runs at 10.3.
+- [ ] **6.3 OTA:** verified staging (6.3a) is done, and updates refuse to start or install while chats are running or prompts are queued (6.3b). Left: real silent-install and PackageInstaller runs, which need a newer published release.
 
 ### Performance and maintainability
 
-- [ ] **7.1 Baselines:** measure cold/warm first useful frame and typing, idle heap/working set, CPU/disk/network and sustained streaming on desktop and Android.
-- [ ] **7.2 Startup/state:** move safe loads, migrations, fonts, tokenizer, discovery and composition-time image decoding off the UI path; bound queues, caches and inactive payloads. Check: large chats/vaults and lifecycle equivalence.
-- [ ] **7.3 Incremental work:** replace repeated buffer scans/serialization/copies with correct incremental work; retain bounded wire previews. Check: Unicode/chunk equivalence and allocation measurements.
-- [ ] **7.4 Modules:** dead code, unused imports and the unused resources dependency are gone; identical workspace-edit and media-storage code is shared in jvmShared (7.4a). AiProviderEngine went from 8.2k to 1.4k lines across 12 per-protocol and per-concern files, with code lines verified unchanged apart from header comments, visibility and extension receivers (7.4b). Remaining: split ParchmentApp (8k) and SettingsPages (5k); their composables share local state, so this needs explicit state ownership, not a mechanical move. Check: behavior equivalence before and after. workspaceList, Glob and Search differ deliberately (desktop tree cache); a few functions are kept only as test seams for real import/export paths.
-- [ ] **7.5 Renderers:** bound recursion and repeated Markdown/LaTeX/SVG/icon parsing. Check: nested, fuzz and pathological inputs on both platforms.
+- [ ] **7.1 Baselines:** repeatable desktop fixture numbers come from `PerformanceBaselineTest`. Left: the real app's cold/warm first frame, typing, idle memory, CPU/disk/network and sustained streaming, on desktop and Android.
+- [ ] **7.2 Startup/state:** chat images decode off the UI thread and desktop startup costs measure small. Left: recheck on Android; large vault and lifecycle checks.
+- [x] **7.3 Incremental work:** word counts and open code fences scan only new text, with chunk and Unicode equivalence tests; a streamed split inside an open fence no longer breaks it; replies over 32k chars refresh every 48–96 ms.
+- [x] **7.4 Modules:** the provider engine, Settings and ParchmentApp are split into focused files with code lines proven unchanged; streaming and summaries reach app state only through explicit holders (ChatRunHosts.kt). workspaceList, Glob and Search differ deliberately (desktop tree cache).
+- [ ] **7.5 Renderers:** Markdown, LaTeX and SVG are depth- and size-bounded, with linear SVG scanning; nested, fuzz and pathological inputs pass on desktop. Left: the same check on Android.
 
 ### UI
 
-- [ ] **8.2 Fit:** screen, long-name and cost-label work is done. Remaining: IME and rotation on a device at 10.3.
-- [ ] **8.3 Motion/access:** the Reduce motion setting is done. Remaining: confirm Android's system animation scale and handset reader checks at 10.3.
+- [x] **8.2 Fit:** screen, long-name and cost-label work; keyboard and rotation pass on the Android 17 phone.
+- [ ] **8.3 Motion/access:** the Reduce motion setting is done. Left: Android's system animation scale and a screen reader on the phone (skipped by the user).
 
 ### Workflows
 
-- [ ] **9.2 Gaps:** implement confirmed essential gaps as small, testable tasks without unsupported completeness claims.
-- [ ] **9.3 Workflows:** verify complete agent, daily-chat and roleplay flows and update docs/FEATURE_COVERAGE.md.
-- [ ] **9.4 Skills and MCP:** add agent skills and MCP server support, under the existing tool permissions and approvals. Check: a real skill and MCP server work end to end; disabled or unapproved tools stay blocked.
-- [ ] **9.5 Computer and phone use:** let the agent see and operate the Windows desktop and Android phone, with explicit opt-in, per-action approval and an always-available Stop. Check: real tasks on both platforms; denied or stopped actions never run. Device runs wait for 10.3.
+- [x] **9.2 Gaps:** full-history search, the `ask_user` question tool and lossless V2/V3 card export.
+- [x] **9.3 Workflows:** agent, daily-chat and roleplay journeys run end to end on desktop.
+- [x] **9.4 Skills and MCP:** workspace skills load on demand. MCP servers connect over HTTP on both platforms and as local processes on desktop, for both protocol generations, under the existing approvals. Proven against a real local process and HTTP fixtures; no third-party server has been run yet.
+- [x] **9.6 Composer controls:** thinking and duration sliders, aspect ratio tiles and resolution buttons, each with a custom value.
+- [x] **9.7 Subagents:** a delegate tool with its own context, read-only, no nesting, counted toward spend. Custom helpers from files can come later.
+- [x] **9.8 Browse:** search the official MCP Registry from Settings (hosted servers only); install a skill from a GitHub link.
+- [x] **9.5 Computer and phone use:** off by default, every action approved, Stop and denial proven. Screenshot, tap and denial pass on the phone; the user confirmed a real task on Windows (2026-11-11).
 
 ### Final gate
 
-- [ ] **10.2 Final audit:** recheck every public boundary, error, recovery and performance path; resolve critical/high findings. Known input: `.mp4` and image URLs in model text download without the public-web address guard (responses are stored as media, not returned to the model); decide whether to apply it.
-- [ ] **10.3 One final matrix:** desktopTest, compileDebugKotlinAndroid, assembleRelease, createDistributable and the desktop/device runtime matrix. Rerun only what failures affect.
-- [ ] **10.4 Docs:** concise MEMORY, TODO, README and CONTRIBUTING with actual results and practical limits.
-- [ ] **10.5 One final commit/push:** only after every required step and final verification pass; confirm origin/main reachability.
-- [ ] **10.6 Final cleanup:** after every other task here is finished, clean up the Parchment codebase and the Parchment GitHub repository. Confirm destructive or public GitHub changes (branches, tags, releases) with the user first.
+- [x] **10.2 Final audit:** a 2026-11-10 review of all uncommitted work and a pass over device control found 13 issues, all fixed; URLs in model text reach only the public web or the provider's own server.
+- [x] **10.3 Matrix:** gate passed 2026-11-11 (385 tests, Android compile, release APK, Windows distributable). Phone and Windows runs found and fixed the approval mismatch and crashes on Stop and chat switching. Remaining device items stay open by user decision.
+- [x] **10.4 Docs:** MEMORY, TODO, README, CONTRIBUTING and coverage state actual results and limits.
+- [x] **10.5 One final commit/push:** one commit on `main` after `affected` passed (385 tests, 2026-11-11), pushed to origin.
+- [x] **10.6 Final cleanup:** marketing comments and the idle notification title made plain; stale TODO lines fixed; old stash dropped. GitHub (user-approved, 2026-11-11): 48 old releases and tags deleted (v2.0.62–v2.0.67 kept), plain description, topics, wiki off.
+- [x] **10.7 Professional handover:** plain README, CONTRIBUTING with a submit checklist, docs/ARCHITECTURE.md (layout, a chat turn, where to change what), AGENTS.md pointer, pull request and bug report templates.
 
 ## Completed
 
@@ -111,6 +108,8 @@ Confirmed critical or high defects always go first. Otherwise small, clear fixes
 - [x] **10.2b CI signer setup:** run 42616265429 published v2.0.65; APK digest, certificate and metadata verified.
 - [x] **10.2c Signing fallback:** blank key password falls back to the store password; key retrieval validated before packaging.
 
+- [x] **8.4 Plain language:** on-screen jargon replaced; docs/DESIGN.md holds the word list.
+- [x] **4.5 Turn order:** text written between tools stays in order on screen and in replay on every wire; Responses message phases are kept.
 - [x] **11.1 Workflow:** `scripts/verify.py` is the single check command: it remembers verified files, reports exact failures and blocks concurrent runs. `scripts/quality.py` enforces encoding, unused imports, dead code, file-size ratchets, banned patterns, doc budgets and tracked secrets, locally and in CI. AGENTS.md is harness-neutral with thin entry points. Compile, test, filter and concurrency failures were each proven on real runs.
 
 ## Sources

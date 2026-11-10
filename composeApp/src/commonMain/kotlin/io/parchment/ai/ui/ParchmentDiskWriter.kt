@@ -157,7 +157,7 @@ internal class ParchmentDiskWriter(
         }
         val error = failure
         if (error != null) {
-            errorState.value = error.message?.take(1000) ?: "Unable to persist local changes."
+            errorState.value = error.message?.take(1000) ?: "Your changes could not be saved."
             throw error
         } else {
             pending.update { latest ->

@@ -12,6 +12,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GoalTrackerState
@@ -667,11 +668,12 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
             onToolCall = onToolCall,
             onGoalProgress = onGoalProgress
         )
+        if (batchRecords.any { it.hasScreenshot }) extraLoopMessages.dropOlderAnthropicScreenshots()
         val toolResultBlocks = batchRecords.map { rec ->
             buildJsonObject {
                 put("type", "tool_result")
                 put("tool_use_id", rec.id)
-                put("content", rec.resultText)
+                put("content", anthropicToolResultContent(rec))
                 if (rec.isError) put("is_error", true)
             }
         }
@@ -761,6 +763,8 @@ internal fun AiProviderEngine.buildAnthropicBaseMessages(
             val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
             val thinkSig = nodeVar?.thinkingSignature.orEmpty()
             val toolCalls = nodeVar?.toolCalls.orEmpty()
+            val turnText = turnTextLayout(text, toolCalls)
+            val finalText = stripInlineErrorNotices(turnText.finalText)
             val isOlderAssistantTurn = idx < lastAssistantIdx
 
             if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
@@ -777,6 +781,7 @@ internal fun AiProviderEngine.buildAnthropicBaseMessages(
             } else if (toolCalls.isNotEmpty()) {
                 val batches = groupToolCallsIntoStepBatches(
                     toolCalls = toolCalls,
+                    beforeTool = turnText.beforeTool,
                     fallbackTurnSignature = thinkSig,
                     fallbackTurnThinking = thinkSummary
                 )
@@ -795,6 +800,12 @@ internal fun AiProviderEngine.buildAnthropicBaseMessages(
                             put("type", "thinking")
                             put("thinking", batchThinking)
                             put("signature", batchSig)
+                        })
+                    }
+                    if (batch.precedingText.isNotBlank()) {
+                        assistantToolBlocks.add(buildJsonObject {
+                            put("type", "text")
+                            put("text", batch.precedingText.trimEnd())
                         })
                     }
                     for ((tc, callId) in batch.calls.zip(callIds)) {
@@ -827,13 +838,13 @@ internal fun AiProviderEngine.buildAnthropicBaseMessages(
                     appendRoleBlocks("user", userResultBlocks)
                 }
 
-                if (cleanText.isNotBlank()) {
+                if (finalText.isNotBlank()) {
                     appendRoleBlocks(
                         "assistant",
                         listOf(
                             buildJsonObject {
                                 put("type", "text")
-                                put("text", cleanText)
+                                put("text", finalText)
                             }
                         )
                     )

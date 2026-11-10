@@ -12,6 +12,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
@@ -451,13 +452,15 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
                 put("content", rec.resultText)
             })
         }
+        if (batchRecords.any { it.hasScreenshot }) extraToolMessages.dropOlderScreenshotEntries()
+        batchRecords.filter { it.hasScreenshot }.forEach { extraToolMessages.add(chatScreenshotMessage(it)) }
         val trippedReason = circuitBreaker.checkTripped()
         if (trippedReason != null) {
             onStatus(trippedReason)
             break
         }
     }
-    extractMarkdownImagesFromText(fullTextAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id)
+    extractMarkdownImagesFromText(fullTextAccumulator.toString(), profile.mediaAspectRatio, onMedia, sessionId = session.id, providerBaseUrl = profile.baseUrl)
 }
 
 /** Reasoning text stays with its own wire family; these turns carry it in the handoff note instead. */
@@ -546,6 +549,8 @@ internal fun AiProviderEngine.buildOpenAiChatCompletionsMessages(
             val cleanText = stripInlineErrorNotices(text)
             val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
             val toolCalls = nodeVar?.toolCalls.orEmpty()
+            val turnText = turnTextLayout(text, toolCalls)
+            val finalText = stripInlineErrorNotices(turnText.finalText)
             val isOlderAssistantTurn = idx < lastAssistantIdx
             val replayReasoning = !foldHistoricalToolsToText && nodeVar?.providerProtocol !in REASONING_FOREIGN_TO_CHAT
             if (foldHistoricalToolsToText && toolCalls.isNotEmpty()) {
@@ -557,6 +562,7 @@ internal fun AiProviderEngine.buildOpenAiChatCompletionsMessages(
             } else if (toolCalls.isNotEmpty()) {
                 val batches = groupToolCallsIntoStepBatches(
                     toolCalls = toolCalls,
+                    beforeTool = turnText.beforeTool,
                     fallbackTurnSignature = "",
                     fallbackTurnThinking = thinkSummary
                 )
@@ -569,6 +575,7 @@ internal fun AiProviderEngine.buildOpenAiChatCompletionsMessages(
                         if (replayReasoning && batch.precedingThinking.isNotBlank()) {
                             put("reasoning_content", batch.precedingThinking)
                         }
+                        if (batch.precedingText.isNotBlank()) put("content", batch.precedingText)
                         putJsonArray("tool_calls") {
                             for ((tc, callId) in batch.calls.zip(callIds)) {
                                 add(buildJsonObject {
@@ -598,11 +605,11 @@ internal fun AiProviderEngine.buildOpenAiChatCompletionsMessages(
                         })
                     }
                 }
-                if (cleanText.isNotBlank()) {
+                if (finalText.isNotBlank()) {
                     val closingReasoning = nodeVar?.trailingThinking.orEmpty()
                     messages.add(buildJsonObject {
                         put("role", "assistant")
-                        put("content", cleanText)
+                        put("content", finalText)
                         if (replayReasoning && closingReasoning.isNotBlank()) {
                             put("reasoning_content", closingReasoning)
                         }

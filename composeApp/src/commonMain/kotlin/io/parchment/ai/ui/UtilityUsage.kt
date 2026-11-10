@@ -18,7 +18,7 @@ import io.parchment.ai.model.ChatSession
 import io.parchment.ai.network.aggregateApiUsageRecords
 
 internal fun ChatSession.withUtilityUsage(record: ApiUsageRecord): ChatSession {
-    require(record.ownerSessionId.isBlank() || record.ownerSessionId == id) { "Utility usage belongs to a different chat." }
+    require(record.ownerSessionId.isBlank() || record.ownerSessionId == id) { "This background usage belongs to a different chat." }
     val index = utilityUsageRecords.indexOfFirst { it.requestId == record.requestId }
     val records = if (index < 0) utilityUsageRecords + record
         else utilityUsageRecords.toMutableList().also { it[index] = record }
@@ -33,8 +33,8 @@ internal fun UtilityUsageSummary(records: List<ApiUsageRecord>) {
     var expanded by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val cost = SessionSpendSummary(metrics, 0.0, 0).label
-        BasicText("Utility requests: ${metrics.reportedRequests} · $cost", style = palette.uiBodyStyle)
-        SepiaButton(if (expanded) "Hide utility usage" else "Show utility usage", compact = true,
+        BasicText("Background requests: ${metrics.reportedRequests} · $cost", style = palette.uiBodyStyle)
+        SepiaButton(if (expanded) "Hide background usage" else "Show background usage", compact = true,
             style = SepiaButtonStyle.GHOST, onClick = { expanded = !expanded })
         if (expanded) Column(Modifier.heightIn(max = 200.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -46,7 +46,7 @@ internal fun UtilityUsageSummary(records: List<ApiUsageRecord>) {
                     "compaction" -> "Compaction"
                     "translation" -> "Translation"
                     "draft" -> "Reply drafts"
-                    else -> "Other utility requests"
+                    else -> "Other background requests"
                 }
                 BasicText("$label · ${part.reportedRequests} requests", style = palette.uiBodyStyle)
                 BasicText("Input ${part.inputTokens} · output ${part.outputTokens} · reasoning ${part.reasoningTokens}", style = palette.uiLabelStyle)

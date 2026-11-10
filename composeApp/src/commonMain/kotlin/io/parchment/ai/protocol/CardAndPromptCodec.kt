@@ -8,6 +8,7 @@ import io.parchment.ai.model.ThemeConfig
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -16,8 +17,6 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -37,6 +36,11 @@ object CardAndPromptCodec {
         isLenient = true
         encodeDefaults = true
     }
+
+    private val LORE_FRAGMENT_ID = Regex("""^cb-frag-(\d+)-""")
+
+    /** Cards live in app state, so an embedded-image card is imported without its raw copy. */
+    private const val MAX_PRESERVED_CARD_CHARS = 512 * 1024
 
     private val PNG_SIGNATURE = byteArrayOf(
         0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
@@ -132,8 +136,7 @@ object CardAndPromptCodec {
         // Extract character_book lore entries (V2 / V3 card format) into Composable Fragments
         val parsedFragments = mutableListOf<ContextFragment>()
         val charBookObj = (dataObj["character_book"] as? JsonObject) ?: (root["character_book"] as? JsonObject)
-        val entriesArr = (charBookObj?.get("entries") as? JsonArray) ?: (charBookObj?.get("entries") as? JsonObject)?.values?.let { JsonArray(it.toList()) }
-        if (entriesArr != null) {
+        loreEntries(charBookObj).let { entriesArr ->
             entriesArr.forEachIndexed { idx, entryEl ->
                 val entry = entryEl as? JsonObject ?: return@forEachIndexed
                 val content = entry.str("content", "entry")
@@ -174,7 +177,8 @@ object CardAndPromptCodec {
             creatorNotes = dataObj.str("creator_notes", "creatorNotes", "comment"),
             tags = dataObj.strList("tags"),
             embeddedFragments = parsedFragments,
-            sourceFormat = spec
+            sourceFormat = spec,
+            sourceData = (root["data"] as? JsonObject)?.toString()?.takeIf { it.length <= MAX_PRESERVED_CARD_CHARS }.orEmpty()
         )
     }
 
@@ -201,59 +205,85 @@ object CardAndPromptCodec {
         )
     }
 
-    /**
-     * Exports a CharacterOrScenarioCard to clean V2/V3 + Parchment compatible JSON string.
-     */
-    fun exportCardToJson(card: CharacterOrScenarioCard): String {
-        val jsonObj = buildJsonObject {
-            put("spec", "chara_card_v2")
-            put("spec_version", "2.0")
-            put("name", card.name)
-            put("description", card.description)
-            put("personality", card.personality)
-            put("scenario", card.scenario)
-            put("first_mes", card.firstMessage)
-            put("mes_example", card.exampleDialogue)
-            put("system_prompt", card.systemPrompt)
-            put("post_history_instructions", card.postHistoryInstructions)
-            putJsonObject("data") {
+    private fun loreEntries(book: JsonObject?): List<JsonElement> = when (val entries = book?.get("entries")) {
+        is JsonArray -> entries
+        is JsonObject -> entries.values.toList()
+        else -> emptyList()
+    }
+
+    /** Lays Parchment's edits over the imported entry, so ordering, regex and vendor fields survive. */
+    private fun loreEntry(fragment: ContextFragment, order: Int, raw: JsonObject?): JsonObject {
+        val entry = LinkedHashMap<String, JsonElement>(raw ?: emptyMap())
+        val hasOwnName = (raw?.get("name") as? JsonPrimitive)?.content?.isNotBlank() == true
+        entry.getOrPut("id") { JsonPrimitive(order) }
+        entry["name"] = JsonPrimitive(fragment.title)
+        if (!hasOwnName || "comment" !in entry) entry["comment"] = JsonPrimitive(fragment.title)
+        entry["content"] = JsonPrimitive(fragment.content)
+        entry["enabled"] = JsonPrimitive(fragment.mode != FragmentActivationMode.MUTED)
+        if (fragment.mode != FragmentActivationMode.MUTED || "constant" !in entry) {
+            entry["constant"] = JsonPrimitive(fragment.mode == FragmentActivationMode.PINNED)
+        }
+        entry["keys"] = JsonArray(fragment.keywords.map(::JsonPrimitive))
+        entry.getOrPut("extensions") { JsonObject(emptyMap()) }
+        entry.getOrPut("insertion_order") { JsonPrimitive(order) }
+        entry.getOrPut("use_regex") { JsonPrimitive(false) }
+        return JsonObject(entry)
+    }
+
+    private fun loreBook(card: CharacterOrScenarioCard, preserved: JsonObject?): JsonObject? {
+        val rawEntries = loreEntries(preserved)
+        val written = card.embeddedFragments.mapIndexed { order, fragment ->
+            val rawIndex = LORE_FRAGMENT_ID.find(fragment.id)?.groupValues?.get(1)?.toIntOrNull()
+            loreEntry(fragment, order, rawIndex?.let { rawEntries.getOrNull(it) as? JsonObject })
+        }
+        // Entries with no text never reach the editor, so they can only be kept, not deleted.
+        val hidden = rawEntries.filter { element ->
+            val entry = element as? JsonObject ?: return@filter false
+            listOf("content", "entry").all { (entry[it] as? JsonPrimitive)?.content.isNullOrBlank() }
+        }
+        if (written.isEmpty() && hidden.isEmpty()) return null
+        val book = LinkedHashMap<String, JsonElement>(preserved ?: emptyMap())
+        book["entries"] = JsonArray(written + hidden)
+        book.getOrPut("extensions") { JsonObject(emptyMap()) }
+        return JsonObject(book)
+    }
+
+    internal fun cardDocument(card: CharacterOrScenarioCard, v3: Boolean): JsonObject {
+        val preserved = runCatching { prettyJson.parseToJsonElement(card.sourceData) as? JsonObject }.getOrNull()
+        val data = LinkedHashMap<String, JsonElement>(preserved ?: emptyMap())
+        data["name"] = JsonPrimitive(card.name)
+        data["description"] = JsonPrimitive(card.description)
+        data["personality"] = JsonPrimitive(card.personality)
+        data["scenario"] = JsonPrimitive(card.scenario)
+        data["first_mes"] = JsonPrimitive(card.firstMessage)
+        data["alternate_greetings"] = JsonArray(card.alternateGreetings.map(::JsonPrimitive))
+        data["mes_example"] = JsonPrimitive(card.exampleDialogue)
+        data["system_prompt"] = JsonPrimitive(card.systemPrompt)
+        data["post_history_instructions"] = JsonPrimitive(card.postHistoryInstructions)
+        data["creator_notes"] = JsonPrimitive(card.creatorNotes)
+        data["tags"] = JsonArray(card.tags.map(::JsonPrimitive))
+        data.getOrPut("creator") { JsonPrimitive("") }
+        data.getOrPut("character_version") { JsonPrimitive("") }
+        data.getOrPut("extensions") { JsonObject(emptyMap()) }
+        if (v3) data.getOrPut("group_only_greetings") { JsonArray(emptyList()) }
+        val book = loreBook(card, preserved?.get("character_book") as? JsonObject)
+        if (book != null) data["character_book"] = book else data.remove("character_book")
+        return buildJsonObject {
+            put("spec", if (v3) "chara_card_v3" else "chara_card_v2")
+            put("spec_version", if (v3) "3.0" else "2.0")
+            if (!v3) {
+                // Flat copies are for older V1 readers; V3 keeps its fields only inside `data`.
                 put("name", card.name)
                 put("description", card.description)
                 put("personality", card.personality)
                 put("scenario", card.scenario)
                 put("first_mes", card.firstMessage)
-                putJsonArray("alternate_greetings") {
-                    card.alternateGreetings.forEach { add(JsonPrimitive(it)) }
-                }
                 put("mes_example", card.exampleDialogue)
                 put("system_prompt", card.systemPrompt)
                 put("post_history_instructions", card.postHistoryInstructions)
-                put("creator_notes", card.creatorNotes)
-                putJsonArray("tags") {
-                    card.tags.forEach { add(JsonPrimitive(it)) }
-                }
-                if (card.embeddedFragments.isNotEmpty()) {
-                    putJsonObject("character_book") {
-                        putJsonArray("entries") {
-                            card.embeddedFragments.forEachIndexed { idx, frag ->
-                                add(buildJsonObject {
-                                    put("id", idx)
-                                    put("name", frag.title)
-                                    put("comment", frag.title)
-                                    put("content", frag.content)
-                                    put("enabled", frag.mode != FragmentActivationMode.MUTED)
-                                    put("constant", frag.mode == FragmentActivationMode.PINNED)
-                                    putJsonArray("keys") {
-                                        frag.keywords.forEach { add(JsonPrimitive(it)) }
-                                    }
-                                })
-                            }
-                        }
-                    }
-                }
             }
+            put("data", JsonObject(data))
         }
-        return prettyJson.encodeToString(JsonObject.serializer(), jsonObj)
     }
 
     /**
@@ -261,8 +291,9 @@ object CardAndPromptCodec {
      * If `basePngBytes` is null, generates a clean 32x32 Warm Sepia Parchment PNG automatically.
      */
     fun exportCardToPngBytes(card: CharacterOrScenarioCard, basePngBytes: ByteArray? = null): ByteArray {
-        val cardJson = exportCardToJson(card)
-        val base64Payload = Base64.encode(cardJson.encodeToByteArray())
+        fun payload(v3: Boolean) = Base64.encode(
+            prettyJson.encodeToString(JsonObject.serializer(), cardDocument(card, v3)).encodeToByteArray()
+        )
         val targetPng = if (basePngBytes != null && isPng(basePngBytes)) {
             basePngBytes
         } else {
@@ -271,8 +302,8 @@ object CardAndPromptCodec {
         return injectTextChunksIntoPng(
             pngBytes = targetPng,
             chunks = mapOf(
-                "chara" to base64Payload,
-                "ccv3" to base64Payload
+                "chara" to payload(v3 = false),
+                "ccv3" to payload(v3 = true)
             )
         )
     }

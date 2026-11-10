@@ -1,5 +1,6 @@
 package io.parchment.ai
 
+import io.parchment.ai.runtime.AppForeground
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -228,6 +229,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        AppForeground.markLeft()
         PlatformBridge.flushPendingStateNow()
         super.onStop()
     }
@@ -323,6 +325,7 @@ class MainActivity : ComponentActivity() {
      * Offers notification permission once while visible. Denial does not prevent a foreground service.
      */
     override fun onResume() {
+        AppForeground.markResumed()
         super.onResume()
         LongDecodeForegroundService.refreshNotificationNotice(applicationContext)
     }

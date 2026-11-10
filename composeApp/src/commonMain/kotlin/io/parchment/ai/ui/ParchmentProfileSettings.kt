@@ -30,7 +30,9 @@ import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.platform.PlatformBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** A chat with its own name keeps it; otherwise the profile name applies, including to {{user}}. */
 internal fun ChatSession.withProfileName(preferences: PreferencesConfig): ChatSession =
@@ -54,9 +56,7 @@ internal fun ProfilePicture(picture: ImageBitmap?, size: Dp) {
 internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (PreferencesConfig) -> Unit, onNotify: (String) -> Unit) {
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
-    val picture = remember(prefs.profilePicturePath) {
-        prefs.profilePicturePath.takeIf { it.isNotBlank() }?.let(PlatformBridge::loadImageBitmapFromFile)
-    }
+    val picture = rememberFileImage(prefs.profilePicturePath).bitmap
     SepiaSectionCard(title = "Your profile") {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             ProfilePicture(picture, 56.dp)
@@ -80,7 +80,7 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
                                 }
                                 val extension = picked.fileName.substringAfterLast('.', "png").lowercase()
                                 val saved = PlatformBridge.saveGeneratedMediaFile("profile-picture-${PlatformBridge.currentTimeMillis()}.$extension", picked.bytes)
-                                if (PlatformBridge.loadImageBitmapFromFile(saved) == null) {
+                                if (withContext(Dispatchers.Default) { PlatformBridge.loadImageBitmapFromFile(saved) } == null) {
                                     onNotify("That file could not be read as a picture.")
                                     return@launch
                                 }

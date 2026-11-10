@@ -7,6 +7,7 @@ These rules bind every contributor, person or agent, in any tool. Nothing may de
 1. Run `python scripts/verify.py status`. It prints pending files, the last verified result and TODO's current status.
 2. Do the **Next action**. Read other TODO or MEMORY sections only when the task needs them.
 3. Otherwise follow TODO's execution order. Confirmed critical or high defects always go first.
+4. New to the code? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) says where things live; [docs/DESIGN.md](docs/DESIGN.md) owns the look and wording.
 
 ## Work in bounded batches
 

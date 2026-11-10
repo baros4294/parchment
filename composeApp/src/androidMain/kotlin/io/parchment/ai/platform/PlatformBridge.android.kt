@@ -642,6 +642,13 @@ actual object PlatformBridge {
     actual fun fetchUrlText(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> =
         PublicWebTransport.fetch(url, maxChars, isCancelled)
 
+    actual fun fetchPublicBytes(url: String, maxBytes: Int, isCancelled: (() -> Boolean)?): Result<ByteArray> =
+        PublicWebTransport.fetchBytes(url, maxBytes, isCancelled)
+
+    actual val computerControl: ComputerControl get() = AndroidComputerControl
+    actual val supportsLocalMcpServers: Boolean = false
+    actual fun startMcpProcess(command: String): McpProcess? = null
+
 
     @Volatile
     private var lastReportedDecodeSec: Int = -1
@@ -764,6 +771,8 @@ actual object PlatformBridge {
     actual fun localFileSizeBytes(filePath: String): Long = mediaStore.sizeOf(filePath)
 
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)
+
+    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = synchronized(imageCache) { imageCache[filePath] }
 
     actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
         if (filePath.isBlank()) return null

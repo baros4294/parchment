@@ -30,6 +30,14 @@ class ParchmentHydrationPersistenceTest {
     )
 
     @Test
+    fun everyMessageInAStubHasAUniqueId() {
+        val messages = List(5) { MessageNode(id = "real-$it", role = MessageRole.USER, variants = listOf(MessageVariant(id = "v$it", content = "text"))) }
+        val stub = dehydrateChatSessionToCompactStub(full("stub-ids").copy(messages = messages))
+        assertEquals(5, stub.messages.size)
+        assertEquals(5, stub.messages.map { it.id }.toSet().size)
+    }
+
+    @Test
     fun queuedFullSnapshotWritesDespiteCurrentSessionDehydration() {
         val id = "test-full-after-stub-" + PlatformBridge.currentTimeMillis()
         val original = full(id)

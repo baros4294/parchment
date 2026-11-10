@@ -387,6 +387,79 @@ object WorkspaceHarness {
             }
         ),
         ToolDefinition(
+            name = ComputerUse.TOOL_NAME,
+            description = "See and control this device. The user approves every action. Start with action 'screenshot'; each other action returns a new screenshot. Coordinates are pixels in the latest screenshot.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("action") {
+                        put("type", "string")
+                        putJsonArray("enum") { listOf("screenshot", "click", "double_click", "right_click", "move", "type", "key", "scroll").forEach { add(JsonPrimitive(it)) } }
+                    }
+                    putJsonObject("x") { put("type", "integer") }
+                    putJsonObject("y") { put("type", "integer") }
+                    putJsonObject("text") { put("type", "string"); put("description", "Text to enter, for 'type'.") }
+                    putJsonObject("keys") { put("type", "string"); put("description", "For 'key', such as ctrl+c or enter. On Android: back, home or recents.") }
+                    putJsonObject("amount") { put("type", "integer"); put("description", "For 'scroll': positive scrolls down, negative up.") }
+                }
+                putJsonArray("required") { add(JsonPrimitive("action")) }
+            }
+        ),
+        ToolDefinition(
+            name = "agent_delegate",
+            description = "Hand a self-contained task to a helper with its own separate context, such as searching a large codebase. It can read and search but cannot change anything, and it returns only its findings, which keeps this conversation short. Give it everything it needs in the task, because it cannot see this conversation.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("task") {
+                        put("type", "string")
+                        put("description", "What the helper should find out, written so it makes sense on its own.")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("task")) }
+            }
+        ),
+        ToolDefinition(
+            name = "skill_load",
+            description = "Load the full instructions of a skill listed under Available skills. Use it when a skill's description fits the task.",
+            requiresWritePermission = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("name") {
+                        put("type", "string")
+                        put("description", "The skill's name, exactly as listed.")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("name")) }
+            }
+        ),
+        ToolDefinition(
+            name = "ask_user",
+            description = "Pause and ask the user a question only they can answer, such as a decision between real options or missing information. Do not use it for confirmation of work you can check yourself.",
+            requiresWritePermission = false,
+            requiresWorkspaceFolder = false,
+            parametersSchema = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("question") {
+                        put("type", "string")
+                        put("description", "The question, written so it makes sense on its own.")
+                    }
+                    putJsonObject("options") {
+                        put("type", "array")
+                        putJsonObject("items") { put("type", "string") }
+                        put("description", "Optional short answers to offer. The user can always type their own.")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("question")) }
+            }
+        ),
+        ToolDefinition(
             name = "goal_complete",
             description = "Signal that all steps and acceptance criteria of the active goal have been verified and completed.",
             requiresWritePermission = false,
@@ -453,12 +526,13 @@ object WorkspaceHarness {
         )
     )
 
-    fun allTools(): List<ToolDefinition> = ALL_TOOLS
+    fun allTools(): List<ToolDefinition> = ALL_TOOLS + McpRegistry.definitions.value
 
     private data class CachedWorkspaceContext(
         val timestampMs: Long,
         val fileNames: List<String>,
-        val combinedContent: String
+        val combinedContent: String,
+        val skills: List<WorkspaceSkill> = emptyList()
     )
 
     private val workspaceContextCache = mutableMapOf<String, CachedWorkspaceContext>()
@@ -497,9 +571,16 @@ object WorkspaceHarness {
                 }
             }
         }
+        val skills = scanSkills(cleanRoot)
+        if (skills.isNotEmpty()) {
+            sb.appendLine("#### Available skills")
+            sb.appendLine("Call `skill_load` with a skill's name when its description fits the task.")
+            skills.forEach { sb.appendLine("- ${it.name}: ${it.description}") }
+        }
         val fresh = CachedWorkspaceContext(
             timestampMs = now,
             fileNames = foundNames,
+            skills = skills,
             combinedContent = sb.toString().trim()
         )
         synchronized(workspaceContextCache) {
@@ -507,6 +588,53 @@ object WorkspaceHarness {
         }
         return fresh
     }
+
+    data class WorkspaceSkill(val name: String, val description: String, val path: String)
+
+    private const val SKILL_MAX_LINES = 2_000
+    private const val SKILL_MAX_DESCRIPTION_CHARS = 1_024
+    private const val SKILL_MAX_COUNT = 64
+    private val SKILL_FOLDERS = listOf(".parchment/skills", ".agents/skills", ".claude/skills")
+    private val SKILL_NAME = Regex("[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}")
+
+    /** Reads the `name` and `description` of a SKILL.md, including folded YAML descriptions. */
+    internal fun parseSkillHeader(text: String): Pair<String, String>? {
+        val lines = text.lines()
+        if (lines.firstOrNull()?.trim() != "---") return null
+        val end = lines.drop(1).indexOfFirst { it.trim() == "---" }
+        if (end < 0) return null
+        val header = lines.subList(1, end + 1)
+        fun field(key: String): String {
+            val at = header.indexOfFirst { it.startsWith("$key:") }
+            if (at < 0) return ""
+            val first = header[at].substringAfter(':').trim()
+            if (first.isNotEmpty() && first.first() !in ">|") return first.removeSurrounding("\"").removeSurrounding("'")
+            return header.drop(at + 1).takeWhile { it.isBlank() || it.first().isWhitespace() }.joinToString(" ") { it.trim() }.trim()
+        }
+        return field("name") to field("description")
+    }
+
+    private fun scanSkills(root: String): List<WorkspaceSkill> {
+        val found = linkedMapOf<String, WorkspaceSkill>()
+        for (folder in SKILL_FOLDERS) {
+            val entries = PlatformBridge.workspaceList(root, folder, recursive = false).getOrNull() ?: continue
+            for (entry in entries.lines().map { it.trim() }.filter { it.endsWith("/") }.sorted()) {
+                val path = "${entry}SKILL.md"
+                val numbered = PlatformBridge.workspaceRead(root, path, startLine = 1, maxLines = 40).getOrNull() ?: continue
+                // The reader adds a header line and line numbers for the model.
+                val text = numbered.lines().drop(1).joinToString("\n") { it.substringAfter(": ", "") }
+                val (declared, description) = parseSkillHeader(text) ?: continue
+                val name = declared.ifBlank { entry.trimEnd('/').substringAfterLast('/') }
+                if (description.isNotBlank() && SKILL_NAME.matches(name) && name !in found && found.size < SKILL_MAX_COUNT) {
+                    found[name] = WorkspaceSkill(name, description.take(SKILL_MAX_DESCRIPTION_CHARS), path)
+                }
+            }
+        }
+        return found.values.toList()
+    }
+
+    fun discoverSkills(workspaceRoot: String): List<WorkspaceSkill> =
+        if (workspaceRoot.isBlank()) emptyList() else getOrLoadWorkspaceContext(workspaceRoot).skills
 
     fun listDiscoveredContextFileNames(workspaceRoot: String): List<String> {
         if (workspaceRoot.isBlank()) return emptyList()
@@ -531,16 +659,17 @@ object WorkspaceHarness {
         policy: AgentPermissionPolicy? = null
     ): List<ToolDefinition> {
         val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
-        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool) return emptyList()
-        return ALL_TOOLS.filter { tool ->
+        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool && McpRegistry.definitions.value.isEmpty() && policy?.computerAccess != true) return emptyList()
+        return allTools().filter { tool ->
             if (policy != null && !policy.allowsTool(tool.name)) return@filter false
+            if (tool.name == ComputerUse.TOOL_NAME && policy?.computerAccess != true) return@filter false
             if (tool.name in setOf("web_search", "web_fetch") && !enableWebTools) return@filter false
             if (tool.name == "web_search" && !includeLocalWebSearchTool) {
                 return@filter false
             }
             if (!hasMountedWorkspace) {
-                if (!goalModeActive && (enableWebTools || includeLocalWebSearchTool)) {
-                    tool.name == "web_search" || tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll"
+                if (!goalModeActive) {
+                    tool.name == "web_search" || tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll" || tool.name == "ask_user" || tool.name == "agent_delegate" || tool.name == ComputerUse.TOOL_NAME || McpRegistry.isMcpTool(tool.name)
                 } else {
                     !tool.requiresWorkspaceFolder
                 }
@@ -687,6 +816,16 @@ object WorkspaceHarness {
             }
             "todo_write" -> "Updating task checklist"
             "goal_complete" -> "Verifying & completing goal"
+            "ask_user" -> "Waiting for your answer"
+            "skill_load" -> "Loading skill ${strArg("name")}"
+            "agent_delegate" -> "Helper working: ${strArg("task").take(80)}"
+            ComputerUse.TOOL_NAME -> when (strArg("action")) {
+                "screenshot" -> "Looking at the screen"
+                "click", "double_click", "right_click" -> "${strArg("action").replace('_', ' ').replaceFirstChar { it.uppercase() }} at ${strArg("x")}, ${strArg("y")}"
+                "type" -> "Typing: ${strArg("text").take(60)}"
+                "key" -> "Pressing ${strArg("keys")}"
+                else -> "Using the computer"
+            }
             "agent_memory" -> "Updating PARCHMENT_MEMORY.md (${strArg("action").ifBlank { "read" }})"
             "dice_roll" -> "Rolling ${strArg("expression").ifBlank { "1d20" }}"
             else -> "Executing $toolName"
@@ -772,6 +911,12 @@ object WorkspaceHarness {
                 }
                 "Updated Todo Checklist ($done/${parsed.size} completed, $active in_progress, $pending pending).\n$mdSummary"
             }
+            "skill_load" -> discoverSkills(workspaceRoot).find { it.name == strArg("name") }
+                ?.let { PlatformBridge.workspaceRead(workspaceRoot, it.path, startLine = 1, maxLines = SKILL_MAX_LINES) }
+                ?: Result.failure(IllegalArgumentException("No skill named '${strArg("name")}' is available in this workspace."))
+            ComputerUse.TOOL_NAME -> Result.failure(IllegalStateException("Computer control is not available in this run."))
+            "agent_delegate" -> Result.failure(IllegalStateException("Helpers are not available in this run."))
+            "ask_user" -> Result.failure(IllegalStateException("No one is available to answer in this run. Decide yourself and state your assumption."))
             "goal_complete" -> runCatching {
                 val summary = strArg("summary", "Goal completed.")
                 val verification = strArg("verification", "Verified all acceptance criteria.")
@@ -1365,7 +1510,7 @@ object WorkspaceHarness {
     }
 
     /**
-     * Executes a 100% free, zero-API-key multi-engine web search cascade:
+     * Runs a keyless web search across these engines in turn:
      * 1. DuckDuckGo HTML (`https://html.duckduckgo.com/html/?q=...`)
      * 2. Wikipedia OpenSearch / Query API (`https://en.wikipedia.org/w/api.php?...`)
      * 3. HackerNews Algolia Search API (`https://hn.algolia.com/api/v1/search?query=...`)

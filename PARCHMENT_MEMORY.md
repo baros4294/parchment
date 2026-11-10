@@ -1,12 +1,12 @@
 # Parchment Memory
 
-Updated 2026-11-10. Stable contracts only: read the section you need. AGENTS.md owns workflow; TODO owns progress.
+Updated 2026-11-11. Stable contracts only: read the section you need. AGENTS.md owns workflow; TODO owns progress.
 
 ## Standing decisions
 
 - Keep changes local until all TODO work and the final matrix pass, then one commit/push to origin/main. Never force-push, overwrite unrelated work or claim unverified completion.
 - No automatic local Git snapshots of verified batches (user decision, 2026-11-10); don't re-propose them.
-- The phone is unplugged until the final device gate; device-dependent checks stay unchecked until then.
+- Scripted phone taps must first confirm Parchment is in front.
 - Never optimize by losing history or instructions, weakening permissions, altering opaque signatures or silently enabling server storage.
 
 ## Project and build
@@ -20,6 +20,7 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 - Text files are UTF-8 without a BOM and use LF, except .bat and .iss. PowerShell scripts stay ASCII.
 - Never replace or copy builds into %LOCALAPPDATA%/Programs/Parchment. Installed Windows updates use GitHub Release OTA; test workspace artifacts.
 - Release uses DEX/lintVital; minification and shrinking are disabled, so do not call it R8 verification. generateBuildConfig declares appVersion, appVersionCode and githubRepo inputs.
+- Android aborted cancelling a 565-register coroutine; keep big suspend bodies split into local suspend functions.
 - Android signing is private-env-only: dot-source scripts/load-private-signer.ps1 and never regenerate the ignored local key. Public fingerprint: 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574. The legacy key is rejected; docs/RELEASE_SIGNING.md covers migration. Unset or blank key passwords resolve to the store password. All four encrypted CI signer secrets stay configured until a release ships that fix.
 - Desktop JVM flags: `-Xms32m -Xmx1024m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:-ShrinkHeapInSteps -XX:G1PeriodicGCInterval=8000 -XX:+G1PeriodicGCInvokesConcurrent`
 
@@ -39,6 +40,7 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 - WorkspacePathGuard checks real ancestors and rejects escaping links and junctions. PublicWebTransport binds connections to validated public DNS addresses and validates each redirect. Provider transport is separate.
 - SSE that closes without the provider's finish signal or `[DONE]` is an interruption, not an answer. AcceptedJobException marks work the provider accepted: poll it, never resubmit it.
 - Utility requests mask inherited tool context, disable tools and goal loops, and propagate cancellation.
+- computer_use is off by default: every action needs approval, with no run-wide grants. Screenshots stay out of chat state and only the newest is resent. Permits are claimed against permit.scope.
 
 ## Runs and timing
 
@@ -46,7 +48,7 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 - RunActivity and RunLeaseRegistry own elapsed time and absolute owner snapshots. Acquire before replacing or queueing workers; close only that lease on actual job completion. Exclude approval-only waits and subtract the union of active tool intervals once. Keep a visible Android service while waiting, with CPU and Wi-Fi holds released; heartbeats reconcile owners every 15 seconds.
 - Durations use Android uptime and desktop nanoTime. One-second samples exclude unobserved gaps over five seconds, so brief desktop suspension is a timing limit.
 - Windows power helper: synchronized owners, validated heartbeat, independent restart. Real sleep, Modern Standby and battery policy can still suspend execution.
-- Device: OnePlus PLZ110, Android 17/API 37. Installed verification APK is 2.0.64/264; newer source is not installed.
+- Device: OnePlus PLZ110, Android 17/API 37. The system can cut the network about 2 s after the app leaves the screen; the stall watch retries on return.
 
 ## Usage and cost
 
@@ -55,10 +57,15 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 
 - Keep request beginnings stable: stale tool output compacts in batches of 8, and keyword lore goes in the late note, not the system prompt.
 
+- Streamed Markdown: a cached split needs text after it, or an open fence breaks. Model text renderers keep their depth and size bounds; over a bound shows plain text.
+
+- MCP tools are `mcp__<server>__<tool>`, ask for approval like file changes, and imports drop local commands and disable the rest. Spec: 2025-11-25 handshake with fallback to 2026-07-28, checked 2026-11-10.
+
 ## Persistence
 
 - Layout: parchment-settings.json, backups/, chats/<id>/chat.json and per-chat media/. Keep safe legacy migration and portable relative export paths.
 - ChatSession.isCompactStub is transient. Hydrate from the full pending payload before disk. Never save, generate or export from an unavailable full chat. Merge background loads without replacing edits or resurrecting deletions.
+- Stub messages keep unique ids: the chat list keys on them.
 - appDiskWriter keeps the latest dirty revision per chat, settings and deletion, clears only matching successes and retries failures with backoff.
 - AtomicFileStorage and SnapshotFileStorage stage, sync and atomically replace, with no truncate fallback. Preserve valid backups and failed migration inputs; reject dot IDs, escapes and collisions. Close NIO readers before decoding to avoid Windows replacement starvation.
 - Strip attachment base64 only when the resolved local file is readable and nonempty.

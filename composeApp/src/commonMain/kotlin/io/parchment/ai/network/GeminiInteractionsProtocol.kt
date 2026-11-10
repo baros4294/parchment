@@ -13,6 +13,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
@@ -29,7 +30,6 @@ import io.parchment.ai.network.AiProviderEngine.RawWebCitation
 import io.parchment.ai.network.AiProviderEngine.ResolvedBinaryAttachment
 import io.parchment.ai.network.AiProviderEngine.StepRetriesExhaustedException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -198,8 +198,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                     put("store", false)
                 }
 
-                // Always stream SSE in real time so tokens & reasoning flow smoothly at 60/120fps;
-                // if `useBackgroundLongDecode` is enabled and the stream drops, we seamlessly poll `/interactions/{id}`!
+                // Always stream. With `useBackgroundLongDecode`, a dropped stream falls back to polling `/interactions/{id}`.
                 put("stream", true)
 
                 if (useChainedId) {
@@ -224,6 +223,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                                     }
                                 })
                             }
+                            pendingToolResults.filter { it.hasScreenshot }.forEach { add(interactionsScreenshotStep(it)) }
                         }
                     } else if (pendingStopHookPrompt.isNotBlank() && useChainedId) {
                         putJsonArray("input") {
@@ -1014,6 +1014,8 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                 }
             })
         }
+        if (results.any { it.hasScreenshot }) extraLoopSteps.dropOlderScreenshotEntries()
+        results.filter { it.hasScreenshot }.forEach { extraLoopSteps.add(interactionsScreenshotStep(it)) }
         pendingToolResults = results
         val trippedReason = circuitBreaker.checkTripped()
         if (trippedReason != null) {
@@ -1220,6 +1222,8 @@ internal fun AiProviderEngine.buildGeminiInteractionsTurnsArray(
             val thinkSummary = nodeVar?.thinkingSummary.orEmpty()
             val trailingThink = nodeVar?.trailingThinking.orEmpty()
             val toolCalls = nodeVar?.toolCalls.orEmpty()
+            val turnText = turnTextLayout(text, toolCalls)
+            val finalText = stripInlineErrorNotices(turnText.finalText)
             val isOlderAssistantTurn = idx < lastAssistantIdx
             var emittedThoughtForTurn = false
             var emittedAnyStepForTurn = false
@@ -1256,6 +1260,7 @@ internal fun AiProviderEngine.buildGeminiInteractionsTurnsArray(
                 if (toolCalls.isNotEmpty()) {
                     val batches = groupToolCallsIntoStepBatches(
                         toolCalls = toolCalls,
+                        beforeTool = turnText.beforeTool,
                         fallbackTurnSignature = if (isForeignProtocol) "" else rawSig,
                         fallbackTurnThinking = thinkSummary
                     )
@@ -1278,6 +1283,18 @@ internal fun AiProviderEngine.buildGeminiInteractionsTurnsArray(
                                 }
                             })
                             emittedThoughtForTurn = true
+                            emittedAnyStepForTurn = true
+                        }
+                        if (batch.precedingText.isNotBlank()) {
+                            stepsList.add(buildJsonObject {
+                                put("type", "model_output")
+                                putJsonArray("content") {
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", batch.precedingText)
+                                    })
+                                }
+                            })
                             emittedAnyStepForTurn = true
                         }
                         val callIds = replayIds.assign(batch.calls)
@@ -1330,7 +1347,7 @@ internal fun AiProviderEngine.buildGeminiInteractionsTurnsArray(
                     emittedAnyStepForTurn = true
                 }
                 val outputText = when {
-                    cleanText.isNotBlank() -> cleanText
+                    finalText.isNotBlank() -> finalText
                     !emittedThoughtForTurn && thinkSummary.isNotBlank() && toolCalls.isEmpty() -> {
                         "[Interrupted during reasoning — partial thoughts:\n$thinkSummary]"
                     }

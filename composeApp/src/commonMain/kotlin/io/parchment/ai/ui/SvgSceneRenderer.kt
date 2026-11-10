@@ -335,31 +335,76 @@ private fun SvgGradientDef.toComposeBrush(
     }
 }
 
-private val SVG_COMMENT_REGEX = Regex("(?s)<!--.*?-->")
-private val SVG_STYLE_TAG_REGEX = Regex("(?is)<style\\b[^>]*>(.*?)</style>")
-private val SVG_CSS_RULE_REGEX = Regex("""([^{]+)\{([^}]*)\}""")
-private val SVG_XML_TAG_REGEX = Regex("""<(/?)([a-zA-Z0-9:_-]+)([^>]*?)(/?)>""", RegexOption.DOT_MATCHES_ALL)
-private val SVG_ATTR_PAIR_REGEX = Regex("""([a-zA-Z0-9:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+private const val MAX_SVG_CHARS = 512 * 1024
+private const val MAX_SVG_TAGS = 20_000
+private const val MAX_SVG_DRAW_ITEMS = 6_000
+
+// Possessive runs and lookbehinds keep these linear: a failed match cannot be retried from inside a name.
+private val SVG_XML_TAG_REGEX = Regex("""<(/?)([a-zA-Z0-9:_-]++)([^<>]*?)(/?)>""", RegexOption.DOT_MATCHES_ALL)
+private val SVG_ATTR_PAIR_REGEX = Regex("""(?<![a-zA-Z0-9:_-])([a-zA-Z0-9:_-]++)\s*+=\s*+(?:"([^"]*+)"|'([^']*+)')""")
 private val SVG_WHITESPACE_REGEX = Regex("\\s+")
 private val SVG_WS_COMMA_REGEX = Regex("[\\s,]+")
 private val SVG_WS_COMMA_SLASH_REGEX = Regex("[\\s,/]+")
-private val SVG_TRANSFORM_FN_REGEX = Regex("""([a-zA-Z]+)\s*\(([^)]*)\)""")
+private val SVG_TRANSFORM_FN_REGEX = Regex("""(?<![a-zA-Z])([a-zA-Z]++)\s*+\(([^)]*+)\)""")
 private val SVG_NUMBER_TOKEN_REGEX = Regex("""[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?""")
 
+private fun stripSvgComments(raw: String): String {
+    val out = StringBuilder(raw.length)
+    var cursor = 0
+    while (true) {
+        val open = raw.indexOf("<!--", cursor)
+        if (open == -1) return out.append(raw, cursor, raw.length).toString()
+        out.append(raw, cursor, open)
+        val close = raw.indexOf("-->", open + 4)
+        if (close == -1) return out.toString()
+        cursor = close + 3
+    }
+}
+
+private fun svgStyleBodies(xml: String): List<String> {
+    val bodies = mutableListOf<String>()
+    var cursor = 0
+    while (true) {
+        val open = xml.indexOf("<style", cursor, ignoreCase = true)
+        if (open == -1) return bodies
+        val afterName = open + 6
+        if (afterName < xml.length && xml[afterName].isLetterOrDigit()) {
+            cursor = afterName
+            continue
+        }
+        val tagEnd = xml.indexOf('>', afterName)
+        if (tagEnd == -1) return bodies
+        val close = xml.indexOf("</style>", tagEnd + 1, ignoreCase = true)
+        if (close == -1) return bodies
+        bodies += xml.substring(tagEnd + 1, close)
+        cursor = close + 8
+    }
+}
+
+private inline fun forEachCssRule(css: String, action: (selectors: String, declarations: String) -> Unit) {
+    var cursor = 0
+    while (true) {
+        val open = css.indexOf('{', cursor)
+        if (open == -1) return
+        val close = css.indexOf('}', open + 1)
+        if (close == -1) return
+        action(css.substring(cursor, open), css.substring(open + 1, close))
+        cursor = close + 1
+    }
+}
+
 internal fun parseSvgSceneDocument(rawSvg: String, defaultCurrentColor: Color = Color.Black): SvgSceneDocument? {
-    val cleanXml = rawSvg
-        .replace(SVG_COMMENT_REGEX, "")
-        .trim()
+    if (rawSvg.length > MAX_SVG_CHARS) return null
+    val cleanXml = stripSvgComments(rawSvg).trim()
     val svgStart = cleanXml.indexOf("<svg", ignoreCase = true)
     if (svgStart == -1) return null
 
     // 1. Parse CSS <style> rules (.class or tag -> style map)
     val cssRules = mutableMapOf<String, Map<String, String>>()
-    SVG_STYLE_TAG_REGEX.findAll(cleanXml).forEach { m ->
-        val cssBody = m.groupValues[1]
-        SVG_CSS_RULE_REGEX.findAll(cssBody).forEach { ruleMatch ->
-            val selectors = ruleMatch.groupValues[1].split(',').map { it.trim() }.filter { it.isNotEmpty() }
-            val decls = parseInlineCssDeclarations(ruleMatch.groupValues[2])
+    svgStyleBodies(cleanXml).forEach { cssBody ->
+        forEachCssRule(cssBody) { selectorText, declarations ->
+            val selectors = selectorText.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val decls = parseInlineCssDeclarations(declarations)
             for (sel in selectors) {
                 cssRules[sel] = (cssRules[sel] ?: emptyMap()) + decls
             }
@@ -389,7 +434,9 @@ internal fun parseSvgSceneDocument(rawSvg: String, defaultCurrentColor: Color = 
     var activeGradientAttrs: Map<String, String> = emptyMap()
     val activeGradientStops = mutableListOf<Pair<Float, Color>>()
 
+    var tagCount = 0
     for (match in tagRegex.findAll(cleanXml, startIndex = svgStart)) {
+        if (++tagCount > MAX_SVG_TAGS) return null
         val isClosing = match.groupValues[1] == "/"
         val rawTagName = match.groupValues[2].substringAfter(':').lowercase()
         val attrBody = match.groupValues[3]
@@ -526,6 +573,7 @@ internal fun parseSvgSceneDocument(rawSvg: String, defaultCurrentColor: Color = 
                 currentStyle
             }
             drawItems.add(SvgRenderItem(shapePath, effectiveStyle, currentTransform))
+            if (drawItems.size > MAX_SVG_DRAW_ITEMS) return null
         }
 
         if (!isSelfClosing && (rawTagName == "svg" || rawTagName == "g" || rawTagName == "a")) {

@@ -42,3 +42,22 @@ The window uses the native caption, so minimize, maximize, Snap Layouts and roun
 ## Reviewing changes
 
 `python scripts/verify.py test UiGalleryTest` renders the real app at phone and desktop sizes, plus an icon sheet, into `.parchment-local/verification/gallery/`, using sample chats in the test sandbox.
+
+## Words on screen
+
+Write for a capable person who is not a developer. Say what a control does, not how it works.
+
+| Instead of | Say |
+|---|---|
+| Wire dialect, protocol | API format |
+| Base URL, endpoint | Server URL, address |
+| Compact, compaction | Shorten the conversation |
+| Context window | Conversation limit |
+| Steer | Send now |
+| Fork | Branch |
+| Mount | Choose folder |
+| Reasoning | Thinking |
+| Cache read, cache write | Reused, saved for reuse |
+| Utility requests | Background requests |
+
+Keep "API key", "tokens", "Markdown" and "World Book": people meet these terms outside Parchment. Show a term of art such as temperature beside a plain description.

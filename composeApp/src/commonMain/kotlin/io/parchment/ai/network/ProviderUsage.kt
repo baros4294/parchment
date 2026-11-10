@@ -206,6 +206,8 @@ internal class ProviderUsageLedger(
     }
 
     fun snapshots(): List<ApiUsageRecord> = records.values.toList()
+    /** Counts a helper's request as part of this run, keeping its own price and purpose. */
+    fun adopt(record: ApiUsageRecord) { records[record.requestId] = record }
     fun observeChargeComponent(component: String): ApiUsageRecord? {
         val record = records.values.lastOrNull() ?: return null
         if (component in record.usage.charges.observedComponents) return null

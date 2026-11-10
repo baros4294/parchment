@@ -7,6 +7,9 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.Proxy
 import java.net.UnknownHostException
@@ -68,7 +71,7 @@ internal object PublicWebTransport {
 
     internal fun validatedAddresses(addresses: List<InetAddress>): List<InetAddress> {
         if (addresses.isEmpty() || addresses.any { !isPublicAddress(it) }) {
-            throw UnknownHostException("Agent web tools can connect only to public internet addresses.")
+            throw UnknownHostException("This request can connect only to public internet addresses.")
         }
         // OkHttp connects directly to these validated addresses; there is no second DNS lookup.
         return addresses
@@ -84,58 +87,78 @@ internal object PublicWebTransport {
         return url
     }
 
-    private sealed interface Step {
-        data class Redirect(val url: HttpUrl) : Step
-        data class Text(val text: String) : Step
-    }
+    private const val STOPPED = "The owning run stopped or web permission was revoked."
 
-    fun fetch(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> = runCatching {
-        val limit = maxChars.coerceIn(500, 100_000)
-        val rawLimit = (limit * 4).coerceIn(32_000, 400_000)
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+    /** Validates every hop itself, because a redirect is just another untrusted URL. */
+    private fun <T : Any> request(url: String, accept: String, seconds: Long, isCancelled: (() -> Boolean)?, read: (Response) -> T): T {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)
         var target = validateUrl(url)
         repeat(6) {
-            check(isCancelled?.invoke() != true) { "The owning run stopped or web permission was revoked." }
+            check(isCancelled?.invoke() != true) { STOPPED }
             val remaining = deadline - System.nanoTime()
             check(remaining > 0) { "Web request timed out." }
             val call = client.newCall(Request.Builder().url(target).get()
                 .header("User-Agent", "ParchmentAI/${ParchmentBuildConfig.APP_VERSION}")
-                .header("Accept", "text/markdown, text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.8")
+                .header("Accept", accept)
                 .build())
             call.timeout().timeout(remaining, TimeUnit.NANOSECONDS)
             val watcher = if (isCancelled == null) null else cancellationWatcher.scheduleAtFixedRate({
                 runCatching { if (isCancelled.invoke()) call.cancel() }
             }, 100, 100, TimeUnit.MILLISECONDS)
-            val step = try {
+            val result = try {
                 call.execute().use { response ->
-                    check(isCancelled?.invoke() != true) { "The owning run stopped or web permission was revoked." }
+                    check(isCancelled?.invoke() != true) { STOPPED }
                     if (response.code in setOf(301, 302, 303, 307, 308)) {
                         val location = response.header("Location") ?: error("Redirect has no Location header.")
-                        val redirected = target.resolve(location) ?: error("Redirect contains an invalid URL.")
-                        Step.Redirect(validateUrl(redirected.toString()))
+                        target = validateUrl((target.resolve(location) ?: error("Redirect contains an invalid URL.")).toString())
+                        null
                     } else {
-                        val body = response.body
-                        val text = body.charStream().use { reader ->
-                            val builder = StringBuilder(rawLimit.coerceAtMost(32_768))
-                            val buffer = CharArray(4096)
-                            while (builder.length < rawLimit) {
-                                check(isCancelled?.invoke() != true) { "The owning run stopped or web permission was revoked." }
-                                val count = reader.read(buffer, 0, minOf(buffer.size, rawLimit - builder.length))
-                                if (count < 0) break
-                                builder.append(buffer, 0, count)
-                            }
-                            builder.toString()
-                        }
-                        check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(400)}" }
-                        Step.Text(WorkspaceHarness.convertHtmlToReadableText(text, body.contentType()?.toString().orEmpty()).take(limit))
+                        read(response)
                     }
                 }
             } finally { watcher?.cancel(false) }
-            when (step) {
-                is Step.Text -> return@runCatching step.text
-                is Step.Redirect -> target = step.url
-            }
+            if (result != null) return result
         }
         error("Web request exceeded the redirect limit.")
+    }
+
+    fun fetch(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> = runCatching {
+        val limit = maxChars.coerceIn(500, 100_000)
+        val rawLimit = (limit * 4).coerceIn(32_000, 400_000)
+        request(url, "text/markdown, text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.8", 30, isCancelled) { response ->
+            val body = response.body
+            val text = body.charStream().use { reader ->
+                val builder = StringBuilder(rawLimit.coerceAtMost(32_768))
+                val buffer = CharArray(4096)
+                while (builder.length < rawLimit) {
+                    check(isCancelled?.invoke() != true) { STOPPED }
+                    val count = reader.read(buffer, 0, minOf(buffer.size, rawLimit - builder.length))
+                    if (count < 0) break
+                    builder.append(buffer, 0, count)
+                }
+                builder.toString()
+            }
+            check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(400)}" }
+            WorkspaceHarness.convertHtmlToReadableText(text, body.contentType()?.toString().orEmpty()).take(limit)
+        }
+    }
+
+    internal fun readBounded(input: InputStream, maxBytes: Int, isCancelled: (() -> Boolean)?): ByteArray {
+        val output = ByteArrayOutputStream(64 * 1024)
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            check(isCancelled?.invoke() != true) { STOPPED }
+            val count = input.read(buffer)
+            if (count < 0) return output.toByteArray()
+            check(output.size() + count <= maxBytes) { "Media download exceeded the $maxBytes byte limit." }
+            output.write(buffer, 0, count)
+        }
+    }
+
+    fun fetchBytes(url: String, maxBytes: Int, isCancelled: (() -> Boolean)?): Result<ByteArray> = runCatching {
+        request(url, "*/*", 180, isCancelled) { response ->
+            check(response.isSuccessful) { "Media download failed: HTTP ${response.code}" }
+            response.body.byteStream().use { readBounded(it, maxBytes, isCancelled) }
+        }
     }
 }

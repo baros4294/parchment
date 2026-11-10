@@ -88,13 +88,15 @@ internal object AtomicFileStorage {
         commitAtomically(staged.toPath(), target.toPath())
     }
 
+    private const val MAX_REPLACE_ATTEMPTS = 14 // About 2.3 seconds in total.
+
     private fun commitAtomically(source: Path, target: Path) {
-        repeat(8) { attempt ->
+        repeat(MAX_REPLACE_ATTEMPTS) { attempt ->
             try {
                 Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 return
             } catch (error: AccessDeniedException) {
-                if (attempt == 7) throw error
+                if (attempt == MAX_REPLACE_ATTEMPTS - 1) throw error
                 // Windows readers/indexers can briefly hold handles without delete sharing.
                 Thread.sleep(minOf(8L shl attempt, 256L))
             }

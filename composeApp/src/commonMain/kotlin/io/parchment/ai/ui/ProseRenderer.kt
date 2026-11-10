@@ -66,11 +66,72 @@ internal class IncrementalProseBlockCache {
     private var stableBlocks: List<ProseBlock> = emptyList()
     private var lastFullText: String = ""
     private var lastFullBlocks: List<ProseBlock> = emptyList()
+    /** A split that changed the parse stays wrong until the text reaches a new break, so don't re-test it each frame. */
+    private var rejectedSplitEnd = -1
+
+    /** A still-open code fence, so each frame scans only the newly arrived lines instead of the whole fence. */
+    private class OpenFence(val blocksBefore: List<ProseBlock>, val language: String, val bodyStart: Int, var scanFrom: Int)
+    private var openFence: OpenFence? = null
+    private var rejectedFenceLine = -1
+
+    private fun lineClosesFence(raw: String, lineStart: Int, lineEnd: Int): Boolean {
+        var at = lineStart
+        while (at < lineEnd && raw[at].isWhitespace()) at++
+        return at + 3 <= lineEnd && raw.startsWith("```", at)
+    }
+
+    private fun extendOpenFence(raw: String, enableMath: Boolean): List<ProseBlock>? {
+        val fence = openFence ?: return null
+        var lineStart = fence.scanFrom
+        val stillOpen = enableMath == lastEnableMath && raw.startsWith(lastFullText) && raw.indexOf('\r', lineStart) == -1
+        while (stillOpen) {
+            val newline = raw.indexOf('\n', lineStart)
+            if (lineClosesFence(raw, lineStart, if (newline == -1) raw.length else newline)) break
+            if (newline == -1) {
+                fence.scanFrom = lineStart
+                var body = fence.bodyStart
+                while (body < raw.length && raw[body] == '\n') body++ // The block parser drops leading blank lines.
+                return fence.blocksBefore + ProseBlock.CodeFence(fence.language, raw.substring(body))
+            }
+            lineStart = newline + 1
+        }
+        openFence = null
+        return null
+    }
+
+    /** Enters fence mode only after proving the shortcut gives the same blocks as the real parse. */
+    private fun enterOpenFence(raw: String, tailStart: Int, tailBlocks: List<ProseBlock>, combined: List<ProseBlock>, enableMath: Boolean) {
+        val last = tailBlocks.lastOrNull() as? ProseBlock.CodeFence ?: return
+        if (raw.length - tailStart <= 512 || raw.indexOf('\r', tailStart) != -1) return
+        var opener = raw.lastIndexOf("```")
+        while (opener >= tailStart) {
+            val lineStart = raw.lastIndexOf('\n', opener - 1).coerceAtLeast(tailStart - 1) + 1
+            if (raw.substring(lineStart, opener).isBlank()) {
+                val newline = raw.indexOf('\n', opener)
+                if (newline == -1 || lineStart == rejectedFenceLine) return
+                var body = newline + 1
+                while (body < raw.length && raw[body] == '\n') body++
+                val head = parseProseBlocks(raw.substring(tailStart, lineStart), enableMath)
+                if (head + ProseBlock.CodeFence(last.language, raw.substring(body)) == tailBlocks) {
+                    openFence = OpenFence(combined.dropLast(1), last.language, newline + 1, raw.lastIndexOf('\n') + 1)
+                } else {
+                    rejectedFenceLine = lineStart
+                }
+                return
+            }
+            opener = raw.lastIndexOf("```", opener - 1)
+        }
+    }
 
     fun parseIncremental(raw: String, enableMath: Boolean = true): List<ProseBlock> {
         if (raw.isBlank()) return emptyList()
         if (raw == lastFullText && enableMath == lastEnableMath) {
             return lastFullBlocks
+        }
+        extendOpenFence(raw, enableMath)?.let { blocks ->
+            lastFullText = raw
+            lastFullBlocks = blocks
+            return blocks
         }
         if (enableMath != lastEnableMath || stablePrefixText.isEmpty() || !raw.startsWith(stablePrefixText)) {
             lastEnableMath = enableMath
@@ -79,7 +140,8 @@ internal class IncrementalProseBlockCache {
             lastFullBlocks = full
             // Try to seed a stable prefix if raw is already long
             val splitAt = raw.lastIndexOf("\n\n")
-            if (splitAt >= 256) {
+            // Text must follow the break: at the very end of an open fence, a split looks valid and isn't.
+            if (splitAt >= 256 && splitAt + 2 != rejectedSplitEnd && raw.substring(splitAt + 2).isNotBlank()) {
                 val candPrefix = raw.substring(0, splitAt + 2)
                 val candTail = raw.substring(splitAt + 2)
                 val headB = parseProseBlocks(candPrefix, enableMath)
@@ -88,6 +150,7 @@ internal class IncrementalProseBlockCache {
                     stablePrefixText = candPrefix
                     stableBlocks = headB
                 } else {
+                    rejectedSplitEnd = splitAt + 2
                     stablePrefixText = ""
                     stableBlocks = emptyList()
                 }
@@ -95,17 +158,19 @@ internal class IncrementalProseBlockCache {
                 stablePrefixText = ""
                 stableBlocks = emptyList()
             }
+            enterOpenFence(raw, 0, full, full, enableMath)
             return full
         }
 
-        val tail = raw.substring(stablePrefixText.length)
+        val tailStart = stablePrefixText.length
+        val tail = raw.substring(tailStart)
         val tailBlocks = parseProseBlocks(tail, enableMath)
         val combined = if (stableBlocks.isEmpty()) tailBlocks else stableBlocks + tailBlocks
 
         // Advance stablePrefixText once the active tail grows past 512 chars and has a paragraph break `\n\n`
         if (tail.length > 512) {
             val relSplit = tail.lastIndexOf("\n\n")
-            if (relSplit >= 180) {
+            if (relSplit >= 180 && stablePrefixText.length + relSplit + 2 != rejectedSplitEnd && tail.substring(relSplit + 2).isNotBlank()) {
                 val candHead = tail.substring(0, relSplit + 2)
                 val candRem = tail.substring(relSplit + 2)
                 val headB = parseProseBlocks(candHead, enableMath)
@@ -113,10 +178,13 @@ internal class IncrementalProseBlockCache {
                 if (headB + remB == tailBlocks) {
                     stablePrefixText += candHead
                     stableBlocks = stableBlocks + headB
+                } else {
+                    rejectedSplitEnd = stablePrefixText.length + relSplit + 2
                 }
             }
         }
 
+        enterOpenFence(raw, tailStart, tailBlocks, combined, enableMath)
         lastFullText = raw
         lastFullBlocks = combined
         return combined
@@ -787,15 +855,23 @@ internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<Pro
     return blocks
 }
 
+private const val MAX_INLINE_NESTING = 16
+private const val MAX_STYLED_PARAGRAPH_CHARS = 20_000
+
 internal fun styleLiteraryParagraph(
     raw: String,
     palette: ParchmentPalette,
     indentChars: Int,
     enableMath: Boolean = true,
-    enableInlineDollarMath: Boolean = true
+    enableInlineDollarMath: Boolean = true,
+    depth: Int = 0
 ): AnnotatedString = buildAnnotatedString {
     val indentPrefix = if (indentChars > 0) " ".repeat(indentChars * 2) else ""
     val text = indentPrefix + raw
+    if (depth > MAX_INLINE_NESTING || text.length > MAX_STYLED_PARAGRAPH_CHARS) {
+        append(text)
+        return@buildAnnotatedString
+    }
 
     var i = 0
     val n = text.length
@@ -859,7 +935,7 @@ internal fun styleLiteraryParagraph(
                             fontStyle = FontStyle.Italic
                         )
                     )
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 3
                 } else {
@@ -879,7 +955,7 @@ internal fun styleLiteraryParagraph(
                             fontWeight = FontWeight.SemiBold
                         )
                     )
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 2
                 } else {
@@ -894,7 +970,7 @@ internal fun styleLiteraryParagraph(
                 if (endIdx != -1) {
                     val inner = text.substring(i + 2, endIdx)
                     pushStyle(SpanStyle(color = palette.primaryInk, fontWeight = FontWeight.SemiBold))
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 2
                 } else {
@@ -909,7 +985,7 @@ internal fun styleLiteraryParagraph(
                 if (endIdx != -1) {
                     val inner = text.substring(i + 2, endIdx)
                     pushStyle(SpanStyle(color = palette.mutedInk, textDecoration = TextDecoration.LineThrough))
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 2
                 } else {
@@ -941,7 +1017,7 @@ internal fun styleLiteraryParagraph(
                         )
                     )
                     pushStyle(linkStyle)
-                    append(styleLiteraryParagraph(linkLabel, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(linkLabel, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     pop()
                     i = closeParen + 1
@@ -962,7 +1038,7 @@ internal fun styleLiteraryParagraph(
                             fontStyle = FontStyle.Italic
                         )
                     )
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 1
                 } else {
@@ -982,7 +1058,7 @@ internal fun styleLiteraryParagraph(
                             fontStyle = FontStyle.Italic
                         )
                     )
-                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath))
+                    append(styleLiteraryParagraph(inner, palette, 0, enableMath, enableInlineDollarMath, depth + 1))
                     pop()
                     i = endIdx + 1
                 } else {
@@ -1011,7 +1087,8 @@ internal fun styleLiteraryParagraph(
                             palette = palette.copy(config = palette.config.copy(highlightDialogueAndNarration = false)),
                             indentChars = 0,
                             enableMath = enableMath,
-                            enableInlineDollarMath = enableInlineDollarMath
+                            enableInlineDollarMath = enableInlineDollarMath,
+                            depth = depth + 1
                         )
                     )
                     append(closeChar)

@@ -749,6 +749,13 @@ actual object PlatformBridge {
     actual fun fetchUrlText(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> =
         PublicWebTransport.fetch(url, maxChars, isCancelled)
 
+    actual fun fetchPublicBytes(url: String, maxBytes: Int, isCancelled: (() -> Boolean)?): Result<ByteArray> =
+        PublicWebTransport.fetchBytes(url, maxBytes, isCancelled)
+
+    actual val computerControl: ComputerControl get() = DesktopComputerControl
+    actual val supportsLocalMcpServers: Boolean = true
+    actual fun startMcpProcess(command: String): McpProcess? = DesktopMcpProcess(command)
+
     private val windowsPowerLease by lazy { WindowsPowerLease() }
     private val isWindows: Boolean
         get() = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
@@ -854,6 +861,8 @@ actual object PlatformBridge {
     actual fun localFileSizeBytes(filePath: String): Long = mediaStore.sizeOf(filePath)
 
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)
+
+    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = synchronized(imageCache) { imageCache[filePath] }
 
     actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
         if (filePath.isBlank()) return null

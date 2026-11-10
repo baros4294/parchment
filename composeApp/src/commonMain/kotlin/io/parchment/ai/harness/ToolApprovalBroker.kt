@@ -29,6 +29,8 @@ data class ToolApprovalRequest(
 
 enum class ToolApprovalDecision { ALLOW_ONCE, ALLOW_EXACT_ACTION_FOR_RUN, DENY, STOP }
 
+data class UserQuestion(val requestId: String, val chatId: String, val callId: String, val question: String, val options: List<String>)
+
 /** This capability is deliberately not serializable. */
 class ToolExecutionPermit internal constructor(
     internal val broker: ToolApprovalBroker,
@@ -67,6 +69,12 @@ class ToolApprovalBroker(
     private val denials = mutableSetOf<Action>()
     private val requestsState = MutableStateFlow<List<ToolApprovalRequest>>(emptyList())
     val requests: StateFlow<List<ToolApprovalRequest>> = requestsState.asStateFlow()
+    private data class PendingQuestion(val question: UserQuestion, val answer: CompletableDeferred<String?>)
+    private val pendingQuestions = mutableMapOf<String, PendingQuestion>()
+    private val questionsState = MutableStateFlow<List<UserQuestion>>(emptyList())
+    val questions: StateFlow<List<UserQuestion>> = questionsState.asStateFlow()
+    /** Set by the run that owns this broker, because only it can start and pay for a helper. */
+    var subagentRunner: (suspend (task: String, onProgress: suspend (String) -> Unit) -> Result<String>)? = null
     private val closed = MutableStateFlow(false)
     private val revision = MutableStateFlow(0L)
     private var observedScope: ToolAccessScope? = policySource()
@@ -86,10 +94,57 @@ class ToolApprovalBroker(
             pending.values.forEach { it.answer.complete(ToolApprovalDecision.DENY) }
             pending.clear()
             requestsState.value = emptyList()
+            clearQuestionsLocked()
             observedScope = current
             observedRevision = revision.value
         }
         return current
+    }
+
+    private fun clearQuestionsLocked() {
+        pendingQuestions.values.forEach { it.answer.complete(null) }
+        pendingQuestions.clear()
+        questionsState.value = emptyList()
+    }
+
+    /** Pauses the run for a person's answer. Null means the run ended or its permissions changed first. */
+    suspend fun askUser(callId: String, question: String, options: List<String>): String? {
+        currentCoroutineContext().ensureActive()
+        val waiting = mutex.withLock {
+            reconcileLocked() ?: return null
+            val entry = PendingQuestion(UserQuestion("$runId:${++sequence}", chatId, callId, question, options), CompletableDeferred())
+            pendingQuestions[entry.question.requestId] = entry
+            questionsState.value = pendingQuestions.values.map { it.question }
+            entry
+        }
+        val activity = currentCoroutineContext()[RunActivityContext]
+        activity?.activity?.setWaiting(activity.branch, true)
+        try {
+            return waiting.answer.await()
+        } finally {
+            activity?.activity?.setWaiting(activity.branch, false)
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    pendingQuestions.remove(waiting.question.requestId)
+                    questionsState.value = pendingQuestions.values.map { it.question }
+                }
+            }
+        }
+    }
+
+    suspend fun answerQuestion(requestId: String, answer: String): Boolean = mutex.withLock {
+        reconcileLocked()
+        pendingQuestions[requestId]?.answer?.complete(answer) ?: false
+    }
+
+    private fun stopLocked() {
+        closed.value = true
+        grants.clear()
+        denials.clear()
+        pending.values.forEach { it.answer.complete(ToolApprovalDecision.STOP) }
+        pending.clear()
+        requestsState.value = emptyList()
+        clearQuestionsLocked()
     }
 
     suspend fun refreshPolicy() { mutex.withLock { reconcileLocked() } }
@@ -126,7 +181,7 @@ class ToolApprovalBroker(
                 AgentPermissionGate.denial(scope, name, argumentsJson)?.let { return@withLock ToolAuthorization.Denied(it) }
                 when (decision) {
                     ToolApprovalDecision.ALLOW_ONCE, ToolApprovalDecision.ALLOW_EXACT_ACTION_FOR_RUN -> {
-                        if (decision == ToolApprovalDecision.ALLOW_EXACT_ACTION_FOR_RUN) grants.add(action)
+                        if (decision == ToolApprovalDecision.ALLOW_EXACT_ACTION_FOR_RUN && name != ComputerUse.TOOL_NAME) grants.add(action)
                         ToolAuthorization.Allowed(ToolExecutionPermit(this, scope, name, argumentsJson, revision.value))
                     }
                     else -> {
@@ -151,12 +206,7 @@ class ToolApprovalBroker(
             reconcileLocked()
             val waiting = pending[requestId] ?: return@withLock false
             if (decision == ToolApprovalDecision.STOP) {
-                closed.value = true
-                grants.clear()
-                denials.clear()
-                pending.values.forEach { it.answer.complete(ToolApprovalDecision.STOP) }
-                pending.clear()
-                requestsState.value = emptyList()
+                stopLocked()
                 true
             } else waiting.answer.complete(decision)
         }
