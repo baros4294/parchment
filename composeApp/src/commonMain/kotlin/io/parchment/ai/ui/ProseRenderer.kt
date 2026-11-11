@@ -825,9 +825,8 @@ internal fun parseProseBlocks(raw: String, enableMath: Boolean = true): List<Pro
             }
 
             else -> {
-                // Treat each non-empty newline in AI output as its own distinct paragraph block
-                // (or group consecutive bullet items nicely with 6.dp spacing) so single-\n and double-\n
-                // paragraphs never look like a single wrapped wall of text on mobile or desktop!
+                // Each non-empty line of model output is its own paragraph (consecutive bullets are grouped
+                // 6 dp apart), so text using single or double line breaks never reads as one wall of text.
                 flushPara()
                 val rawIndentCols = line.takeWhile { it == ' ' || it == '\t' }
                     .fold(0) { acc, c -> acc + if (c == '\t') 2 else 1 }
@@ -1027,7 +1026,7 @@ internal fun styleLiteraryParagraph(
                 }
             }
 
-            // Italic Narration / Action: *...* (skips nested **bold**, `code`, and $math$ spans!)
+            // Italic narration or action: *...* (skips nested **bold**, `code` and $math$ spans).
             ch == '*' && i + 1 < n && !text[i + 1].isWhitespace() -> {
                 val endIdx = findClosingSingleAsterisk(text, i + 1)
                 if (endIdx != -1) {
@@ -1067,7 +1066,7 @@ internal fun styleLiteraryParagraph(
                 }
             }
 
-            // Spoken Dialogue: "..." or “...” (recursively parses inner *italic*, **bold**, and `code` spans!)
+            // Spoken dialogue: "..." or “...”, with inner *italic*, **bold** and `code` spans parsed too.
             (ch == '"' || ch == '“') && palette.config.highlightDialogueAndNarration &&
                 (i == 0 || text[i - 1].isWhitespace() || text[i - 1] in "([*_—-") -> {
                 val closeChar = if (ch == '“') '”' else '"'

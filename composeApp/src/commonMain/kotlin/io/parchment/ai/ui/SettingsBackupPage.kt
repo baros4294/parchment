@@ -44,7 +44,7 @@ import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
 
 // ============================================================================================
-// SUBPAGE 7: BACKUP & OTA (Split Storage: Settings & Assistants vs Per-Chat .json Files)
+// Settings page 7: Storage and updates (settings and assistants are stored apart from each chat's file).
 // ============================================================================================
 @Composable
 internal fun BackupAndOtaSubpage(
@@ -172,7 +172,7 @@ internal fun BackupAndOtaSubpage(
     ) {
         BasicText(text = "Storage, backup & updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
-        // Card 1: Storage & file manager (Inspect & delete Chats, Media Uploads, AI Media, Backups, & Temp files!)
+        // Card 1: storage: inspect and delete chats, uploads, generated media, backups and temporary files.
         SepiaSectionCard(
             title = "Storage & file manager (${allStoredFiles.size} files • ${formatBytesCompact(totalBytes)})",
             subtitle = PlatformBridge.getAppStorageDirectoryPath(),
@@ -616,7 +616,7 @@ internal fun BackupAndOtaSubpage(
             }
         }
 
-        // Card 4: Settings, Providers, Assistants & System Prompts Backup (Decoupled from Chats!)
+        // Card 4: back up settings, providers, assistants and system prompts, separately from chats.
         SepiaSectionCard(
             title = "Settings, providers & assistants backup (.json)",
             subtitle = "${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"

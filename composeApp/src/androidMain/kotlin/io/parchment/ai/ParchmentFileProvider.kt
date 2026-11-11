@@ -13,7 +13,7 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Lightweight, zero-dependency ContentProvider for securely sharing local PDFs, videos,
+ * A small ContentProvider, with no library dependency, for sharing local PDFs, videos,
  * audio, and images with Android's default external viewer apps
  * without triggering FileUriExposedException.
  */

@@ -30,7 +30,7 @@ import io.parchment.ai.model.AgentPermissionOverrides
 import io.parchment.ai.platform.PlatformBridge
 
 // ============================================================================================
-// SUBPAGE 5: WORKSPACE & LOCAL AGENT HARNESS (Full 16-Tool Live Registry + 1-Tap Mount)
+// Settings page 5: Workspace and agent tools (the folder, permissions, skills and MCP servers).
 // ============================================================================================
 @Composable
 internal fun WorkspaceSubpage(

@@ -42,7 +42,7 @@ import kotlinx.serialization.json.putJsonObject
 // OpenAI Chat Completions: request history and the streaming agent loop.
 
 // ============================================================================================
-// 2B. OPENAI LEGACY FALLBACK (/v1/chat/completions)
+// 2B. OpenAI Chat Completions (/v1/chat/completions), also the fallback for Responses
 //     For OpenAI-compatible 3rd-party proxies (OpenRouter, DeepSeek, Doubao Ark, vLLM/llama.cpp).
 //     Supports full multi-step tool loops (up to 64 steps) and streaming usage telemetry.
 // ============================================================================================

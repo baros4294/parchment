@@ -526,7 +526,7 @@ class ParchmentProtocolAndHarnessTest {
         )
         assertTrue(OtaUpdateEngine.compareVersions("1.2.0", "1.2.0-beta.1") > 0, "Stable release 1.2.0 must be newer than 1.2.0-beta.1")
 
-        // 9. Verify Smart Primary-First Legacy Protocol Fallback Classifier & Zero-Loss Mid-Turn Handoff
+        // 9. Falling back from the primary to the legacy protocol, and handing a turn over mid-reply without loss
         assertFalse(
             AiProviderEngine.shouldFallbackToLegacyProtocol(RuntimeException("HTTP 401: invalid_api_key"), useLegacyFallbackEndpoint = true),
             "Auth 401 error must fail fast and never fall back to legacy endpoint"
@@ -595,7 +595,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(compactedOverflow.first().activeVariant.content.contains("Auto-Compacted Earlier Conversation Continuity Digest"))
         assertEquals(4, compactedOverflow.count { it.includedInContext }, "Digest node + 3 newest turns must remain active after compacting 3 oldest of 6 turns")
 
-        // 11. Verify LCS Unified Line Diff Engine (Green ADDED / Red REMOVED / CONTEXT) & Official Lab SVG Slug Resolver
+        // 11. Line diffs (added, removed, context) and AI lab logo lookup
         val diffLines = computeUnifiedLineDiff(
             oldText = "fun hello() {\n    println(\"old\")\n}",
             newText = "fun hello() {\n    println(\"new1\")\n    println(\"new2\")\n}"
@@ -619,7 +619,7 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("2h15m", formatDurationFromMs(8_145_000L))
         assertEquals("1d4h15m", formatDurationFromMs(101_700_000L))
 
-        // 13. Verify SVGO Arc-Flag Normalization keeps all 18 official Lab SVG Icons strictly inside 24x24 viewBox
+        // 13. Arc-flag normalization keeps all 18 built-in lab logos inside their 24x24 viewBox
         for ((slug, pathList) in BUILTIN_LAB_SVG_PATHS) {
             assertTrue(pathList.isNotEmpty(), "Lab '$slug' must have at least one SVG path")
             for (dStr in pathList) {
@@ -680,7 +680,7 @@ class ParchmentProtocolAndHarnessTest {
         val delRec = WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_WRITE, "c_del", "fs_delete", """{"path":"src/MainApp.kt"}""")
         assertTrue(!delRec.isError, "fs_delete failed: ${delRec.resultText}")
 
-        // 17. Verify Foolproof Zero-Answer Auto-Continuation History Builder (Stage 1 & Stage 2)
+        // 17. History for continuing a reply that came back empty (both stages)
         val baseNodes = listOf(
             MessageNode(id = "u-1", role = MessageRole.USER, variants = listOf(MessageVariant(id = "vu-1", content = "Explain quantum tunneling.")))
         )
@@ -776,7 +776,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(boundSources[2].groundedLineNumbers.contains(3))
         assertTrue(boundSources[2].groundedLines.first().contains("OpenAI Responses API"))
 
-        // 20. Verify Dynamic Modality Discovery from `/v1/models` JSON (Zero Hardcoded Model Names)
+        // 20. Modalities come from the `/v1/models` response, not from hardcoded model names
         val modelsJson = """
             {
               "data": [
@@ -970,7 +970,8 @@ class ParchmentProtocolAndHarnessTest {
             } else {
                 "seq 1 2200 | while read i; do echo \"Line_${'$'}{i}_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\"; done"
             }
-            val res = PlatformBridge.workspaceShellExec(tempRoot, cmd, timeoutSeconds = 15)
+            // The limit only catches a deadlock; a cold CI runner can spend 10+ seconds just starting PowerShell.
+            val res = PlatformBridge.workspaceShellExec(tempRoot, cmd, timeoutSeconds = 60)
             assertTrue(res.isSuccess, "workspaceShellExec must not deadlock on >64 KB stdout: ${res.exceptionOrNull()?.message}")
             val out = res.getOrThrow()
             assertTrue(out.startsWith("Exit Code: 0"), "Expected Exit Code: 0, got: ${out.take(120)}")
@@ -1129,7 +1130,8 @@ class ParchmentProtocolAndHarnessTest {
             callId = "call-live-shell",
             toolName = "shell_exec",
             allowShell = true,
-            argumentsJson = """{"command":"echo parchment_live_stream_ok","timeout_seconds":10}""",
+            // A generous limit: a cold CI runner can spend 10+ seconds just starting PowerShell.
+            argumentsJson = """{"command":"echo parchment_live_stream_ok","timeout_seconds":60}""",
             onOutputDelta = { partial ->
                 synchronized(deltas) { deltas.add(partial) }
             }
@@ -1683,7 +1685,7 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(ProviderProtocol.OPENAI_RESPONSES, migratedProfile.protocol)
         assertEquals("https://ark.ap-southeast.bytepluses.com/api/v3", migratedProfile.baseUrl)
 
-        // 2. Verify KISS Tail-Free & Version-Agnostic Smart Endpoint URL Resolution
+        // 2. Endpoint URLs resolve without a forced path or API version
         val defaultOpenAi = ProviderProfile(id = "p1", name = "OpenAI", protocol = ProviderProtocol.OPENAI_RESPONSES, baseUrl = "https://api.openai.com")
         assertEquals("https://api.openai.com/v1/responses", AiProviderEngine.resolveSmartEndpointUrl(defaultOpenAi, "/v1/responses", "/responses"))
 

@@ -4,14 +4,14 @@ A map for anyone changing the code. Rules that must not break live in [MEMORY.md
 
 ## Shape
 
-One Kotlin Multiplatform module, `composeApp`, builds the Windows app (JVM) and the Android app. The UI uses Compose Foundation only: no Material, no WebView.
+Two Gradle modules. `composeApp` is a Kotlin Multiplatform module holding all the code, for desktop (JVM) and Android; it also packages the Windows app. `androidApp` is a thin shell that builds the APK: application id, version, signing, R8 and the bundled fonts. AGP 9 requires this split. The UI uses Compose Foundation only: no Material, no WebView.
 
 | Source set | Holds |
 |---|---|
 | `commonMain` | Everything shared: UI, provider protocols, agent tools, data model, storage logic |
 | `jvmShared` | JVM file and network code both platforms run: atomic storage, archives, workspace file access, public-web transport |
 | `desktopMain` | Windows entry point (`Main.kt`), native title bar, power requests, computer control, local MCP processes |
-| `androidMain` | `MainActivity`, the foreground service for long runs, update installs, phone control (Accessibility), file sharing |
+| `androidMain` | `MainActivity`, the foreground service for long runs, update installs, phone control (Accessibility), file sharing, and the manifest and `res/` that merge into the APK |
 | `commonTest`, `desktopTest` | All tests; they run on the desktop JVM through `scripts/verify.py` |
 
 `platform/PlatformBridge.kt` declares what each platform must provide. Keep the platform files thin and put shared JVM logic in `jvmShared`.
@@ -58,7 +58,7 @@ Settings are in `parchment-settings.json` with earlier copies in `backups/`, and
 | How messages look | `ui/MessageTurnItem.kt`, `ui/ProseRenderer.kt`, `ui/ParchmentComponents.kt` |
 | Colors, type and icons | `ui/ParchmentTheme.kt`, `ui/KissIconGlyphs.kt`, and DESIGN.md first |
 | What is saved and how | `ui/ParchmentStatePersistence.kt`, `jvmShared/platform/` |
-| Builds and releases | `.github/workflows/build-installers.yml`, `docs/RELEASE_SIGNING.md` |
+| Builds and releases | `gradle/libs.versions.toml`, `androidApp/build.gradle.kts` (APK, R8 rules), `.github/workflows/build-installers.yml`, `docs/RELEASE_SIGNING.md` |
 
 ## Releases
 

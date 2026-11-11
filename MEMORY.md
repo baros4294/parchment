@@ -11,12 +11,11 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 
 ## Project and build
 
-- Toolchain (2026-11-11): Temurin JDK 25 in Program Files/Eclipse Adoptium as JAVA_HOME; SDK %LOCALAPPDATA%/Android/Sdk as ANDROID_HOME. verify.py skips a stale inherited JAVA_HOME (an old JDK 8 path).
-- scripts/verify.py is the only entry point: it supplies JDK/SDK, version 2.1.0/264 (CI: VERSION_LINE/VERSION_BASE_RUN in the workflow), two workers and the configuration cache (not final: signer task); logs and ledger in .parchment-local/verification/.
+- scripts/verify.py is the only entry point: saved JAVA_HOME/ANDROID_HOME (a stale inherited JDK 8 path is skipped), version 2.1.0 (CI: VERSION_LINE/VERSION_BASE_RUN), two workers, configuration cache except final; logs in .parchment-local/verification/.
 - Keep org.gradle.daemon=false (memory bloat); Gradle heap 2560 MB.
 - PowerShell scripts stay ASCII.
 - Never copy builds into %LOCALAPPDATA%/Programs/Parchment. Only CI builds (-PofficialRelease=true) check for or install OTA updates. Dev runs keep data in ignored parchment-portable-data.
-- Android release uses R8 and resource shrinking (composeApp/proguard-rules.pro); keep each release's mapping.txt.
+- AGP 9 split: composeApp (KMP library) holds all code, manifest and res; androidApp only builds the APK (id io.parchment.ai, signing, R8 rules, font assets). Keep class names in io.parchment.ai: the Accessibility component depends on them.
 - Android: keep big suspend bodies split into local suspend functions (cancelling a 565-register coroutine aborted).
 - Android signing is private-env-only: dot-source scripts/load-private-signer.ps1; never regenerate the ignored key (fingerprint 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574). The legacy key is rejected (docs/RELEASE_SIGNING.md); blank key passwords use the store password (shipped).
 - Packaged desktop uses AppCDS: jlink base archive + `$APPDIR/parchment.jsa`, rebuilt after updates.

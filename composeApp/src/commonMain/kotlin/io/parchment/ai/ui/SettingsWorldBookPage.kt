@@ -40,7 +40,7 @@ import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
 
 // ============================================================================================
-// SUBPAGE 6: WORLD BOOK & CARDS (.png / .json Character Cards & Lorebook)
+// Settings page 6: World Book and character cards (.png or .json).
 // ============================================================================================
 @Composable
 internal fun WorldBookAndCardsSubpage(

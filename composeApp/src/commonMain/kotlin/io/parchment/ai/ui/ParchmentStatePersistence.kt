@@ -824,7 +824,7 @@ internal fun decodeChatSessionsFromPickedFile(
 }
 
 /**
- * Fast-path Frame 0 startup loader: reads ONLY `parchment-settings.json` and the single active
+ * Start-up loader for the first frame: reads only `parchment-settings.json` and the single active
  * `chats/<activeSessionId>/chat.json` file synchronously before drawing the first frame.
  * Remaining historical chats are hydrated as lightweight stubs in the background on `Dispatchers.Default`.
  */

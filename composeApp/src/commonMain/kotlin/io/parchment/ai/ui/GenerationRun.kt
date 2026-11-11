@@ -2,9 +2,7 @@ package io.parchment.ai.ui
 
 import io.parchment.ai.harness.wasCutOff
 import io.parchment.ai.harness.withInterruptedOutcome
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
@@ -262,8 +260,8 @@ internal fun GenerationHost.beginGeneration(
             }
         }
 
-        // Hardware VSync Letter-by-Letter Character Pacer (locks to 60Hz / 120Hz / 144Hz / 240Hz display clock via uiScope's MonotonicFrameClock,
-        // using sub-pixel fractional accumulators so prose & thoughts glide onto the page letter-by-letter instead of jumping in word chunks!)
+        // Reveals text in step with the display's frame clock, carrying fractional characters between frames,
+        // so text and thoughts appear smoothly instead of in word-sized jumps.
         val pacerJob = launch {
             var lastFrameNanos = 0L
             var thinkCarry = 0f
@@ -456,7 +454,7 @@ internal fun GenerationHost.beginGeneration(
                         )
                     }
                 }
-                // Atomic background disk checkpoint every 3.5 seconds so switching apps NEVER loses progress without disk/JSON thrashing
+                // Save a checkpoint every 3.5 seconds: switching apps never loses progress, and the disk isn't written on every token.
                 if (now - lastDiskCheckpointMs >= 3500L) {
                     lastDiskCheckpointMs = now
                     flushCheckpointToDisk(isFinal = false)
@@ -704,7 +702,7 @@ internal fun GenerationHost.beginGeneration(
                             }
                             is StreamUpdate.ToolCallEvent -> {
                                 val now = activity.elapsedMs
-                                // Keep the Reasoning + Tool stopwatch ticking continuously across tool calls!
+                                // The reasoning and tool timer keeps running across tool calls.
                                 if (activeThinkingPhaseStartMs < 0L) activeThinkingPhaseStartMs = now
                                 thinkingDurationMs = (accumulatedThinkingMs + (now - activeThinkingPhaseStartMs)).coerceAtLeast(100L)
                                 val stepThinkFallback = currentStepThinkingTarget.toString().trim()
@@ -946,7 +944,7 @@ internal fun GenerationHost.beginGeneration(
                 generateTopicTitle(sessionId, forceRegenerate = false)
             }
 
-            // If there are queued prompts for this session (`⏳ Queue` mode), automatically dispatch the next one!
+            // Send the next queued message for this chat, if there is one.
             val sessQueue = queuedPromptsBySession[sessionId].orEmpty()
             if (finishedOwnRun && terminalPhase == AgentRunPhase.COMPLETED && sessQueue.isNotEmpty()) {
                 val nextItem = sessQueue.first()

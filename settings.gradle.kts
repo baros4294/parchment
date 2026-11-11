@@ -29,3 +29,5 @@ dependencyResolutionManagement {
 }
 
 include(":composeApp")
+// AGP 9 keeps Android applications out of Kotlin Multiplatform modules: androidApp is the thin APK shell.
+include(":androidApp")

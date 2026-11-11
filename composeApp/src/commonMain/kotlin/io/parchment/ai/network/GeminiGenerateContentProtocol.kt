@@ -42,7 +42,7 @@ import kotlinx.serialization.json.putJsonObject
 // Gemini generateContent: request history and the streaming agent loop.
 
 // ============================================================================================
-// 1B. GOOGLE GEMINI STREAM GENERATE CONTENT DRIVER (/v1beta/models/{model}:streamGenerateContent)
+// 1B. Gemini streamGenerateContent (/v1beta/models/{model}:streamGenerateContent)
 //     Implements the exact Gemini 4 Argon / Gemini 3+ / Gemini 2.5 dialect:
 //     - Gemini 4 Argon: `thinkingConfig: { includeThoughts: true, thinkingLevel: "LOW"|"MEDIUM"|"HIGH" }`,
 //       omits `temperature`/`topP` (SamplingPolicy.never), defaults to 65536 maxOutputTokens,
@@ -125,7 +125,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                 val baseContents = buildGeminiGenerateContentContents(activeNodes, session, continuePrefix, foldHistoricalToolsOnRetry)
                 put("contents", JsonArray(baseContents + extraLoopContentTurns))
 
-                // Tools & toolConfig (attempts mixed built-in + function tools with VALIDATED, self-healing to AUTO on HTTP 400)
+                // Tools and toolConfig: try built-in and function tools together, and fall back to AUTO if the API rejects it (400).
                 val allowMixedTools = !disableMixedToolsOnRetry
                 val toolsArr = buildJsonArray {
                     if (allowMixedTools || activeWorkspaceTools.isEmpty()) {

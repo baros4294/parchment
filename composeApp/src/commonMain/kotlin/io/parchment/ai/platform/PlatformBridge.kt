@@ -221,7 +221,7 @@ expect object PlatformBridge {
     fun listAppStorageFiles(): List<StoredAppFileItem>
     fun deleteAppStorageFile(fullPath: String): Boolean
 
-    // Native File Pickers for PNG / JSON Card & System Prompt Import/Export & Custom TTF Fonts
+    // System file pickers: card and system prompt import and export, and custom fonts.
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?
     /** Lets the user choose chat exports and imports each one, streaming archives instead of loading them into memory. */
     suspend fun <T> pickAndImportChatFiles(decode: (chatJsons: List<String>) -> T): List<ChatImportOutcome<T>>
@@ -268,7 +268,7 @@ expect object PlatformBridge {
     fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String)
     fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
 
-    // In-App Zero-Browser OTA Update Installer
+    // In-app update download and install.
     fun createOtaStagedDownload(assetName: String): OtaStagedDownload
 
     // Generated Image & Video Media Storage, Per-Chat Media Bundling, and Native Playback

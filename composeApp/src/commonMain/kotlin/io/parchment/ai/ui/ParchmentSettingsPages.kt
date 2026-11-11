@@ -296,7 +296,7 @@ fun ParchmentSettingsScreen(
             }
         } else {
             // Compact / Portrait Mobile Layout:
-            // Hierarchical Vertical Root Menu List -> Subpage Drill-Down (Zero awkward horizontal chip strip!)
+            // A vertical list of sections, each opening its own page (no horizontal chip strip).
             var mobileOpenedCategory by remember(initialCategory, startAtMobileRoot) {
                 mutableStateOf<SettingsCategory?>(if (startAtMobileRoot) null else initialCategory)
             }

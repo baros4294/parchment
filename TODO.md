@@ -4,15 +4,15 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** batch 14 docs checkpoint on main (2026-11-11). JDK 25 and a fresh Android SDK are installed; Gradle 8.13 cannot run on JDK 25, so builds fail until 16.2.
-- **Last verified:** 2026-11-11, `verify.py review` passed (gates, 35 tool tests, link check). Last build: batch 12 `final` and `perf` (390 tests; start 1.44 s with 300 chats, idle 274 MB, APK 4.2 MB, installer 56.5 MB).
-- **Next action:** batch 16, starting with 16.2 (Gradle that runs on JDK 25).
+- **Source:** batch 16 checkpoint on main (2026-11-11): JDK 25, Gradle 9.7.1, AGP 9.3.3, Kotlin 2.4.21, Compose 1.12.2, androidApp split.
+- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (390 tests, signed R8 APK 4.3 MB, package); packaged start 1.51 s with 300 chats, idle 268 MB.
+- **Next action:** the 14.3 screenshots, then 12.13.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Measure before optimizing; one surface at a time.
 
-16 → 14.2 and the 14.3 screenshots (need a working build) → 12.13 → 13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
+14.3 screenshots → 12.13 → 13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
 
 ## Open tasks
 
@@ -30,6 +30,7 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 - [x] **12.9 Phone check:** the R8 release runs on the phone without crashes and starts instantly. The user checks Android on their own and reports problems (2026-11-11); no agent phone runs.
 - [x] **12.12 Windows size:** drop the never-used `classes_nocoops.jsa` (12 MB) and compress the installer with lzma2/ultra64; desktop start 1.44 s, idle 274 MB.
 - [ ] **12.13 Desktop shrinking:** ProGuard for the desktop release jars (about 25 MB) with keep rules for JNA, Ktor's engine lookup and serialization; test the packaged app before release.
+- [x] **12.14 Flaky Shell tests:** their hang limits are 60 s, so a cold runner's PowerShell start-up no longer fails them; saves retry for 5 s instead of 2.3 s.
 - [ ] **12.11 Crash reports:** attach each release's R8 mapping.txt in CI so phone stack traces can be decoded.
 
 ### UI and UX
@@ -45,7 +46,7 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 ### Documentation
 
 - [x] **14.1 One owner per fact:** README (what, features, privacy), CONTRIBUTING (setup for JDK 25 and the SDK, commands), ARCHITECTURE (code map, storage, releases), DESIGN, PERFORMANCE, MEMORY, TODO. FEATURE_COVERAGE.md retired into README and Known gaps; stale JDK 21, 10.3 and signing notes fixed; quality.py checks links and anchors; verify.py reads JAVA_HOME and ANDROID_HOME.
-- [ ] **14.2 Code comments:** keep the why, cut the promotional and all-caps comments, and correct ones the code no longer matches. Needs a build, so it runs after 16.
+- [x] **14.2 Code comments:** about 120 shouting or promotional comments rewritten in plain words; four imports only comments had kept "used" removed.
 - [ ] **14.3 README:** done: feature tour and a privacy note listing every network call. Open: current screenshots (light, dark, phone) once the gallery builds again.
 
 ### Open-source essentials
@@ -58,18 +59,18 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 
 ### Toolchain and dependencies, bleeding edge
 
-- [ ] **16.1 JDK 25 LTS:** the user replaces JDK 8 with Temurin 25. Point verify.py, README, MEMORY and CI (setup-java) at it; the packaged runtime is jlinked from it.
-- [ ] **16.2 Build tools:** latest Gradle (9.1+ is needed to run on JDK 25), AGP, Kotlin and Compose Multiplatform; Android compile and target SDK to the newest stable.
-- [ ] **16.3 Libraries:** latest Ktor, OkHttp, coroutines, serialization, AndroidX and JNA; read each changelog for breaking changes and remove workarounds the new versions make unneeded.
-- [ ] **16.4 JDK 25 runtime wins:** measure the AOT cache (`-XX:AOTCache`, which supersedes AppCDS) and compact object headers against today's 1.44 s and 274 MB; keep only what measures better.
-- [ ] **16.5 Verify:** one `final` and `perf` run, then a checkpoint; record new versions in MEMORY.
+- [x] **16.1 JDK 25:** builds, CI and the packaged runtime use Temurin 25; the desktop app enables native access for JNA and Skia.
+- [x] **16.2 Build tools:** Gradle 9.7.1, AGP 9.3.3, Kotlin 2.4.21, Compose 1.12.2, compile and target SDK 37: the newest Kotlin supports (AGP 9.5 and Gradle 9.9 wait for it). AGP 9 forced the androidApp split.
+- [x] **16.3 Libraries:** Ktor 3.6.1, serialization 1.12.0, activity-compose 1.13.0, JNA 5.19.1; coroutines 1.11.0 is current. Deprecated Gradle and Compose accessors replaced.
+- [x] **16.4 JDK 25 runtime:** compact object headers measured 1 s slower to start (the base archive doesn't match) for 2 MB less memory: off. The AOT cache can't be written: JDK 25 builds it with a `java.exe` the bundled runtime doesn't ship. AppCDS stays.
+- [ ] **16.6 AOT cache in CI:** build the AOT cache at release time with a full JDK and a scripted training run, then measure it against AppCDS.
 
 ### Carried over
 
 - [ ] **11.7 Signature sanitization audit:** check every provider's reasoning-signature rules against its current spec; signatures stay opaque and are never translated.
 ## Known gaps
 
-Not planned yet; open a task before working on one. CHARX card archives are not supported, and a card with over 512 KB of data imports without keeping its original copy. There are no reusable persona profiles. Voice is dictation and read-aloud, not a full-duplex live session. On Android, MCP servers must be HTTP; local commands are desktop-only. Shell runs with your full account access and is not sandboxed.
+Not planned; open a task first. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
 
 ## Sources
 

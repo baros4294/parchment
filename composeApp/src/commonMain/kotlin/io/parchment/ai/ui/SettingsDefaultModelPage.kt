@@ -22,7 +22,7 @@ import io.parchment.ai.model.DefaultModelConfig
 import io.parchment.ai.model.ProviderProfile
 
 // ============================================================================================
-// SUBPAGE 4: DEFAULT MODEL (Global, Title Summary, Context Compression, Translation)
+// Settings page 4: Default models (chat, titles, context compression, translation).
 // ============================================================================================
 @Composable
 internal fun DefaultModelSubpage(

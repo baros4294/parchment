@@ -77,12 +77,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
-// ============================================================================================
-// MESSAGE TURN ITEM WITH:
-// - Auto-Opening Live Markdown/LaTeX Reasoning Box while Thinking -> Auto-Collapse when Done
-// - 1-Tap `📋 Copy` (Plain Text) & `📋 Markdown` (Markdown) Buttons
-// - Vertical Stacking of Action Buttons & Telemetry so Portrait `⋯ More` NEVER Hides Buttons!
-// ============================================================================================
+// One message: its reasoning (open while the model thinks, folded when done), the text, copy actions,
+// and the footer, where actions sit above the token counts so More never hides buttons on a phone.
 private const val MAX_SHRINKABLE_BUBBLE_CHARS = 800
 private const val SENT_BUBBLE_WIDTH_FRACTION = 0.84f
 private const val REPLY_BUBBLE_WIDTH_FRACTION = 0.94f
@@ -147,13 +143,10 @@ internal fun MessageTurnItem(
     var highlightedSourceLineText by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
     var copiedBadge by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
     val enableMd = if (isAssistant) preferences.renderAssistantMessagesWithMarkdown else preferences.renderUserMessagesWithMarkdown
-    // Live Reasoning Expansion & "Single-Thought Peek" State Machine:
-    // - While actively reasoning (`isActivelyThinkingThisNode == true`):
-    //   - Default (`manualThinkingToggle == null` or `true`): Full Thinking and tool steps open.
-    //   - When user presses `Hide ▲` (`manualThinkingToggle == false`): switches to Compact Single-Thought Peek
-    //     (`isLivePeekOnly = true`) showing ONLY the latest single thought block!
-    // - After reasoning finishes (`isActivelyThinkingThisNode == false`):
-    //   - Pressing `Hide ▲` (or auto-collapsing when `autoCollapseThinking` is ON) hides all thinking completely!
+    // How reasoning is shown:
+    // - While the model reasons: all thinking and tool steps are open by default; Hide switches to a peek
+    //   (`isLivePeekOnly`) that shows only the latest thought.
+    // - Once it finishes: Hide (or `autoCollapseThinking`) folds the thinking away entirely.
     val isReasoningExpanded = when {
         isActivelyThinkingThisNode -> manualThinkingToggle != false
         manualThinkingToggle != null -> manualThinkingToggle == true
@@ -190,8 +183,7 @@ internal fun MessageTurnItem(
     val showBubbles = viewMode == ViewMode.EDITORIAL_TURNS
     val isSentBubble = showBubbles && !isAssistant
 
-    // Disable outer `.animateContentSize` while `activeVar.isStreaming` is true so 60/120fps VSync character
-    // streaming never fights a lagging spring height animation on every wrapped line!
+    // No size animation while streaming: text grows every frame, and a spring animating each new line lags behind it.
     val baseContainerModifier = if (viewMode == ViewMode.MANUSCRIPT) {
         Modifier
             .fillMaxWidth()
@@ -235,7 +227,7 @@ internal fun MessageTurnItem(
     }
 
     Column(modifier = containerModifier, horizontalAlignment = if (isSentBubble) Alignment.End else Alignment.Start) {
-        // Turn Header & Branch/Swipe Bar (FlowRow so Speaker/Model and Swipe/Thought pills never overlap on mobile!)
+        // Header and version bar; a wrapping row so the name, model and version pills never overlap on a phone.
         val showTurnHeader = isAssistant || preferences.showUserAvatar || preferences.showUserName ||
             preferences.showUserTimestamp || node.variants.size > 1 || !node.includedInContext
         if (showTurnHeader) @OptIn(ExperimentalLayoutApi::class)
@@ -686,8 +678,8 @@ internal fun MessageTurnItem(
                 }
 
                 if (hasInterleavedSteps) {
-                    // Chronological Interleaved Timeline: think1 -> tool1 -> think2 -> tool2 -> think3 -> tool3
-                    // Windowed during massive 25+ tool runs so Compose never mounts 100+ ProseRenderer trees simultaneously!
+                    // Thinking and tool steps in the order they happened. Long runs show a window of steps so
+                    // dozens of text renderers are never composed at once.
                     val totalToolSteps = activeVar.toolCalls.size
                     var showAllInterleavedSteps by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
                     val maxVisibleTailSteps = if (isActivelyThinkingThisNode) 12 else 24
@@ -1331,10 +1323,8 @@ internal fun MessageTurnItem(
 
         Spacer(Modifier.height(6.dp))
 
-        // ========================================================================================
-        // VERTICALLY STACKED MESSAGE FOOTER (Buttons on Row 1, Telemetry on Row 2)
-        // Guarantees that expanding `⋯ More` on portrait phones NEVER crushes or hides buttons!
-        // ========================================================================================
+        // Footer: actions on the first row, token counts on the second, so More never squeezes the buttons
+        // on a narrow phone.
         if (isAssistant || preferences.showUserMessageActions) {
             Column(
                 modifier = Modifier.fillMaxWidth().alpha(footerAlpha).onFocusChanged { footerHasFocus = it.hasFocus },
@@ -1512,7 +1502,7 @@ internal fun MessageTurnItem(
                     }
                 }
 
-                // Clean, Scannable Pill Telemetry for Assistant Messages (Separates Output Prose Tokens from Tool Input Payloads!)
+                // Token counts for a reply, with written text counted apart from tool payloads.
                 val m = activeVar.tokenMetrics
                 if (isAssistant && preferences.showTokenAndContextStats && (!win.isCompact || showMoreActions) &&
                     (activeVar.content.isNotBlank() || activeVar.toolCalls.isNotEmpty() || m.outputTokens > 0)
@@ -1558,7 +1548,7 @@ internal fun MessageTurnItem(
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Pill 1: Output Prose Tokens (+ Reasoning Tokens + Tool Payload Tokens clearly separated!)
+                        // Pill 1: output tokens, with reasoning and tool payload tokens shown separately.
                         Box(
                             modifier = Modifier
                         ) {
@@ -1731,10 +1721,7 @@ internal fun MessageTurnItem(
             }
         }
 
-        // ========================================================================================
-        // EXPANDABLE LINE-GROUNDED WEB SOURCES DRAWER (Toggled by `🌐 N Sources` pill in footer)
-        // Clearly shows which exact line(s) in the assistant message each source grounds!
-        // ========================================================================================
+        // Web sources, opened from the Sources pill in the footer; each source shows the lines it supports.
         AnimatedVisibility(visible = isAssistant && showSourcesDrawer && activeVar.webSources.isNotEmpty()) {
             Column(
                 modifier = Modifier

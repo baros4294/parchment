@@ -41,7 +41,7 @@ import io.parchment.ai.model.asOverrides
 import io.parchment.ai.platform.PlatformBridge
 
 // ============================================================================================
-// SUBPAGE 3: ASSISTANTS (Assistant Cards + Editor Subpage)
+// Settings page 3: Assistants (the list and the editor).
 // ============================================================================================
 @Composable
 internal fun AssistantsSubpage(

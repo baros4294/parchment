@@ -128,7 +128,7 @@ data class ProviderProfile(
     val autoFetchModels: Boolean = true,
     val timeoutMinutes: Int = 60,
     /**
-     * Privacy-first: server-side conversation state is OFF by default (`store=false`),
+     * Private by default: server-side conversation state is off (`store=false`),
      * so full history is always serialized locally and nothing persists provider-side.
      */
     val useStatefulChaining: Boolean = false,

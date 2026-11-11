@@ -230,7 +230,7 @@ internal fun AiProviderEngine.buildFoldedToolHistoryText(
 }.trim()
 
 // ============================================================================================
-// SHARED HELPERS: System Prompt Compiler, Cache-Preserving Author's Note Injector,
+// Shared helpers: the system prompt builder, the cache-friendly author's note placement,
 // Auth Header Builder, SSE Stream Reader, and Raw JSON Merger.
 // ============================================================================================
 internal fun AiProviderEngine.buildCompiledSystemPrompt(

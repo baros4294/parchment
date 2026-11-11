@@ -24,7 +24,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,7 +38,7 @@ import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.launch
 
 // ============================================================================================
-// SUBPAGE 1: PREFERENCES
+// Settings page 1: Preferences.
 // ============================================================================================
 private val ACCENT_SWATCHES = listOf(
     "#8B5A2B" to "Brown", "#9E4730" to "Rust", "#3B5998" to "Blue", "#1F6F54" to "Green",
@@ -168,7 +167,7 @@ internal fun PreferencesSubpage(
                         onCheckedChange = { onUpdatePreferences(prefs.copy(reduceMotion = it)) }
                     )
 
-                    // Theme Swatches + Custom Hex Toggle (FlowRow so swatches & Hex button never clip on mobile!)
+                    // Accent swatches and a custom hex color, in a wrapping row so nothing clips on a phone.
                     SepiaAdaptiveRow(label = "Accent color") {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(Modifier.selectableGroup(), itemVerticalAlignment = Alignment.CenterVertically) {
@@ -256,7 +255,7 @@ internal fun PreferencesSubpage(
 
                     FontChoiceRows(theme, onUpdateTheme, onNotify)
 
-                    // Typography Sizes (No artificial clamping when typing! Stacked cleanly on mobile so labels never truncate)
+                    // Text sizes: values aren't clamped while typing, and fields stack on phones so labels never truncate.
                     var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }
                     var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                     var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }

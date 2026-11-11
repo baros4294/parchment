@@ -709,7 +709,7 @@ actual object PlatformBridge {
     }
 
     private fun installOtaApk(apk: File): Result<String> = runCatching {
-        // Flush any pending in-memory state to disk BEFORE starting the Android OTA package installer!
+        // Save everything pending before the package installer starts.
         flushPendingStateNow()
 
         val ctx = appContext ?: error("Android application context is not initialized.")

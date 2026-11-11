@@ -233,7 +233,7 @@ object O200kTokenizer {
 
     /**
      * Computes the session/system/history portion of `ContextWindowBreakdown` (excluding the live Composer draft).
-     * Memoizing this separately in the UI ensures typing in the Composer never re-scans chat history or tool schemas!
+     * Kept separate so the UI can cache it: typing in the composer then never re-scans history or tool schemas.
      */
     fun computeBaseContextWindowBreakdown(
         session: ChatSession,
@@ -378,8 +378,8 @@ object O200kTokenizer {
     }
 
     /**
-     * Computes the unified, itemized `ContextWindowBreakdown` across all 7 categories so the
-     * Circular Context Ring, Context Breakdown Popover, and per-turn token counters always agree!
+     * Computes the itemized `ContextWindowBreakdown` across all 7 categories, so the context ring, the
+     * breakdown popover and the per-turn token counts always agree.
      */
     fun computeContextWindowBreakdown(
         session: ChatSession,

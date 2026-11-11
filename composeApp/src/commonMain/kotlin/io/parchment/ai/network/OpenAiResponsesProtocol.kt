@@ -44,7 +44,7 @@ import kotlinx.serialization.json.putJsonObject
 // OpenAI Responses: request history and the streaming agent loop.
 
 // ============================================================================================
-// 2. OPENAI RESPONSES API DRIVER (/v1/responses)
+// 2. OpenAI Responses API (/v1/responses)
 //    Supports stateful previous_response_id chaining, reasoning effort & summary,
 //    web_search_preview, and Local Workspace Function Tools loop.
 // ============================================================================================

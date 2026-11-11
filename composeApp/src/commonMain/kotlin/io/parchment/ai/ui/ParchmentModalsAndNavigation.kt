@@ -79,9 +79,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.launch
 
-// ============================================================================================
-// DESKTOP BROWSER-STYLE MULTI-TASKING TAB BAR & MOBILE CHROMIUM/FIREFOX TAB SWITCHER GRID
-// ============================================================================================
+// Chat tabs: a tab strip on desktop and a tab grid on phones.
 @Composable
 internal fun DesktopBrowserTabBar(
     appState: AppStateSnapshot,
@@ -448,9 +446,7 @@ internal fun MobileTabSwitcherModal(
     }
 }
 
-// ============================================================================================
-// TOP EDITORIAL BAR WITH INLINE TITLE RENAME (`✎`), AI TITLE REGEN (`✦`), & MODEL POPOVER
-// ============================================================================================
+// Top bar: rename the chat, write a new title, and pick the model.
 @Composable
 internal fun TopEditorialBar(
     appState: AppStateSnapshot,
@@ -744,9 +740,7 @@ internal fun TopEditorialBar(
     }
 }
 
-// ============================================================================================
-// PARCHMENT `[ Assistants | Chats ]` LEFT SIDEBAR
-// ============================================================================================
+// Left sidebar: Assistants, Chats and Pinned.
 @Composable
 internal fun ParchmentSidebar(
     appState: AppStateSnapshot,
@@ -1112,9 +1106,7 @@ internal fun ParchmentSidebar(
     }
 }
 
-// ============================================================================================
-// BUILT-IN ZOOMABLE IMAGE LIGHTBOX & TEXT/CODE ATTACHMENT VIEWER MODAL (ZERO-DIM STUDIO CARD)
-// ============================================================================================
+// Attachment viewer: zoomable images, and text or code files.
 @Composable
 internal fun ParchmentAttachmentViewerModal(
     item: ActiveMediaViewerItem,
@@ -1481,7 +1473,7 @@ internal fun ParchmentAttachmentViewerModal(
 }
 
 // ============================================================================================
-// RIGHT CHAT FILES, ARTIFACTS & SOURCES SIDEBAR (`ParchmentRightFilesSidebar`)
+// Right sidebar: the chat's files, generated media and sources (`ParchmentRightFilesSidebar`).
 // Categorizes every item in the active chat into:
 // 1. `✦ AI-Generated Files & Media` (Workspace writes/edits, generated images/videos, SVG/code artifacts)
 // 2. `↑ User-Uploaded Documents & Files` (Attached PDFs, images, code/text files, video/audio)
@@ -1538,8 +1530,8 @@ private val VAULT_CODE_FENCE_REGEX = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)`
 private val VAULT_LINE_NUMBER_STRIP_REGEX = Regex("^\\d+:\\s?")
 
 /**
- * Fast, zero-JSON-parsing, zero-list-allocation counter for the TopEditorialBar `📂` Vault badge.
- * Full `extractSessionVaultItems` only runs when the user actually opens the Right Files Sidebar!
+ * Counts the chat's files for the top bar badge without parsing or building lists; the full
+ * `extractSessionVaultItems` runs only when the files sidebar is opened.
  */
 internal fun countSessionVaultItemsFast(
     session: ChatSession,
@@ -2280,7 +2272,7 @@ internal fun ParchmentRightFilesSidebar(
 }
 
 // ============================================================================================
-// INTERACTIVE CONTEXT WINDOW BREAKDOWN POPOVER (`ContextWindowBreakdownPopover`)
+// Context window breakdown (`ContextWindowBreakdownPopover`).
 // Opened by clicking `SepiaContextGaugeRing` in the Composer footer.
 // Displays unified `o200k_base` token counts across 7 context categories + Free Space + 1-tap actions.
 // ============================================================================================

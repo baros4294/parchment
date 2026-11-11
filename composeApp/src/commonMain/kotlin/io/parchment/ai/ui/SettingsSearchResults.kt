@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
 // ============================================================================================
 // Settings search, item by item
 // Searches across Preferences, Providers, Models, Assistants, Default Models, Workspace,
-// World Book / Lorebook, and Backup / OTA with interactive inline controls and 1-tap tab jumps!
+// World Book, and Storage and updates, with working controls and a link to each page.
 // ============================================================================================
 private fun matchesSearchTokens(tokens: List<String>, vararg terms: String): Boolean {
     if (tokens.isEmpty()) return true
@@ -197,7 +197,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
     fun hit(vararg terms: String): Boolean = matchesSearchTokens(tokens, *terms)
 
-    // 1. PREFERENCES INDIVIDUAL ITEM MATCHES (Every single setting in PreferencesSubpage!)
+    // 1. Preferences, matched setting by setting.
     val hitColorMode = hit("Color Mode & Preset", "Appearance & Fonts", "theme", "sepia", "dark", "light", "ivory", "oxford", "candlelight", "midnight", "oled")
     val hitAccentColor = hit("Accent Color", "Appearance & Fonts", "swatch", "hex", "canvas", "ink", "card color")
     val hitAppFont = hit("Text Font", "Code Font", "App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "monospace", "ttf", "otf", "custom font")
@@ -260,7 +260,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
         hitNewChatDeleteTopic, hitNewChatLaunch, hitAutoScrollOnOpen, hitAutoFollowBottom, hitAutoCompactLimit, hitNavMinimap, hitSendShortcut, hitPasteLongFile
     ).any { it }
 
-    // 2. PROVIDERS & MODELS MATCHES
+    // 2. Providers and models.
     val hitApiKey = hit("API Key", "Providers", "token", "auth", "bearer", "credential", activeProfile.name)
     val hitBaseUrl = hit("Base URL", "Endpoint Path Override", "Providers", "proxy", "host", activeProfile.baseUrl)
     val hitStateful = hit("Stateful Interaction Chaining", "previous_interaction_id", "previous_response_id", "cache", "Providers", PROVIDER_STORAGE_TITLE)
@@ -278,19 +278,19 @@ internal fun GlobalSettingsSearchResultsSubpage(
     }
     val anyProviderMatch = hitApiKey || hitBaseUrl || hitStateful || hitLongDecode || hitLegacyFallback || hitSampling || hitCapabilities || matchingModels.isNotEmpty()
 
-    // 3. WORKSPACE MATCHES
+    // 3. Workspace.
     val hitWorkspaceMode = hit("Agent approvals and file access", "Agent permissions", "assistant defaults", "inherit", "web access", "network", "sandbox", "power", "keep awake", "tools", "Workspace Mode", "Read-Only", "Agent R/W", "fs_read", "fs_edit", "todo_write", "folder", "workspace")
     val hitShellExec = hit("Shell full process access", "shell_exec", "terminal", "powershell", "bash", "command", "workspace")
     val anyWorkspaceMatch = hitWorkspaceMode || hitShellExec
 
-    // 4. DEFAULT MODELS MATCHES
+    // 4. Default models.
     val hitGlobalModel = hit("Global Default Chat Model", "Default Model", "primary model")
     val hitTitleModel = hit("Title Generation", "Topic Naming", "Default Model", "prompt template", "auto title")
     val hitSummaryModel = hit("Summary & Context Compression", "Default Model", "compact context", "summarize")
     val hitTranslationModel = hit("Translation Model", "Target Language", "Default Model", "translate")
     val anyDefaultModelMatch = hitGlobalModel || hitTitleModel || hitSummaryModel || hitTranslationModel
 
-    // 5. ASSISTANTS, WORLD BOOK, & BACKUP / OTA MATCHES
+    // 5. Assistants, World Book, and Storage and updates.
     val matchingAssistants = remember(appState.assistants, tokens) {
         appState.assistants.filter { asst ->
             hit(asst.name, asst.systemPrompt, asst.authorsNote, "assistant", "persona", "agent", "system prompt", "author's note")

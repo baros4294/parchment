@@ -132,7 +132,7 @@ fun ParchmentApp(
     var otaState by remember { mutableStateOf<OtaUpdateState>(OtaUpdateState.Idle) }
     var dismissOtaBanner by remember { mutableStateOf(false) }
 
-    // Concurrent Per-Session Multi-Tasking Stream & Queue State (allows multiple tabs to run simultaneously!)
+    // Stream and queue state per chat, so several tabs can run at once.
     var activeStreamsBySession by processState.runs.streams
     var queuedPromptsBySession by processState.queuedPrompts
     DisposableEffect(uiScope) {
@@ -174,7 +174,7 @@ fun ParchmentApp(
         }
     }
 
-    // On-demand lazy hydration when switching active chat + automatic dehydration of inactive chats to keep RAM ultra-low
+    // Load the chat being switched to in full and shrink inactive ones back to stubs, to keep memory low.
     LaunchedEffect(appState.activeSessionId) {
         val current = appState
         val target = current.sessions.find { it.id == current.activeSessionId }
@@ -210,7 +210,7 @@ fun ParchmentApp(
         normalizeOpenTabs(validSaved, activeSession.id)
     }
 
-    // Per-session composer inputs & staged attachments (synced per session so switching tabs never leaks or loses files!)
+    // Composer text and staged attachments per chat, so switching tabs never moves or loses files.
     var userPromptInput by remember(activeSession.id) { mutableStateOf(activeSession.draftInput) }
     var assistantPrefillInput by remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
     var showPrefillBox by remember { mutableStateOf(false) }
@@ -594,7 +594,7 @@ fun ParchmentApp(
         }
     }
 
-    // Automatically fetch models ONLY when savedModels is empty AND never overwrite an existing user defaultModel!
+    // Fetch models automatically only when none are saved, and never replace the user's chosen default model.
     LaunchedEffect(activeProfile.id, activeProfile.baseUrl, activeProfile.apiKey, activeProfile.autoFetchModels) {
         val hasCredentialsOrCustomProxy = activeProfile.apiKey.isNotBlank() ||
             activeProfile.baseUrl.trimEnd('/') != activeProfile.protocol.defaultBaseUrl.trimEnd('/')
@@ -739,7 +739,7 @@ fun ParchmentApp(
     /**
      * Core Generation Dispatcher with:
      * - Concurrent Per-Session Multi-Tasking (multiple tabs run simultaneously in background)
-     * - 60/120fps VSYNC Character Pacer (`withFrameNanos`)
+     * - Reveals text once per display frame (`withFrameNanos`)
      * - Auto-Open / Auto-Collapse Reasoning Phase tracking
      * - 1.5s Atomic Disk Checkpoints + Cancellation/Close Preservation
      * - Automatic Queue Drain (`⏳ Queue`), Live Voice TTS Readout, and First-Turn Auto-Title Generation
@@ -876,7 +876,7 @@ fun ParchmentApp(
             )
         )
 
-        // NEVER overwrite a manually named chat title with the first message!
+        // A chat title the user set by hand is never replaced by the first message.
         updateSessionById(sessionId, immediate = true) {
             it.copy(
                 messages = updatedMessages,
@@ -913,7 +913,7 @@ fun ParchmentApp(
         if (targetNode.role != MessageRole.ASSISTANT) return
         val historyBefore = complete.messages.subList(0, nodeIndex)
         val existingText = AiProviderEngine.stripInlineErrorNotices(targetNode.activeVariant.content)
-        // Immediately strip any inline error banner in UI state so the user sees clean resumption at 0ms!
+        // Clear the inline error at once so the resumed reply starts clean.
         updateActiveSession(immediate = true) { sess ->
             sess.copy(
                 messages = sess.messages.mapIndexed { idx, n ->
@@ -1003,7 +1003,7 @@ fun ParchmentApp(
             return
         }
 
-        // Handle `/continue` slash command (Continues the last Assistant turn seamlessly)
+        // `/continue` extends the last assistant reply.
         if (rawInput.equals("/continue", ignoreCase = true) && currentAtts.isEmpty()) {
             val lastAsstIdx = activeSession.messages.indexOfLast { it.role == MessageRole.ASSISTANT }
             if (lastAsstIdx >= 0) {
@@ -1041,7 +1041,7 @@ fun ParchmentApp(
             return
         }
 
-        // Handle `/btw <question>` ephemeral side-question (auto-muted from context once answered!)
+        // `/btw <question>` asks a side question; once answered it is left out of later context.
         val isBtw = rawInput.startsWith("/btw ", ignoreCase = true)
         val cleanedInput = if (isBtw) {
             "[Side Question (/btw): ${rawInput.substringAfter(" ").trim()}]"
@@ -1101,7 +1101,7 @@ fun ParchmentApp(
 
     /**
      * `⚡ Steer` Mode: Immediately stops the in-flight stream on the active tab, keeps partial AI output,
-     * appends the user's new follow-up prompt, and starts generating from the new prompt!
+     * appends the user's new follow-up prompt, and starts generating from the new prompt.
      */
     fun triggerSteerNow() {
         val targetSessId = activeSession.id
@@ -1231,12 +1231,10 @@ fun ParchmentApp(
     }
 
     /**
-     * Unified Regenerate Dispatcher supporting BOTH:
-     * 1. User turns (`targetNode.role == MessageRole.USER`): deletes all Assistant / subsequent turns below
-     *    the User message, appends a fresh Assistant turn right below it, and streams a new response.
-     * 2. Assistant turns (`targetNode.role == MessageRole.ASSISTANT`): honors `deleteMessagesBelowWhenRegenerating`
-     *    (truncating subsequent turns) and `deletePreviousMessageWhenRegenerating` (replacing ONLY the active
-     *    swipe variant in-place instead of wiping out other swipe versions).
+     * Regenerates from either kind of turn:
+     * 1. A user turn: deletes the turns below it, adds a new assistant turn and streams a new reply.
+     * 2. An assistant turn: follows `deleteMessagesBelowWhenRegenerating` (drop later turns) and
+     *    `deletePreviousMessageWhenRegenerating` (replace only the active version, keeping the others).
      */
     fun executeRegenerateFromNode(nodeIndex: Int, sessionId: String = activeSession.id) {
         val curSnap = appState
@@ -1251,7 +1249,7 @@ fun ParchmentApp(
         val modelUsed = sess.modelOverride.ifBlank { curProf.defaultModel }
 
         if (targetNode.role == MessageRole.USER) {
-            // Regenerating under a User message ALWAYS deletes all Assistant/subsequent messages below it
+            // Regenerating from a user message always deletes the messages below it.
             val historyUpToUser = sess.messages.subList(0, nodeIndex + 1)
             val newAsstNodeId = "node-$now-regen-a"
             val newVarId = "var-$now-regen-a"
@@ -1291,7 +1289,7 @@ fun ParchmentApp(
             val prefs = curSnap.preferences
             val activeVarIdx = targetNode.activeVariantIndex.coerceIn(0, (targetNode.variants.size - 1).coerceAtLeast(0))
             val newVariants = if (prefs.deletePreviousMessageWhenRegenerating && targetNode.variants.isNotEmpty()) {
-                // Replace ONLY the currently active swipe variant in-place, preserving all other swipe versions!
+                // Replace only the active version in place; the other versions stay.
                 targetNode.variants.mapIndexed { vIdx, v -> if (vIdx == activeVarIdx) newVar else v }
             } else {
                 targetNode.variants + newVar
@@ -1422,7 +1420,7 @@ fun ParchmentApp(
     }
 
     fun createNewTopicForAssistant(assistant: AssistantAgent, openInNewTab: Boolean = true) {
-        // If an untouched empty 'New Chat' tab for this exact assistant is already open, switch to it instead of piling up duplicate blank tabs!
+        // Reuse an open, untouched "New Chat" tab for this assistant instead of adding another blank one.
         val existingEmptyOpenTab = appState.sessions.find { s ->
             s.id in openTabIds &&
                 s.assistantId == assistant.id &&
@@ -1730,7 +1728,7 @@ fun ParchmentApp(
                         desktopWindowHeader(if (isSettingsOpen) "Settings" else activeSession.title)
                     }
 
-                    // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
+                    // 1. Top bar, hidden while Settings is open so there is only one way back to the chat.
                     if (!isSettingsOpen) {
                         val bgStreamingCount = activeStreamsBySession.keys.count { it != activeSession.id }
                         val vaultCountKey = remember(
@@ -1984,7 +1982,7 @@ fun ParchmentApp(
 
                     // 2. Main Content Area:
                     // - On Desktop: Side-by-side Sidebar + Chat/Settings
-                    // - On Mobile: Chat/Settings underneath + 86%-width Slide-Over Drawer with Scrim!
+                    // - On phones: the chat or Settings underneath, with the sidebar sliding over 86% of the width.
                     val sidebarComposable: @Composable (Modifier) -> Unit = { mod ->
                         ParchmentSidebar(
                             appState = appState,
@@ -2193,7 +2191,7 @@ fun ParchmentApp(
                                         activeStreamsBySession = emptyMap()
                                         queuedPromptsBySession = emptyMap()
                                         pendingAttachmentsBySession = emptyMap()
-                                        // Preserve existing chats on disk when importing a settings-only JSON file!
+                                        // Importing a settings-only file keeps the chats already on disk.
                                         val mergedSessions = if (restored.sessions.isEmpty()) {
                                             appState.sessions
                                         } else {
@@ -2501,7 +2499,7 @@ fun ParchmentApp(
                                                 }
                                                 bannerNotification = "Rewound chat to turn #${nodeIndex + 1} (removed ${plural(dropped, "later turn")})."
                                             } else {
-                                                // Clicked `↺ Rewind` on the final message: rewind that turn (or turn pair) so it's never a no-op!
+                                                // Rewind on the last message removes that turn (or turn pair), so it always does something.
                                                 val dropCount = if (total >= 2 && activeSession.messages.last().role == MessageRole.ASSISTANT) 2 else 1
                                                 updateActiveSession(immediate = true) { sess ->
                                                     sess.copy(messages = sess.messages.dropLast(dropCount))
@@ -2868,7 +2866,7 @@ fun ParchmentApp(
                             )
                         }
 
-                        // Full Multi-Column Tab Overview Grid (Unlocked on BOTH Mobile & Desktop!)
+                        // Grid of all open tabs, on phones and desktop.
                         if (showMobileTabSwitcher) {
                             MobileTabSwitcherModal(
                                 appState = appState,

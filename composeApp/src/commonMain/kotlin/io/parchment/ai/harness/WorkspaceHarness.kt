@@ -24,9 +24,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlin.math.pow
 /**
- * Self-contained, pure-API Local File System & Long-Horizon Goal Agent Harness.
- * Zero external CLI bridge required. Works directly with Gemini Interactions, OpenAI Responses,
- * and Anthropic Messages tool loops.
+ * The agent's local tools: workspace files, shell, web, goals and todo lists. Runs in-process (no external
+ * command-line bridge) and serves the tool loops of every provider wire.
  */
 object WorkspaceHarness {
 
@@ -1091,11 +1090,10 @@ object WorkspaceHarness {
     private val LINE_NUMBER_PREFIX_REGEX = Regex("""^\s*(\d+):\s?(.*)$""")
 
     /**
-     * Pre-Context Output Compression & Head+Tail Bookend Size Valve.
-     * - Strips noisy ANSI escape codes, PowerShell `#< CLIXML ... </Objs>` progress XML, and excessive blank lines.
-     * - Applies a Head + Tail Bookend Size Valve to `shell_exec`, `fs_search`, `fs_list`, and `fs_glob`
-     *   so a single noisy command or directory dump never floods the context window, while NEVER
-     *   truncating requested `fs_read` file line ranges.
+     * Tidies tool output before it reaches the model:
+     * - Drops ANSI escape codes, PowerShell progress XML (`#< CLIXML`) and runs of blank lines.
+     * - Keeps only the head and tail of long `shell_exec`, `fs_search`, `fs_list` and `fs_glob` output, so one
+     *   noisy command can't flood the context. Line ranges asked for with `fs_read` are never cut.
      */
     fun compressToolOutputWithSizeValve(toolName: String, rawOutput: String): String {
         if (rawOutput.isEmpty()) return rawOutput
@@ -1181,7 +1179,7 @@ object WorkspaceHarness {
      * 2-Tier Exact + Whitespace/Indentation-Normalized Self-Healing Edit Engine:
      * 1. Tier 1: Exact substring match (with automatic stripping of accidental `fs_read` line numbers).
      * 2. Tier 2: Line-by-line trimmed/whitespace-normalized match when exact match fails due to minor
-     *    indentation or trailing-space drift, automatically preserving/re-aligning relative indentation!
+     *    indentation or trailing-space drift, keeping the relative indentation of the replacement.
      */
     fun applySingleEditWithFuzzySelfHealing(
         existingLf: String,
@@ -1867,11 +1865,10 @@ object WorkspaceHarness {
         }
 
         /**
-         * Stop-Hook Work-Check Gate:
-         * Called when the model finishes a turn with zero tool calls (`toolCalls.isEmpty()`).
-         * - If no `/goal` or `todo_write` checklist is active (normal chat, roleplay, short writing), returns `null` -> immediate exit!
-         * - If `goalState` has incomplete (`pending` / `in_progress`) items and the circuit breaker hasn't tripped,
-         *   returns the Work-Check continuation prompt so the model continues until 100% complete!
+         * Decides whether a turn that ended without tool calls is really finished.
+         * - With no `/goal` or todo list active (ordinary chat or writing), returns `null` and the turn ends.
+         * - With unfinished goal or todo items, and the circuit breaker not tripped, returns a prompt that asks
+         *   the model to carry on until they are done.
          */
         fun evaluateStopHookPrompt(): String? {
             val gs = goalState ?: return null

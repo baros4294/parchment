@@ -40,7 +40,7 @@ import kotlinx.serialization.json.putJsonObject
 // Anthropic Messages: request history and the streaming agent loop.
 
 // ============================================================================================
-// 3. ANTHROPIC MESSAGES API DRIVER (/v1/messages)
+// 3. Anthropic Messages API (/v1/messages)
 //    Supports Extended Thinking + cryptographic signature preservation,
 //    Automatic Prompt Caching (`cache_control: {"type": "ephemeral"}`),
 //    Native Assistant Prefill (`continuePrefix`), and Local Workspace Function Tools loop.

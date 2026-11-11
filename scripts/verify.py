@@ -43,21 +43,22 @@ TOOL_TESTS = REPO / "scripts" / "test_workflow_tools.py"
 APP_VERSION = "2.1.0"
 APP_VERSION_CODE = "264"
 DESKTOP_TEST = ":composeApp:desktopTest"
-ANDROID_COMPILE = ":composeApp:compileDebugKotlinAndroid"
-# assembleRelease compiles all Android Kotlin for release, so a separate debug compile here would only repeat it.
-FINAL_TASKS = (DESKTOP_TEST, ":composeApp:assembleRelease", ":composeApp:createDistributable")
+# The shared module's Android code compiles in :composeApp; :androidApp only packages the APK (AGP 9).
+ANDROID_COMPILE = ":composeApp:compileAndroidMain"
+# The release APK build compiles all Android code, so a separate compile here would only repeat it.
+FINAL_TASKS = (DESKTOP_TEST, ":androidApp:assembleRelease", ":composeApp:createDistributable")
 SIGNER_VARIABLES = ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS")
 MAX_COMPILE_ERRORS = 25
 MAX_FAILED_TESTS = 20
 MAX_LINE = 260
 
 PACKAGE = "io.parchment.ai"
-CODE_PATHS = ("composeApp/", "gradle/")
+CODE_PATHS = ("composeApp/", "androidApp/", "gradle/")
 CODE_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradle.properties", "gradlew", "gradlew.bat")
 # Every code change runs all desktop tests. Compiling Android repeats the shared code's compile, so affected adds it
 # only when a change can reach Android: its sources, shared JVM code, the platform expect declarations or the build.
 ANDROID_PATHS = ("composeApp/src/androidMain/", "composeApp/src/jvmShared/", "composeApp/src/commonMain/kotlin/io/parchment/ai/platform/",
-                 "gradle/", "composeApp/build.gradle.kts", "composeApp/proguard-rules.pro")
+                 "gradle/", "composeApp/build.gradle.kts", "androidApp/")
 
 
 @dataclass

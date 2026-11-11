@@ -102,8 +102,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // ============================================================================================
-// MAIN MANUSCRIPT / CHAT VIEWPORT WITH FLOATING MINIMAP (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
-// AND STEER / QUEUE COMMAND DECK COMPOSER
+// The chat page: messages, the floating message navigator and the composer with steer and queue.
 // ============================================================================================
 @Composable
 internal fun ManuscriptViewport(
@@ -173,11 +172,11 @@ internal fun ManuscriptViewport(
     var showMinimapTreeModal by remember { mutableStateOf(false) }
     var showContextBreakdownPopover by remember { mutableStateOf(false) }
 
-    // Smart Bottom-Edge Auto-Follow with Sticky Manual Scroll-Up Disengage & Auto-Scroll on Chat Open:
-    // 1. Scrolls to the bottom spacer (`totalItemsCount - 1`) with a large positive offset so long AI messages
-    //    pin their BOTTOM edge to the bottom of the viewport instead of snapping to the TOP of the message!
-    // 2. Immediately disengages auto-scroll when the user scrolls up manually and stays disengaged until the user
-    //    scrolls back to the bottom or taps `↓ Latest` / `⤓` (never yanking the viewport away after 5s while reading!).
+    // Following the newest text:
+    // 1. Scrolls to the bottom spacer with a large offset, so a long reply keeps its bottom edge in view
+    //    instead of jumping to its top.
+    // 2. Stops following as soon as the user scrolls up, and stays stopped until they scroll back down or tap
+    //    Latest, so the page never moves away while they read.
     var userScrollPausedUntilMs by remember(activeSession.id) { mutableStateOf(0L) }
     var userDisengagedAutoFollow by remember(activeSession.id) { mutableStateOf(false) }
 
@@ -249,8 +248,8 @@ internal fun ManuscriptViewport(
         }
     }
 
-    // Bucket streaming content length into 128-char steps while streaming so 120fps VSync frames
-    // never recompute full-history O200kTokenizer breakdowns on every single character!
+    // While streaming, recount the context breakdown every 128 characters rather than on every frame:
+    // counting the whole history is too costly to repeat per character.
     val throttledBreakdownTrigger = if (isStreaming) {
         (lastMsgContentLen / 128) * 128 + (activeSession.messages.lastOrNull()?.activeVariant?.toolCalls?.size ?: 0)
     } else {
@@ -302,7 +301,7 @@ internal fun ManuscriptViewport(
     }
     val liveContextTokens = contextBreakdown.totalUsedTokens
 
-    // 5-Second Minimap Linger Timer (`5000ms` after scrolling stops or after any minimap button tap!)
+    // The navigator stays visible for 5 seconds after scrolling stops or after one of its buttons is used.
     var isMinimapScrollLingering by remember { mutableStateOf(false) }
     var minimapInteractionTick by remember { mutableStateOf(0) }
 
@@ -338,7 +337,7 @@ internal fun ManuscriptViewport(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Collapsible Chat Notes & Memory Drawer (Toggled via `✎ Notes` in the Top Bar — zero duplicate sub-header ribbon!)
+        // Chat notes and memory, opened from Notes in the top bar.
         AnimatedVisibility(visible = showSessionInspector) {
             Column(
                 modifier = Modifier
@@ -458,7 +457,7 @@ internal fun ManuscriptViewport(
             }
         }
 
-        // Main Chat Area + Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`)
+        // The message list and the floating message navigator.
         val win = LocalParchmentWindowSize.current
         val userPicture = rememberFileImage(preferences.profilePicturePath).bitmap
         BoxWithConstraints(
@@ -481,7 +480,7 @@ internal fun ManuscriptViewport(
                                 if (ev.type == PointerEventType.Scroll) {
                                     val dy = ev.changes.firstOrNull()?.scrollDelta?.y ?: 0f
                                     if (dy < 0f) {
-                                        // User scrolled UP with mouse wheel / trackpad — immediately pause auto-follow for 5s!
+                                        // Scrolling up with the wheel or trackpad pauses following for 5 seconds.
                                         userDisengagedAutoFollow = true
                                         userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
                                     }
@@ -680,7 +679,7 @@ internal fun ManuscriptViewport(
                 activeModalityProfile.isLiveRealtimeAudio
 
             // Unified Bottom-Center Floating Stack:
-            // Stacked vertically with `spacedBy(8.dp)` so the Floating Live Audio Pill NEVER overlaps the `↓ Latest` Pill!
+            // Stacked with 8 dp between them so the live audio pill never covers the Latest pill.
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -836,7 +835,7 @@ internal fun ManuscriptViewport(
                     }
                 }
 
-                // High-Contrast Frosted-Glass Opaque `↓ Latest` Pill when scrolled up (zero background text bleed-through!)
+                // The Latest pill, shown when scrolled up; opaque so text behind it doesn't show through.
                 AnimatedVisibility(
                     visible = isScrolledUpFromBottom,
                     enter = slideInVertically(
@@ -897,7 +896,7 @@ internal fun ManuscriptViewport(
                     }
                 }
             }
-            // Floating Message Navigation Minimap (`⤒`, `↑`, `🗺 Tree/Swipes`, `↓`, `⤓`) with 5-Second Linger!
+            // Message navigator: first, previous, branches, next and last.
             val showNavButtons = when (preferences.messageNavButtons) {
                 MessageNavVisibility.ALWAYS -> activeSession.messages.isNotEmpty()
                 MessageNavVisibility.WHILE_SCROLLING -> activeSession.messages.isNotEmpty() && isMinimapScrollLingering
@@ -1135,7 +1134,7 @@ internal fun ManuscriptViewport(
         }
 
         // ========================================================================================
-        // ZEN-BY-DEFAULT FLOATING COMPOSER WITH DESKTOP ENTER-TO-SEND & STEER / QUEUE
+        // The composer: Enter sends on desktop; while a reply runs, steer or queue the next message.
         // ========================================================================================
         val hasTypedInput = userPromptInput.isNotBlank() || assistantPrefillInput.isNotBlank() || pendingAttachments.isNotEmpty()
 
@@ -1162,7 +1161,7 @@ internal fun ManuscriptViewport(
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                // 1. Multi-Line Expandable Live Streaming Status Strip (Splits headline & detail onto clean newlines!)
+                // 1. Live status while streaming: the headline and its detail on separate lines.
                 var statusExpanded by remember { mutableStateOf(false) }
                 AnimatedVisibility(visible = isStreaming) {
                     val rawStatus = streamingStatus.ifBlank { "Generating reply…" }
@@ -1489,8 +1488,8 @@ internal fun ManuscriptViewport(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                // Vertical Slash-Command Autocomplete Palette when typing `/` in the Composer!
-                // Automatically dismisses as soon as a space is entered (e.g. `/goal ` or `/btw `) so it never blocks typing!
+                // Slash-command suggestions while typing `/`. They close at the first space (`/goal `), so they
+                // never get in the way of typing the argument.
                 val trimmedSlashPrefix = userPromptInput.trimStart()
                 val showSlashSuggestions = trimmedSlashPrefix.startsWith("/") &&
                     !trimmedSlashPrefix.contains('\n') &&
@@ -1552,7 +1551,7 @@ internal fun ManuscriptViewport(
                                             if (spec.takesArgument) {
                                                 onUserPromptChange("${spec.command} ")
                                             } else {
-                                                // 1-tap instant execution for no-argument slash commands!
+                                                // Commands without an argument run on a single tap.
                                                 onUserPromptChange("")
                                                 when (spec.command) {
                                                     "/compact" -> onCompactContext()
@@ -1658,7 +1657,7 @@ internal fun ManuscriptViewport(
                     }
                 }
 
-                // Vertical `@` File, Attachment & Lore Mention Autocomplete Palette!
+                // `@` suggestions: workspace files, attachments and lore entries.
                 val activeAtQuery: String? = remember(userPromptInput) {
                     val lastAt = userPromptInput.lastIndexOf('@')
                     if (lastAt == -1) null
@@ -1903,7 +1902,7 @@ internal fun ManuscriptViewport(
                     }
                 }
 
-                // 4. Clean Borderless Prompt Input Area with Desktop Enter-to-Send & Shift+Enter Newline!
+                // 4. The text field: on desktop Enter sends and Shift+Enter adds a line.
                 val targetName = activeSession.activeCard?.name?.takeIf { it.isNotBlank() }
                     ?: activeAssistant.name.takeIf { it.isNotBlank() }
                     ?: activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { "AI" }
@@ -1961,7 +1960,7 @@ internal fun ManuscriptViewport(
                 }
                 SepiaDivider()
 
-                // 5. Zen Composer Footer: Dynamically scaled for both Mobile & Desktop (zero right-side whitespace!)
+                // 5. Composer footer, sized for phone and desktop widths.
                 val hasActiveTools = activeProfile.enableWebSearch ||
                     activeProfile.enableCodeExecution ||
                     activeProfile.enableUrlContext ||
@@ -2114,7 +2113,7 @@ internal fun ManuscriptViewport(
                         }
                     }
                 } else {
-                    // Single full-width SpaceBetween row on both Mobile (idle) and Desktop!
+                    // One full-width row on desktop, and on phones while idle.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,

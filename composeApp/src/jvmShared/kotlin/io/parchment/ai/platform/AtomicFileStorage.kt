@@ -88,7 +88,9 @@ internal object AtomicFileStorage {
         commitAtomically(staged.toPath(), target.toPath())
     }
 
-    private const val MAX_REPLACE_ATTEMPTS = 14 // About 2.3 seconds in total.
+    // About 5 seconds in total. Saves run on the background writer, so a slow machine with an antivirus
+    // scanner holding the file can wait this long without the interface noticing.
+    private const val MAX_REPLACE_ATTEMPTS = 24
 
     private fun commitAtomically(source: Path, target: Path) {
         repeat(MAX_REPLACE_ATTEMPTS) { attempt ->

@@ -27,8 +27,8 @@ import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.getDiscoveredVendorForModel
 
 /**
- * Pure Compose Foundation Lucide-Inspired KISS Vector Icon Pack (24x24 coordinate grid).
- * Zero OS emoji dependencies — renders crisp, theme-tinted SVG vector strokes at any DPI.
+ * Parchment's own vector icons on a 24×24 grid, drawn with Compose Foundation and tinted by the theme,
+ * so no OS emoji is needed.
  */
 enum class KissIcon {
     MENU,
@@ -283,7 +283,7 @@ private val parsedKissLabelCache = object : LinkedHashMap<String, ParsedLabelWit
 }
 
 /**
- * Automatically strips any legacy emoji/symbol tokens from a label and resolves crisp vector `KissIcon`s.
+ * Strips emoji or symbol tokens from a label and maps them to `KissIcon`s.
  */
 fun parseKissLabelIcons(raw: String): ParsedLabelWithIcons {
     val trimmed = raw.trim()
@@ -425,13 +425,8 @@ fun KissVectorIcon(
     }
 }
 
-// ============================================================================================
-// OFFICIAL AI LAB & MODEL SVG ICON ENGINE (Powered by @lobehub/icons-static-svg Database)
-// Renders verbatim 24x24 SVG <path d="..."/> vectors from lobehub/lobe-icons for Gemini, OpenAI,
-// Claude, Anthropic, DeepSeek, Grok, Qwen, Mistral, Meta Llama, ByteDance, Doubao/Seedream,
-// Zhipu/GLM, Kimi/Moonshot, MiniMax, Perplexity, Cohere, OpenRouter, & Google, with live online
-// fallback lookup from raw.githubusercontent.com/lobehub/lobe-icons for any other lab slug!
-// ============================================================================================
+// AI lab logos from lobehub/lobe-icons, drawn from their 24×24 SVG paths. The common labs are built in;
+// any other lab's logo is fetched from raw.githubusercontent.com/lobehub/lobe-icons when first needed.
 private val LOBE_ICONS_HTTP_CLIENT
     get() = AiProviderEngine.httpClient
 private val DYNAMIC_LOBE_SVG_CACHE = mutableStateMapOf<String, List<String>>()

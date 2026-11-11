@@ -113,7 +113,7 @@ internal fun AiProviderEngine.isTransientOrProxyTimeoutError(err: Throwable): Bo
         }
     }
     // Treat all other network, socket, EOF, stream, rate-limit (429),
-    // gateway (502/503/504/520-529), and upstream proxy interruptions as retryable!
+    // gateway (502/503/504/520-529), and upstream proxy interruptions as retryable.
     return true
 }
 

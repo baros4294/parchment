@@ -30,7 +30,7 @@ class PrivateSignerTest(unittest.TestCase):
         self.assertEqual(fingerprint, certificate_fingerprint("SHA256: " + colon_format))
 
 
-@unittest.skipUnless(shutil.which("java") and shutil.which("keytool"), "JDK 21 must be on PATH")
+@unittest.skipUnless(shutil.which("java") and shutil.which("keytool"), "a JDK must be on PATH")
 class PrivateKeyStagingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -12,12 +12,12 @@ import kotlinx.coroutines.async
 // Opaque reasoning signatures and cross-provider reasoning handoff.
 
 // ============================================================================================
-// 5. UNIVERSAL MEDIA & AUDIO DRIVER (IMAGE, VIDEO, AND TTS AUTO-ROUTING)
+// 5. Media and audio: images, video and speech, routed to the right endpoint.
 //    Supports:
 //    - Universal Image Generation (`POST /v1/images/generations` & `/api/v3/images/generations` with 3-stage payload self-healing)
 //    - Universal Video Generation (`POST /contents/generations/tasks`, `/videos/generations`, `/video/generations`, `/videos` + sync/async polling)
 //    - Universal Audio Speech / TTS (`POST /v1/audio/speech` & `/audio/speech` with fallback to `/chat/completions`)
-//    - Automatic fallback to `/v1/chat/completions` when a proxy wraps media generation inside chat completions!
+//    - Falls back to `/v1/chat/completions` when a proxy offers media generation only through chat.
 // ============================================================================================
 /**
  * Cross-provider reasoning continuity.

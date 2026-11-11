@@ -62,7 +62,7 @@ import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.launch
 
 // ============================================================================================
-// SUBPAGE 2: PROVIDERS (3-Pane Provider List + Detail + Model Subpage)
+// Settings page 2: Providers (the list, a provider's details and a model's page).
 // ============================================================================================
 @Composable
 internal fun ProvidersSubpage(
@@ -359,7 +359,7 @@ internal fun ProvidersSubpage(
                         SepiaDivider()
                     }
                 }
-                // If a specific model's ⚙ subpage is open, show the dedicated Per-Model Token & Pricing Subpage!
+                // With a model's page open, show its token limits and pricing.
                 val configModelId = selectedModelForConfigSubpage
                 if (configModelId != null) {
                     ModelConfigSubpage(
@@ -652,7 +652,7 @@ internal fun ProvidersSubpage(
                                     AiProviderEngine.fetchAvailableModels(activeProfile).fold(
                                         onSuccess = { fetched ->
                                             val merged = (activeProfile.savedModels + fetched).distinct()
-                                            // NEVER overwrite an existing defaultModel!
+                                            // Never replace a default model the user already chose.
                                             // If defaultModel is blank, pick a chat model (skipping deep-research/embedding)
                                             val preferredDefault = activeProfile.defaultModel.ifBlank {
                                                 pickBestInitialChatModel(merged)
@@ -1140,7 +1140,7 @@ internal fun ProviderProtocolSubpage(
 
 /**
  * Dedicated Subpage for Per-Model Context Window, Max Output Tokens, and `models.dev` Pricing.
- * Zero forced minimums (`0 = Unlimited`, `Blank = Strip`).
+ * No forced minimums: `0` means unlimited and blank leaves the field out of the request.
  */
 @Composable
 private fun ModelConfigSubpage(

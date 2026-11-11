@@ -24,7 +24,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -165,8 +164,8 @@ private suspend fun AiProviderEngine.executeWorkspaceToolWithLiveProgress(
         return record.copy(isRunning = false, durationMs = (clock() - startMs).coerceAtLeast(1L),
             thoughtSignature = thoughtSignature, precedingThinking = precedingThinking)
     }
-    // IMPORTANT: Run the blocking tool execution in `async(Dispatchers.IO)` (which NEVER calls `flow.emit()`)
-    // and consume `liveChannel` directly on the caller's coroutine so Kotlin's `Flow` context invariant is NEVER violated!
+    // The blocking tool runs in `async(Dispatchers.IO)`, which never calls `emit()`; `liveChannel` is read on the
+    // caller's coroutine. Emitting from another context would break Flow's context rule and throw.
     return kotlinx.coroutines.coroutineScope {
         val workerDeferred = async(Dispatchers.IO) {
             try {
@@ -272,8 +271,8 @@ internal suspend fun AiProviderEngine.executeWorkspaceToolBatchWithLiveProgress(
             return results
         }
 
-        // Parallel fast path: emit RUNNING cards for all read-only tools immediately,
-        // execute them concurrently on Dispatchers.IO, and emit completed records in deterministic order!
+        // Read-only tools run in parallel: show a running card for each at once, run them on Dispatchers.IO,
+        // and report the results in a fixed order.
         val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
         onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
         for ((idx, triple) in calls.withIndex()) {

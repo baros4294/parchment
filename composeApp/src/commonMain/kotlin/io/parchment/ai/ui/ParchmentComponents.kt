@@ -127,9 +127,8 @@ val LocalReduceMotion = compositionLocalOf { false }
 fun plural(count: Int, noun: String): String = "$count $noun${if (count == 1) "" else "s"}"
 
 /**
- * Adaptive Setting Row:
- * - On Desktop (`!isCompact`): Places `label` on the left and `content` on the right (`SpaceBetween`).
- * - On Mobile (`isCompact`): Stacks `label` on top and full-width `content` below so chips/buttons never clip or overflow!
+ * A settings row: label left and content right on wide screens; on compact screens the label sits above
+ * full-width content, so chips and buttons never clip.
  */
 @Composable
 fun SepiaAdaptiveRow(
@@ -181,9 +180,9 @@ private val COMPACT_BTN_SHAPE = RoundedCornerShape(8.dp)
 private val REGULAR_BTN_SHAPE = RoundedCornerShape(8.dp)
 
 /**
- * 2026 Tactile KISS Interactive Modifier:
- * - Desktop Hover: Hand cursor, subtle micro-lift (`1.018f` scale, `-0.75.dp` Y-shift).
- * - Mobile & Desktop Press: Spring compression (`0.945f` scale with bouncy return) + native Haptic Feedback.
+ * Clickable with feedback:
+ * - Hover (pointer devices): hand cursor and a slight lift (1.018 scale, -0.75 dp).
+ * - Press: a spring squeeze (0.945 scale) and haptic feedback.
  */
 @Composable
 fun Modifier.kissClickable(
@@ -668,8 +667,8 @@ fun SepiaTextField(
     }
     var lastTextValue by remember { mutableStateOf(value) }
     if (value != lastTextValue) {
-        // External state change (e.g. selecting a `/command ` from autocomplete or streaming a draft):
-        // sync textFieldValueState and place the cursor at the END of the new text!
+        // The text changed from outside (a picked `/command ` or a streamed draft): sync and put the cursor
+        // at the end.
         lastTextValue = value
         textFieldValueState = TextFieldValue(text = value, selection = TextRange(value.length))
     }
@@ -1238,7 +1237,7 @@ fun SepiaContextGaugeRing(
 }
 
 /**
- * Zero-allocation O(N) word counter so streaming token deltas never allocate `Regex` or `List<String>`.
+ * Counts words in one pass without allocating, since it runs on every streamed update.
  */
 fun countWordsFast(text: CharSequence): Int {
     var count = 0
@@ -1438,7 +1437,7 @@ fun SepiaSearchableModelPicker(
             }
         }
 
-        // 2. Provider Filter Pills (shown when >1 provider has models — wrapped via FlowRow so pills never clip!)
+        // 2. Provider filters, when more than one provider has models; they wrap so none clip.
         if (providerCounts.size > 1) {
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
@@ -1467,7 +1466,7 @@ fun SepiaSearchableModelPicker(
             }
         }
 
-        // 3. Vendor Family Filter Pills (shown when >= 2 vendor families exist — wrapped via FlowRow!)
+        // 3. Model family filters, when there are at least two families.
         if (vendorCounts.size >= 2) {
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
@@ -1632,9 +1631,7 @@ fun SepiaSearchableModelPicker(
     }
 }
 
-// ============================================================================================
-// GIT / GITHUB-STYLE GREEN & RED UNIFIED LINE DIFF ENGINE (`fs_edit`, `fs_write`, & ```diff)
-// ============================================================================================
+// Line diffs for `fs_edit`, `fs_write` and ```diff blocks, shown as added and removed lines.
 enum class DiffLineKind {
     CONTEXT,
     REMOVED,
@@ -1648,8 +1645,7 @@ data class DiffLine(
 )
 
 /**
- * Computes a clean unified line-by-line diff using LCS (Longest Common Subsequence) with
- * automatic collapsing of long unchanged context regions (> 6 lines).
+ * A unified line diff using the longest common subsequence, with unchanged runs over 6 lines collapsed.
  */
 fun computeUnifiedLineDiff(oldText: String, newText: String): List<DiffLine> {
     val oldLines = if (oldText.isEmpty()) emptyList() else oldText.replace("\r\n", "\n").lines()
@@ -1662,7 +1658,7 @@ fun computeUnifiedLineDiff(oldText: String, newText: String): List<DiffLine> {
         return oldLines.take(120).map { DiffLine(DiffLineKind.REMOVED, it) }
     }
 
-    // Fast O(N) common prefix & suffix trimming before running LCS on only the changed middle region!
+    // Trim the shared start and end first, so the costly comparison runs only on the changed middle.
     var prefixLen = 0
     val minTotal = minOf(oldLines.size, newLines.size)
     while (prefixLen < minTotal && oldLines[prefixLen] == newLines[prefixLen]) {
@@ -1736,7 +1732,7 @@ fun computeUnifiedLineDiff(oldText: String, newText: String): List<DiffLine> {
         rawDiff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[k]))
     }
 
-    // Collapse runs of > 6 consecutive CONTEXT lines to keep the diff focused
+    // Collapse runs of more than 6 unchanged lines to keep the diff focused.
     val compacted = mutableListOf<DiffLine>()
     var idx = 0
     while (idx < rawDiff.size) {

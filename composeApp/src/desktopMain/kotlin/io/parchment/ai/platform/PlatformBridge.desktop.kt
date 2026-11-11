@@ -80,7 +80,7 @@ actual object PlatformBridge {
 
     private fun resolveStorageDir(): File {
         cachedStorageDir?.let { if (it.exists()) return it }
-        // 0. Isolate Gradle/JUnit test workers so unit tests NEVER touch the user's real %LOCALAPPDATA%\ParchmentAI folder!
+        // 0. Test workers get their own temporary folder, so tests never touch the real %LOCALAPPDATA%\ParchmentAI.
         if (!System.getProperty("org.gradle.test.worker").isNullOrBlank()) {
             val testDir = java.nio.file.Files.createTempDirectory("parchment-test-data-").toFile()
             val ownedPath = testDir.canonicalFile.toPath()
@@ -791,7 +791,7 @@ actual object PlatformBridge {
     }
 
     private fun installOtaExecutable(installerFile: File): Result<String> = runCatching {
-        // Flush any pending in-memory state to disk BEFORE starting the OTA installer!
+        // Save everything pending before the installer starts.
         flushPendingStateNow()
 
         val tempDir = checkNotNull(installerFile.parentFile) { "The update has no folder." }

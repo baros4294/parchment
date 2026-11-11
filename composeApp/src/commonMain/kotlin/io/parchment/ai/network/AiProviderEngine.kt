@@ -450,9 +450,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                 val toolsBeforePass = executedTools.size
                 val mediaBeforePass = generatedMedia.size
 
-                // On Nudge Pass >= 2 (if the model completed reasoning once and then spent Nudge Pass 1
-                // thinking again without outputting any final prose), automatically relax thinkingEffort
-                // and surface the completed thought summary so the model immediately writes the final answer!
+                // From the second nudge pass (the model finished reasoning, then spent the first nudge reasoning
+                // again with no answer), lower the thinking effort and show it its earlier thought summary, so
+                // it writes the answer.
                 val effectiveProfileForPass = when {
                     emptyAnswerNudgePass == 2 -> transportProfile.copy(thinkingEffort = "low")
                     emptyAnswerNudgePass >= 3 -> transportProfile.copy(thinkingEffort = "minimal")
@@ -530,9 +530,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         onCitation = { cit -> recordRawCitationAndEmit(cit) }
                                     )
                                 }
-                                // Always attempt the newer /v1beta/interactions protocol first; if it errors out
-                                // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
-                                // hand off any accumulated thoughts/tools/prose to :streamGenerateContent!
+                                // Try the Interactions API first. If it fails (or, with useLegacyFallbackEndpoint on,
+                                // its quick retries run out), hand the thoughts, tool calls and text so far to
+                                // :streamGenerateContent.
                                 if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
                                     runLegacyGeminiGenerateContent(effectiveHistoryNodes, effectiveContinuePrefix)
                                 } else {
@@ -768,9 +768,9 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         }
                                     }
                                 } else {
-                                    // Always attempt the newer /v1/responses protocol first; if it errors out
-                                    // (or exhausts fast probe retries when useLegacyFallbackEndpoint is ON), seamlessly
-                                    // hand off any accumulated thoughts/tools/prose to /v1/chat/completions!
+                                    // Try /v1/responses first. If it fails (or, with useLegacyFallbackEndpoint on, its
+                                    // quick retries run out), hand the thoughts, tool calls and text so far to
+                                    // /v1/chat/completions.
                                     if (emptyAnswerNudgePass >= 3 && effectiveProfileForPass.useLegacyFallbackEndpoint) {
                                         runLegacyOpenAiChatCompletions(effectiveHistoryNodes, effectiveContinuePrefix)
                                     } else {
@@ -966,9 +966,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     val producedNewThoughts = thinkingBuilder.length > thinkBeforePass || signatureBuilder.length > sigBeforePass
                     val producedMediaOrTools = generatedMedia.size > mediaBeforePass || executedTools.size > toolsBeforePass
 
-                    // Reactive Context-Overflow Self-Healing: if the endpoint reports that the prompt/context
-                    // exceeded the model's maximum context window, condense the oldest 50% of active turns into
-                    // a Continuity Digest and retry immediately!
+                    // Context overflow: when the provider reports the prompt is over the model's context window,
+                    // condense the oldest half of the active turns into a continuity digest and retry.
                     val unmutedCount = activeBaseHistoryNodes.count { it.includedInContext }
                     if (isContextLengthExceededError(actualErr) && unmutedCount > 4) {
                         activeBaseHistoryNodes = compactHistoryNodesOnOverflow(activeBaseHistoryNodes)
@@ -1000,7 +999,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     } else if ((producedNewContent || producedNewThoughts || producedMediaOrTools) &&
                         isRetryable && (isLongGoalRun || continuationPass < MAX_MID_STREAM_CONTINUATION_PASSES)
                     ) {
-                        // Defeat proxy/Cloudflare stream cutoffs or overnight Wi-Fi drops by waiting 60s and seamlessly stitching a continuation pass
+                        // A stream cut by a proxy or a dropped connection: wait, then continue the reply in a new pass.
                         continuationPass++
                         retryAttempt = 0
                         currentContinuePrefix = contentBuilder.toString()
@@ -1255,7 +1254,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         val rawBase = profile.baseUrl.trim()
         val rawOverride = profile.endpointPathOverride.trim()
 
-        // 1. Custom protocol / explicit tail-free mode: the URL is sent VERBATIM, never rebuilt.
+        // 1. Custom providers: the URL is sent exactly as entered, never rebuilt.
         if (profile.protocol.isCustomWire) {
             if (rawOverride.startsWith("http://", ignoreCase = true) || rawOverride.startsWith("https://", ignoreCase = true)) {
                 return rawOverride.trimEnd('#')
@@ -1289,7 +1288,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             return if (base.endsWith(cleanOverride, ignoreCase = true)) base else "$base$cleanOverride"
         }
 
-        // 3. Auto-detect when baseUrl already ends with a concrete endpoint path (no hardcoded tail appended!)
+        // 3. A base URL that already ends in an endpoint path is used as is, with no path appended.
         val lowerBase = base.lowercase()
         val concreteEndpointTails = listOf(
             "/responses",
@@ -1455,7 +1454,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
 
                 while (!channel.isClosedForRead) {
                     // Adaptive per-line SSE idle watchdog:
-                    // - 90 seconds once SSE lines have already started arriving (catches half-open proxy/CDN mid-sentence stalls!)
+                    // - 90 seconds once lines have started arriving (catches a proxy that stalls mid-reply)
                     // - 300 seconds before the first SSE line arrives (allows deep pre-token reasoning on slow endpoints)
                     val perLineTimeoutMs = if (sawSseLine) 90_000L else 300_000L
                     val line = withTimeoutOrNull(perLineTimeoutMs) {
@@ -1486,8 +1485,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                 deliver(currentEvent, "[DONE]")
                                 currentEvent = ""
                             } else if (dataLines.isEmpty() && isCompleteJsonObject(dataVal)) {
-                                // Fast path: complete standalone JSON object on a single data: line — emit immediately
-                                // without waiting for a trailing blank line (prevents proxy buffering & adjacent-record drops!)
+                                // A complete JSON object on one data: line is delivered at once, without waiting for
+                                // the blank line: some proxies hold that line back or merge records.
                                 deliver(currentEvent, dataVal)
                                 currentEvent = ""
                             } else {
@@ -1541,9 +1540,8 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     }
 
     // ============================================================================================
-    // UNIVERSAL LINE-GROUNDED WEB SOURCE CITATION ENGINE
-    // Extracts citations across Gemini, OpenAI Responses, OpenAI Chat Completions, Anthropic Messages,
-    // and local `web_fetch` tool executions, and binds each source to the exact line(s) it grounds!
+    // Web citations: read from Gemini, OpenAI Responses, Chat Completions, Anthropic Messages and the local
+    // `web_fetch` tool, and tied to the lines of the reply each source supports.
     // ============================================================================================
     internal data class RawWebCitation(
         val url: String,

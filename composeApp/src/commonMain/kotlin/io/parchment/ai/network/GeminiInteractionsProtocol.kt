@@ -68,7 +68,7 @@ suspend fun AiProviderEngine.cancelBackgroundInteraction(profile: ProviderProfil
 }
 
 // ============================================================================================
-// 1. GOOGLE GEMINI INTERACTIONS API DRIVER (/v1beta/interactions)
+// 1. Gemini Interactions API (/v1beta/interactions)
 //    Supports Gemini 4 Argon Long Decode, SSE Streaming, Background=true Polling,
 //    previous_interaction_id stateful chaining, Built-in Tools & Local Workspace Harness.
 // ============================================================================================

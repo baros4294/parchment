@@ -1,12 +1,11 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import java.security.KeyStore
-import java.security.MessageDigest
-import java.security.PrivateKey
 
+// The shared module: all app code for desktop and Android. The Android APK itself (applicationId, signing,
+// R8) is built by :androidApp, because AGP 9 no longer lets an application live in a multiplatform module.
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
-    alias(libs.plugins.androidApplication)
+    alias(libs.plugins.androidKmpLibrary)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinSerialization)
@@ -20,7 +19,7 @@ val githubRepoProp = (project.findProperty("githubRepo") as? String)?.trim()
 // Set only by .github/workflows/build-installers.yml. Dev runs and local packages must never install an update over the real app.
 val officialReleaseProp = (project.findProperty("officialRelease") as? String)?.trim().toBoolean()
 
-val generateBuildConfig by tasks.registering {
+val generateBuildConfig = tasks.register("generateBuildConfig") {
     val outputDir = layout.buildDirectory.dir("generated/parchmentConfig")
     inputs.property("appVersion", appVersionProp)
     inputs.property("appVersionCode", appVersionCodeProp)
@@ -50,44 +49,17 @@ val generateBuildConfig by tasks.registering {
     }
 }
 
-val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
-    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
-
-val validatePrivateReleaseSigner by tasks.registering {
-    doLast {
-        val location = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
-            ?: error("Release signing requires ANDROID_KEYSTORE_PATH; load the private signer first.")
-        val password = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
-            ?: error("Release signing requires ANDROID_KEYSTORE_PASSWORD.")
-        val alias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
-            ?: error("Release signing requires ANDROID_KEY_ALIAS.")
-        val store = KeyStore.getInstance(file(location), password.toCharArray())
-        require(store.isKeyEntry(alias)) { "Release signer alias must contain a private key." }
-        val certificate = store.getCertificate(alias) ?: error("Release signer certificate is unavailable.")
-        val fingerprint = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        require(fingerprint != "ed96a0a733e9e6d38633f04a6a182c997fe60d480d9e33e5f078faa2536d26eb") {
-            "The exposed repository key cannot sign a release. Use the private signer and migration plan."
-        }
-        val keyPassword = requireNotNull(releaseKeyPassword).toCharArray()
-        try {
-            require(store.getKey(alias, keyPassword) is PrivateKey) {
-                "Release signer alias must contain a readable private key."
-            }
-        } finally {
-            keyPassword.fill('\u0000')
-        }
-    }
-}
-tasks.matching { it.name == "preReleaseBuild" || it.name == "validateSigningRelease" }
-    .configureEach { dependsOn(validatePrivateReleaseSigner) }
-
 kotlin {
     compilerOptions {
         freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 
-    androidTarget {
+    android {
+        namespace = "io.parchment.ai"
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        minSdk = libs.versions.android.minSdk.get().toInt()
+        // res/ holds the launcher icon, strings and the accessibility service config.
+        androidResources { enable = true }
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
         }
@@ -100,17 +72,17 @@ kotlin {
     }
 
     sourceSets {
-        val desktopMain by getting
-        val androidMain by getting
+        val desktopMain = getByName("desktopMain")
+        val androidMain = getByName("androidMain")
         desktopMain.kotlin.srcDir("src/jvmShared/kotlin")
 
         commonMain {
             kotlin.srcDir(generateBuildConfig.map { it.outputs.files.singleFile })
             dependencies {
-            // Pure Compose Foundation & UI primitives only — zero Material / Fluent bloat
-            implementation(compose.runtime)
-            implementation(compose.foundation)
-            implementation(compose.ui)
+            // Compose Foundation and UI only: no Material.
+            implementation(libs.compose.runtime)
+            implementation(libs.compose.foundation)
+            implementation(libs.compose.ui)
 
             // Coroutines & JSON Serialization
             implementation(libs.kotlinx.coroutines.core)
@@ -149,55 +121,6 @@ tasks.withType<Test>().configureEach {
     systemProperty("parchment.gallery", renderGallery.get())
 }
 
-android {
-    namespace = "io.parchment.ai"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-
-    sourceSets["main"].assets.srcDirs("src/commonMain/resources")
-
-    defaultConfig {
-        applicationId = "io.parchment.ai"
-        minSdk = libs.versions.android.minSdk.get().toInt()
-        targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = appVersionCodeProp
-        versionName = appVersionProp
-    }
-
-    signingConfigs {
-        // Debug uses the developer's normal local debug key. Release has no repository-key fallback.
-        create("releaseSigning") {
-            val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            if (!keystorePath.isNullOrBlank()) {
-                storeFile = file(keystorePath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = releaseKeyPassword
-            }
-        }
-    }
-
-    buildTypes {
-        getByName("release") {
-            // R8 removes unused code and resources: a smaller APK that starts faster on low-end phones.
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("releaseSigning")
-        }
-    }
-
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
 compose.desktop {
     application {
         mainClass = "io.parchment.ai.MainKt"
@@ -215,7 +138,9 @@ compose.desktop {
             "-XX:-ShrinkHeapInSteps",
             "-XX:G1PeriodicGCInterval=8000",
             "-XX:+G1PeriodicGCInvokesConcurrent",
-            "-XX:SoftRefLRUPolicyMSPerMB=250"
+            "-XX:SoftRefLRUPolicyMSPerMB=250",
+            // JNA (title bar, memory check) and Skia call native code; JDK 25 warns and later JDKs will block it.
+            "--enable-native-access=ALL-UNNAMED"
         )
 
         nativeDistributions {

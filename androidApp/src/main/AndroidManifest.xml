@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everything (permissions, activity, services, provider) is declared in composeApp/src/androidMain and merges in. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

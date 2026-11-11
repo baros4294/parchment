@@ -300,7 +300,7 @@ internal suspend fun AiProviderEngine.extractCitationsFromAnthropicBlock(
 
 /**
  * Deduplicates raw web citations and binds each source to the exact 1-based line number(s)
- * and line excerpt(s) in `assistantContent` that it grounds!
+ * and line excerpt(s) in `assistantContent` that it supports.
  */
 internal fun AiProviderEngine.bindSourcesToMessageLines(
     assistantContent: String,

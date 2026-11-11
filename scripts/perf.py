@@ -21,7 +21,7 @@ from pathlib import Path
 
 PACKAGE = "io.parchment.ai"
 APP_DIR_PARTS = ("composeApp", "build", "compose", "binaries", "main", "app", "Parchment")
-APK_PARTS = ("composeApp", "build", "outputs", "apk", "release", "composeApp-release.apk")
+APK_PARTS = ("androidApp", "build", "outputs", "apk", "release", "androidApp-release.apk")
 CHATS, MESSAGES = 300, 40
 IDLE_SECONDS = 10
 TIMEOUT_SECONDS = 60
