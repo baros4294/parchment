@@ -1,0 +1,35 @@
+name: Release Please
+
+# Keeps a "release PR" open that collects the changes since the last release: its version bump and CHANGELOG.md
+# entries come from Conventional Commit messages (feat:, fix:). Merging that PR creates the tag and the GitHub
+# release, then starts the build that attaches the apps. Nothing is released until you merge it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Update the Release PR or Cut the Release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # A tag created by this workflow's token doesn't start other workflows, so start the release build on it.
+      - name: Build and Attach the Apps
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh workflow run build-installers.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

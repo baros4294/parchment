@@ -1,4 +1,5 @@
-# Weekly update pull requests for Gradle dependencies and the pinned GitHub Actions.
+# Weekly update pull requests for Gradle dependencies and the pinned GitHub Actions. Patch and minor updates whose
+# checks pass are merged by .github/workflows/dependabot-automerge.yml; major updates wait for a person.
 version: 2
 updates:
   - package-ecosystem: gradle
@@ -6,11 +7,22 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
     groups:
       kotlin-and-compose:
         patterns: ["org.jetbrains.kotlin*", "org.jetbrains.compose*", "org.jetbrains.kotlinx*"]
+    ignore:
+      # Kotlin 2.4.21 supports the Android Gradle Plugin up to 9.3 and Gradle up to 9.7 (checked 2026-11). Raise
+      # these limits together with a Kotlin release that supports newer ones.
+      - dependency-name: "com.android*"
+        versions: [">= 9.4"]
+      - dependency-name: "gradle-wrapper"
+        versions: [">= 9.8"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: ci

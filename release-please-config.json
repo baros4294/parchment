@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "parchment",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": false,
+      "changelog-sections": [
+        { "type": "feat", "section": "New" },
+        { "type": "fix", "section": "Fixes" },
+        { "type": "perf", "section": "Faster and lighter" },
+        { "type": "deps", "section": "Dependencies" },
+        { "type": "docs", "section": "Documentation", "hidden": true },
+        { "type": "chore", "section": "Maintenance", "hidden": true },
+        { "type": "ci", "section": "Builds", "hidden": true },
+        { "type": "refactor", "section": "Code", "hidden": true },
+        { "type": "test", "section": "Tests", "hidden": true }
+      ]
+    }
+  }
+}

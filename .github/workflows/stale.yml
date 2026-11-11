@@ -1,0 +1,29 @@
+name: Stale issues and pull requests
+
+# Marks issues and pull requests with no activity for 60 days, then closes them 14 days later unless someone
+# replies. Bugs, security reports and pinned items are never closed this way.
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          exempt-issue-labels: "bug,security,pinned"
+          exempt-pr-labels: "pinned,dependencies"
+          stale-issue-message: "No activity for 60 days, so this will close in 14 days. Reply if it still matters."
+          stale-pr-message: "No activity for 60 days, so this will close in 14 days. Push or reply to keep it open."
+          close-issue-message: "Closed after 74 days without activity. Reopen it if it still matters."
+          close-pr-message: "Closed after 74 days without activity. Reopen it to continue."

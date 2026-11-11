@@ -239,8 +239,10 @@ jobs:
   publish-github-release:
     name: Publish OTA Release Assets (.APK & .EXE)
     needs: [build-android-apk, build-windows-exe]
+    # Releases come only from version tags (release-please starts this run for its tag) or a manual run; a push to
+    # main just builds and tests, so merged updates reach users only when a release is cut.
     # A skipped job skips its dependents unless the condition says otherwise.
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.build-windows-exe.result == 'success' && (needs.build-android-apk.result == 'success' || (inputs.reuse_android_run && needs.build-android-apk.result == 'skipped')) }}
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && needs.build-windows-exe.result == 'success' && (needs.build-android-apk.result == 'success' || (inputs.reuse_android_run && needs.build-android-apk.result == 'skipped')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -276,18 +278,10 @@ jobs:
           name: Parchment-Windows-EXE-Installer
           path: release-assets
 
-      - name: Checkout Changelog
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: CHANGELOG.md
-          sparse-checkout-cone-mode: false
-          path: source
-
-      # Release notes are the changelog's Unreleased section; SHA256SUMS.txt lets anyone check a download.
+      # release-please already wrote the notes from the commits; this adds the signing note and how to check a
+      # download. SHA256SUMS.txt lets anyone check one.
       - name: Prepare Release Notes and Checksums
         run: |
-          awk '/^## Unreleased/{on=1; next} /^## /{on=0} on' source/CHANGELOG.md > notes.md
-          [[ -s notes.md ]] || echo "See CHANGELOG.md." > notes.md
           {
             echo
             echo "Android releases use a private signing identity. Legacy installations signed with the exposed repository key require an explicit backup/export and migration before installation."
@@ -303,6 +297,7 @@ jobs:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: ${{ steps.rel.outputs.tag }}
           body_path: notes.md
+          append_body: true
           files: |
             release-assets/Parchment-Android-Universal.apk
             release-assets/Parchment-Android-R8-mapping.txt
@@ -310,4 +305,3 @@ jobs:
             release-assets/Parchment-Windows-x64-Setup.exe
             release-assets/SHA256SUMS.txt
           fail_on_unmatched_files: false
-          generate_release_notes: true

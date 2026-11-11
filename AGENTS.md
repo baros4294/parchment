@@ -33,6 +33,8 @@ A batch is done only when `affected` passes and TODO records it: tick what is ve
 
 Report in a few lines: what changed, what was verified, what wasn't. Never claim a check you did not run.
 
+Commit messages follow Conventional Commits (`feat:`, `fix:`, `perf:`, `docs:`, `chore:`, `ci:`, `refactor:`, `test:`): release-please builds the version and CHANGELOG from them. A push to `main` doesn't release; merging the release PR does.
+
 ## Spend tokens carefully
 
 - Prefer `status` to reading whole docs. Read line ranges, not whole files, and batch independent reads.

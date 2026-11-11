@@ -1,8 +1,8 @@
 # Changelog
 
-What changed in each release, newest first. Add to **Unreleased** with each change; the release workflow publishes that section as the release notes. After a release, rename it to the version and start a new, empty Unreleased.
+What changed in each release, newest first. From 2.1.7 on, release-please writes these entries from commit messages that follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` and `fix:` appear here and set the next version); edit wording in its release PR before merging it.
 
-## Unreleased
+## 2.1.6
 
 - **Windows: chats, model lists and update checks work again.** Since 2.1.2 the Windows app's smaller build removed a part Ktor needs for JSON, so every request failed with "Could not initialize class io.ktor.serialization.kotlinx.ExtensionsJvmKt". **On Windows 2.1.2 or 2.1.3, install this version by hand once** (download the installer below and run it; chats and settings are kept): the broken versions can't update themselves. Android was not affected.
 - Releases now fail to build if the shrinking step removes any class Java looks up by name.
