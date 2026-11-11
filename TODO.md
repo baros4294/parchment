@@ -6,13 +6,13 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 - **Source:** batch 12 checkpoint on main (pushed 2026-11-11; CI publishes the next release).
 - **Last verified:** 2026-11-11, `verify.py final` and `affected` passed (390 tests, signed R8 APK, package); `perf`: start 1.55 s with 300 chats, idle 289 MB, APK 4.2 MB. The R8 build has not run on a phone yet.
-- **Next action:** 12.9 phone check of the R8 release, then batch 13.
+- **Next action:** batch 13, starting with 13.1 research.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Measure before optimizing; one surface at a time.
 
-12.9 → 13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 14 → 15 → 11.7.
+13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 14 → 15 → 11.7.
 
 ## Open tasks
 
@@ -27,7 +27,9 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 - [ ] **12.6 Responsiveness:** done: low-memory devices stream at about 30 frames a second. Open: profile recomposition and split ParchmentApp state so streaming doesn't redraw the sidebar; target p95 frame 16 ms desktop, 33 ms low-end Android.
 - [ ] **12.7 Harness efficiency:** done: the cache report adds average and largest request. Open: the same report for Anthropic and Gemini, then trim payloads only where equivalence tests prove nothing is lost.
 - [ ] **12.8 Codebase:** split the 2,000+ line UI files by feature and render settings search from the pages' own rows (1,000 duplicated lines); done with 13.4 so the screens can be checked.
-- [ ] **12.9 Phone check:** run the R8 release on the phone (chat, settings, MCP, import and export, Pinned tab and jump, font rows); `verify.py perf` for Android numbers; generate an app baseline profile after R8.
+- [x] **12.9 Phone check:** the R8 release runs on the phone without crashes and starts instantly. The user checks Android on their own and reports problems (2026-11-11); no agent phone runs.
+- [x] **12.12 Windows size:** drop the never-used `classes_nocoops.jsa` (12 MB) and compress the installer with lzma2/ultra64; desktop start 1.44 s, idle 274 MB.
+- [ ] **12.13 Desktop shrinking:** ProGuard for the desktop release jars (about 25 MB) with keep rules for JNA, Ktor's engine lookup and serialization; test the packaged app before release.
 - [ ] **12.11 Crash reports:** attach each release's R8 mapping.txt in CI so phone stack traces can be decoded.
 
 ### UI and UX

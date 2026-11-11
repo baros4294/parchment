@@ -259,7 +259,11 @@ tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJLinkTask
     (javaClass.getMethod("getStripNativeCommands\$compose").invoke(this) as Property<Boolean>).set(false)
     val runtimeBin = destinationDir.dir("bin")
     doLast {
-        runtimeBin.get().asFile.listFiles { file -> file.extension.equals("exe", ignoreCase = true) }?.forEach { it.delete() }
+        val bin = runtimeBin.get().asFile
+        bin.listFiles { file -> file.extension.equals("exe", ignoreCase = true) }?.forEach { it.delete() }
+        // The JVM reads this second archive only when compressed object pointers are off (heaps over about 32 GB);
+        // Parchment's heap is capped at 1 GB, so it would ship 12 MB that is never used.
+        bin.resolve("server/classes_nocoops.jsa").delete()
     }
 }
 tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
