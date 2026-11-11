@@ -61,6 +61,9 @@ class AtomicFileStorageTest {
                 while (running.get()) {
                     val contents = AtomicFileStorage.readText(target)
                     check(contents == first || contents == second) { "Reader observed a partial snapshot." }
+                    // Real readers pause between reads. A reader that never lets go of the file can starve Windows'
+                    // replace on a busy machine (failed twice under load, 2026-11-11), which is not what this checks.
+                    Thread.sleep(1)
                 }
             } catch (error: Throwable) {
                 failure.set(error)

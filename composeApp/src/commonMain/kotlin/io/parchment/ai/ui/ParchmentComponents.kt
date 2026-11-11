@@ -323,9 +323,10 @@ fun SepiaButton(
         }
     }
 
+    // A disabled filled button keeps an outline, so on dark themes it still reads as a button, just an unavailable one.
     val borderColor = when (style) {
-        SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else Color.Transparent
-        SepiaButtonStyle.SECONDARY -> if (enabled) p.border else Color.Transparent
+        SepiaButtonStyle.PRIMARY -> if (enabled) p.accent else p.border
+        SepiaButtonStyle.SECONDARY -> p.border
         SepiaButtonStyle.OUTLINE -> when {
             !enabled -> p.border.copy(alpha = 0.32f)
             isPressed -> p.accent
@@ -333,7 +334,7 @@ fun SepiaButton(
             else -> p.border.copy(alpha = 0.52f)
         }
         SepiaButtonStyle.GHOST -> if (enabled && (isPressed || isHovered)) p.accent.copy(alpha = 0.28f) else Color.Transparent
-        SepiaButtonStyle.DANGER -> if (enabled) p.danger else Color.Transparent
+        SepiaButtonStyle.DANGER -> if (enabled) p.danger else p.border
     }
 
     val win = LocalParchmentWindowSize.current

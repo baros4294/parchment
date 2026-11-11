@@ -104,7 +104,7 @@ internal fun ProvidersSubpage(
             if (isWide) {
                 Column(
                     modifier = Modifier
-                        .width(235.dp)
+                        .textScaledWidth(235.dp)
                         .fillMaxHeight()
                         .background(p.sheetBg.copy(alpha = 0.35f))
                         .padding(Space.s12),

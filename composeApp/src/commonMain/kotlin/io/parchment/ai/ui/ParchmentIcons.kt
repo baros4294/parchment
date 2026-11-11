@@ -412,7 +412,8 @@ fun KissVectorIcon(
     strokeWidthDp: Dp = Dp.Unspecified,
     modifier: Modifier = Modifier
 ) {
-    Canvas(modifier = modifier.size(size)) {
+    // Icons sit beside text, so they grow with the system text size too (capped; see textGrowth).
+    Canvas(modifier = modifier.size(size * textGrowth())) {
         val unit = this.size.minDimension / 24f
         // Weight follows size within limits, so small and large icons read as one family.
         val strokePx = if (strokeWidthDp != Dp.Unspecified) strokeWidthDp.toPx()
@@ -716,7 +717,7 @@ fun ModelLabSvgIcon(
     }
 
     if (parsedVectorPaths.isNotEmpty()) {
-        Canvas(modifier = modifier.size(size)) {
+        Canvas(modifier = modifier.size(size * textGrowth())) {
             val scaleX = this.size.width / 24f
             val scaleY = this.size.height / 24f
             withTransform({ scale(scaleX, scaleY, Offset.Zero) }) {

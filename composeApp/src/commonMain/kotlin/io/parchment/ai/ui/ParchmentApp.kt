@@ -1980,11 +1980,16 @@ fun ParchmentApp(
                     // 2. Main Content Area:
                     // - On Desktop: Side-by-side Sidebar + Chat/Settings
                     // - On phones: the chat or Settings underneath, with the sidebar sliding over 86% of the width.
+                    // A streaming reply replaces appState every frame. The sidebar gets the copy it last drew from until
+                    // something it shows changes, so its lists and pinned replies aren't rebuilt per frame.
+                    val sidebarKey = sidebarFingerprint(appState)
+                    val sidebarAppState = remember(sidebarKey) { appState }
+                    val sidebarActiveSession = remember(sidebarKey) { activeSession }
                     val sidebarComposable: @Composable (Modifier) -> Unit = { mod ->
                         ParchmentSidebar(
-                            appState = appState,
+                            appState = sidebarAppState,
                             activeAssistant = activeAssistant,
-                            activeSession = activeSession,
+                            activeSession = sidebarActiveSession,
                             selectedTab = sidebarTab,
                             isCompactScreen = isCompactScreen,
                             onSelectTab = { sidebarTab = it },
@@ -2091,7 +2096,7 @@ fun ParchmentApp(
                                 exit = shrinkHorizontally(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                             ) {
                                 Row(modifier = Modifier.fillMaxHeight()) {
-                                    sidebarComposable(Modifier.width(285.dp).fillMaxHeight())
+                                    sidebarComposable(Modifier.textScaledWidth(285.dp).fillMaxHeight())
                                     Box(
                                         modifier = Modifier
                                             .width(LineWidth.hairline)
@@ -2892,3 +2897,19 @@ fun ParchmentApp(
         }
     }
 }
+
+/**
+ * Changes only when something the sidebar displays changes, so a streaming reply doesn't redraw it. Per chat:
+ * what the sidebar shows, leaving out reply text on purpose (it changes every frame).
+ */
+private fun sidebarFingerprint(state: AppStateSnapshot): List<Any> = listOf(
+    state.sessions.map { s ->
+        listOf(
+            s.id, s.title, s.isPinned, s.updatedAt, s.assistantId, s.messages.size, s.isCompactStub,
+            s.messages.mapNotNull { node -> node.id.takeIf { node.pinned } }
+        )
+    },
+    state.assistants,
+    state.preferences,
+    state.activeSessionId
+)

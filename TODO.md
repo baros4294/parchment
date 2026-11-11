@@ -4,9 +4,9 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** batch 18 committed locally (2026-11-11), not pushed: all TODOs are pushed together at the end.
-- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (390 tests, signed R8 APK 4.3 MB, ProGuard-shrunk package); packaged start 1.54 s with 300 chats, idle 286 MB.
-- **Next action:** 12.6 and 12.8 with 13.4–13.7, starting with the DESIGN.md audit list.
+- **Source:** batch 19 (sidebar and settings list pass) committed locally (2026-11-11), not pushed: all TODOs are pushed together at the end.
+- **Last verified:** 2026-11-11 on JDK 25: all 390 tests (two flaky ones rerun after their fix), signed APK 4.3 MB, shrunk package; packaged start 1.54 s with 300 chats, idle 286 MB.
+- **Next action:** the composer and chat page pass (DESIGN.md audit 1), then first run, settings and 13.5.
 
 ## Execution order
 
@@ -20,17 +20,17 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 
 - [x] **12.1 Baseline and budgets:** `verify.py perf` measures the packaged app with 300 synthetic chats (start, idle memory, sizes) and a connected phone; budgets in docs/PERFORMANCE.md.
 - [x] **12.2 Fonts:** JetBrains Mono without Nerd Font icons, 9.4 MB to 0.9 MB; saved "JetBrainsMono Nerd" choices still match.
-- [x] **12.3 Android shrinking:** R8 and resource shrinking with rules in composeApp/proguard-rules.pro; APK 15.5 MB to 4.2 MB.
-- [x] **12.4 Start-up:** stored chats load one at a time with an id-only probe (no longer all at once, three parses each); the update check waits 8 s; library start-up profiles already ship.
-- [x] **12.5 Memory:** low-memory mode under 4 GB (or Android's low-RAM flag) shrinks the image caches.
-- [x] **12.10 Build cost:** UI gallery renders only on request, `affected` compiles Android only when a change can reach it, `final` drops the duplicate debug compile, Gradle uses the parallel collector. `affected` 5 min to 2.5 min.
-- [ ] **12.6 Responsiveness:** done: low-memory devices stream at about 30 frames a second. Open: profile recomposition and split ParchmentApp state so streaming doesn't redraw the sidebar; target p95 frame 16 ms desktop, 33 ms low-end Android.
+- [x] **12.3 Android shrinking:** R8 and resource shrinking with rules in androidApp/proguard-rules.pro; APK 15.5 MB to 4.2 MB.
+- [x] **12.4 Start-up:** stored chats load one at a time with an id-only probe; the update check waits 8 s.
+- [x] **12.5 Memory:** low-memory mode under 4 GB shrinks the image caches.
+- [x] **12.10 Build cost:** gallery on request only, Android compiled only when reachable, no duplicate debug compile, parallel GC. `affected` 5 min to 2.5 min.
+- [ ] **12.6 Responsiveness:** done: low-memory devices stream at about 30 frames a second. The sidebar gets a copy of the state that changes only when what it shows changes. Open: its callbacks still change every streamed frame (they read the active chat), so make them stable, then profile recomposition; target p95 frame 16 ms desktop, 33 ms low-end Android.
 - [ ] **12.7 Harness efficiency:** done: the cache report adds average and largest request. Open: the same report for Anthropic and Gemini, then trim payloads only where equivalence tests prove nothing is lost.
-- [ ] **12.8 Codebase:** split the 2,000+ line UI files by feature and render settings search from the pages' own rows (1,000 duplicated lines); done with 13.4 so the screens can be checked.
+- [ ] **12.8 Codebase:** done: the sidebar has its own file. Open: split the other 2,000+ line UI files by feature and render settings search from the pages' own rows (1,000 duplicated lines); done with 13.4 so the screens can be checked.
 - [x] **12.9 Phone check:** the R8 release runs on the phone without crashes and starts instantly. The user checks Android on their own and reports problems (2026-11-11); no agent phone runs.
 - [x] **12.12 Windows size:** drop the never-used `classes_nocoops.jsa` (12 MB) and compress the installer with lzma2/ultra64; desktop start 1.44 s, idle 274 MB.
 - [x] **12.13 Desktop shrinking:** ProGuard 7.10 shrinks the release jars from 35.1 MB to 22.2 MB (keep rules in compose-desktop.pro). JDK 25 has no jmods, so the build extracts the JDK classes for it once; the packaged app starts and opens chats.
-- [x] **12.14 Flaky Shell tests:** their hang limits are 60 s, so a cold runner's PowerShell start-up no longer fails them; saves retry for 5 s instead of 2.3 s.
+- [x] **12.14 Flaky tests:** Shell tests allow 60 s; saves retry for 5 s; the file-replace test's reader pauses between reads.
 - [ ] **12.11 Crash reports:** done in CI: each release attaches `Parchment-Android-R8-mapping.txt`. Open: confirm it on the next release.
 
 ### UI and UX
@@ -38,14 +38,14 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 - [x] **13.1 Research:** eight lessons from iA Writer, Things, Linear, Raycast, Bear, Craft and the Apple Design Award criteria, each mapped to a 13.x change, in DESIGN.md.
 - [x] **13.2 Audit:** the gallery now renders dark (it had used a light preset) and 200% text; eight ranked issues in DESIGN.md, each assigned to 13.4–13.6.
 - [x] **13.3 Design system:** `ui/DesignTokens.kt` (space, radius, line, icon, elevation, motion) in DESIGN.md. Every animation goes through `motionTween`/`motionSpring`, so Reduce motion is instant everywhere; half-step sizes snapped; on-scale literals in all UI files use tokens. Off-scale spacing moves over per surface in 13.4.
-- [ ] **13.4 Core surfaces:** chat page and composer, sidebar and tabs, settings (grouping, long pages, search), first run with no provider (guided setup), empty, loading and error states.
+- [ ] **13.4 Core surfaces:** done: sidebar, tabs and settings list at large text sizes; disabled buttons keep an outline. Open: chat page and composer, sidebar and tabs, settings (grouping, long pages, search), first run with no provider (guided setup), empty, loading and error states.
 - [ ] **13.5 Interaction:** command palette (Ctrl+K), keyboard shortcuts for every main action, undo instead of confirm for reversible deletes, immediate feedback, predictable back on Android, haptics where they help.
 - [ ] **13.6 Accessibility:** NVDA and TalkBack passes, keyboard-only navigation, 200% text, contrast on every theme, reduced motion honored everywhere.
 - [ ] **13.7 Low-end rendering:** no blur or heavy shadows, cheap animations that switch off in reduced mode, and no layout jank while streaming.
 
 ### Documentation
 
-- [x] **14.1 One owner per fact:** README (what, features, privacy), CONTRIBUTING (setup for JDK 25 and the SDK, commands), ARCHITECTURE (code map, storage, releases), DESIGN, PERFORMANCE, MEMORY, TODO. FEATURE_COVERAGE.md retired into README and Known gaps; stale JDK 21, 10.3 and signing notes fixed; quality.py checks links and anchors; verify.py reads JAVA_HOME and ANDROID_HOME.
+- [x] **14.1 One owner per fact:** README, CONTRIBUTING, ARCHITECTURE, DESIGN, PERFORMANCE, MEMORY, TODO each own their facts; FEATURE_COVERAGE.md retired; stale notes fixed; quality.py checks links and anchors.
 - [x] **14.2 Code comments:** about 120 shouting or promotional comments rewritten in plain words; four imports only comments had kept "used" removed.
 - [x] **14.3 README:** feature tour, a privacy note listing every network call, and light, dark and phone screenshots from the UI gallery (docs/images).
 
@@ -68,9 +68,10 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 ### Carried over
 
 - [ ] **11.7 Signature sanitization audit:** check every provider's reasoning-signature rules against its current spec; signatures stay opaque and are never translated.
+
 ## Known gaps
 
-Not planned; open a task first. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
+Not planned; open a task first. Compose 1.12 can fail in its own layout bookkeeping ("not found in RectList"; about half of gallery runs, retried there): watch for it in the app and update Compose when fixed. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
 
 ## Sources
 

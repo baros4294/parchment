@@ -5,7 +5,11 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 // The design system in code: docs/DESIGN.md explains when to use each value. New UI takes these instead of
@@ -81,6 +85,19 @@ object Motion {
     /** Stiffness of a brisk spring for things that pop in. */
     const val POP_STIFFNESS = 580f
 }
+
+/**
+ * A fixed column width (sidebar, settings list) that grows with the system text size, up to 1.6 times at 200%,
+ * so labels keep whole words on one line instead of breaking inside them.
+ */
+@Composable
+fun Modifier.textScaledWidth(base: Dp): Modifier = width(base * textGrowth())
+
+/** How much fixed sizes grow with the system text size: 1 at 100%, at most 1.6 at 200% and above. */
+@Composable
+fun textGrowth(): Float = LocalDensity.current.fontScale.coerceIn(1f, MAX_TEXT_GROWTH)
+
+private const val MAX_TEXT_GROWTH = 1.6f
 
 /** A timed animation that is instant when the person has turned on Reduce motion. */
 @Composable

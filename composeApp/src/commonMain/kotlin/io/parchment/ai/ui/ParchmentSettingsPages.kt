@@ -114,7 +114,7 @@ fun ParchmentSettingsScreen(
                 // Left Category Rail
                 Column(
                     modifier = Modifier
-                        .width(225.dp)
+                        .textScaledWidth(225.dp)
                         .fillMaxHeight()
                         .background(p.sheetBg.copy(alpha = 0.65f))
                         .padding(14.dp),

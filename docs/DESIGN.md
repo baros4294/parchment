@@ -34,6 +34,8 @@ Everything else lives in `ui/DesignTokens.kt`. New UI uses these names, not lite
 - **Elevation:** flat, except things that float above the page (notifications, menus): one 8 dp shadow (`Elevation`).
 - **Motion:** 110 ms leaving, 150 arriving, 180 travelling, 250 overlays leaving, springs without bounce for size changes (`Motion`). Always through `motionTween` and `motionSpring`, which turn instant under Reduce motion.
 - **Focus:** keyboard focus draws a 2 dp accent ring; focus from a click draws none.
+- **Text size:** fixed columns (`textScaledWidth`) and icons grow with the system text size, up to 1.6 times at 200%, so labels keep whole words. Short labels in tight places take one line with an ellipsis.
+- **Disabled:** a disabled button keeps its outline and dims its fill and text, so it still reads as a button.
 - **Buttons:** Primary for the main action, Secondary and Outline for the rest, Ghost in toolbars, Danger for destructive actions.
 
 ## What we learned from award-winning apps
@@ -55,14 +57,13 @@ Studied 2026-11 (iA Writer, Things, Linear, Raycast, Bear, Craft, Apple Design A
 
 Taken from the gallery (light and dark, phone and desktop, 100% and 200% text) and ranked by harm. Each item names the task that fixes it; remove it once fixed.
 
-1. **200% text, desktop:** the sidebar and settings list keep a fixed 285 dp width, so labels break mid-word ("Preference / s", "Assist / ants") and the search box hides its hint. Let fixed-width columns grow with text size and never break inside a word (13.6).
-2. **200% text:** icons keep their size while text doubles, so they read as specks beside labels. Inline icons should follow text size (13.6).
-3. **200% text, phone:** the composer wraps Tools onto a second row and the chat title shows only two words. Collapse rarely used composer controls into one menu (13.4).
-4. **Destructive actions in quiet places:** "Clear all" sits beside a single chat with no undo. Undo instead of confirm, and a less prominent place (13.5).
-5. **First run:** the empty chat says what to do but not how to add a provider; with no provider it should lead into setup (13.4).
-6. **Settings, Providers:** three columns on a desktop leave the middle one mostly empty; the models empty state relies on an icon (13.4).
-7. **Settings, Appearance:** themes are a long list of radio rows; small previews would let people compare them at a glance (13.4).
-8. **Dark:** contrast passes; the disabled Send button is hard to tell from the composer. Give disabled buttons a visible outline (13.6).
+Fixed so far: columns and icons too small at 200% text, and the hard-to-see disabled Send button in dark.
+
+1. **200% text, phone:** the composer wraps Tools onto a second row and the chat title shows only two words. Collapse rarely used composer controls into one menu (13.4).
+2. **Destructive actions in quiet places:** "Clear all" sits beside a single chat with no undo. Undo instead of confirm, and a less prominent place (13.5).
+3. **First run:** the empty chat says what to do but not how to add a provider; with no provider it should lead into setup (13.4).
+4. **Settings, Providers:** three columns on a desktop leave the middle one mostly empty; the models empty state relies on an icon (13.4).
+5. **Settings, Appearance:** themes are a long list of radio rows; small previews would let people compare them at a glance (13.4).
 
 Sources: [How we redesigned the Linear UI](https://linear.app/now/how-we-redesigned-the-linear-ui), [iA Writer vs Word](https://ia.net/topics/writer-vs-word), [Apple Design Awards](https://developer.apple.com/design/awards/).
 
