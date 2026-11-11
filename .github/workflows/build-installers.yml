@@ -28,6 +28,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Branch builds are VERSION_LINE.<run number - VERSION_BASE_RUN>: run 73 is 2.1.0, run 74 is 2.1.1.
+# Earlier runs keep 2.0.<run number>, so a Windows-only rebuild reusing one still matches its APK.
+# The Android version code stays 200 + run number, so it only ever grows.
+env:
+  VERSION_LINE: "2.1"
+  VERSION_BASE_RUN: "73"
+
 jobs:
   build-android-apk:
     name: Build Android .APK (Universal)
@@ -70,7 +77,11 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_ALIAS || '' }}
           ANDROID_KEY_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
-          APP_VER="2.0.$GITHUB_RUN_NUMBER"
+          if (( GITHUB_RUN_NUMBER >= VERSION_BASE_RUN )); then
+            APP_VER="$VERSION_LINE.$((GITHUB_RUN_NUMBER - VERSION_BASE_RUN))"
+          else
+            APP_VER="2.0.$GITHUB_RUN_NUMBER"
+          fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             APP_VER="${GITHUB_REF#refs/tags/v}"
           fi
@@ -166,7 +177,9 @@ jobs:
         env:
           BUILD_NUMBER: ${{ steps.build.outputs.number }}
         run: |
-          $appVer = "2.0.$env:BUILD_NUMBER"
+          $number = [int]$env:BUILD_NUMBER
+          $base = [int]$env:VERSION_BASE_RUN
+          $appVer = if ($number -ge $base) { "$env:VERSION_LINE.$($number - $base)" } else { "2.0.$number" }
           if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
             $appVer = $env:GITHUB_REF.Substring(11)
           }
@@ -191,7 +204,9 @@ jobs:
         env:
           BUILD_NUMBER: ${{ steps.build.outputs.number }}
         run: |
-          $appVer = "2.0.$env:BUILD_NUMBER"
+          $number = [int]$env:BUILD_NUMBER
+          $base = [int]$env:VERSION_BASE_RUN
+          $appVer = if ($number -ge $base) { "$env:VERSION_LINE.$($number - $base)" } else { "2.0.$number" }
           if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
             $appVer = $env:GITHUB_REF.Substring(11)
           }
@@ -222,7 +237,11 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v2.0.$BUILD_NUMBER"
+            if (( BUILD_NUMBER >= VERSION_BASE_RUN )); then
+              TAG="v$VERSION_LINE.$((BUILD_NUMBER - VERSION_BASE_RUN))"
+            else
+              TAG="v2.0.$BUILD_NUMBER"
+            fi
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -244,7 +263,7 @@ jobs:
         uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          name: "Parchment ${{ steps.rel.outputs.tag }} — Horizon"
+          name: ${{ steps.rel.outputs.tag }}
           body: |
             Android releases use a private signing identity. Legacy installations signed with the exposed repository key require an explicit backup/export and migration before installation.
             See the [release-signing and migration guide](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE_SIGNING.md). Installs already using the private identity can update normally.

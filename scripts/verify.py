@@ -40,7 +40,7 @@ LOCK_PATH = STATE_DIR / "run.lock"
 TEST_RESULTS = REPO / "composeApp" / "build" / "test-results" / "desktopTest"
 TOOL_TESTS = REPO / "scripts" / "test_workflow_tools.py"
 
-APP_VERSION = "2.0.64"
+APP_VERSION = "2.1.0"
 APP_VERSION_CODE = "264"
 DESKTOP_TEST = ":composeApp:desktopTest"
 ANDROID_COMPILE = ":composeApp:compileDebugKotlinAndroid"

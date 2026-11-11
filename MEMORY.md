@@ -12,7 +12,7 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 ## Project and build
 
 - Toolchain (2026-11-11): Temurin JDK 25 in Program Files/Eclipse Adoptium as JAVA_HOME; SDK %LOCALAPPDATA%/Android/Sdk as ANDROID_HOME. verify.py skips a stale inherited JAVA_HOME (an old JDK 8 path).
-- scripts/verify.py is the only entry point: it supplies JDK/SDK, version 2.0.64/264, two workers and the configuration cache (not final: signer task); logs and ledger in .parchment-local/verification/.
+- scripts/verify.py is the only entry point: it supplies JDK/SDK, version 2.1.0/264 (CI: VERSION_LINE/VERSION_BASE_RUN in the workflow), two workers and the configuration cache (not final: signer task); logs and ledger in .parchment-local/verification/.
 - Keep org.gradle.daemon=false (memory bloat); Gradle heap 2560 MB.
 - PowerShell scripts stay ASCII.
 - Never copy builds into %LOCALAPPDATA%/Programs/Parchment. Only CI builds (-PofficialRelease=true) check for or install OTA updates. Dev runs keep data in ignored parchment-portable-data.

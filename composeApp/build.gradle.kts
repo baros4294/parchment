@@ -13,7 +13,7 @@ plugins {
 }
 
 val appVersionProp = (project.findProperty("appVersion") as? String)?.removePrefix("v")?.trim()
-    ?.takeIf { it.isNotEmpty() } ?: "2.0.0"
+    ?.takeIf { it.isNotEmpty() } ?: "2.1.0"
 val appVersionCodeProp = (project.findProperty("appVersionCode") as? String)?.toIntOrNull() ?: 200
 val githubRepoProp = (project.findProperty("githubRepo") as? String)?.trim()
     ?.takeIf { it.isNotEmpty() } ?: "baros4294/parchment"
