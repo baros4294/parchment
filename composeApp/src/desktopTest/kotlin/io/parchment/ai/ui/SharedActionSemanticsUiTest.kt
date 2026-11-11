@@ -193,7 +193,7 @@ class SharedActionSemanticsUiTest {
             val surfaces = listOf(palette.canvasBg, palette.sheetBg, palette.cardBg, palette.elevatedBg)
             mapOf(
                 "primary" to palette.primaryInk, "narration" to palette.narrationInk, "muted" to palette.mutedInk,
-                "danger" to palette.danger, "success" to palette.success
+                "danger" to palette.danger, "success" to palette.success, "accent" to palette.accent
             ).forEach { (name, ink) ->
                 surfaces.forEach { surface ->
                     assertTrue(contrastRatio(ink, surface) >= 4.5f, "${config.name}: $name on $surface = ${contrastRatio(ink, surface)}")

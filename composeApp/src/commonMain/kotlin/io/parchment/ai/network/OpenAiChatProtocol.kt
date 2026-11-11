@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
@@ -333,31 +335,31 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
                         }
                         if (maxTokensDialectOverride == "auto") {
                             maxTokensDialectOverride = if (wasUsingCompletionKey) "max_tokens" else "max_completion_tokens"
-                            onStatus("Switching token limit parameter to $maxTokensDialectOverride…")
+                            onStatus(Strings.switchingTokenLimitParameterTo(maxTokensDialectOverride))
                         } else {
                             maxTokensDialectOverride = "omit"
-                            onStatus("Endpoint rejected token cap parameter — retrying with model default limit…")
+                            onStatus(Strings.endpointRejectedTokenCapParameterRetrying)
                         }
                         continue
                     }
                     if (!omitReasoningEffortOnRetry && (errMsg.contains("reasoning_effort") || errMsg.contains("reasoning"))) {
                         omitReasoningEffortOnRetry = true
-                        onStatus("Endpoint rejected reasoning_effort — retrying without reasoning_effort…")
+                        onStatus(Strings.endpointRejectedReasoningEffortRetryingWithout)
                         continue
                     }
                     if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                         stripSamplingOnRetry = true
-                        onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                        onStatus(Strings.endpointRejectedSamplingParametersRetryingWith)
                         continue
                     }
                     if (!omitStreamOptionsOnRetry && errMsg.contains("stream_options")) {
                         omitStreamOptionsOnRetry = true
-                        onStatus("Endpoint rejected stream_options — retrying without stream_options…")
+                        onStatus(Strings.endpointRejectedStreamOptionsRetryingWithout)
                         continue
                     }
                     if (!omitModalitiesOnRetry && modelOutputsImages && errMsg.contains("modalities")) {
                         omitModalitiesOnRetry = true
-                        onStatus("Endpoint rejected modalities array — retrying without modalities…")
+                        onStatus(Strings.endpointRejectedModalitiesArrayRetryingWithout)
                         continue
                     }
                     if (!foldHistoricalToolsOnRetry && hasReplayableHistory &&
@@ -365,7 +367,7 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
                             errMsg.contains("reasoning_content") || errMsg.contains("invalid_request"))
                     ) {
                         foldHistoricalToolsOnRetry = true
-                        onStatus("Endpoint rejected historical tool or reasoning data — folding prior history into compact text & retrying…")
+                        onStatus(Strings.endpointRejectedHistoricalToolOrReasoning)
                         continue
                     }
                 }
@@ -401,7 +403,7 @@ internal suspend fun AiProviderEngine.executeOpenAiChatCompletionsLoop(
                     put("role", "user")
                     put("content", stopHookPrompt)
                 })
-                onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                onStatus(Strings.goalWorkCheckContinuingIncompleteChecklist)
                 continue
             }
             break

@@ -41,11 +41,11 @@ internal fun GenerationHost.beginGeneration(
 ) {
     val sessionSnap = appState.sessions.find { it.id == sessionId } ?: return
     if (sessionSnap.isCompactStub) {
-        bannerNotification = "Chat history is still loading. Try again when it is ready."
+        bannerNotification = Strings.chatHistoryIsStillLoadingTry
         return
     }
     if (sessionSnap.messages.none { node -> node.id == targetAssistantNodeId && node.variants.any { it.id == targetVariantId } }) {
-        bannerNotification = "The requested turn is no longer available."
+        bannerNotification = Strings.theRequestedTurnIsNoLonger
         return
     }
     val assistantSnap = appState.assistants.find { it.id == sessionSnap.assistantId } ?: activeAssistant
@@ -365,7 +365,7 @@ internal fun GenerationHost.beginGeneration(
                         updateOwnedStream { cur ->
                             if (cur != null && cur.isThinkingPhase && !cur.statusText.startsWith("Auto-retrying") && !cur.statusText.startsWith("Context ")) {
                                 cur.copy(
-                                    statusText = "Thinking ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                    statusText = Strings.thinkingWords(modelName, thinkWords, toolSuffix, formatDurationFromMs(thinkingDurationMs))
                                 )
                             } else cur
                         }
@@ -471,7 +471,7 @@ internal fun GenerationHost.beginGeneration(
             var minTokensForNextAutoCompact = autoCompactThresholdTokens
             var lastMidStreamCompactCheckMs = activity.elapsedMs
 
-            class MidStreamAutoCompactSignal(val usagePct: Long) : Exception("Auto-compact triggered at $usagePct%")
+            class MidStreamAutoCompactSignal(val usagePct: Long) : Exception(Strings.autoCompactTriggeredAt(usagePct))
 
             fun computeBaseContextTokens(): Int {
                 return O200kTokenizer.computeContextWindowBreakdown(
@@ -518,9 +518,9 @@ internal fun GenerationHost.beginGeneration(
                 if (!plan.didCompactAnything) return false
 
                 val statusPrefix = if (isMidStream) {
-                    "Conversation $usagePct% full, pausing to shorten it…"
+                    Strings.conversationFullPausingToShortenIt(usagePct)
                 } else {
-                    "Conversation $usagePct% full, shortening older messages…"
+                    Strings.conversationFullShorteningOlderMessages(usagePct)
                 }
                 updateOwnedStream { cur ->
                     cur?.copy(isThinkingPhase = false, statusText = statusPrefix, phase = AgentRunPhase.COMPACTING)
@@ -590,7 +590,7 @@ internal fun GenerationHost.beginGeneration(
                 )
                 updateOwnedStream { cur ->
                     cur?.copy(
-                        statusText = "Conversation shortened ($usagePct% → $newPct%), continuing ($modelName)…",
+                        statusText = Strings.conversationShortenedContinuing(usagePct, newPct, modelName),
                         interactionId = "",
                         phase = AgentRunPhase.RUNNING
                     )
@@ -675,7 +675,7 @@ internal fun GenerationHost.beginGeneration(
                                 updateOwnedStream { cur ->
                                     cur?.copy(
                                         isThinkingPhase = true,
-                                        statusText = "Thinking ($modelName • $thinkWords words$toolSuffix • ${formatDurationFromMs(thinkingDurationMs)})…"
+                                        statusText = Strings.thinkingWords(modelName, thinkWords, toolSuffix, formatDurationFromMs(thinkingDurationMs))
                                     )
                                 }
                                 if (now - lastMidStreamCompactCheckMs >= 1500L) {
@@ -692,7 +692,7 @@ internal fun GenerationHost.beginGeneration(
                                 updateOwnedStream { cur ->
                                     cur?.copy(
                                         isThinkingPhase = false,
-                                        statusText = "Writing ($modelName • +$wordCount words)…"
+                                        statusText = Strings.writingWords(modelName, wordCount)
                                     )
                                 }
                                 if (now - lastMidStreamCompactCheckMs >= 1500L) {
@@ -748,7 +748,7 @@ internal fun GenerationHost.beginGeneration(
                                     updateOwnedStream { cur ->
                                         cur?.copy(
                                             isThinkingPhase = true,
-                                            statusText = "Executed tool: ${enrichedTool.name} (${formatDurationFromMs(thinkingDurationMs)})…"
+                                            statusText = Strings.executedTool(enrichedTool.name, formatDurationFromMs(thinkingDurationMs))
                                         )
                                     }
                                     flushCheckpointToDisk(isFinal = false)
@@ -766,9 +766,9 @@ internal fun GenerationHost.beginGeneration(
                                 val done = update.goalTracker.completedCount
                                 val total = update.goalTracker.todos.size
                                 val goalMsg = if (total > 0) {
-                                    "Goal Progress ($done/$total steps done)…"
+                                    Strings.goalProgressStepsDone(done, total)
                                 } else {
-                                    "Planning Goal: ${update.goalTracker.goalObjective.take(48)}…"
+                                    Strings.planningGoal(update.goalTracker.goalObjective.take(48))
                                 }
                                 updateOwnedStream { cur -> cur?.copy(statusText = goalMsg) }
                                 patchVariantMemory { v -> v.copy(goalTracker = update.goalTracker) }
@@ -861,10 +861,10 @@ internal fun GenerationHost.beginGeneration(
                                             "$partialProse\n\n*[Stream paused/interrupted: ${update.message} — tap '→ Continue' to resume seamlessly]*"
                                         }
                                         hasPartialReasoningOrTools -> {
-                                            "*[Stream paused/interrupted: ${update.message} — tap '→ Continue' or reply 'continue' to resume seamlessly]*"
+                                            Strings.streamPausedInterruptedTapContinueOr(update.message)
                                         }
                                         else -> {
-                                            "**[Provider Error: ${update.message}]**\n\nCheck your API key, server URL (`${effectiveProfileForApi.baseUrl}`), or Model ID (`$modelName`) in **⚙ Settings → Providers**."
+                                            Strings.providerErrorCheckYourApiKey(update.message, effectiveProfileForApi.baseUrl, modelName)
                                         }
                                     }
                                     v.copy(
@@ -912,11 +912,11 @@ internal fun GenerationHost.beginGeneration(
             val partialProse = networkContentTarget.toString()
             val hasPartialReasoningOrTools = networkThinkingTarget.isNotEmpty() || accumulatedTools.isNotEmpty()
             flushCheckpointToDisk(isFinal = true) { v ->
-                val errLabel = t.message ?: t::class.simpleName ?: "Unknown error"
+                val errLabel = t.message ?: t::class.simpleName ?: Strings.unknownError
                 val notice = when {
                     partialProse.isNotBlank() -> "$partialProse\n\n*[Interrupted: $errLabel]*"
-                    hasPartialReasoningOrTools -> "*[Interrupted: $errLabel — tap '→ Continue' or reply 'continue' to resume]*"
-                    else -> "**[Stream Error: $errLabel]**"
+                    hasPartialReasoningOrTools -> Strings.interruptedTapContinueOrReplyContinue(errLabel)
+                    else -> Strings.streamError(errLabel)
                 }
                 v.copy(
                     content = notice,
@@ -959,7 +959,7 @@ internal fun GenerationHost.beginGeneration(
             sessionId = sessionId,
             targetNodeId = targetAssistantNodeId,
             isThinkingPhase = false,
-            statusText = "Connecting to ${effectiveProfileForApi.name} ($modelName)…",
+            statusText = Strings.connectingTo(effectiveProfileForApi.name, modelName),
             interactionId = "",
             job = newJob,
             toolApprovalBroker = approvalBroker,

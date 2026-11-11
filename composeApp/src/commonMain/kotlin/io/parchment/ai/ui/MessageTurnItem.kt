@@ -166,7 +166,7 @@ internal fun MessageTurnItem(
     val speakerTitle = if (isAssistant) {
         characterName.ifBlank { activeVar.modelUsed.ifBlank { "Assistant" } }
     } else {
-        userName.ifBlank { "User" }
+        userName.ifBlank { Strings.user }
     }
 
     var variantSwipeDelta by remember(node.id, node.activeVariantIndex) { mutableStateOf(0f) }
@@ -299,7 +299,7 @@ internal fun MessageTurnItem(
                         }
                         if (!node.includedInContext) {
                             BasicText(
-                                text = "Left out of context",
+                                text = Strings.leftOutOfContext,
                                 style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold)
                             )
                         }
@@ -330,7 +330,7 @@ internal fun MessageTurnItem(
                 if (node.variants.size > 1) {
                     SepiaButton(
                         text = "←",
-                        contentDescription = "Previous version",
+                        contentDescription = Strings.previousVersion,
                         compact = true,
                         enabled = node.activeVariantIndex > 0,
                         style = SepiaButtonStyle.GHOST,
@@ -342,7 +342,7 @@ internal fun MessageTurnItem(
                     )
                     SepiaButton(
                         text = "→",
-                        contentDescription = "Next version",
+                        contentDescription = Strings.nextVersion,
                         compact = true,
                         enabled = node.activeVariantIndex < node.variants.lastIndex,
                         style = SepiaButtonStyle.GHOST,
@@ -363,17 +363,17 @@ internal fun MessageTurnItem(
                         "$prefix$tools tool${if (tools == 1) "" else "s"}"
                     } else ""
                     val chipText = when {
-                        isLivePeekOnly && isCurrentlyToolStep -> "🔧 Tool Peek$sec…"
-                        isLivePeekOnly -> "🧠 Peek$sec…"
-                        isActivelyThinkingThisNode && isCurrentlyToolStep -> "🔧 Working$sec$toolBadge…"
-                        isActivelyThinkingThisNode -> "🧠 Thinking$sec$toolBadge…"
-                        isReasoningExpanded -> "▾ Thought$sec$toolBadge"
-                        else -> "▸ Thought$sec$toolBadge"
+                        isLivePeekOnly && isCurrentlyToolStep -> Strings.toolPeek(sec)
+                        isLivePeekOnly -> Strings.peek(sec)
+                        isActivelyThinkingThisNode && isCurrentlyToolStep -> Strings.working(sec, toolBadge)
+                        isActivelyThinkingThisNode -> Strings.thinking2(sec, toolBadge)
+                        isReasoningExpanded -> Strings.thought2(sec, toolBadge)
+                        else -> Strings.thought3(sec, toolBadge)
                     }
                     SepiaButton(
                         text = chipText,
                         compact = true,
-                        hint = "Show or hide the thinking and tool steps",
+                        hint = Strings.showOrHideTheThinking,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
                             manualThinkingToggle = if (isActivelyThinkingThisNode) {
@@ -431,13 +431,13 @@ internal fun MessageTurnItem(
                         val toolCount = activeVar.toolCalls.size
                         val headerSummary = buildString {
                             if (isLivePeekOnly) {
-                                append(if (livePeekInfo.isToolPeek) "Latest Tool" else "Latest Thought")
+                                append(if (livePeekInfo.isToolPeek) Strings.latestTool else Strings.latestThought)
                             } else if (isActivelyThinkingThisNode) {
-                                append(if (livePeekInfo.isToolPeek) "Running tools and thinking" else "Thinking")
+                                append(if (livePeekInfo.isToolPeek) Strings.runningToolsAndThinking else Strings.thinking)
                             } else if (win.isCompact) {
-                                append("Reasoning")
+                                append(Strings.reasoning)
                             } else {
-                                append("Thinking and tool steps")
+                                append(Strings.thinkingAndToolSteps)
                             }
                             if (wordCount > 0) append(" ($wordCount words")
                             if (toolCount > 0) {
@@ -453,7 +453,7 @@ internal fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = if (isLivePeekOnly) "▾" else "▴",
-                        contentDescription = if (isLivePeekOnly) "Show thinking" else "Hide thinking",
+                        contentDescription = if (isLivePeekOnly) Strings.showThinking else Strings.hideThinking,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -501,7 +501,7 @@ internal fun MessageTurnItem(
                                             .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         BasicText(
-                                            text = "Running",
+                                            text = Strings.running,
                                             style = p.monoStyle.copy(
                                                 color = p.accent,
                                                 fontWeight = FontWeight.Bold,
@@ -568,9 +568,9 @@ internal fun MessageTurnItem(
                         SepiaFileDiffCard(
                             filePath = pathStr,
                             actionLabel = when (lowerTool) {
-                                "fs_edit" -> "Edited"
-                                "fs_multi_edit" -> "Multi-Edited"
-                                else -> "Wrote"
+                                "fs_edit" -> Strings.edited
+                                "fs_multi_edit" -> Strings.multiEdited
+                                else -> Strings.wrote
                             },
                             oldText = oldTxt,
                             newText = newTxt,
@@ -604,7 +604,7 @@ internal fun MessageTurnItem(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .then(if (canExpandTool) Modifier.clickable(role = Role.Button, onClickLabel = if (isToolResultExpanded) "Collapse tool result" else "Expand tool result") { isToolResultExpanded = !isToolResultExpanded } else Modifier),
+                                .then(if (canExpandTool) Modifier.clickable(role = Role.Button, onClickLabel = if (isToolResultExpanded) Strings.collapseToolResult else Strings.expandToolResult) { isToolResultExpanded = !isToolResultExpanded } else Modifier),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -641,7 +641,7 @@ internal fun MessageTurnItem(
                                             .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         BasicText(
-                                            text = "Running",
+                                            text = Strings.running,
                                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                         )
                                     }
@@ -649,7 +649,7 @@ internal fun MessageTurnItem(
                                 if (canExpandTool) {
                                     SepiaButton(
                                         text = if (effectiveExpanded) "▴" else "▾",
-                                        contentDescription = if (effectiveExpanded) "Collapse tool result" else "Expand tool result",
+                                        contentDescription = if (effectiveExpanded) Strings.collapseToolResult else Strings.expandToolResult,
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { isToolResultExpanded = !isToolResultExpanded }
@@ -685,7 +685,7 @@ internal fun MessageTurnItem(
                     } else 0
                     if (hiddenStepCount > 0) {
                         SepiaButton(
-                            text = "▾ Show $hiddenStepCount earlier tool steps (${totalToolSteps} total)",
+                            text = Strings.showEarlierToolStepsTotal(hiddenStepCount, totalToolSteps),
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = { showAllInterleavedSteps = true }
@@ -713,7 +713,7 @@ internal fun MessageTurnItem(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
                                     BasicText(
-                                        text = "Thought #$thoughtStepCounter",
+                                        text = Strings.thought(thoughtStepCounter),
                                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                     )
                                 }
@@ -757,7 +757,7 @@ internal fun MessageTurnItem(
                             ) {
                                 KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 11.dp)
                                 BasicText(
-                                    text = "Thought #$thoughtStepCounter",
+                                    text = Strings.thought(thoughtStepCounter),
                                     style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                 )
                             }
@@ -802,7 +802,7 @@ internal fun MessageTurnItem(
                             size = 12.dp
                         )
                         BasicText(
-                            text = "Thinking saved for the next turn",
+                            text = Strings.thinkingSavedForTheNext,
                             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFamily = p.codeFontFamily)
                         )
                     }
@@ -823,9 +823,9 @@ internal fun MessageTurnItem(
                 else -> KissIcon.TARGET
             }
             val statusText = when {
-                goalTracker.isCompleted -> "Done, $doneCount of $totalCount"
+                goalTracker.isCompleted -> Strings.doneOf(doneCount, totalCount)
                 totalCount > 0 -> "$doneCount of $totalCount done"
-                else -> "Planning"
+                else -> Strings.planning
             }
             Column(
                 modifier = Modifier
@@ -854,7 +854,7 @@ internal fun MessageTurnItem(
                     ) {
                         KissVectorIcon(icon = KissIcon.TARGET, tint = p.accent, size = IconSize.md)
                         BasicText(
-                            text = "Goal: ${goalTracker.goalObjective.ifBlank { "Autonomous Task Checklist" }}",
+                            text = Strings.goal(goalTracker.goalObjective.ifBlank { Strings.autonomousTaskChecklist }),
                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         )
                     }
@@ -918,7 +918,7 @@ internal fun MessageTurnItem(
                     ) {
                         KissVectorIcon(icon = KissIcon.CHECK, tint = p.accent, size = 12.dp)
                         BasicText(
-                            text = "Verified: ${goalTracker.verificationSummary}",
+                            text = Strings.verified(goalTracker.verificationSummary),
                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Medium)
                         )
                     }
@@ -951,7 +951,7 @@ internal fun MessageTurnItem(
                 ) {
                     if (!isAssistant) {
                         SepiaButton(
-                            text = "↻ Save & regenerate",
+                            text = Strings.saveRegenerate,
                             compact = true,
                             style = SepiaButtonStyle.PRIMARY,
                             onClick = {
@@ -962,7 +962,7 @@ internal fun MessageTurnItem(
                         )
                     }
                     SepiaButton(
-                        text = "Save",
+                        text = Strings.save,
                         compact = true,
                         style = if (isAssistant) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.OUTLINE,
                         onClick = {
@@ -971,7 +971,7 @@ internal fun MessageTurnItem(
                         }
                     )
                     SepiaButton(
-                        text = "Save as new version",
+                        text = Strings.saveAsNewVersion,
                         compact = true,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
@@ -980,7 +980,7 @@ internal fun MessageTurnItem(
                         }
                     )
                     SepiaButton(
-                        text = "Cancel",
+                        text = Strings.cancel,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -1012,7 +1012,7 @@ internal fun MessageTurnItem(
                 if (isLongCollapsible) {
                     Spacer(Modifier.height(Space.s4))
                     SepiaButton(
-                        text = if (isLongExpanded) "▾ Collapse Long Message" else "▸ Read Full Message (${activeVar.content.length} chars)",
+                        text = if (isLongExpanded) Strings.collapseLongMessage else Strings.readFullMessageChars(activeVar.content.length),
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { isLongExpanded = !isLongExpanded }
@@ -1048,7 +1048,7 @@ internal fun MessageTurnItem(
                                     .clip(RoundedCornerShape(Radius.r10))
                                     .background(p.cardBg)
                                     .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
-                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = Strings.openAttachment) { onInspectAttachment(att) }
                                     .padding(Space.s8),
                                 verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
@@ -1090,7 +1090,7 @@ internal fun MessageTurnItem(
                                     ) {
                                         KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = IconSize.sm)
                                         BasicText(
-                                            text = "Zoom",
+                                            text = Strings.zoom,
                                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                                         )
                                     }
@@ -1116,14 +1116,14 @@ internal fun MessageTurnItem(
                             val isAud = mime.startsWith("audio/") || lower.endsWith(".mp3") ||
                                 lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac")
                             val iconAndAction = when {
-                                isPdf -> KissIcon.FILE_TEXT to "Open PDF"
-                                isVid -> KissIcon.VIDEO to "Play Video"
-                                isAud -> KissIcon.AUDIO to "Play Audio"
+                                isPdf -> KissIcon.FILE_TEXT to Strings.openPdf
+                                isVid -> KissIcon.VIDEO to Strings.playVideo
+                                isAud -> KissIcon.AUDIO to Strings.playAudio
                                 else -> {
                                     val stats = if (att.textContent.isNotBlank()) {
                                         "${att.textContent.lines().size} lines"
-                                    } else "File"
-                                    KissIcon.FILE_TEXT to "View ($stats)"
+                                    } else Strings.file
+                                    KissIcon.FILE_TEXT to Strings.view(stats)
                                 }
                             }
                             Row(
@@ -1131,7 +1131,7 @@ internal fun MessageTurnItem(
                                     .clip(RoundedCornerShape(Radius.r8))
                                     .background(p.cardBg)
                                     .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
-                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = Strings.openAttachment) { onInspectAttachment(att) }
                                     .padding(horizontal = Space.s10, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(7.dp)
@@ -1192,7 +1192,7 @@ internal fun MessageTurnItem(
                                     ) {
                                         KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = IconSize.md)
                                         BasicText(
-                                            text = "Generated Image (${media.localFilePath.ifBlank { media.remoteUrl }})",
+                                            text = Strings.generatedImage(media.localFilePath.ifBlank { media.remoteUrl }),
                                             style = p.uiBodyStyle.copy(color = p.accent)
                                         )
                                     }
@@ -1211,7 +1211,7 @@ internal fun MessageTurnItem(
                                     Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                         if (bmp != null) {
                                             SepiaButton(
-                                                text = "🔍 View & zoom",
+                                                text = Strings.viewZoom,
                                                 compact = true,
                                                 style = SepiaButtonStyle.PRIMARY,
                                                 onClick = { onInspectGeneratedImage(media) }
@@ -1220,7 +1220,7 @@ internal fun MessageTurnItem(
                                         val openTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                         if (openTarget.isNotBlank()) {
                                             SepiaButton(
-                                                text = "Open in OS",
+                                                text = Strings.openInOs,
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
                                                 onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
@@ -1228,7 +1228,7 @@ internal fun MessageTurnItem(
                                         }
                                         if (media.localFilePath.isNotBlank()) {
                                             SepiaButton(
-                                                text = "Copy image",
+                                                text = Strings.copyImage,
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
                                                 onClick = {
@@ -1260,7 +1260,7 @@ internal fun MessageTurnItem(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.VIDEO, tint = p.accent, size = 15.dp)
                                     BasicText(
-                                        text = "Generated Video (${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""})",
+                                        text = Strings.generatedVideo(media.mimeType, if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""),
                                         style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
@@ -1268,7 +1268,7 @@ internal fun MessageTurnItem(
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
-                                            text = "▶ Play video (.MP4)",
+                                            text = Strings.playVideoMp4,
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
@@ -1294,7 +1294,7 @@ internal fun MessageTurnItem(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.AUDIO, tint = p.accent, size = 15.dp)
                                     BasicText(
-                                        text = "Generated Audio (${media.mimeType})",
+                                        text = Strings.generatedAudio(media.mimeType),
                                         style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
@@ -1302,7 +1302,7 @@ internal fun MessageTurnItem(
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
-                                            text = "▶ Play audio (.MP3)",
+                                            text = Strings.playAudioMp3,
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
                                             onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
@@ -1349,7 +1349,7 @@ internal fun MessageTurnItem(
                     if (activeVar.content.isNotBlank()) {
                         SepiaButton(
                             text = if (isSpeakingThisTurn) "🔇" else "🔊",
-                            contentDescription = if (isSpeakingThisTurn) "Stop reading aloud" else "Read aloud",
+                            contentDescription = if (isSpeakingThisTurn) Strings.stopReadingAloud else Strings.readAloud,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -1368,7 +1368,7 @@ internal fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = "↻",
-                        contentDescription = "Regenerate response",
+                        contentDescription = Strings.regenerateResponse,
                         compact = true,
                         enabled = !activeVar.isStreaming,
                         style = SepiaButtonStyle.GHOST,
@@ -1379,8 +1379,8 @@ internal fun MessageTurnItem(
                     if (isAssistant && (!win.isCompact || isLatestTurn || showMoreActions || node.pinned)) {
                         SepiaButton(
                             text = "📌",
-                            contentDescription = if (node.pinned) "Unpin reply" else "Pin reply",
-                            hint = if (node.pinned) "Remove from Pinned in the sidebar" else "Keep this reply in Pinned in the sidebar",
+                            contentDescription = if (node.pinned) Strings.unpinReply else Strings.pinReply,
+                            hint = if (node.pinned) Strings.removeFromPinnedInTheSidebar else Strings.keepThisReplyInPinnedIn,
                             compact = true,
                             style = if (node.pinned) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
                             onClick = onTogglePin
@@ -1388,7 +1388,7 @@ internal fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = if (showMoreActions) "▴" else "⋯",
-                        contentDescription = if (showMoreActions) "Hide more actions" else "More actions",
+                        contentDescription = if (showMoreActions) Strings.hideMoreActions else Strings.moreActions,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showMoreActions = !showMoreActions }
@@ -1419,7 +1419,7 @@ internal fun MessageTurnItem(
                         )
                         if (isAssistant) {
                             SepiaButton(
-                                text = "→ Continue",
+                                text = Strings.continueLabel2,
                                 compact = true,
                                 enabled = !activeVar.isStreaming,
                                 style = SepiaButtonStyle.GHOST,
@@ -1428,7 +1428,7 @@ internal fun MessageTurnItem(
                         }
                         SepiaButton(
                             text = "✎",
-                            contentDescription = "Edit message",
+                            contentDescription = Strings.editMessage,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -1439,27 +1439,27 @@ internal fun MessageTurnItem(
                         if (activeVar.content.isNotBlank()) {
                             SepiaButton(
                                 text = "🌐",
-                                contentDescription = "Translate message",
+                                contentDescription = Strings.translateMessage,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onTranslate
                             )
                         }
                         SepiaButton(
-                            text = "⑂ Branch",
+                            text = Strings.branch,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onForkHere
                         )
                         SepiaButton(
-                            text = "↺ Rewind",
+                            text = Strings.rewind,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onRewindHere
                         )
                         SepiaButton(
                             text = if (node.includedInContext) "🙈" else "👁",
-                            contentDescription = if (node.includedInContext) "Exclude from context" else "Include in context",
+                            contentDescription = if (node.includedInContext) Strings.excludeFromContext else Strings.includeInContext,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onToggleContextMute
@@ -1467,7 +1467,7 @@ internal fun MessageTurnItem(
                         if (activeVar.rawRequestPreview.isNotBlank()) {
                             SepiaButton(
                                 text = "‹/›",
-                                contentDescription = "Raw request and response",
+                                contentDescription = Strings.rawRequestAndResponse,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showRawWireDrawer = !showRawWireDrawer }
@@ -1482,7 +1482,7 @@ internal fun MessageTurnItem(
                             )
                             SepiaButton(
                                 text = "🗑",
-                                contentDescription = "Delete message",
+                                contentDescription = Strings.deleteMessage,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode
@@ -1490,7 +1490,7 @@ internal fun MessageTurnItem(
                         } else {
                             SepiaButton(
                                 text = "🗑",
-                                contentDescription = "Delete message",
+                                contentDescription = Strings.deleteMessage,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = onDeleteNode
@@ -1554,7 +1554,7 @@ internal fun MessageTurnItem(
                                 horizontalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 BasicText(
-                                    text = "~${formatCompactTokens(outProseTok)} tokens",
+                                    text = Strings.tokens(formatCompactTokens(outProseTok)),
                                     style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
                                 )
                                 if (thinkTok > 0) {
@@ -1615,7 +1615,7 @@ internal fun MessageTurnItem(
                                             size = 10.dp
                                         )
                                         BasicText(
-                                            text = "${m.tokensPerSec} tok/s$durationSuffix",
+                                            text = Strings.tokS(m.tokensPerSec, durationSuffix),
                                             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     } else {
@@ -1646,30 +1646,30 @@ internal fun MessageTurnItem(
                             ) {
                                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     BasicText(
-                                        text = "${formatCompactTokens(m.inputTokens)} input • ${formatCompactTokens(m.outputTokens)} output",
+                                        text = Strings.inputOutput(formatCompactTokens(m.inputTokens), formatCompactTokens(m.outputTokens)),
                                         style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.cachedInputTokens > 0 || m.cacheCreationInputTokens > 0) {
                                         BasicText(
-                                            text = "${formatCompactTokens(m.cachedInputTokens)} reused • ${formatCompactTokens(m.cacheCreationInputTokens)} saved for reuse",
+                                            text = Strings.reusedSavedForReuse(formatCompactTokens(m.cachedInputTokens), formatCompactTokens(m.cacheCreationInputTokens)),
                                             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     }
                                     if (m.reportedRequests > 0) {
                                         BasicText(
-                                            text = "${m.reportedRequests} request${if (m.reportedRequests == 1) "" else "s"}" +
+                                            text = Strings.request(m.reportedRequests, if (m.reportedRequests == 1) "" else "s") +
                                                 if (!m.usageIsComplete || !m.costIsAvailable) " • partial" else if (m.reportedCostRequests == m.reportedRequests) " • reported cost" else " • estimate",
                                             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                         )
                                     }
                                     if (m.outputIncludesUnreportedReasoning) BasicText(
-                                        text = "Thinking counted in output", style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
+                                        text = Strings.thinkingCountedInOutput, style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.reportedRequests > 0 && !m.costIsAvailable && costVal == 0.0) BasicText(
-                                        text = "Cost unavailable", style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
+                                        text = Strings.costUnavailable, style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                     if (m.unpricedCostComponents.isNotEmpty()) BasicText(
-                                        text = "Unpriced: ${m.unpricedCostComponents.sorted().joinToString(", ")}",
+                                        text = Strings.unpriced(m.unpricedCostComponents.sorted().joinToString(", ")),
                                         style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
                                     )
                                 }
@@ -1701,7 +1701,7 @@ internal fun MessageTurnItem(
                     modifier = Modifier
                 ) {
                     BasicText(
-                        text = "${formatCompactTokens(userTok)} tok$attSuffix",
+                        text = Strings.tok(formatCompactTokens(userTok), attSuffix),
                         style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk, fontWeight = FontWeight.Medium)
                     )
                 }
@@ -1742,7 +1742,7 @@ internal fun MessageTurnItem(
                     ) {
                         KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accent, size = IconSize.md)
                         BasicText(
-                            text = "Grounded Web Sources (${activeVar.webSources.size}) — Tap a source to highlight its line",
+                            text = Strings.groundedWebSourcesTapASource(activeVar.webSources.size),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
@@ -1750,7 +1750,7 @@ internal fun MessageTurnItem(
                     }
                     SepiaButton(
                         text = "×",
-                        contentDescription = "Close sources",
+                        contentDescription = Strings.closeSources,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -1769,12 +1769,12 @@ internal fun MessageTurnItem(
                             highlightedSourceLineText == firstGroundedLine
                         val lineBadgeText = if (src.groundedLineNumbers.isNotEmpty()) {
                             if (src.groundedLineNumbers.size == 1) {
-                                "Line ${src.groundedLineNumbers.first()}"
+                                Strings.line(src.groundedLineNumbers.first())
                             } else {
-                                "Lines ${src.groundedLineNumbers.joinToString(", ")}"
+                                Strings.lines2(src.groundedLineNumbers.joinToString(", "))
                             }
                         } else {
-                            "Grounded"
+                            Strings.grounded
                         }
 
                         Column(
@@ -1840,7 +1840,7 @@ internal fun MessageTurnItem(
                                 }
                                 SepiaButton(
                                     text = "↗",
-                                    contentDescription = "Open source",
+                                    contentDescription = Strings.openSource,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { openWebLink(src.url) }
@@ -1914,7 +1914,7 @@ internal fun MessageTurnItem(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        BasicText(text = "Request sent:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                        BasicText(text = Strings.requestSent, style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
                         SepiaButton(
                             text = if (copiedRawWire == "req") "✓" else "📋",
                             compact = true,
@@ -1933,7 +1933,7 @@ internal fun MessageTurnItem(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            BasicText(text = "Latest response:", style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
+                            BasicText(text = Strings.latestResponse, style = p.uiLabelStyle.copy(fontWeight = FontWeight.Bold))
                             SepiaButton(
                                 text = if (copiedRawWire == "resp") "✓" else "📋",
                                 compact = true,

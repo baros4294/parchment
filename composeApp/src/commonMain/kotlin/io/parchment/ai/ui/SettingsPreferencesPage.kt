@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.BasicText
@@ -41,8 +40,8 @@ import kotlinx.coroutines.launch
 // Settings page 1: Preferences.
 // ============================================================================================
 private val ACCENT_SWATCHES = listOf(
-    "#8B5A2B" to "Brown", "#9E4730" to "Rust", "#3B5998" to "Blue", "#1F6F54" to "Green",
-    "#5E4B8B" to "Purple", "#7A5216" to "Bronze", "#8C3823" to "Brick", "#2D3748" to "Slate"
+    "#8B5A2B" to Strings.brown, "#9E4730" to Strings.rust, "#3B5998" to Strings.blue, "#1F6F54" to Strings.green,
+    "#5E4B8B" to Strings.purple, "#7A5216" to Strings.bronze, "#8C3823" to Strings.brick, "#2D3748" to Strings.slate
 )
 
 @Composable
@@ -52,7 +51,7 @@ internal fun AccentSwatches(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> 
             color = parseHexColor(hex),
             name = "$name accent",
             selected = theme.accentHex.equals(hex, ignoreCase = true),
-            onClick = { onUpdateTheme(theme.copy(name = "Custom Theme", accentHex = hex)) }
+            onClick = { onUpdateTheme(theme.copy(name = Strings.customTheme, accentHex = hex)) }
         )
     }
 }
@@ -64,7 +63,7 @@ private val CODE_FONTS = listOf("JetBrains Mono", "Inter", "Serif")
 @Composable
 internal fun FontChoiceRows(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit, onNotify: (String) -> Unit) {
     FontChoiceRow(
-        label = "Text font",
+        label = Strings.textFont,
         fonts = TEXT_FONTS,
         family = theme.proseFontFamily,
         customPath = theme.customProseFontPath,
@@ -73,7 +72,7 @@ internal fun FontChoiceRows(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> 
         onNotify = onNotify
     )
     FontChoiceRow(
-        label = "Code font",
+        label = Strings.codeFont,
         fonts = CODE_FONTS,
         family = theme.codeFontFamily,
         customPath = theme.customCodeFontPath,
@@ -103,15 +102,15 @@ private fun FontChoiceRow(
             }
             if (customName.isNotBlank()) SepiaChip(label = customName, selected = true, onClick = {})
             SepiaButton(
-                text = "📂 .TTF/.OTF",
+                text = Strings.ttfOtf,
                 compact = true,
                 style = SepiaButtonStyle.OUTLINE,
                 onClick = {
                     scope.launch {
-                        val picked = PlatformBridge.pickFontFile("Choose a ${label.lowercase()} (.ttf or .otf)")
+                        val picked = PlatformBridge.pickFontFile(Strings.chooseATtfOrOtf(label.lowercase()))
                         if (!picked.isNullOrBlank()) {
                             onCustom(picked)
-                            onNotify("${label} set to ${picked.substringAfterLast('/').substringAfterLast('\\')}.")
+                            onNotify(Strings.setTo(label, picked.substringAfterLast('/').substringAfterLast('\\')))
                         }
                     }
                 }
@@ -148,32 +147,32 @@ internal fun PreferencesSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
-        BasicText(text = "Preferences", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = Strings.preferences, style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         if (matchesSearch("profile", "name", "picture", "avatar")) ProfileCard(prefs, onUpdatePreferences, onNotify)
         if (matchesSearch("spend", "budget", "limit", "cost")) SpendLimitCard(prefs, onUpdatePreferences)
 
         // 1. Appearance & Fonts
         if (matchesSearch("color mode", "theme", "font", "sepia", "dark", "light", "opacity", "size")) {
-            SepiaSectionCard(title = "Appearance & fonts") {
+            SepiaSectionCard(title = Strings.appearanceFonts) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     ThemePresetChoices(theme, onUpdateTheme)
 
                     SepiaDivider()
 
                     SepiaToggleRow(
-                        title = "Reduce motion",
+                        title = Strings.reduceMotion,
                         checked = prefs.reduceMotion,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(reduceMotion = it)) }
                     )
 
                     // Accent swatches and a custom hex color, in a wrapping row so nothing clips on a phone.
-                    SepiaAdaptiveRow(label = "Accent color") {
+                    SepiaAdaptiveRow(label = Strings.accentColor) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(Modifier.selectableGroup(), itemVerticalAlignment = Alignment.CenterVertically) {
                             AccentSwatches(theme, onUpdateTheme)
                             SepiaButton(
-                                text = if (showCustomColorHexDrawer) "▾ Hex" else "✎ Hex",
+                                text = if (showCustomColorHexDrawer) Strings.hex else Strings.hex2,
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = { showCustomColorHexDrawer = !showCustomColorHexDrawer }
@@ -187,15 +186,15 @@ internal fun PreferencesSubpage(
                                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.canvasBgHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
-                                        label = "Canvas hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, canvasBgHex = it)) },
+                                        label = Strings.canvasHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     SepiaTextField(
                                         value = theme.cardBgHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", cardBgHex = it)) },
-                                        label = "Card hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, cardBgHex = it)) },
+                                        label = Strings.cardHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -203,15 +202,15 @@ internal fun PreferencesSubpage(
                                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.primaryInkHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
-                                        label = "Ink hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, primaryInkHex = it)) },
+                                        label = Strings.inkHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     SepiaTextField(
                                         value = theme.accentHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", accentHex = it)) },
-                                        label = "Accent hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, accentHex = it)) },
+                                        label = Strings.accentHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -220,29 +219,29 @@ internal fun PreferencesSubpage(
                                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.canvasBgHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
-                                        label = "Canvas hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, canvasBgHex = it)) },
+                                        label = Strings.canvasHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     SepiaTextField(
                                         value = theme.cardBgHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", cardBgHex = it)) },
-                                        label = "Card hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, cardBgHex = it)) },
+                                        label = Strings.cardHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     SepiaTextField(
                                         value = theme.primaryInkHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
-                                        label = "Ink hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, primaryInkHex = it)) },
+                                        label = Strings.inkHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     SepiaTextField(
                                         value = theme.accentHex,
-                                        onValueChange = { onUpdateTheme(theme.copy(name = "Custom", accentHex = it)) },
-                                        label = "Accent hex",
+                                        onValueChange = { onUpdateTheme(theme.copy(name = Strings.custom2, accentHex = it)) },
+                                        label = Strings.accentHex,
                                         monospace = true,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -267,7 +266,7 @@ internal fun PreferencesSubpage(
                                 proseSizeText = v
                                 v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
                             },
-                            label = "Prose font size (sp)",
+                            label = Strings.proseFontSizeSp,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -277,7 +276,7 @@ internal fun PreferencesSubpage(
                                 codeSizeText = v
                                 v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
                             },
-                            label = "Code font size (sp)",
+                            label = Strings.codeFontSizeSp,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -288,7 +287,7 @@ internal fun PreferencesSubpage(
                             maxWidthText = v
                             v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
                         },
-                        label = "Max reading width (dp)",
+                        label = Strings.maxReadingWidthDp,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -298,16 +297,16 @@ internal fun PreferencesSubpage(
 
         // 2. Chat Item Display (Matching Screenshots 4 & 5)
         if (matchesSearch("chat item display", "layout", "bubble", "page", "avatar", "timestamp", "tokens", "thinking cards", "tool cards", "model name", "provider")) {
-            SepiaSectionCard(title = "Chat item display") {
+            SepiaSectionCard(title = Strings.chatItemDisplay) {
                 Column {
-                    SepiaAdaptiveRow(label = "Message layout style") {
+                    SepiaAdaptiveRow(label = Strings.messageLayoutStyle) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(Space.s6),
                             verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             SepiaChip(
-                                label = "Bubbles",
+                                label = Strings.bubbles,
                                 selected = prefs.defaultViewMode == ViewMode.EDITORIAL_TURNS,
                                 onClick = {
                                     onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.EDITORIAL_TURNS))
@@ -315,7 +314,7 @@ internal fun PreferencesSubpage(
                                 }
                             )
                             SepiaChip(
-                                label = "Page",
+                                label = Strings.page,
                                 selected = prefs.defaultViewMode == ViewMode.MANUSCRIPT,
                                 onClick = {
                                     onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.MANUSCRIPT))
@@ -326,89 +325,89 @@ internal fun PreferencesSubpage(
                     }
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show provider in model capsule",
+                        title = Strings.showProviderInModelCapsule,
                         checked = prefs.showProviderInModelCapsule,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderInModelCapsule = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show assistant avatar in title bar",
+                        title = Strings.showAssistantAvatarInTitle,
                         checked = prefs.showAssistantAvatarInTitleBar,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showAssistantAvatarInTitleBar = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show user avatar",
+                        title = Strings.showUserAvatar,
                         checked = prefs.showUserAvatar,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showUserAvatar = it)) }
                     )
                     SepiaToggleRow(
-                        title = "Show user name",
+                        title = Strings.showUserName,
                         checked = prefs.showUserName,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showUserName = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show user timestamp",
+                        title = Strings.showUserTimestamp,
                         checked = prefs.showUserTimestamp,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showUserTimestamp = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show user message actions",
+                        title = Strings.showUserMessageActions,
                         checked = prefs.showUserMessageActions,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showUserMessageActions = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show model icon / avatar",
+                        title = Strings.showModelIconAvatar,
                         checked = prefs.showModelIcon,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showModelIcon = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show model name",
+                        title = Strings.showModelName,
                         checked = prefs.showModelName,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showModelName = it)) }
                     )
                     SepiaToggleRow(
-                        title = "Show model timestamp",
+                        title = Strings.showModelTimestamp,
                         checked = prefs.showModelTimestamp,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showModelTimestamp = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show provider after model name",
+                        title = Strings.showProviderAfterModelName,
                         checked = prefs.showProviderAfterModelName,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderAfterModelName = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show usage stats",
+                        title = Strings.showUsageStats,
                         checked = prefs.showTokenAndContextStats,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showTokenAndContextStats = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Count usage for the whole reply",
+                        title = Strings.countUsageForTheWhole,
                         checked = prefs.showTokensForEntireTurn,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showTokensForEntireTurn = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show thinking cards",
+                        title = Strings.showThinkingCards,
                         checked = prefs.showThinkingCards,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showThinkingCards = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show tool cards",
+                        title = Strings.showToolCards,
                         checked = prefs.showToolCards,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showToolCards = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show thinking level on the button",
+                        title = Strings.showThinkingLevelOnThe,
                         checked = prefs.showReasoningLevelOnButton,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showReasoningLevelOnButton = it)) }
                     )
@@ -418,52 +417,52 @@ internal fun PreferencesSubpage(
 
         // 3. Rendering Settings (Matching Screenshot 6)
         if (matchesSearch("rendering", "markdown", "math", "latex", "reasoning", "thinking", "code blocks", "dialogue")) {
-            SepiaSectionCard(title = "Rendering settings") {
+            SepiaSectionCard(title = Strings.renderingSettings) {
                 Column {
                     SepiaToggleRow(
-                        title = "Inline $...$ Rendering",
+                        title = Strings.inlineRendering,
                         checked = prefs.inlineDollarMathRendering,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(inlineDollarMathRendering = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Math formula rendering",
+                        title = Strings.mathFormulaRendering,
                         checked = prefs.mathFormulaRendering,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(mathFormulaRendering = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Render user messages with Markdown",
+                        title = Strings.renderUserMessagesWithMarkdown,
                         checked = prefs.renderUserMessagesWithMarkdown,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(renderUserMessagesWithMarkdown = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Format thinking text (headings, math)",
+                        title = Strings.formatThinkingTextHeadingsMath,
                         checked = prefs.renderReasoningWithMarkdown,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(renderReasoningWithMarkdown = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Render assistant messages with Markdown",
+                        title = Strings.renderAssistantMessagesWithMarkdown,
                         checked = prefs.renderAssistantMessagesWithMarkdown,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(renderAssistantMessagesWithMarkdown = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Highlight spoken \"dialogue\" & *narration* ink",
+                        title = Strings.highlightSpokenDialogueNarrationInk,
                         checked = theme.highlightDialogueAndNarration,
                         onCheckedChange = { onUpdateTheme(theme.copy(highlightDialogueAndNarration = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Auto-collapse code blocks",
+                        title = Strings.autoCollapseCodeBlocks,
                         checked = prefs.autoCollapseCodeBlocks,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseCodeBlocks = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Collapse long messages (> 1,800 chars)",
+                        title = Strings.collapseLongMessages1800,
                         checked = prefs.collapseLongMessages,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
                     )
@@ -473,7 +472,7 @@ internal fun PreferencesSubpage(
 
         // 4. Behavior & Startup (Matching Screenshots 7 & 8)
         if (matchesSearch("behavior", "startup", "thinking", "regenerate", "delete", "navigation", "minimap", "shortcut", "paste", "battery", "background", "scroll")) {
-            SepiaSectionCard(title = "Behavior & startup") {
+            SepiaSectionCard(title = Strings.behaviorStartup) {
                 Column {
                     if (PlatformBridge.isAndroid) {
                         val isUnrestricted = remember { PlatformBridge.isIgnoringBatteryOptimizations() }
@@ -485,12 +484,12 @@ internal fun PreferencesSubpage(
                         ) {
                             Column(modifier = Modifier.weight(1f, fill = false).padding(end = Space.s10)) {
                                 BasicText(
-                                    text = "Android unrestricted background mode",
+                                    text = Strings.androidUnrestrictedBackgroundMode,
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = p.accent)
                                 )
                             }
                             SepiaButton(
-                                text = if (isUnrestricted) "✓ Unrestricted" else "⚡ Allow Now",
+                                text = if (isUnrestricted) Strings.unrestricted else Strings.allowNow,
                                 compact = true,
                                 style = if (isUnrestricted) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.PRIMARY,
                                 onClick = { PlatformBridge.requestUnrestrictedBackgroundBattery() }
@@ -500,97 +499,97 @@ internal fun PreferencesSubpage(
                     }
 
                     SepiaToggleRow(
-                        title = "Auto switch to topics",
+                        title = Strings.autoSwitchToTopics,
                         checked = prefs.autoSwitchToTopics,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoSwitchToTopics = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Auto-collapse thinking",
+                        title = Strings.autoCollapseThinking,
                         checked = prefs.autoCollapseThinking,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseThinking = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show tool result summary",
+                        title = Strings.showToolResultSummary,
                         checked = prefs.showToolResultSummary,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showToolResultSummary = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Delete messages below when regenerating",
+                        title = Strings.deleteMessagesBelowWhenRegenerating,
                         checked = prefs.deleteMessagesBelowWhenRegenerating,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(deleteMessagesBelowWhenRegenerating = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Delete previous message when regenerating",
+                        title = Strings.deletePreviousMessageWhenRegenerating,
                         checked = prefs.deletePreviousMessageWhenRegenerating,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(deletePreviousMessageWhenRegenerating = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Confirm before regenerating",
+                        title = Strings.confirmBeforeRegenerating,
                         checked = prefs.confirmBeforeRegenerating,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeRegenerating = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Confirm before deleting or clearing chats",
+                        title = Strings.confirmBeforeDeletingOrClearing,
                         checked = prefs.confirmBeforeDeletingChat,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Keep message versions when branching",
+                        title = Strings.keepMessageVersionsWhenBranching,
                         checked = prefs.keepMessageVersionsWhenForking,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(keepMessageVersionsWhenForking = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Show chat list dates",
+                        title = Strings.showChatListDates,
                         checked = prefs.showChatListDates,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(showChatListDates = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "New chat when switching assistants",
+                        title = Strings.newChatWhenSwitchingAssistants,
                         checked = prefs.newChatWhenSwitchingAssistants,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(newChatWhenSwitchingAssistants = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "New chat after deleting topic",
+                        title = Strings.newChatAfterDeletingTopic,
                         checked = prefs.newChatAfterDeletingTopic,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(newChatAfterDeletingTopic = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "New chat on launch",
+                        title = Strings.newChatOnLaunch,
                         checked = prefs.newChatOnLaunch,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(newChatOnLaunch = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Auto-scroll to bottom when opening a chat",
+                        title = Strings.autoScrollToBottomWhen,
                         checked = prefs.autoScrollToBottomOnOpen,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoScrollToBottomOnOpen = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Auto-follow bottom while streaming",
+                        title = Strings.autoFollowBottomWhileStreaming,
                         checked = prefs.autoFollowBottom,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoFollowBottom = it)) }
                     )
                     SepiaDivider()
                     SepiaToggleRow(
-                        title = "Shorten the conversation automatically when it's 85% full",
+                        title = Strings.shortenTheConversationAutomaticallyWhen,
                         checked = prefs.autoCompactWhenNearContextLimit,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
                     )
                     SepiaDivider()
                     // Message Navigation Buttons (Minimap) Visibility
-                    SepiaAdaptiveRow(label = "Message navigation minimap") {
+                    SepiaAdaptiveRow(label = Strings.messageNavigationMinimap) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(Space.s6),
@@ -608,7 +607,7 @@ internal fun PreferencesSubpage(
                     SepiaDivider()
 
                     // Send Shortcut
-                    SepiaAdaptiveRow(label = "Send shortcut (desktop)") {
+                    SepiaAdaptiveRow(label = Strings.sendShortcutDesktop) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(Space.s6),
@@ -626,7 +625,7 @@ internal fun PreferencesSubpage(
                     SepiaDivider()
 
                     SepiaToggleRow(
-                        title = "Paste long text as file attachment",
+                        title = Strings.pasteLongTextAsFile,
                         checked = prefs.pasteLongTextAsFile,
                         onCheckedChange = { onUpdatePreferences(prefs.copy(pasteLongTextAsFile = it)) }
                     )
@@ -642,7 +641,7 @@ internal fun PreferencesSubpage(
                                     onUpdatePreferences(prefs.copy(pasteConversionThresholdChars = it))
                                 }
                             },
-                            label = "Conversion threshold (characters)",
+                            label = Strings.conversionThresholdCharacters,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )

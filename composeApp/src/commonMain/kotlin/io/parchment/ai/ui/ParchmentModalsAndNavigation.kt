@@ -5,7 +5,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -58,18 +57,7 @@ import io.parchment.ai.model.AppStateSnapshot
 import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.ProviderProfile
-import io.parchment.ai.model.GeneratedMediaItem
-import io.parchment.ai.model.MediaKind
-import io.parchment.ai.model.MessageRole
-import io.parchment.ai.model.PromptAttachment
-import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.protocol.ContextWindowBreakdown
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.launch
 
@@ -116,7 +104,7 @@ internal fun DesktopBrowserTabBar(
                 val cardName = (sess.activeCard ?: tabAsst?.activeCard)?.name?.takeIf { it.isNotBlank() }
                 val rawTitle = sess.title.ifBlank { "New Chat" }
                 val primaryTitle = if (rawTitle == "New Chat" && cardName != null) {
-                    "$cardName • New Chat"
+                    Strings.newChat3(cardName)
                 } else {
                     rawTitle
                 }
@@ -168,7 +156,7 @@ internal fun DesktopBrowserTabBar(
 
             SepiaButton(
                 text = "+",
-                contentDescription = "New tab",
+                contentDescription = Strings.newTab,
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = onNewTab
@@ -178,7 +166,7 @@ internal fun DesktopBrowserTabBar(
         Spacer(Modifier.width(Space.s8))
 
         SepiaButton(
-            text = "⊞ ${openTabIds.size} Tabs",
+            text = Strings.tabs(openTabIds.size),
             compact = true,
             style = SepiaButtonStyle.OUTLINE,
             onClick = onOpenTabOverview
@@ -258,28 +246,28 @@ internal fun MobileTabSwitcherModal(
                 ) {
                     KissVectorIcon(icon = KissIcon.TABS, tint = p.accent, size = IconSize.lg)
                     BasicText(
-                        text = "Open Tabs (${openTabIds.size})" + if (runningTotal > 0) " • $runningTotal active" else "",
+                        text = Strings.openTabs(openTabIds.size) + if (runningTotal > 0) " • $runningTotal active" else "",
                         style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                     if (emptyTabsCount >= 2) {
                         SepiaButton(
-                            text = "🗑 Empty ($emptyTabsCount)",
+                            text = Strings.empty(emptyTabsCount),
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = onCloseEmptyTabs
                         )
                     }
                     SepiaButton(
-                        text = "+ New tab",
+                        text = Strings.newTab2,
                         compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = onNewTab
                     )
                     SepiaButton(
                         text = "×",
-                        contentDescription = "Close tab overview",
+                        contentDescription = Strings.closeTabOverview,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onCloseModal
@@ -291,7 +279,7 @@ internal fun MobileTabSwitcherModal(
                 SepiaTextField(
                     value = tabFilterQuery,
                     onValueChange = { tabFilterQuery = it },
-                    placeholder = "🔍 Filter open tabs by title, assistant, model, or message…",
+                    placeholder = Strings.filterOpenTabsByTitle,
                     singleLine = true,
                     minHeight = 34.dp,
                     modifier = Modifier.fillMaxWidth()
@@ -325,7 +313,7 @@ internal fun MobileTabSwitcherModal(
                                     .ifBlank { tabProf?.name.orEmpty() }
                                 val lastMsgPreview = sess.messages.lastOrNull()?.activeVariant?.content
                                     ?.take(110)?.replace('\n', ' ').orEmpty()
-                                    .ifBlank { "Empty chat — tap to start" }
+                                    .ifBlank { Strings.emptyChatTapToStart }
 
                                 Column(
                                     modifier = Modifier
@@ -412,7 +400,7 @@ internal fun MobileTabSwitcherModal(
                                         ) {
                                             KissStreamingPulseDot(color = p.accent)
                                             BasicText(
-                                                text = streamInfo.statusText.ifBlank { "Running in background…" },
+                                                text = streamInfo.statusText.ifBlank { Strings.runningInBackground },
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
                                                 style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
@@ -423,7 +411,7 @@ internal fun MobileTabSwitcherModal(
                                             " • ${formatCompactTimestamp(sess.updatedAt)}"
                                         } else ""
                                         BasicText(
-                                            text = "${sess.messages.size} messages$dateSuffix",
+                                            text = Strings.messages(sess.messages.size, dateSuffix),
                                             style = p.uiLabelStyle.copy(fontSize = 11.sp)
                                         )
                                     }
@@ -468,7 +456,7 @@ internal fun TopEditorialBar(
 ) {
     val p = LocalParchmentPalette.current
     val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-    val modelLabel = activeModel.ifBlank { "Select model…" }
+    val modelLabel = activeModel.ifBlank { Strings.selectModel }
     var isEditingTitle by remember(activeSession.id) { mutableStateOf(false) }
     var titleBuffer by remember(activeSession.id, activeSession.title) { mutableStateOf(activeSession.title) }
 
@@ -492,7 +480,7 @@ internal fun TopEditorialBar(
             ) {
                 SepiaButton(
                     text = if (showSidebar) "◂" else "☰",
-                    contentDescription = if (showSidebar) "Close sidebar" else "Open sidebar",
+                    contentDescription = if (showSidebar) Strings.closeSidebar else Strings.openSidebar,
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = onToggleSidebar
@@ -503,7 +491,7 @@ internal fun TopEditorialBar(
                         symbol = activeAssistant.iconEmoji,
                         selected = true,
                         sizeDp = 28.dp,
-                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }.accessibilityLabel("Assistant settings")
+                        modifier = Modifier.kissClickable { onOpenSettings(SettingsCategory.ASSISTANTS) }.accessibilityLabel(Strings.assistantSettings)
                     )
                 }
 
@@ -520,7 +508,7 @@ internal fun TopEditorialBar(
                                 modifier = Modifier.weight(1f)
                             )
                             SepiaButton(
-                                text = "Save",
+                                text = Strings.save,
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = {
@@ -539,13 +527,13 @@ internal fun TopEditorialBar(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = p.uiHeaderStyle.copy(fontSize = 15.sp),
-                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }.accessibilityLabel("Edit title: ${activeSession.title}")
+                                modifier = Modifier.weight(1f, fill = false).kissClickable(hoverScale = 1.01f) { isEditingTitle = true }.accessibilityLabel(Strings.editTitle(activeSession.title))
                             )
                             if (!isCompactScreen && activeSession.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "✦",
-                                    contentDescription = "Regenerate title",
-                                    hint = "Write a new title from this chat",
+                                    contentDescription = Strings.regenerateTitle,
+                                    hint = Strings.writeANewTitleFrom,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = onRegenerateTitleAi
@@ -609,7 +597,7 @@ internal fun TopEditorialBar(
                                 shape = tabBadgeShape
                             )
                             .kissClickable { onOpenMobileTabSwitcher() }
-                            .accessibilityLabel("Open tabs: $openTabCount")
+                            .accessibilityLabel(Strings.openTabs2(openTabCount))
                             .padding(horizontal = Space.s6),
                         contentAlignment = Alignment.Center
                     ) {
@@ -634,7 +622,7 @@ internal fun TopEditorialBar(
                 if (chatArtifactsCount > 0 || showRightFilesSidebar) {
                     SepiaButton(
                         text = "📁 $chatArtifactsCount",
-                        contentDescription = "Files in this chat: $chatArtifactsCount",
+                        contentDescription = Strings.filesInThisChat(chatArtifactsCount),
                         compact = true,
                         style = if (showRightFilesSidebar) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
                         onClick = onToggleRightFilesSidebar
@@ -642,7 +630,7 @@ internal fun TopEditorialBar(
                 }
                 SepiaButton(
                     text = "✎",
-                    contentDescription = "Chat notes",
+                    contentDescription = Strings.chatNotes,
                     compact = true,
                     style = if (showSessionInspector || hasChatNotes) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
                     onClick = onToggleSessionInspector
@@ -650,7 +638,7 @@ internal fun TopEditorialBar(
                 if (!win.isCompact) {
                     SepiaButton(
                         text = "⚙",
-                        contentDescription = "Settings",
+                        contentDescription = Strings.settings,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { onOpenSettings(null) }
@@ -690,7 +678,7 @@ internal fun TopEditorialBar(
                     ) {
                         KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
                         BasicText(
-                            text = "Choose a model",
+                            text = Strings.chooseAModel,
                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         )
                         BasicText(
@@ -703,7 +691,7 @@ internal fun TopEditorialBar(
                         horizontalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         SepiaButton(
-                            text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage providers",
+                            text = if (isCompactScreen) Strings.providers else Strings.manageProviders,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -713,7 +701,7 @@ internal fun TopEditorialBar(
                         )
                         SepiaButton(
                             text = "×",
-                            contentDescription = "Close model picker",
+                            contentDescription = Strings.closeModelPicker,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onToggleQuickModelPopover
@@ -798,7 +786,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             val dimInfo = if (bmp != null) "${bmp.width}×${bmp.height}px • " else ""
                             BasicText(
-                                text = "$dimInfo${item.mimeType} • Scroll, pinch, or double-tap to zoom",
+                                text = Strings.scrollPinchOrDoubleTapTo(dimInfo, item.mimeType),
                                 style = p.uiLabelStyle
                             )
                         }
@@ -810,7 +798,7 @@ internal fun ParchmentAttachmentViewerModal(
                         ) {
                             SepiaButton(
                                 text = "🔍−",
-                                contentDescription = "Zoom out",
+                                contentDescription = Strings.zoomOut,
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -833,7 +821,7 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                             SepiaButton(
                                 text = "🔍+",
-                                contentDescription = "Zoom in",
+                                contentDescription = Strings.zoomIn,
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -844,7 +832,7 @@ internal fun ParchmentAttachmentViewerModal(
                             if (openTarget.isNotBlank()) {
                                 SepiaButton(
                                     text = "📂",
-                                    contentDescription = "Open file",
+                                    contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
@@ -853,23 +841,23 @@ internal fun ParchmentAttachmentViewerModal(
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
                                     text = "📥",
-                                    contentDescription = "Save file",
+                                    contentDescription = Strings.saveFile,
                                     compact = true,
                                     style = SepiaButtonStyle.SECONDARY,
                                     onClick = {
                                         scope.launch {
                                             val saved = runCatching { PlatformBridge.exportLocalFile(item.title, item.localFilePath) }.getOrElse { error ->
-                                                onNotify("Save failed: ${error.message}")
+                                                onNotify(Strings.saveFailed(error.message))
                                                 return@launch
                                             }
-                                            if (saved != null) onNotify("Saved image to $saved")
+                                            if (saved != null) onNotify(Strings.savedImageTo(saved))
                                         }
                                     }
                                 )
                             }
                             SepiaButton(
                                 text = "✕",
-                                contentDescription = "Close",
+                                contentDescription = Strings.close,
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose
@@ -947,7 +935,7 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                         } else if (!fileImage.isLoading) {
                             BasicText(
-                                text = "Unable to decode image preview (${item.localFilePath.ifBlank { item.remoteUrl }})",
+                                text = Strings.unableToDecodeImagePreview(item.localFilePath.ifBlank { item.remoteUrl }),
                                 style = p.uiHeaderStyle.copy(color = p.narrationInk)
                             )
                         }
@@ -1002,7 +990,7 @@ internal fun ParchmentAttachmentViewerModal(
                                 )
                             }
                             BasicText(
-                                text = "$linesCount lines • ${item.textContent.length} chars • ${item.mimeType}",
+                                text = Strings.linesChars(linesCount, item.textContent.length, item.mimeType),
                                 style = p.uiLabelStyle
                             )
                         }
@@ -1015,7 +1003,7 @@ internal fun ParchmentAttachmentViewerModal(
                             if (isSvgContent || isMarkdownContent) {
                                 SepiaButton(
                                     text = if (showRenderedPreview) "‹/›" else "👁",
-                                    contentDescription = if (showRenderedPreview) "Show source" else "Show preview",
+                                    contentDescription = if (showRenderedPreview) Strings.showSource else Strings.showPreview,
                                     compact = true,
                                     style = if (showRenderedPreview) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
                                     onClick = { showRenderedPreview = !showRenderedPreview }
@@ -1023,7 +1011,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             SepiaButton(
                                 text = if (copied) "✓" else "📋",
-                                contentDescription = if (copied) "Copied" else "Copy",
+                                contentDescription = if (copied) Strings.copied else Strings.copy,
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
@@ -1033,21 +1021,21 @@ internal fun ParchmentAttachmentViewerModal(
                             )
                             SepiaButton(
                                 text = "📥",
-                                contentDescription = "Save file",
+                                contentDescription = Strings.saveFile,
                                 compact = true,
                                 style = SepiaButtonStyle.SECONDARY,
                                 onClick = {
                                     scope.launch {
                                         val fileName = item.title.substringAfterLast('/').substringAfterLast('\\').ifBlank { "file.txt" }
                                         val saved = PlatformBridge.saveFileForExport(fileName, item.textContent.encodeToByteArray())
-                                        if (saved != null) onNotify("Saved file to $saved")
+                                        if (saved != null) onNotify(Strings.savedFileTo(saved))
                                     }
                                 }
                             )
                             if (item.localFilePath.isNotBlank()) {
                                 SepiaButton(
                                     text = "📂",
-                                    contentDescription = "Open file",
+                                    contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
@@ -1055,7 +1043,7 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             SepiaButton(
                                 text = "✕",
-                                contentDescription = "Close",
+                                contentDescription = Strings.close,
                                 compact = true,
                                 style = SepiaButtonStyle.PRIMARY,
                                 onClick = onClose
@@ -1088,808 +1076,9 @@ internal fun ParchmentAttachmentViewerModal(
                             }
                             else -> {
                                 BasicText(
-                                    text = item.textContent.ifEmpty { "(Empty file)" },
+                                    text = item.textContent.ifEmpty { Strings.emptyFile },
                                     style = p.monoStyle.copy(fontSize = 13.sp, lineHeight = 18.sp)
                                 )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================================
-// Right sidebar: the chat's files, generated media and sources (`ParchmentRightFilesSidebar`).
-// Categorizes every item in the active chat into:
-// 1. `✦ AI-Generated Files & Media` (Workspace writes/edits, generated images/videos, SVG/code artifacts)
-// 2. `↑ User-Uploaded Documents & Files` (Attached PDFs, images, code/text files, video/audio)
-// 3. `🌐 Grounded Web Sources` (Internet search citations with explicit line-number & quote pointers)
-// ============================================================================================
-internal enum class RightVaultFilter(val label: String) {
-    ALL("All"),
-    AI_GENERATED("✦ AI Gen"),
-    USER_UPLOADED("↑ Uploaded"),
-    WEB_SOURCES("🌐 Sources")
-}
-
-internal sealed class AiGeneratedChatArtifact {
-    abstract val turnNumber: Int
-
-    data class WorkspaceFileArtifact(
-        override val turnNumber: Int,
-        val filePath: String,
-        val actionBadge: String,
-        val content: String,
-        val lineCount: Int
-    ) : AiGeneratedChatArtifact()
-
-    data class MediaArtifact(
-        override val turnNumber: Int,
-        val media: GeneratedMediaItem
-    ) : AiGeneratedChatArtifact()
-
-    data class CodeSnippetArtifact(
-        override val turnNumber: Int,
-        val fileName: String,
-        val language: String,
-        val code: String,
-        val lineCount: Int
-    ) : AiGeneratedChatArtifact()
-}
-
-internal data class UserUploadedChatArtifact(
-    val turnNumber: Int, // 0 = currently staged in composer
-    val attachment: PromptAttachment
-)
-
-internal data class SessionGroundedWebSource(
-    val turnNumber: Int,
-    val source: WebSourceCitation
-)
-
-private val rightVaultJson = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-}
-
-private val VAULT_CODE_FENCE_REGEX = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
-private val VAULT_LINE_NUMBER_STRIP_REGEX = Regex("^\\d+:\\s?")
-
-/**
- * Counts the chat's files for the top bar badge without parsing or building lists; the full
- * `extractSessionVaultItems` runs only when the files sidebar is opened.
- */
-internal fun countSessionVaultItemsFast(
-    session: ChatSession,
-    pendingAttachments: List<PromptAttachment> = emptyList()
-): Int {
-    var total = pendingAttachments.size
-    for (node in session.messages) {
-        val v = node.activeVariant
-        total += v.attachments.size
-        if (node.role == MessageRole.ASSISTANT) {
-            total += v.mediaItems.size
-            total += v.webSources.size
-            var wroteWorkspaceFileInTurn = false
-            for (tc in v.toolCalls) {
-                if (!tc.isError) {
-                    val n = tc.name
-                    if (n.equals("fs_write", ignoreCase = true) ||
-                        n.equals("fs_edit", ignoreCase = true) ||
-                        n.equals("fs_multi_edit", ignoreCase = true)
-                    ) {
-                        wroteWorkspaceFileInTurn = true
-                        total++
-                    }
-                }
-            }
-            if (!wroteWorkspaceFileInTurn && v.content.length >= 32 && v.content.contains("```")) {
-                for (match in VAULT_CODE_FENCE_REGEX.findAll(v.content)) {
-                    val lang = match.groupValues.getOrNull(1)?.trim().orEmpty()
-                    val code = match.groupValues.getOrNull(2)?.trim().orEmpty()
-                    if (code.isNotEmpty() && (countLinesFast(code) >= 6 || lang.equals("svg", ignoreCase = true))) {
-                        total++
-                    }
-                }
-            }
-        }
-    }
-    return total
-}
-
-internal fun extractSessionVaultItems(
-    session: ChatSession,
-    pendingAttachments: List<PromptAttachment> = emptyList()
-): Triple<List<AiGeneratedChatArtifact>, List<UserUploadedChatArtifact>, List<SessionGroundedWebSource>> {
-    val aiArtifacts = mutableListOf<AiGeneratedChatArtifact>()
-    val userUploads = mutableListOf<UserUploadedChatArtifact>()
-    val webSources = mutableListOf<SessionGroundedWebSource>()
-
-    for (att in pendingAttachments) {
-        userUploads.add(UserUploadedChatArtifact(turnNumber = 0, attachment = att))
-    }
-
-    val codeFenceRegex = VAULT_CODE_FENCE_REGEX
-
-    session.messages.forEachIndexed { idx, node ->
-        val turnNum = idx + 1
-        val v = node.activeVariant
-        if (node.role == MessageRole.USER) {
-            for (att in v.attachments) {
-                userUploads.add(UserUploadedChatArtifact(turnNumber = turnNum, attachment = att))
-            }
-        } else if (node.role == MessageRole.ASSISTANT) {
-            for (att in v.attachments) {
-                userUploads.add(UserUploadedChatArtifact(turnNumber = turnNum, attachment = att))
-            }
-            var wroteWorkspaceFileInTurn = false
-            for (tc in v.toolCalls) {
-                val low = tc.name.lowercase()
-                if ((low == "fs_write" || low == "fs_edit" || low == "fs_multi_edit") && !tc.isError) {
-                    val parsed = runCatching { rightVaultJson.parseToJsonElement(tc.argumentsJson).jsonObject }.getOrNull()
-                    val path = parsed?.get("path")?.jsonPrimitive?.contentOrNull.orEmpty()
-                    if (path.isNotBlank()) {
-                        wroteWorkspaceFileInTurn = true
-                        val content = when (low) {
-                            "fs_write" -> parsed?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
-                            "fs_edit" -> parsed?.get("new_text")?.jsonPrimitive?.contentOrNull.orEmpty()
-                            else -> {
-                                val edits = parsed?.get("edits") as? JsonArray
-                                edits?.mapNotNull { (it as? JsonObject)?.get("new_text")?.jsonPrimitive?.contentOrNull }
-                                    ?.joinToString("\n\n").orEmpty()
-                            }
-                        }
-                        val badge = if (low == "fs_write") "✦ AI wrote" else "✦ AI edited"
-                        aiArtifacts.add(
-                            AiGeneratedChatArtifact.WorkspaceFileArtifact(
-                                turnNumber = turnNum,
-                                filePath = path,
-                                actionBadge = badge,
-                                content = content.ifBlank { tc.resultText },
-                                lineCount = countLinesFast(content).coerceAtLeast(1)
-                            )
-                        )
-                    }
-                }
-            }
-            for (media in v.mediaItems) {
-                aiArtifacts.add(AiGeneratedChatArtifact.MediaArtifact(turnNumber = turnNum, media = media))
-            }
-            if (!wroteWorkspaceFileInTurn && v.content.contains("```")) {
-                var blockCounter = 0
-                for (match in codeFenceRegex.findAll(v.content)) {
-                    val lang = match.groupValues.getOrNull(1)?.trim().orEmpty().ifBlank { "txt" }
-                    val code = match.groupValues.getOrNull(2)?.trim().orEmpty()
-                    val lines = countLinesFast(code)
-                    if (code.isNotEmpty() && (lines >= 6 || lang.equals("svg", ignoreCase = true))) {
-                        blockCounter++
-                        aiArtifacts.add(
-                            AiGeneratedChatArtifact.CodeSnippetArtifact(
-                                turnNumber = turnNum,
-                                fileName = "turn-$turnNum-artifact-$blockCounter.${lang.lowercase()}",
-                                language = lang,
-                                code = code,
-                                lineCount = lines
-                            )
-                        )
-                    }
-                }
-            }
-            for (src in v.webSources) {
-                webSources.add(SessionGroundedWebSource(turnNumber = turnNum, source = src))
-            }
-        }
-    }
-
-    return Triple(aiArtifacts, userUploads, webSources)
-}
-
-@Composable
-internal fun ParchmentRightFilesSidebar(
-    activeSession: ChatSession,
-    pendingAttachments: List<PromptAttachment>,
-    onInspectAttachment: (PromptAttachment) -> Unit,
-    onInspectGeneratedImage: (GeneratedMediaItem) -> Unit,
-    onReattachAttachment: (PromptAttachment) -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val p = LocalParchmentPalette.current
-    var selectedFilter by remember(activeSession.id) { mutableStateOf(RightVaultFilter.ALL) }
-    val vaultStructuralKey = remember(
-        activeSession.id,
-        activeSession.messages.size,
-        pendingAttachments.size,
-        activeSession.messages.lastOrNull()?.activeVariant?.let { v ->
-            "${v.toolCalls.size}:${v.mediaItems.size}:${v.webSources.size}:${v.isStreaming}:${v.content.length / 256}"
-        }
-    ) {
-        "${activeSession.id}:${activeSession.messages.size}:${pendingAttachments.size}:" +
-            activeSession.messages.sumOf {
-                val v = it.activeVariant
-                v.toolCalls.size * 17 + v.mediaItems.size * 31 + v.webSources.size * 13 + v.attachments.size * 7 + (v.content.length / 256)
-            }
-    }
-    val (aiArtifacts, userUploads, webSources) = remember(vaultStructuralKey, pendingAttachments) {
-        extractSessionVaultItems(activeSession, pendingAttachments)
-    }
-    val totalCount = aiArtifacts.size + userUploads.size + webSources.size
-
-    Column(
-        modifier = modifier
-            .background(p.sheetBg)
-            .padding(horizontal = Space.s12, vertical = Space.s10),
-        verticalArrangement = Arrangement.spacedBy(Space.s8)
-    ) {
-        // Header Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                KissVectorIcon(icon = KissIcon.FOLDER, tint = p.accent, size = 15.dp)
-                BasicText(
-                    text = "Chat Files & Sources ($totalCount)",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = p.uiHeaderStyle.copy(fontSize = 15.sp)
-                )
-            }
-            SepiaButton(
-                text = "×",
-                contentDescription = "Close",
-                compact = true,
-                style = SepiaButtonStyle.GHOST,
-                onClick = onClose
-            )
-        }
-
-        // Category Filter Pills
-        @OptIn(ExperimentalLayoutApi::class)
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            SepiaChip(
-                label = "All $totalCount",
-                selected = selectedFilter == RightVaultFilter.ALL,
-                onClick = { selectedFilter = RightVaultFilter.ALL }
-            )
-            SepiaChip(
-                label = "✦ AI Gen ${aiArtifacts.size}",
-                selected = selectedFilter == RightVaultFilter.AI_GENERATED,
-                onClick = { selectedFilter = RightVaultFilter.AI_GENERATED }
-            )
-            SepiaChip(
-                label = "↑ Uploaded ${userUploads.size}",
-                selected = selectedFilter == RightVaultFilter.USER_UPLOADED,
-                onClick = { selectedFilter = RightVaultFilter.USER_UPLOADED }
-            )
-            SepiaChip(
-                label = "🌐 Sources ${webSources.size}",
-                selected = selectedFilter == RightVaultFilter.WEB_SOURCES,
-                onClick = { selectedFilter = RightVaultFilter.WEB_SOURCES }
-            )
-        }
-
-        SepiaDivider()
-
-        if (totalCount == 0) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(Space.s16),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(Space.s8)
-                ) {
-                    KissVectorIcon(icon = KissIcon.FOLDER, tint = p.mutedInk, size = 26.dp)
-                    BasicText(
-                        text = "No files or sources yet",
-                        style = p.uiHeaderStyle.copy(fontSize = 14.sp, color = p.narrationInk)
-                    )
-                    BasicText(
-                        text = "Files uploaded by you, files or media generated by the AI, and grounded web search sources in this chat will appear here.",
-                        style = p.uiLabelStyle.copy(color = p.mutedInk)
-                    )
-                }
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(Space.s10)
-            ) {
-                val showAiSection = (selectedFilter == RightVaultFilter.ALL || selectedFilter == RightVaultFilter.AI_GENERATED) &&
-                    aiArtifacts.isNotEmpty()
-                val showUploadedSection = (selectedFilter == RightVaultFilter.ALL || selectedFilter == RightVaultFilter.USER_UPLOADED) &&
-                    userUploads.isNotEmpty()
-                val showSourcesSection = (selectedFilter == RightVaultFilter.ALL || selectedFilter == RightVaultFilter.WEB_SOURCES) &&
-                    webSources.isNotEmpty()
-
-                // 1. AI-Generated Files & Media
-                if (showAiSection) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 12.dp)
-                        BasicText(
-                            text = "Files and media from AI (${aiArtifacts.size})",
-                            style = p.uiLabelStyle.copy(
-                                color = p.accent,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                letterSpacing = 0.5.sp
-                            )
-                        )
-                    }
-
-                    aiArtifacts.forEach { item ->
-                        when (item) {
-                            is AiGeneratedChatArtifact.WorkspaceFileArtifact -> {
-                                val shortName = item.filePath.substringAfterLast('/').substringAfterLast('\\')
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(Radius.r8))
-                                        .background(p.cardBg)
-                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
-                                        .clickable(role = Role.Button) {
-                                            val wsRoot = activeSession.workspacePath
-                                            val liveText = if (wsRoot.isNotBlank()) {
-                                                PlatformBridge.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
-                                                    raw.lines().drop(1).joinToString("\n") { it.replaceFirst(VAULT_LINE_NUMBER_STRIP_REGEX, "") }
-                                                }
-                                            } else null
-                                            val fullLocalPath = if (wsRoot.isNotBlank()) {
-                                                "${wsRoot.trimEnd('/', '\\')}/${item.filePath.trimStart('/', '\\')}"
-                                            } else ""
-                                            onInspectAttachment(
-                                                PromptAttachment(
-                                                    id = "ai-ws-${item.turnNumber}-${item.filePath}",
-                                                    fileName = item.filePath,
-                                                    mimeType = "text/plain",
-                                                    textContent = liveText?.takeIf { it.isNotBlank() } ?: item.content,
-                                                    localFilePath = fullLocalPath
-                                                )
-                                            )
-                                        }
-                                        .padding(Space.s10),
-                                    verticalArrangement = Arrangement.spacedBy(Space.s4)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(Radius.r4))
-                                                .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = Space.s6, vertical = Space.s2)
-                                        ) {
-                                            val parsedBadge = remember(item.actionBadge) { parseKissLabelIcons(item.actionBadge) }
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                            ) {
-                                                KissVectorIcon(
-                                                    icon = parsedBadge.leadingIcon ?: KissIcon.SPARKLES,
-                                                    tint = p.accent,
-                                                    size = IconSize.xs
-                                                )
-                                                BasicText(
-                                                    text = parsedBadge.cleanText.ifEmpty { item.actionBadge },
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                                )
-                                            }
-                                        }
-                                        BasicText(
-                                            text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                        )
-                                    }
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
-                                    ) {
-                                        KissVectorIcon(icon = KissIcon.DIFF, tint = p.accent, size = IconSize.md)
-                                        BasicText(
-                                            text = shortName,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                        )
-                                    }
-                                    BasicText(
-                                        text = "${item.filePath} • Click to inspect",
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                    )
-                                }
-                            }
-
-                            is AiGeneratedChatArtifact.MediaArtifact -> {
-                                val media = item.media
-                                val isVideo = media.kind == MediaKind.VIDEO
-                                val fileLabel = media.localFilePath.substringAfterLast('/').substringAfterLast('\\')
-                                    .ifBlank { if (isVideo) "Generated Video (.MP4)" else "Generated Image" }
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(Radius.r8))
-                                        .background(p.cardBg)
-                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
-                                        .clickable(role = Role.Button) {
-                                            if (isVideo) {
-                                                val target = media.localFilePath.ifBlank { media.remoteUrl }
-                                                if (target.isNotBlank()) PlatformBridge.openOrPlayMedia(target)
-                                            } else {
-                                                onInspectGeneratedImage(media)
-                                            }
-                                        }
-                                        .padding(Space.s10),
-                                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(Radius.r4))
-                                                .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = Space.s6, vertical = Space.s2)
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                            ) {
-                                                KissVectorIcon(
-                                                    icon = KissIcon.SPARKLES,
-                                                    tint = p.accent,
-                                                    size = IconSize.xs
-                                                )
-                                                BasicText(
-                                                    text = if (isVideo) "AI video" else "AI image",
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                                )
-                                            }
-                                        }
-                                        BasicText(
-                                            text = "Turn #${item.turnNumber}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                        )
-                                    }
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
-                                    ) {
-                                        KissVectorIcon(
-                                            icon = if (isVideo) KissIcon.VIDEO else KissIcon.IMAGE,
-                                            tint = p.accent,
-                                            size = IconSize.md
-                                        )
-                                        BasicText(
-                                            text = fileLabel,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                        )
-                                    }
-                                    BasicText(
-                                        text = if (isVideo) "Click to play MP4 video" else "Click to zoom image",
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.accent)
-                                    )
-                                }
-                            }
-
-                            is AiGeneratedChatArtifact.CodeSnippetArtifact -> {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(Radius.r8))
-                                        .background(p.cardBg)
-                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
-                                        .clickable(role = Role.Button) {
-                                            onInspectAttachment(
-                                                PromptAttachment(
-                                                    id = "ai-code-${item.turnNumber}-${item.fileName}",
-                                                    fileName = item.fileName,
-                                                    mimeType = "text/plain",
-                                                    textContent = item.code
-                                                )
-                                            )
-                                        }
-                                        .padding(Space.s10),
-                                    verticalArrangement = Arrangement.spacedBy(Space.s4)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(Radius.r4))
-                                                .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = Space.s6, vertical = Space.s2)
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                            ) {
-                                                KissVectorIcon(
-                                                    icon = KissIcon.SPARKLES,
-                                                    tint = p.accent,
-                                                    size = IconSize.xs
-                                                )
-                                                BasicText(
-                                                    text = "AI ${item.language}",
-                                                    style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                                )
-                                            }
-                                        }
-                                        BasicText(
-                                            text = "Turn #${item.turnNumber} • ${item.lineCount} lines",
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                        )
-                                    }
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
-                                    ) {
-                                        KissVectorIcon(icon = KissIcon.CODE, tint = p.accent, size = IconSize.md)
-                                        BasicText(
-                                            text = item.fileName,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                        )
-                                    }
-                                    BasicText(
-                                        text = "Click to view full code",
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 2. User-Uploaded Documents & Files
-                if (showUploadedSection) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        KissVectorIcon(icon = KissIcon.UPLOAD, tint = p.narrationInk, size = 12.dp)
-                        BasicText(
-                            text = "Your uploads (${userUploads.size})",
-                            style = p.uiLabelStyle.copy(
-                                color = p.narrationInk,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                letterSpacing = 0.5.sp
-                            )
-                        )
-                    }
-
-                    userUploads.forEach { entry ->
-                        val att = entry.attachment
-                        val mime = att.mimeType.lowercase()
-                        val lowerName = att.fileName.lowercase()
-                        val isImg = mime.startsWith("image/") || lowerName.endsWith(".png") ||
-                            lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".webp")
-                        val isPdf = mime == "application/pdf" || lowerName.endsWith(".pdf")
-                        val isVid = mime.startsWith("video/") || lowerName.endsWith(".mp4")
-                        val isAud = mime.startsWith("audio/") || lowerName.endsWith(".mp3") || lowerName.endsWith(".wav")
-                        val fileIcon = when {
-                            isImg -> KissIcon.IMAGE
-                            isVid -> KissIcon.VIDEO
-                            isAud -> KissIcon.AUDIO
-                            else -> KissIcon.FILE_TEXT
-                        }
-                        val kindLabel = when {
-                            isPdf -> "PDF Document"
-                            isImg -> "Image"
-                            isVid -> "Video"
-                            isAud -> "Audio"
-                            att.textContent.isNotBlank() -> "${att.textContent.lines().size} lines"
-                            else -> "File"
-                        }
-                        val turnLabel = if (entry.turnNumber == 0) "Staged" else "Turn #${entry.turnNumber}"
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(Radius.r8))
-                                .background(p.cardBg)
-                                .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
-                                .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
-                                .padding(Space.s10),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(Radius.r4))
-                                        .background(p.elevatedBg)
-                                        .padding(horizontal = Space.s6, vertical = Space.s2)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                    ) {
-                                        KissVectorIcon(
-                                            icon = KissIcon.UPLOAD,
-                                            tint = p.primaryInk,
-                                            size = IconSize.xs
-                                        )
-                                        BasicText(
-                                            text = "Your upload",
-                                            style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        )
-                                    }
-                                }
-                                BasicText(
-                                    text = "$turnLabel • $kindLabel",
-                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                )
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    modifier = Modifier.weight(1f).padding(end = Space.s6),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
-                                ) {
-                                    KissVectorIcon(icon = fileIcon, tint = p.accent, size = IconSize.md)
-                                    BasicText(
-                                        text = att.fileName,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                    )
-                                }
-                                if (entry.turnNumber > 0) {
-                                    SepiaButton(
-                                        text = "@",
-                                        contentDescription = "Reattach to composer",
-                                        compact = true,
-                                        style = SepiaButtonStyle.GHOST,
-                                        onClick = { onReattachAttachment(att) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 3. Grounded Web Sources
-                if (showSourcesSection) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accentSecondary, size = 12.dp)
-                        BasicText(
-                            text = "Web sources (${webSources.size})",
-                            style = p.uiLabelStyle.copy(
-                                color = p.accentSecondary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                letterSpacing = 0.5.sp
-                            )
-                        )
-                    }
-
-                    webSources.forEach { item ->
-                        val src = item.source
-                        val lineLabel = if (src.groundedLineNumbers.isNotEmpty()) {
-                            "Line ${src.groundedLineNumbers.joinToString(", ")}"
-                        } else "Grounded"
-                        val quoteExcerpt = src.groundedLines.firstOrNull().orEmpty()
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(Radius.r8))
-                                .background(p.cardBg)
-                                .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
-                                .clickable(role = Role.Button, onClickLabel = "Open source") { openWebLink(src.url) }
-                                .padding(Space.s10),
-                            verticalArrangement = Arrangement.spacedBy(Space.s4)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(Radius.r4))
-                                            .background(p.accent.copy(alpha = 0.16f))
-                                            .padding(horizontal = 5.dp, vertical = Space.s2)
-                                    ) {
-                                        BasicText(
-                                            text = "[${src.index}]",
-                                            style = p.monoStyle.copy(color = p.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        )
-                                    }
-                                    BasicText(
-                                        text = src.domain.ifBlank { src.url },
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
-                                    )
-                                }
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                ) {
-                                    BasicText(
-                                        text = "Turn #${item.turnNumber} • $lineLabel",
-                                        style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                                    )
-                                    KissVectorIcon(
-                                        icon = KissIcon.EXTERNAL_LINK,
-                                        tint = p.accent,
-                                        size = IconSize.xs
-                                    )
-                                }
-                            }
-                            BasicText(
-                                text = src.title.ifBlank { src.url },
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            )
-                            if (quoteExcerpt.isNotBlank()) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
-                                ) {
-                                    KissVectorIcon(
-                                        icon = KissIcon.CORNER_DOWN_RIGHT,
-                                        tint = p.narrationInk,
-                                        size = IconSize.xs
-                                    )
-                                    BasicText(
-                                        text = "$lineLabel: \"$quoteExcerpt\"",
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = p.uiLabelStyle.copy(color = p.narrationInk, fontSize = 11.sp)
-                                    )
-                                }
                             }
                         }
                     }
@@ -1940,20 +1129,20 @@ internal fun ContextWindowBreakdownPopover(
     )
 
     val historyLabel = buildString {
-        append("Chat History (${breakdown.activeTurnsCount} active")
+        append(Strings.chatHistoryActive(breakdown.activeTurnsCount))
         if (breakdown.mutedTurnsCount > 0) append(", ${breakdown.mutedTurnsCount} left out")
         append(")")
     }
 
     val slices = listOf(
         CategorySlice("System & Persona Prompt", breakdown.systemAndPersonaTokens, colSystem),
-        CategorySlice("Lorebook & Story Memory", breakdown.lorebookAndMemoryTokens, colLorebook),
-        CategorySlice("Workspace & Tool Schemas", breakdown.workspaceAndToolsTokens, colWorkspace),
-        CategorySlice("Uploaded Files (${breakdown.uploadedFilesCount})", breakdown.uploadedFilesTokens, colFiles),
+        CategorySlice(Strings.lorebookStoryMemory, breakdown.lorebookAndMemoryTokens, colLorebook),
+        CategorySlice(Strings.workspaceToolSchemas, breakdown.workspaceAndToolsTokens, colWorkspace),
+        CategorySlice(Strings.uploadedFiles(breakdown.uploadedFilesCount), breakdown.uploadedFilesTokens, colFiles),
         CategorySlice(historyLabel, breakdown.chatHistoryTokens, colHistory),
-        CategorySlice("Current Composer Draft", breakdown.composerDraftTokens, colDraft),
+        CategorySlice(Strings.currentComposerDraft, breakdown.composerDraftTokens, colDraft),
         CategorySlice(
-            label = "Free space remaining",
+            label = Strings.freeSpaceRemaining,
             tokens = breakdown.freeSpaceTokens,
             color = colFree,
             isFreeSpace = true
@@ -1977,20 +1166,20 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s2)) {
                 BasicText(
-                    text = "What fills this conversation",
+                    text = Strings.whatFillsThisConversation,
                     style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                 )
                 val limitText = if (isUnlimited) "∞" else formatCompactTokens(breakdown.contextLimitTokens)
-                val costSuffix = sessionCostLabel.takeIf { it.isNotBlank() }?.let { " • Session $it" }
-                    ?: if (sessionTotalCostUsd > 0.0) " • Session ~${formatUsdCost(sessionTotalCostUsd)}" else ""
+                val costSuffix = sessionCostLabel.takeIf { it.isNotBlank() }?.let { Strings.session(it) }
+                    ?: if (sessionTotalCostUsd > 0.0) Strings.session2(formatUsdCost(sessionTotalCostUsd)) else ""
                 BasicText(
-                    text = "o200k_base • ${breakdown.totalUsedTokens} / $limitText tok ($pctInt% used)$costSuffix",
+                    text = Strings.o200kBaseTokUsed(breakdown.totalUsedTokens, limitText, pctInt, costSuffix),
                     style = p.monoStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                 )
             }
             SepiaButton(
                 text = "×",
-                contentDescription = "Close",
+                contentDescription = Strings.close,
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = onClose
@@ -2054,7 +1243,7 @@ internal fun ContextWindowBreakdownPopover(
                         )
                     }
                     BasicText(
-                        text = "${formatCompactTokens(slice.tokens)} tokens ($slicePct%)",
+                        text = Strings.tokens2(formatCompactTokens(slice.tokens), slicePct),
                         style = p.monoStyle.copy(
                             fontSize = 11.sp,
                             fontWeight = if (slice.isFreeSpace || slice.tokens > 0) FontWeight.SemiBold else FontWeight.Normal,
@@ -2078,7 +1267,7 @@ internal fun ContextWindowBreakdownPopover(
         ) {
             if (canCompact) {
                 SepiaButton(
-                    text = if (isStreaming) "⚡ Shorten and continue" else "⚡ Shorten conversation",
+                    text = if (isStreaming) Strings.shortenAndContinue else Strings.shortenConversation,
                     compact = true,
                     enabled = true,
                     style = SepiaButtonStyle.SECONDARY,
@@ -2090,7 +1279,7 @@ internal fun ContextWindowBreakdownPopover(
             }
             if (canSummarize) {
                 SepiaButton(
-                    text = if (isStreaming) "✦ Summarize & Resume" else "✦ Summarize",
+                    text = if (isStreaming) Strings.summarizeResume else Strings.summarize,
                     compact = true,
                     enabled = true,
                     style = SepiaButtonStyle.OUTLINE,
@@ -2101,7 +1290,7 @@ internal fun ContextWindowBreakdownPopover(
                 )
             }
             SepiaButton(
-                text = "⚙ Limit & pricing",
+                text = Strings.limitPricing,
                 compact = true,
                 style = SepiaButtonStyle.GHOST,
                 onClick = {

@@ -68,10 +68,10 @@ internal fun WorkspaceSubpage(
     ) {
         McpServersCard(appState.preferences, onUpdatePreferences)
         SkillInstallCard(effectiveWsPath, effectiveWsMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE, onNotify)
-        BasicText(text = "Workspace and agent tools", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = Strings.workspaceAndAgentTools, style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Workspace and agent permissions"
+            title = Strings.workspaceAndAgentPermissions
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s12)) {
                 AgentPermissionEditor(
@@ -87,12 +87,12 @@ internal fun WorkspaceSubpage(
                     ) {
                         Column {
                             BasicText(
-                                text = "Auto-Loaded project memory & context files",
+                                text = Strings.autoLoadedProjectMemoryContext,
                                 style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                             )
                             BasicText(
                                 text = if (discoveredFiles.isEmpty()) {
-                                    "No AGENTS.md, CLAUDE.md, PARCHMENT.md, or PARCHMENT_MEMORY.md found in root yet."
+                                    Strings.noAgentsMdClaudeMdParchment
                                 } else {
                                     "Auto-injected into system prompt: ${discoveredFiles.joinToString(", ")}"
                                 },
@@ -101,7 +101,7 @@ internal fun WorkspaceSubpage(
                         }
                         if ("PARCHMENT_MEMORY.md" !in discoveredFiles) {
                             SepiaButton(
-                                text = "Create project memory file",
+                                text = Strings.createProjectMemoryFile,
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
                                 enabled = effectiveWsMode == WorkspaceMode.READ_WRITE,
                                 style = SepiaButtonStyle.OUTLINE,
@@ -111,7 +111,7 @@ internal fun WorkspaceSubpage(
                                         "PARCHMENT_MEMORY.md",
                                         "# Project & Story Memory\n\n- Record key architectural rules, character notes, and decisions here.\n"
                                     ).onSuccess {
-                                        onNotify("Created PARCHMENT_MEMORY.md in workspace root.")
+                                        onNotify(Strings.createdParchmentMemoryMdInWorkspace)
                                     }
                                 }
                             )
@@ -121,7 +121,7 @@ internal fun WorkspaceSubpage(
             }
         }
 
-        SepiaSectionCard(title = "Agent tools") {
+        SepiaSectionCard(title = Strings.agentTools) {
             AgentToolRegistry(
                 policy = toolPolicy, overrides = permissionOverrides,
                 onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } }

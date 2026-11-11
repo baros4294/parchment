@@ -4,7 +4,7 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 
 ## Standing decisions
 
-- Each TODO batch ends with one build and test run and a local commit; push to origin/main only once all TODO work is done (user, 2026-11-11). Never force-push, overwrite unrelated work or claim unverified completion.
+- One build and test run per batch; finish every open TODO, then commit and push once (user, 2026-11-11). After a flaky test failure, rerun only that test. Never force-push, overwrite unrelated work or claim unverified completion.
 - No automatic local Git snapshots between checkpoints (user, 2026-11-10); don't re-propose them.
 - Scripted phone taps first confirm Parchment is in front.
 - Never optimize by losing history or instructions, weakening permissions, altering opaque signatures or silently enabling server storage.

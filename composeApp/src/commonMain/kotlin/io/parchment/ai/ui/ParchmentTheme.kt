@@ -113,7 +113,8 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     val narrationInk = parseHexColor(config.narrationInkHex, Color(0xFF5C4938))
     val readableSurfaces = listOf(canvasBg, sheetBg, cardBg, elevatedBg)
     val mutedInk = readableInk(parseHexColor(config.mutedInkHex, Color(0xFF826F5C)), readableSurfaces)
-    val accent = parseHexColor(config.accentHex, Color(0xFF9E4730))
+    // The accent also colors text (selected tabs, links), so it gets the same readability nudge as muted text.
+    val accent = readableInk(parseHexColor(config.accentHex, Color(0xFF9E4730)), readableSurfaces)
     val accentSecondary = parseHexColor(config.accentSecondaryHex, Color(0xFFB57C2E))
     val danger = readableInk(parseHexColor(config.dangerHex, Color(0xFFA62B2B)), readableSurfaces)
     val success = readableInk(Color(0xFF2E7D32), readableSurfaces)

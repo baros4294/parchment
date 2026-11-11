@@ -62,4 +62,6 @@ Settings are in `parchment-settings.json` with earlier copies in `backups/`, and
 
 ## Releases
 
-CI (`.github/workflows/build-installers.yml`) builds both apps on each push to `main` that changes code and publishes them as a GitHub release, which the in-app updater reads. A manual run can rebuild only the Windows installer and reuse an earlier run's APK. Building and testing locally is covered in [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-test).
+CI (`.github/workflows/build-installers.yml`) builds both apps on each push to `main` that changes code and publishes them as a GitHub release, which the in-app updater reads. Each release carries its notes from the Unreleased section of [CHANGELOG.md](../CHANGELOG.md), a `SHA256SUMS.txt`, the Android R8 mapping file and, when the CycloneDX plugin runs, an SBOM. Actions are pinned by commit; Dependabot proposes updates weekly, and CodeQL analyzes the Kotlin code on pull requests and weekly.
+
+The Windows installer is not code-signed, so SmartScreen warns on first run. Signing is an option: Azure Artifact Signing (formerly Trusted Signing) costs $9.99 a month for 5,000 signatures (checked 2026-11; identity checks decide who may sign up), and a traditional certificate costs more per year and needs a hardware key. A manual run can rebuild only the Windows installer and reuse an earlier run's APK. Building and testing locally is covered in [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-test).

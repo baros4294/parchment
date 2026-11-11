@@ -170,23 +170,23 @@ internal fun BackupAndOtaSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
-        BasicText(text = "Storage, backup & updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = Strings.storageBackupUpdates, style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         // Card 1: storage: inspect and delete chats, uploads, generated media, backups and temporary files.
         SepiaSectionCard(
-            title = "Storage & file manager (${allStoredFiles.size} files • ${formatBytesCompact(totalBytes)})",
+            title = Strings.storageFileManagerFiles(allStoredFiles.size, formatBytesCompact(totalBytes)),
             subtitle = PlatformBridge.getAppStorageDirectoryPath(),
             headerAction = {
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
-                        text = "📂 Open folder",
+                        text = Strings.openFolder,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { PlatformBridge.openOrPlayMedia(PlatformBridge.getAppStorageDirectoryPath()) }
                     )
                     SepiaButton(
                         text = "↻",
-                        contentDescription = "Refresh storage usage",
+                        contentDescription = Strings.refreshStorageUsage,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { storageRefreshTick++ }
@@ -238,7 +238,7 @@ internal fun BackupAndOtaSubpage(
                     verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     SepiaChip(
-                        label = "All (${allStoredFiles.size} • ${formatBytesCompact(totalBytes)})",
+                        label = Strings.all2(allStoredFiles.size, formatBytesCompact(totalBytes)),
                         selected = storageCategoryFilter == null,
                         onClick = { storageCategoryFilter = null }
                     )
@@ -264,11 +264,11 @@ internal fun BackupAndOtaSubpage(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            text = "${plural(orphanAndTempFiles.size, "unused media/temp file")} (${formatBytesCompact(orphanBytes)}) can be safely freed.",
+                            text = Strings.canBeSafelyFreed(plural(orphanAndTempFiles.size, "unused media/temp file"), formatBytesCompact(orphanBytes)),
                             style = p.uiLabelStyle.copy(color = p.accent)
                         )
                         SepiaButton(
-                            text = "🗑 Clean unused (${formatBytesCompact(orphanBytes)})",
+                            text = Strings.cleanUnused(formatBytesCompact(orphanBytes)),
                             compact = true,
                             style = SepiaButtonStyle.SECONDARY,
                             onClick = {
@@ -281,7 +281,7 @@ internal fun BackupAndOtaSubpage(
                                     }
                                 }
                                 storageRefreshTick++
-                                onNotify("Cleaned ${plural(deletedCount, "unused file")} (${formatBytesCompact(freedBytes)} freed).")
+                                onNotify(Strings.cleanedFreed(plural(deletedCount, "unused file"), formatBytesCompact(freedBytes)))
                             }
                         )
                     }
@@ -296,7 +296,7 @@ internal fun BackupAndOtaSubpage(
                     SepiaTextField(
                         value = storageSearchQuery,
                         onValueChange = { storageSearchQuery = it },
-                        placeholder = "🔍 Filter files by name, path, or chat title…",
+                        placeholder = Strings.filterFilesByNamePath,
                         singleLine = true,
                         minHeight = 34.dp,
                         modifier = Modifier.weight(1f)
@@ -304,7 +304,7 @@ internal fun BackupAndOtaSubpage(
                     if (storageSearchQuery.isNotEmpty()) {
                         SepiaButton(
                             text = "×",
-                            contentDescription = "Clear search",
+                            contentDescription = Strings.clearSearch,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { storageSearchQuery = "" }
@@ -326,7 +326,7 @@ internal fun BackupAndOtaSubpage(
                 ) {
                     if (filteredStorageFiles.isEmpty()) {
                         BasicText(
-                            text = "No matching files in storage.",
+                            text = Strings.noMatchingFilesInStorage,
                             style = p.uiLabelStyle.copy(color = p.mutedInk),
                             modifier = Modifier.padding(Space.s8)
                         )
@@ -373,7 +373,7 @@ internal fun BackupAndOtaSubpage(
                                         overflow = TextOverflow.Ellipsis,
                                         style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                     )
-                                    val orphanTag = if (isOrphan) " • Unused" else ""
+                                    val orphanTag = if (isOrphan) Strings.unused else ""
                                     BasicText(
                                         text = "${item.relativePath} • ${formatBytesCompact(item.sizeBytes)} • ${formatCompactTimestamp(item.lastModifiedMs)}$orphanTag",
                                         maxLines = 1,
@@ -391,7 +391,7 @@ internal fun BackupAndOtaSubpage(
                             ) {
                                 SepiaButton(
                                     text = "👁",
-                                    contentDescription = "Preview file",
+                                    contentDescription = Strings.previewFile,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = {
@@ -419,7 +419,7 @@ internal fun BackupAndOtaSubpage(
                                 )
                                 SepiaButton(
                                     text = "📂",
-                                    contentDescription = "Open file",
+                                    contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { PlatformBridge.openOrPlayMedia(item.fullPath) }
@@ -427,17 +427,17 @@ internal fun BackupAndOtaSubpage(
                                 if (!isPrimarySettingsFile) {
                                     SepiaButton(
                                         text = "🗑",
-                                        contentDescription = "Delete file",
+                                        contentDescription = Strings.deleteFile,
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = {
                                             if (matchedSession != null) {
                                                 onDeleteChatSessionById(matchedSession.id)
                                                 storageRefreshTick++
-                                                onNotify("Deleted chat '${matchedSession.title}' (${formatBytesCompact(item.sizeBytes)} freed).")
+                                                onNotify(Strings.deletedChatFreed(matchedSession.title, formatBytesCompact(item.sizeBytes)))
                                             } else if (PlatformBridge.deleteAppStorageFile(item.fullPath)) {
                                                 storageRefreshTick++
-                                                onNotify("Deleted '${item.fileName}' (${formatBytesCompact(item.sizeBytes)} freed).")
+                                                onNotify(Strings.deletedFreed(item.fileName, formatBytesCompact(item.sizeBytes)))
                                             }
                                         }
                                     )
@@ -450,24 +450,24 @@ internal fun BackupAndOtaSubpage(
         }
 
         SepiaSectionCard(
-            title = "App updates",
+            title = Strings.appUpdates,
             subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformBridge.platformName}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
                     value = appState.otaGithubRepo,
                     onValueChange = { repo -> onUpdateOtaSettings(repo, appState.autoCheckOtaOnStartup) },
-                    label = "GitHub release repository (owner/repo)",
+                    label = Strings.githubReleaseRepositoryOwnerRepo,
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 SepiaToggleRow(
-                    title = "Check for updates at launch",
+                    title = Strings.checkForUpdatesAtLaunch,
                     checked = appState.autoCheckOtaOnStartup,
                     onCheckedChange = { onUpdateOtaSettings(appState.otaGithubRepo, it) }
                 )
                 SepiaButton(
-                    text = if (otaState is OtaUpdateState.Checking) "Checking…" else "↻ Check for update now",
+                    text = if (otaState is OtaUpdateState.Checking) Strings.checking else Strings.checkForUpdateNow,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = onCheckOtaNow
                 )
@@ -476,23 +476,23 @@ internal fun BackupAndOtaSubpage(
                         val rel = otaState.release
                         val sizeMb = (rel.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
                         BasicText(
-                            text = "New Release Available: ${rel.tagName} (${rel.assetName} • $sizeMb MB)",
+                            text = Strings.newReleaseAvailableMb(rel.tagName, rel.assetName, sizeMb),
                             style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                         )
                         SepiaButton(
-                            text = "⬇ Download & Install ${rel.tagName} In-App",
+                            text = Strings.downloadInstallInApp(rel.tagName),
                             style = SepiaButtonStyle.PRIMARY,
                             onClick = { onInstallOtaRelease(rel) }
                         )
                     }
                     is OtaUpdateState.UpToDate -> {
                         BasicText(
-                            text = "You are on the latest version (v${otaState.currentVersion}).",
+                            text = Strings.youAreOnTheLatestVersion(otaState.currentVersion),
                             style = p.uiBodyStyle.copy(color = p.accentSecondary)
                         )
                         otaState.latestRelease?.let { rel ->
                             SepiaButton(
-                                text = "Force Re-Install ${rel.tagName}",
+                                text = Strings.forceReInstall(rel.tagName),
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = { onInstallOtaRelease(rel) }
@@ -503,7 +503,7 @@ internal fun BackupAndOtaSubpage(
                         val downMb = (otaState.downloadedBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
                         val totalMb = (otaState.totalBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
                         BasicText(
-                            text = "Downloading ${otaState.release.assetName}: $downMb MB / $totalMb MB (${otaState.progressPercent}%)…",
+                            text = Strings.downloadingMbMb(otaState.release.assetName, downMb, totalMb, otaState.progressPercent),
                             style = p.uiBodyStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                         )
                         Box(
@@ -526,7 +526,7 @@ internal fun BackupAndOtaSubpage(
                         BasicText(text = otaState.message, style = p.uiBodyStyle.copy(color = p.accentSecondary))
                     }
                     is OtaUpdateState.Error -> {
-                        BasicText(text = "Update failed: ${otaState.message}", style = p.uiBodyStyle.copy(color = p.danger))
+                        BasicText(text = Strings.updateFailed(otaState.message), style = p.uiBodyStyle.copy(color = p.danger))
                     }
                     else -> {}
                 }
@@ -535,45 +535,45 @@ internal fun BackupAndOtaSubpage(
 
         // Card 3: Self-Contained Per-Chat Folder Export & Import (chats/<sessionId>/chat.json + media/)
         SepiaSectionCard(
-            title = "Portable chats & media export / import (Per-Chat folder & .zip bundles)",
+            title = Strings.portableChatsMediaExportImport,
             subtitle = PlatformBridge.getChatsStorageDirectoryPath()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
-                        text = "📦 Export All Chats + Media (${appState.sessions.size} Chats .zip)",
+                        text = Strings.exportAllChatsMediaChatsZip(appState.sessions.size),
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
                             scope.launch {
                                 val saved = runCatching {
                                     exportChatSessionsBundle("parchment-chats-backup.zip", appState.sessions)
                                 }.getOrElse { error ->
-                                    onNotify("Chat export failed: ${error.message}")
+                                    onNotify(Strings.chatExportFailed(error.message))
                                     return@launch
                                 }
                                 if (saved != null) {
-                                    onNotify("Exported ${plural(appState.sessions.size, "chat")} + media to $saved")
+                                    onNotify(Strings.exportedMediaTo(plural(appState.sessions.size, "chat"), saved))
                                 }
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📦 Export current chat (.chat.zip + media)",
+                        text = Strings.exportCurrentChatChatZip,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = {
                             scope.launch {
                                 val zipName = buildExportZipFileNameForChat(activeSession)
                                 val saved = runCatching { exportChatSessionsBundle(zipName, listOf(activeSession)) }.getOrElse { error ->
-                                    onNotify("Chat export failed: ${error.message}")
+                                    onNotify(Strings.chatExportFailed(error.message))
                                     return@launch
                                 }
-                                if (saved != null) onNotify("Exported the chat with its media to $saved")
+                                if (saved != null) onNotify(Strings.exportedTheChatWithItsMedia(saved))
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📤 Export current chat (text only)",
+                        text = Strings.exportCurrentChatTextOnly,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
                             scope.launch {
@@ -583,16 +583,16 @@ internal fun BackupAndOtaSubpage(
                                         encodeChatSessionJsonForExport(activeSession)
                                     }
                                 }.getOrElse { error ->
-                                    onNotify("Chat export failed: ${error.message}")
+                                    onNotify(Strings.chatExportFailed(error.message))
                                     return@launch
                                 }
                                 val saved = PlatformBridge.saveFileForExport(fileName, bytes)
-                                if (saved != null) onNotify("Exported the chat to $saved")
+                                if (saved != null) onNotify(Strings.exportedTheChatTo(saved))
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📥 Import chats (.zip / .json)",
+                        text = Strings.importChatsZipJson,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
                             scope.launch {
@@ -606,8 +606,8 @@ internal fun BackupAndOtaSubpage(
                                 val importedChats = outcomes.flatMap { it.result.getOrDefault(emptyList()) }
                                 if (importedChats.isNotEmpty()) onImportChatSessions(importedChats)
                                 when {
-                                    importFailures.isNotEmpty() -> onNotify("Import failed for ${importFailures.joinToString("; ")}")
-                                    importedChats.isEmpty() -> onNotify("No chats were found in the selected files.")
+                                    importFailures.isNotEmpty() -> onNotify(Strings.importFailedFor(importFailures.joinToString("; ")))
+                                    importedChats.isEmpty() -> onNotify(Strings.noChatsWereFoundInThe)
                                 }
                             }
                         }
@@ -618,45 +618,45 @@ internal fun BackupAndOtaSubpage(
 
         // Card 4: back up settings, providers, assistants and system prompts, separately from chats.
         SepiaSectionCard(
-            title = "Settings, providers & assistants backup (.json)",
-            subtitle = "${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"
+            title = Strings.settingsProvidersAssistantsBackupJson,
+            subtitle = Strings.parchmentSettingsJson(PlatformBridge.getAppStorageDirectoryPath())
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
-                        text = "📤 Export settings & assistants (.json)",
+                        text = Strings.exportSettingsAssistantsJson,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
                             scope.launch {
                                 val settingsOnly = appState.copy(sessions = emptyList())
                                 val bytes = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), settingsOnly).encodeToByteArray()
                                 val saved = PlatformBridge.saveFileForExport("parchment-settings.json", bytes)
-                                if (saved != null) onNotify("Exported settings & assistants to $saved")
+                                if (saved != null) onNotify(Strings.exportedSettingsAssistantsTo(saved))
                             }
                         }
                     )
                     SepiaButton(
-                        text = "📥 Import settings & assistants (.json)",
+                        text = Strings.importSettingsAssistantsJson,
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
                             scope.launch {
                                 val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
                                 if (picked.oversized) {
-                                    onNotify("${picked.fileName} is too large to import.")
+                                    onNotify(Strings.isTooLargeToImport(picked.fileName))
                                     return@launch
                                 }
                                 runCatching {
                                     CardAndPromptCodec.prettyJson.decodeFromString<AppStateSnapshot>(picked.bytes.decodeToString())
                                 }.fold(
                                     onSuccess = { restored -> onRestoreFullBackup(restored) },
-                                    onFailure = { err -> onNotify("Settings import failed: ${err.message}") }
+                                    onFailure = { err -> onNotify(Strings.settingsImportFailed(err.message)) }
                                 )
                             }
                         }
                     )
                     SepiaButton(
-                        text = "Wipe all local data & reset",
+                        text = Strings.wipeAllLocalDataReset,
                         style = SepiaButtonStyle.DANGER,
                         onClick = onWipeAllData
                     )

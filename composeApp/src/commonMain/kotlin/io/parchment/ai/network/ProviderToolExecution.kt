@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.parchment.ai.harness.AgentPermissionGate
 import io.parchment.ai.harness.AgentToolRunContext
@@ -131,7 +133,7 @@ private suspend fun AiProviderEngine.executeWorkspaceToolWithLiveProgress(
     activityContext: RunActivityContext?
 ): ToolCallRecord {
     val intent = WorkspaceHarness.describeToolCallIntent(toolName, argumentsJson)
-    if (AgentPermissionGate.effect(accessScope, toolName, argumentsJson).requiresApproval) onStatus("Awaiting approval: $intent")
+    if (AgentPermissionGate.effect(accessScope, toolName, argumentsJson).requiresApproval) onStatus(Strings.awaitingApproval(intent))
     val authorization = authorizeWorkspaceTool(accessScope, callId, toolName, argumentsJson, activityContext)
     if (authorization is ToolAuthorization.Denied) return ToolCallRecord(
         id = callId, name = toolName, argumentsJson = argumentsJson,
@@ -274,7 +276,7 @@ internal suspend fun AiProviderEngine.executeWorkspaceToolBatchWithLiveProgress(
         // Read-only tools run in parallel: show a running card for each at once, run them on Dispatchers.IO,
         // and report the results in a fixed order.
         val summaryNames = calls.map { it.second }.distinct().joinToString(", ")
-        onStatus("Executing ${calls.size} read/search tools in parallel ($summaryNames)…")
+        onStatus(Strings.executingReadSearchToolsInParallel(calls.size, summaryNames))
         for ((idx, triple) in calls.withIndex()) {
             val (callId, fnName, argsJson) = triple
             onStepToolCall(

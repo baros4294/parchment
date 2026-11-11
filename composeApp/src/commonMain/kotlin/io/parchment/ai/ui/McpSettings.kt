@@ -62,38 +62,38 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
     var nextCursor by remember { mutableStateOf("") }
     var loadingMore by remember { mutableStateOf(false) }
     var tokenFreeOnly by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf("Search the public MCP directory.") }
+    var message by remember { mutableStateOf(Strings.searchThePublicMcpDirectory) }
     LaunchedEffect(query) {
         val term = query.trim()
         nextCursor = ""
         if (term.length < 2) {
             results = emptyList()
-            message = "Search the public MCP directory."
+            message = Strings.searchThePublicMcpDirectory
             return@LaunchedEffect
         }
         delay(400)
-        message = "Searching…"
+        message = Strings.searching
         searchMcpRegistry(term).fold(
             { page ->
                 results = page.servers
                 nextCursor = page.nextCursor
-                message = if (page.servers.isEmpty()) "No servers you can add directly were found." else ""
+                message = if (page.servers.isEmpty()) Strings.noServersYouCanAddDirectly else ""
             },
             { error ->
                 if (error is CancellationException) throw error
                 results = emptyList()
-                message = "The directory could not be reached. Try again later."
+                message = Strings.theDirectoryCouldNotBeReached
             }
         )
     }
     val shown = if (tokenFreeOnly) results.filter { !it.needsToken } else results
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-        BasicText("Find a server", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
-        BasicText("Anyone can publish to this directory. Check who made a server before you switch it on.", style = p.uiLabelStyle)
-        SepiaTextField(query, { query = it }, placeholder = "Search, for example github", modifier = Modifier.fillMaxWidth())
+        BasicText(Strings.findAServer, style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
+        BasicText(Strings.anyoneCanPublishToThisDirectory, style = p.uiLabelStyle)
+        SepiaTextField(query, { query = it }, placeholder = Strings.searchForExampleGithub, modifier = Modifier.fillMaxWidth())
         if (results.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-                SepiaChip("No token needed", selected = tokenFreeOnly, onClick = { tokenFreeOnly = !tokenFreeOnly })
+                SepiaChip(Strings.noTokenNeeded, selected = tokenFreeOnly, onClick = { tokenFreeOnly = !tokenFreeOnly })
                 BasicText(plural(shown.size, "server"), style = p.uiLabelStyle)
             }
         }
@@ -117,7 +117,7 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
                     }
                 }
                 if (nextCursor.isNotEmpty()) {
-                    SepiaButton(if (loadingMore) "Loading…" else "Show more", compact = true, style = SepiaButtonStyle.GHOST, enabled = !loadingMore, modifier = Modifier.padding(vertical = Space.s6), onClick = {
+                    SepiaButton(if (loadingMore) Strings.loading else Strings.showMore, compact = true, style = SepiaButtonStyle.GHOST, enabled = !loadingMore, modifier = Modifier.padding(vertical = Space.s6), onClick = {
                         val term = query.trim()
                         val cursor = nextCursor
                         loadingMore = true
@@ -131,7 +131,7 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
                                 },
                                 { error ->
                                     if (error is CancellationException) throw error
-                                    message = "More servers could not be loaded. Try again."
+                                    message = Strings.moreServersCouldNotBeLoaded
                                 }
                             )
                             loadingMore = false
@@ -155,7 +155,7 @@ private fun McpRegistryRow(server: RegistryServer, added: Boolean, onAdd: () -> 
             if (details.isNotEmpty()) BasicText(details, style = p.uiLabelStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (server.description.isNotBlank()) BasicText(server.description, style = p.uiLabelStyle.copy(color = p.primaryInk), maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        SepiaButton(if (added) "Added" else "Add", compact = true, enabled = !added, onClick = onAdd)
+        SepiaButton(if (added) Strings.added else Strings.add, compact = true, enabled = !added, onClick = onAdd)
     }
 }
 
@@ -165,18 +165,18 @@ internal fun SkillInstallCard(workspacePath: String, canWrite: Boolean, onNotify
     val scope = rememberCoroutineScope()
     var link by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    SepiaSectionCard(title = "Install a skill", subtitle = "Skills teach the agent how to do a job. Paste a GitHub link to one.") {
+    SepiaSectionCard(title = Strings.installASkill, subtitle = Strings.skillsTeachTheAgentHow) {
         Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-            SepiaTextField(link, { link = it }, placeholder = "https://github.com/owner/repo/tree/main/skill", modifier = Modifier.fillMaxWidth())
+            SepiaTextField(link, { link = it }, placeholder = Strings.httpsGithubComOwnerRepo, modifier = Modifier.fillMaxWidth())
             BasicText(
-                if (workspacePath.isNotBlank() && canWrite) "It is copied into this workspace. Read a skill before you install it: its instructions guide the agent."
-                else "Choose a folder with write access first.",
+                if (workspacePath.isNotBlank() && canWrite) Strings.itIsCopiedIntoThisWorkspace
+                else Strings.chooseAFolderWithWriteAccess,
                 style = p.uiLabelStyle
             )
-            SepiaButton(if (busy) "Installing…" else "Install", compact = true, enabled = !busy && canWrite && workspacePath.isNotBlank() && link.isNotBlank(), onClick = {
+            SepiaButton(if (busy) Strings.installing else Strings.install, compact = true, enabled = !busy && canWrite && workspacePath.isNotBlank() && link.isNotBlank(), onClick = {
                 val folder = parseGitHubFolder(link)
                 if (folder == null) {
-                    onNotify("That is not a GitHub repository or folder link.")
+                    onNotify(Strings.thatIsNotAGithubRepository)
                     return@SepiaButton
                 }
                 busy = true
@@ -188,7 +188,7 @@ internal fun SkillInstallCard(workspacePath: String, canWrite: Boolean, onNotify
                         fetch = { url, limit -> withContext(Dispatchers.IO) { PlatformBridge.fetchPublicBytes(url, limit).getOrThrow() } }
                     )
                     busy = false
-                    result.fold({ onNotify(it); link = "" }, { onNotify(it.message ?: "The skill could not be installed.") })
+                    result.fold({ onNotify(it); link = "" }, { onNotify(it.message ?: Strings.theSkillCouldNotBeInstalled) })
                 }
             })
         }
@@ -203,33 +203,33 @@ internal fun McpServersCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
     fun update(server: McpServerConfig, change: (McpServerConfig) -> McpServerConfig) {
         onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers.map { if (it.id == server.id) change(it) else it }))
     }
-    SepiaSectionCard(title = "MCP servers", subtitle = "Give the agent tools from other apps. Each call follows your approval setting.") {
+    SepiaSectionCard(title = Strings.mcpServers, subtitle = Strings.giveTheAgentToolsFrom) {
         Column(verticalArrangement = Arrangement.spacedBy(Space.s12)) {
             prefs.mcpServers.forEach { server ->
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
-                    SepiaToggleSwitch(checked = server.enabled, onCheckedChange = { on -> update(server) { it.copy(enabled = on) } }, label = server.name.ifBlank { "New server" })
-                    SepiaTextField(server.name, { text -> update(server) { it.copy(name = text) } }, placeholder = "Name", modifier = Modifier.fillMaxWidth())
-                    SepiaTextField(server.url, { text -> update(server) { it.copy(url = text) } }, placeholder = "Server URL", modifier = Modifier.fillMaxWidth())
+                    SepiaToggleSwitch(checked = server.enabled, onCheckedChange = { on -> update(server) { it.copy(enabled = on) } }, label = server.name.ifBlank { Strings.newServer })
+                    SepiaTextField(server.name, { text -> update(server) { it.copy(name = text) } }, placeholder = Strings.name, modifier = Modifier.fillMaxWidth())
+                    SepiaTextField(server.url, { text -> update(server) { it.copy(url = text) } }, placeholder = Strings.serverUrl, modifier = Modifier.fillMaxWidth())
                     if (server.url.isNotBlank()) {
-                        SepiaTextField(server.bearerToken, { text -> update(server) { it.copy(bearerToken = text) } }, placeholder = "Access token (optional)", modifier = Modifier.fillMaxWidth())
+                        SepiaTextField(server.bearerToken, { text -> update(server) { it.copy(bearerToken = text) } }, placeholder = Strings.accessTokenOptional, modifier = Modifier.fillMaxWidth())
                     } else if (localAllowed) {
-                        SepiaTextField(server.command, { text -> update(server) { it.copy(command = text) } }, placeholder = "Or a local command", monospace = true, modifier = Modifier.fillMaxWidth())
-                        if (server.command.isNotBlank()) BasicText("A local command runs with your full account access. Add only servers you trust.", style = p.uiLabelStyle)
+                        SepiaTextField(server.command, { text -> update(server) { it.copy(command = text) } }, placeholder = Strings.orALocalCommand, monospace = true, modifier = Modifier.fillMaxWidth())
+                        if (server.command.isNotBlank()) BasicText(Strings.aLocalCommandRunsWithYour, style = p.uiLabelStyle)
                     }
                     statuses[server.id]?.let { status ->
                         BasicText(when (status.state) {
-                            McpServerState.CONNECTING -> "Connecting…"
-                            McpServerState.READY -> "Connected, ${plural(status.toolCount, "tool")}"
+                            McpServerState.CONNECTING -> Strings.connecting
+                            McpServerState.READY -> Strings.connected(plural(status.toolCount, "tool"))
                             McpServerState.FAILED -> status.message
                         }, style = p.uiLabelStyle)
                     }
-                    SepiaButton("Remove", compact = true, style = SepiaButtonStyle.GHOST, onClick = {
+                    SepiaButton(Strings.remove, compact = true, style = SepiaButtonStyle.GHOST, onClick = {
                         onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers.filter { it.id != server.id }))
                     })
                     SepiaDivider()
                 }
             }
-            SepiaButton("Add server", compact = true, onClick = {
+            SepiaButton(Strings.addServer, compact = true, onClick = {
                 onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + McpServerConfig("mcp-${PlatformBridge.currentTimeMillis()}")))
             })
             SepiaDivider()

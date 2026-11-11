@@ -61,17 +61,25 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.runtime.key
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import io.parchment.ai.model.PreferencesConfig
+import io.parchment.ai.model.PromptAttachment
+import io.parchment.ai.model.ProviderProfile
+import io.parchment.ai.network.ModelModalityProfile
 
 /** A named stop on a slider and the exact value it sends to the provider. */
 internal data class SliderStop(val label: String, val value: String)
 
 internal val THINKING_STOPS = listOf(
-    SliderStop("Off", "none"), SliderStop("Low", "low"), SliderStop("Medium", "medium"),
-    SliderStop("High", "high"), SliderStop("Extra", "xhigh"), SliderStop("Max", "max")
+    SliderStop(Strings.off, "none"), SliderStop(Strings.low, "low"), SliderStop(Strings.medium, "medium"),
+    SliderStop(Strings.high, "high"), SliderStop(Strings.extra, "xhigh"), SliderStop(Strings.max, "max")
 )
 internal val IMAGE_ASPECTS = listOf("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9")
 internal val VIDEO_ASPECTS = listOf("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
-private val THINKING_AUTOMATIC = listOf("Adaptive" to "adaptive", "Automatic" to "auto")
+private val THINKING_AUTOMATIC = listOf(Strings.adaptive to "adaptive", Strings.automatic to "auto")
 private val SPEECH_SPEEDS = listOf(0.5, 0.75, 0.85, 1.0, 1.25, 1.5, 2.0)
 private val VOICES = listOf("alloy", "nova", "echo", "onyx", "shimmer", "coral", "sage", "Puck", "Kore", "Fenrir", "Aoede")
 private const val MIN_VIDEO_SECONDS = 4
@@ -220,13 +228,13 @@ internal fun ThinkingControl(chipLabel: String, value: String, onChange: (String
     val index = THINKING_STOPS.indexOfFirst { it.value == normalized }
     val shown = THINKING_STOPS.getOrNull(index)?.label
         ?: THINKING_AUTOMATIC.firstOrNull { it.second == normalized }?.first
-        ?: value.ifBlank { "Default" }
+        ?: value.ifBlank { Strings.default }
     PopoverChip(chipLabel, "How much the model thinks before it answers", normalized.isNotEmpty() && normalized != "none") {
-        PopoverHeading("Thinking", shown)
-        StepSlider(THINKING_STOPS.size, index, "Thinking level", shown, { onChange(THINKING_STOPS[it].value) })
+        PopoverHeading(Strings.thinking, shown)
+        StepSlider(THINKING_STOPS.size, index, Strings.thinkingLevel, shown, { onChange(THINKING_STOPS[it].value) })
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            BasicText("Faster", style = p.uiLabelStyle)
-            BasicText("More thorough", style = p.uiLabelStyle)
+            BasicText(Strings.faster, style = p.uiLabelStyle)
+            BasicText(Strings.moreThorough, style = p.uiLabelStyle)
         }
         ChoiceRow(THINKING_AUTOMATIC, normalized, onChange)
         CustomValueField(if (index < 0 && THINKING_AUTOMATIC.none { it.second == normalized }) value else "", "Custom value", value, onChange)
@@ -262,21 +270,21 @@ private fun AspectTile(ratio: String, selected: Boolean, onClick: () -> Unit) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AspectControl(icon: String, value: String, presets: List<String>, onChange: (String) -> Unit) {
-    PopoverChip("$icon $value", "The shape of the picture or video", true) {
-        PopoverHeading("Shape", value)
+    PopoverChip("$icon $value", Strings.theShapeOfThePictureOr, true) {
+        PopoverHeading(Strings.shape, value)
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.s2), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
             presets.forEach { ratio -> AspectTile(ratio, ratio == value) { onChange(ratio) } }
         }
-        CustomValueField(if (value in presets) "" else value, "Custom shape, like 5:4", value, onChange)
+        CustomValueField(if (value in presets) "" else value, Strings.customShapeLike54, value, onChange)
     }
 }
 
 @Composable
 internal fun ResolutionControl(value: String, presets: List<String>, highlighted: Boolean, onChange: (String) -> Unit) {
-    PopoverChip(value, "How detailed the result is", highlighted) {
-        PopoverHeading("Quality", value)
+    PopoverChip(value, Strings.howDetailedTheResultIs, highlighted) {
+        PopoverHeading(Strings.quality, value)
         ChoiceRow(presets.map { it to it }, value, onChange)
-        CustomValueField(if (value in presets) "" else value, "Custom value", value, onChange)
+        CustomValueField(if (value in presets) "" else value, Strings.customValue, value, onChange)
     }
 }
 
@@ -284,14 +292,14 @@ internal fun ResolutionControl(value: String, presets: List<String>, highlighted
 internal fun DurationControl(seconds: Int, onChange: (Int) -> Unit) {
     val current = seconds.coerceIn(MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS)
     val p = LocalParchmentPalette.current
-    PopoverChip("${current}s", "How long the video runs", current > 5) {
-        PopoverHeading("Length", "$current seconds")
-        StepSlider(MAX_VIDEO_SECONDS - MIN_VIDEO_SECONDS + 1, current - MIN_VIDEO_SECONDS, "Video length", "$current seconds", { onChange(it + MIN_VIDEO_SECONDS) })
+    PopoverChip("${current}s", Strings.howLongTheVideoRuns, current > 5) {
+        PopoverHeading(Strings.length, "$current seconds")
+        StepSlider(MAX_VIDEO_SECONDS - MIN_VIDEO_SECONDS + 1, current - MIN_VIDEO_SECONDS, Strings.videoLength, "$current seconds", { onChange(it + MIN_VIDEO_SECONDS) })
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             BasicText("$MIN_VIDEO_SECONDS s", style = p.uiLabelStyle)
             BasicText("$MAX_VIDEO_SECONDS s", style = p.uiLabelStyle)
         }
-        CustomValueField("", "Seconds, from $MIN_VIDEO_SECONDS to $MAX_VIDEO_SECONDS") { typed ->
+        CustomValueField("", Strings.secondsFromTo(MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS)) { typed ->
             typed.toIntOrNull()?.let { onChange(it.coerceIn(MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS)) }
         }
     }
@@ -299,10 +307,10 @@ internal fun DurationControl(seconds: Int, onChange: (Int) -> Unit) {
 
 @Composable
 internal fun VoiceControl(value: String, onChange: (String) -> Unit) {
-    PopoverChip("🗣 $value", "The voice used for speech", true) {
-        PopoverHeading("Voice", value)
+    PopoverChip("🗣 $value", Strings.theVoiceUsedForSpeech, true) {
+        PopoverHeading(Strings.voice, value)
         ChoiceRow(VOICES.map { it to it }, value, onChange)
-        CustomValueField(if (VOICES.any { it.equals(value, ignoreCase = true) }) "" else value, "Custom voice", value, onChange)
+        CustomValueField(if (VOICES.any { it.equals(value, ignoreCase = true) }) "" else value, Strings.customVoice, value, onChange)
     }
 }
 
@@ -310,10 +318,247 @@ internal fun VoiceControl(value: String, onChange: (String) -> Unit) {
 internal fun SpeechSpeedControl(speed: Double, onChange: (Double) -> Unit) {
     val index = SPEECH_SPEEDS.indexOf(speed)
     PopoverChip("${speed}x", "How fast the voice speaks", speed != 1.0) {
-        PopoverHeading("Speed", "${speed}x")
-        StepSlider(SPEECH_SPEEDS.size, index, "Speech speed", "${speed}x", { onChange(SPEECH_SPEEDS[it]) })
-        CustomValueField(if (index >= 0) "" else speed.toString(), "Custom, from $MIN_SPEECH_SPEED to $MAX_SPEECH_SPEED") { typed ->
+        PopoverHeading(Strings.speed, "${speed}x")
+        StepSlider(SPEECH_SPEEDS.size, index, Strings.speechSpeed, "${speed}x", { onChange(SPEECH_SPEEDS[it]) })
+        CustomValueField(if (index >= 0) "" else speed.toString(), Strings.customFromTo(MIN_SPEECH_SPEED, MAX_SPEECH_SPEED)) { typed ->
             typed.toDoubleOrNull()?.takeIf { it.isFinite() }?.let { onChange(it.coerceIn(MIN_SPEECH_SPEED, MAX_SPEECH_SPEED)) }
         }
     }
 }
+
+/** The composer's bottom row: attach, voice, media, thinking and Tools on the left; usage and Send or Stop on the right. */
+@Composable
+internal fun ComposerToolbar(
+    activeProfile: ProviderProfile,
+    activeModalityProfile: ModelModalityProfile,
+    preferences: PreferencesConfig,
+    pendingAttachments: List<PromptAttachment>,
+    isVoiceListening: Boolean,
+    isLiveVoiceMode: Boolean,
+    isStreaming: Boolean,
+    hasTypedInput: Boolean,
+    hasActiveTools: Boolean,
+    showComposerToolsDrawer: Boolean,
+    thinkingLabel: String,
+    toolsChipLabel: String,
+    liveContextTokens: Int,
+    contextLimitTokens: Int,
+    sessionTotalCostUsd: Double,
+    sessionCostLabel: String,
+    onAddAttachment: () -> Unit,
+    onTriggerVoiceInput: () -> Unit,
+    onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
+    onComposerToolsDrawerChange: (Boolean) -> Unit,
+    onToggleContextBreakdown: () -> Unit,
+    onStopStream: () -> Unit,
+    onQueuePrompt: () -> Unit,
+    onSteerNow: () -> Unit,
+    onSend: () -> Unit
+) {
+    val win = LocalParchmentWindowSize.current
+    val leftChipsComposable: @Composable (Modifier) -> Unit = { rowMod ->
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
+            modifier = rowMod,
+            horizontalArrangement = Arrangement.spacedBy(if (win.isCompact) 3.dp else 4.dp),
+            verticalArrangement = Arrangement.spacedBy(Space.s4)
+        ) {
+            SepiaChip(
+                label = "📎",
+                contentDescription = Strings.attachFiles,
+                selected = pendingAttachments.isNotEmpty(),
+                onClick = onAddAttachment
+            )
+            SepiaChip(
+                label = "🎙",
+                contentDescription = Strings.voiceInput,
+                selected = isVoiceListening || isLiveVoiceMode,
+                onClick = onTriggerVoiceInput
+            )
+            if (activeModalityProfile.isAnyImageModel) {
+                AspectControl("🖼", activeProfile.mediaAspectRatio.ifBlank { "1:1" }, IMAGE_ASPECTS) { ratio -> onUpdateProfile { it.copy(mediaAspectRatio = ratio) } }
+                val currentRes = activeProfile.mediaResolution.ifBlank { "1K" }
+                ResolutionControl(currentRes, listOf("1K", "2K", "4K"), currentRes in listOf("2K", "4K")) { res -> onUpdateProfile { it.copy(mediaResolution = res) } }
+            }
+            if (activeModalityProfile.isAnyVideoModel) {
+                AspectControl("🎬", activeProfile.mediaAspectRatio.ifBlank { "16:9" }, VIDEO_ASPECTS) { ratio -> onUpdateProfile { it.copy(mediaAspectRatio = ratio) } }
+                val currentRes = when (activeProfile.mediaResolution) {
+                    "2K" -> "1080p"
+                    "", "512", "1K" -> "720p"
+                    else -> activeProfile.mediaResolution
+                }
+                ResolutionControl(currentRes, listOf("720p", "1080p", "4K"), currentRes in listOf("1080p", "4K")) { res -> onUpdateProfile { it.copy(mediaResolution = res) } }
+                DurationControl(activeProfile.videoDurationSeconds) { seconds -> onUpdateProfile { it.copy(videoDurationSeconds = seconds) } }
+                SepiaChip(
+                    label = if (activeProfile.videoGenerateAudio) Strings.audio2 else Strings.mute,
+                    selected = activeProfile.videoGenerateAudio,
+                    onClick = {
+                        onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) }
+                    }
+                )
+            }
+            if (activeModalityProfile.isAnyAudioModel) {
+                VoiceControl(activeProfile.audioVoice.ifBlank { "alloy" }) { voice -> onUpdateProfile { it.copy(audioVoice = voice) } }
+                if (activeModalityProfile.isDedicatedAudioTts) {
+                    SpeechSpeedControl(activeProfile.audioSpeed) { speed -> onUpdateProfile { it.copy(audioSpeed = speed) } }
+                }
+            }
+            if (!activeModalityProfile.isDedicatedImage &&
+                !activeModalityProfile.isDedicatedVideo &&
+                !activeModalityProfile.isDedicatedAudioTts
+            ) {
+                ThinkingControl(thinkingLabel, activeProfile.thinkingEffort) { level -> onUpdateProfile { it.copy(thinkingEffort = level) } }
+            }
+            SepiaChip(
+                label = toolsChipLabel,
+                contentDescription = Strings.tools,
+                hint = Strings.webSearchWorkspaceAndOther,
+                selected = showComposerToolsDrawer || hasActiveTools,
+                onClick = { onComposerToolsDrawerChange(!showComposerToolsDrawer) }
+            )
+        }
+    }
+
+    // Phones use two full-width rows while streaming (Stop, Queue and Send now need the room) and at large
+    // text sizes, where one row would push single chips onto a line of their own.
+    val largeText = textGrowth() > LARGE_TEXT_GROWTH
+    if (win.isCompact && (isStreaming || largeText)) {
+        val contextRing: @Composable () -> Unit = {
+            if (preferences.showTokenAndContextStats) {
+                SepiaContextGaugeRing(
+                    usedTokens = liveContextTokens,
+                    contextLimitTokens = contextLimitTokens,
+                    sessionCostUsd = sessionTotalCostUsd,
+                    sessionCostLabel = sessionCostLabel,
+                    onClick = { onToggleContextBreakdown() }
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Space.s6)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                leftChipsComposable(Modifier.weight(1f))
+                if (isStreaming && !largeText && preferences.showTokenAndContextStats) {
+                    Spacer(Modifier.width(Space.s6))
+                    contextRing()
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (!isStreaming) {
+                    contextRing()
+                    Spacer(Modifier.weight(1f))
+                    SepiaButton(
+                        text = Strings.send,
+                        compact = true,
+                        enabled = hasTypedInput,
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = onSend
+                    )
+                } else {
+                    SepiaButton(
+                        text = Strings.stop,
+                        hint = Strings.stopThisReply,
+                        compact = true,
+                        style = SepiaButtonStyle.DANGER,
+                        onClick = onStopStream
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (largeText) contextRing()
+                        SepiaButton(
+                            text = Strings.queue,
+                            hint = Strings.sendThisAfterTheCurrent,
+                            compact = true,
+                            enabled = hasTypedInput,
+                            style = SepiaButtonStyle.OUTLINE,
+                            onClick = onQueuePrompt
+                        )
+                        SepiaButton(
+                            text = Strings.sendNow,
+                            hint = Strings.sendThisNowToGuide,
+                            compact = true,
+                            enabled = hasTypedInput,
+                            style = SepiaButtonStyle.PRIMARY,
+                            onClick = onSteerNow
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        // One full-width row on desktop, and on phones at normal text sizes while idle.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            leftChipsComposable(Modifier.weight(1f))
+
+            Spacer(Modifier.width(Space.s6))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (preferences.showTokenAndContextStats) {
+                    SepiaContextGaugeRing(
+                        usedTokens = liveContextTokens,
+                        contextLimitTokens = contextLimitTokens,
+                        sessionCostUsd = sessionTotalCostUsd,
+                        sessionCostLabel = sessionCostLabel,
+                        onClick = { onToggleContextBreakdown() }
+                    )
+                }
+
+                if (isStreaming) {
+                    SepiaButton(
+                        text = Strings.stop,
+                        hint = Strings.stopThisReply,
+                        compact = true,
+                        style = SepiaButtonStyle.DANGER,
+                        onClick = onStopStream
+                    )
+                    SepiaButton(
+                        text = Strings.queue,
+                        hint = Strings.sendThisAfterTheCurrent,
+                        compact = true,
+                        enabled = hasTypedInput,
+                        style = SepiaButtonStyle.OUTLINE,
+                        onClick = onQueuePrompt
+                    )
+                    SepiaButton(
+                        text = Strings.sendNow,
+                        hint = Strings.sendThisNowToGuide,
+                        compact = true,
+                        enabled = hasTypedInput,
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = onSteerNow
+                    )
+                } else {
+                    SepiaButton(
+                        text = Strings.send,
+                        compact = true,
+                        enabled = hasTypedInput,
+                        style = SepiaButtonStyle.PRIMARY,
+                        onClick = onSend
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** System text at 130% or more counts as large for layouts that switch to fewer items per row. */
+private const val LARGE_TEXT_GROWTH = 1.3f

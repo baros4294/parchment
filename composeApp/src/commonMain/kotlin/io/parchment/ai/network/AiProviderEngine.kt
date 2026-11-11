@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.parchment.ai.runtime.AppForeground
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
@@ -151,7 +153,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
     ) {
         val cleanReason = extractCleanApiErrorSummary(reasonSummary)
         if (STREAM_CUT_WHILE_AWAY in reasonSummary) { // Nothing to back off from: the provider never failed.
-            onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
+            onStatus(Strings.retryingNowAttempt(attempt, maxAttempts))
             return
         }
         val resumedAtStart = AppForeground.resumedAt.value
@@ -165,7 +167,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
             onStatus(statusMsg)
             delay(1000L)
         }
-        onStatus("Retrying now (attempt $attempt/$maxAttempts)…")
+        onStatus(Strings.retryingNowAttempt(attempt, maxAttempts))
     }
 
     private const val RETURN_GRACE_MS = 3_000L

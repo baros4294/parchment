@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.prepareGet
@@ -92,7 +94,7 @@ internal suspend fun AiProviderEngine.executeOpenAiAudioSpeechEndpoint(
     for ((idx, candidateObj) in payloadCandidates.withIndex()) {
         val finalPayload = mergeRawJsonExtraBody(candidateObj, profile.rawJsonExtraBody)
         val reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-        onStatus("Synthesizing speech ($model • $voice)…")
+        onStatus(Strings.synthesizingSpeech(model, voice))
         onRawWire(reqStr, "Dispatching to $targetUrl ...")
 
         ensureAgentPolicyCurrent(session, profile)
@@ -326,7 +328,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             for ((pIdx, candPayload) in payloadSequence.withIndex()) {
                 val merged = mergeRawJsonExtraBody(candPayload, profile.rawJsonExtraBody)
                 reqStr = json.encodeToString(JsonObject.serializer(), merged)
-                onStatus("Submitting video generation task ($model)…", "")
+                onStatus(Strings.submittingVideoGenerationTask(model), "")
                 onRawWire(reqStr, "Dispatching to $finalCreateUrl ...")
 
                 ensureAgentPolicyCurrent(session, profile)
@@ -351,7 +353,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
         }
 
         if (createStatus == 404 || createStatus == 405 || createStatus == 501) {
-            onStatus("Routing video model via /v1/chat/completions…", "")
+            onStatus(Strings.routingVideoModelViaV1Chat, "")
             val chatAccumulator = StringBuilder()
             executeOpenAiChatCompletionsLoop(
                 profile = profile,
@@ -433,7 +435,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
                 status.equals("starting", ignoreCase = true)
             ) {
                 pollCount++
-                onStatus("Video Generating ($status • poll #$pollCount)…", taskRef)
+                onStatus(Strings.videoGeneratingPoll(status, pollCount), taskRef)
                 delay(3000L)
                 val pollUrl = buildUrlWithAuthQuery(profile, "${activeTaskUrl.trimEnd('/')}/$taskId")
                 latestTaskObj = try {
@@ -452,7 +454,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
                             "Video task $taskId was accepted, but its status could not be read, so it was not submitted again. ${e.message.orEmpty()}", e
                         )
                     }
-                    onStatus("Video status check failed — trying again ($failedPolls/$MAX_VIDEO_POLL_FAILURES)…", taskRef)
+                    onStatus(Strings.videoStatusCheckFailedTryingAgain(failedPolls, MAX_VIDEO_POLL_FAILURES), taskRef)
                     continue
                 }
                 failedPolls = 0
@@ -477,7 +479,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             ?: throw AiProviderEngine.AcceptedJobException("Video task completed but no video URL was found in response: $latestTaskObj")
 
         onFirstToken()
-        onStatus("Downloading generated MP4 video…", taskRef)
+        onStatus(Strings.downloadingGeneratedMp4Video, taskRef)
         val videoBytes = runCatching {
             downloadMediaBytes(videoUrl, MAX_DOWNLOADED_VIDEO_BYTES)
         }.getOrElse { ByteArray(0) }
@@ -567,7 +569,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             for ((pIdx, candPayload) in candidatePayloads.withIndex()) {
                 val finalPayload = mergeRawJsonExtraBody(candPayload, profile.rawJsonExtraBody)
                 reqStr = json.encodeToString(JsonObject.serializer(), finalPayload)
-                onStatus("Generating image ($model • ${ profile.mediaAspectRatio })…", "")
+                onStatus(Strings.generatingImage(model,  profile.mediaAspectRatio ), "")
                 onRawWire(reqStr, "Dispatching to $finalUrl ...")
 
                 ensureAgentPolicyCurrent(session, profile)
@@ -596,7 +598,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
         }
 
         if (lastStatus == 404 || lastStatus == 405 || lastStatus == 501) {
-            onStatus("Routing image model via /v1/chat/completions…", "")
+            onStatus(Strings.routingImageModelViaV1Chat, "")
             executeOpenAiChatCompletionsLoop(
                 profile = profile,
                 model = model,

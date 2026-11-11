@@ -50,7 +50,7 @@ internal fun pinnedReplies(sessions: List<ChatSession>, onlySessionId: String? =
                 val preview = stripMarkdownToPlainText(node.activeVariant.content.take(PIN_PREVIEW_CHARS))
                     .replace(WHITESPACE, " ")
                     .trim()
-                PinnedReply(session.id, session.title, node.id, preview.ifBlank { "Reply without text" })
+                PinnedReply(session.id, session.title, node.id, preview.ifBlank { Strings.replyWithoutText })
             }
         }
         .toList()
@@ -76,15 +76,15 @@ internal fun ColumnScope.PinnedRepliesPanel(
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
-        SepiaChip("This chat", selected = !allChats, onClick = { allChats = false })
-        SepiaChip("All chats", selected = allChats, onClick = { allChats = true })
+        SepiaChip(Strings.thisChat2, selected = !allChats, onClick = { allChats = false })
+        SepiaChip(Strings.allChats, selected = allChats, onClick = { allChats = true })
     }
     if (pins.isEmpty()) {
         BasicText(
             text = when {
-                query.isNotEmpty() -> "No pinned replies match your search."
-                allChats -> "No pinned replies yet. Use the pin under a reply to keep it here."
-                else -> "No pinned replies in this chat. Use the pin under a reply to keep it here."
+                query.isNotEmpty() -> Strings.noPinnedRepliesMatchYourSearch
+                allChats -> Strings.noPinnedRepliesYetUseThe
+                else -> Strings.noPinnedRepliesInThisChat
             },
             style = p.uiLabelStyle,
             modifier = Modifier.padding(horizontal = Space.s4)
@@ -116,8 +116,8 @@ internal fun ColumnScope.PinnedRepliesPanel(
                 }
                 SepiaButton(
                     text = "📌",
-                    contentDescription = "Unpin reply",
-                    hint = "Remove from Pinned",
+                    contentDescription = Strings.unpinReply,
+                    hint = Strings.removeFromPinned,
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = { onUnpin(pin) }

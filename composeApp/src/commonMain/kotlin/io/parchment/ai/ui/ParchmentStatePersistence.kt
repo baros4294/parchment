@@ -116,13 +116,13 @@ data class SlashCommandSpec(
 )
 
 internal val BUILTIN_SLASH_COMMANDS = listOf(
-    SlashCommandSpec("/goal", "🎯 /goal", "Autonomous multi-step goal & verification checklist", takesArgument = true),
-    SlashCommandSpec("/btw", "💬 /btw", "Side question (left out of the chat once answered)", takesArgument = true),
-    SlashCommandSpec("/compact", "⚡ /compact", "Summarize older turns into Memory & mute them", takesArgument = false),
-    SlashCommandSpec("/summarize", "✦ /summarize", "Update rolling Story / Continuity Summary", takesArgument = false),
-    SlashCommandSpec("/continue", "→ /continue", "Continue the last Assistant reply seamlessly", takesArgument = false),
-    SlashCommandSpec("/rewind", "↺ /rewind", "Remove the last turn pair from this chat", takesArgument = false),
-    SlashCommandSpec("/clear", "🗑 /clear", "Clear all messages in the current chat", takesArgument = false)
+    SlashCommandSpec("/goal", "🎯 /goal", Strings.autonomousMultiStepGoalVerificationChecklist, takesArgument = true),
+    SlashCommandSpec("/btw", "💬 /btw", Strings.sideQuestionLeftOutOfThe, takesArgument = true),
+    SlashCommandSpec("/compact", "⚡ /compact", Strings.summarizeOlderTurnsIntoMemoryMute, takesArgument = false),
+    SlashCommandSpec("/summarize", "✦ /summarize", Strings.updateRollingStoryContinuitySummary, takesArgument = false),
+    SlashCommandSpec("/continue", "→ /continue", Strings.continueTheLastAssistantReplySeamlessly, takesArgument = false),
+    SlashCommandSpec("/rewind", "↺ /rewind", Strings.removeTheLastTurnPairFrom, takesArgument = false),
+    SlashCommandSpec("/clear", "🗑 /clear", Strings.clearAllMessagesInTheCurrent, takesArgument = false)
 )
 
 /** Maximum number of simultaneously open chat tabs before MRU eviction kicks in. */
@@ -243,10 +243,10 @@ internal fun formatCompactTimestamp(epochMs: Long): String {
     val now = PlatformBridge.currentTimeMillis()
     val diffSec = ((now - epochMs) / 1000L).coerceAtLeast(0L)
     return when {
-        diffSec < 60L -> "Just now"
+        diffSec < 60L -> Strings.justNow
         diffSec < 3600L -> "${diffSec / 60L}m ago"
         diffSec < 86_400L -> "${diffSec / 3600L}h ago"
-        diffSec < 172_800L -> "Yesterday"
+        diffSec < 172_800L -> Strings.yesterday
         diffSec < 604_800L -> "${diffSec / 86_400L}d ago"
         else -> "${diffSec / 604_800L}w ago"
     }
@@ -273,7 +273,7 @@ internal fun extractLatestAgentPeek(variant: MessageVariant): LiveAgentPeekInfo 
         val tc = tools[targetIdx]
         val intent = io.parchment.ai.harness.WorkspaceHarness.describeToolCallIntent(tc.name, tc.argumentsJson)
         val intentLines = intent.lines()
-        val headline = "Tool #${targetIdx + 1}/${tools.size} • ${intentLines.firstOrNull().orEmpty()}"
+        val headline = Strings.tool(targetIdx + 1, tools.size, intentLines.firstOrNull().orEmpty())
         val bodyText = buildString {
             if (intentLines.size > 1) {
                 appendLine(intentLines.drop(1).joinToString("\n"))
@@ -356,7 +356,7 @@ internal fun buildFreshSessionForAssistant(
     appState: AppStateSnapshot,
     activeProfile: ProviderProfile,
     assistant: AssistantAgent,
-    userName: String = "User",
+    userName: String = Strings.user,
     now: Long = PlatformBridge.currentTimeMillis()
 ): ChatSession {
     val profId = assistant.defaultProfileId.ifBlank {
@@ -368,7 +368,7 @@ internal fun buildFreshSessionForAssistant(
         }
     }
     val card = assistant.activeCard
-    val cleanUser = userName.ifBlank { "User" }
+    val cleanUser = userName.ifBlank { Strings.user }
     val initialMessages = if (card != null && card.firstMessage.isNotBlank()) {
         val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
         listOf(
@@ -390,7 +390,7 @@ internal fun buildFreshSessionForAssistant(
 
     return ChatSession(
         id = "sess-$now",
-        title = "New Chat",
+        title = Strings.newChat,
         createdAt = now,
         updatedAt = now,
         profileId = profId,
@@ -999,7 +999,7 @@ internal fun sanitizeLoadedSnapshot(saved: AppStateSnapshot): AppStateSnapshot {
         listOf(
             ChatSession(
                 id = "sess-$now",
-                title = "New Chat",
+                title = Strings.newChat,
                 createdAt = now,
                 updatedAt = now,
                 profileId = safeActiveProfile.id,
@@ -1117,7 +1117,7 @@ internal fun createDefaultAppState(): AppStateSnapshot {
 
     val initialSession = ChatSession(
         id = "sess-initial",
-        title = "New Chat",
+        title = Strings.newChat,
         createdAt = now,
         updatedAt = now,
         profileId = geminiProfile.id,

@@ -75,21 +75,21 @@ internal fun WorldBookAndCardsSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
-        BasicText(text = "World Book & character cards (.png / .json)", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = Strings.worldBookCharacterCardsPng, style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         SepiaSectionCard(
-            title = "Import / export .PNG & .JSON cards"
+            title = Strings.importExportPngJsonCards
         ) {
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                 SepiaButton(
-                    text = "📥 Import .PNG or .JSON",
+                    text = Strings.importPngOrJson,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
                         scope.launch {
                             val picked = PlatformBridge.pickFileForImport(listOf("png", "json")) ?: return@launch
                             if (picked.oversized) {
-                                onNotify("${picked.fileName} is too large to import.")
+                                onNotify(Strings.isTooLargeToImport(picked.fileName))
                                 return@launch
                             }
                             CardAndPromptCodec.importFromBytes(picked.fileName, picked.bytes).fold(
@@ -100,38 +100,38 @@ internal fun WorldBookAndCardsSubpage(
                                             val mergedFrags = (activeSession.fragments + importedCard.embeddedFragments).distinctBy { it.title }
                                             onUpdateSession { it.copy(activeCard = importedCard, fragments = mergedFrags) }
                                             onSaveCardToLibrary(importedCard)
-                                            onNotify("Imported '${importedCard.name}' (+${importedCard.embeddedFragments.size} World Book entries).")
+                                            onNotify(Strings.importedWorldBookEntries(importedCard.name, importedCard.embeddedFragments.size))
                                         }
                                         is CardAndPromptCodec.ImportResult.SystemPromptImported -> {
                                             onUpdateSession { it.copy(systemPrompt = res.preset.systemPrompt) }
                                             onSavePresetToLibrary(res.preset)
-                                            onNotify("Imported System Prompt '${res.preset.name}'.")
+                                            onNotify(Strings.importedSystemPrompt(res.preset.name))
                                         }
                                         is CardAndPromptCodec.ImportResult.ThemeImported -> {
                                             onUpdateTheme(res.theme)
-                                            onNotify("Imported Theme '${res.theme.name}'.")
+                                            onNotify(Strings.importedTheme(res.theme.name))
                                         }
                                     }
                                 },
-                                onFailure = { err -> onNotify("Import failed: ${err.message}") }
+                                onFailure = { err -> onNotify(Strings.importFailed(err.message)) }
                             )
                         }
                     }
                 )
                 SepiaButton(
-                    text = "📤 Export card as .PNG",
+                    text = Strings.exportCardAsPng,
                     style = SepiaButtonStyle.SECONDARY,
                     onClick = {
                         scope.launch {
                             val card = currentCard.copy(
-                                name = cardName.trim().ifBlank { "Card" },
+                                name = cardName.trim().ifBlank { Strings.card },
                                 description = cardDesc.trim(),
                                 firstMessage = cardFirstMes.trim(),
                                 systemPrompt = cardSysPrompt.trim()
                             )
                             val bytes = CardAndPromptCodec.exportCardToPngBytes(card)
                             val saved = PlatformBridge.saveFileForExport("${card.name}.card.png", bytes)
-                            if (saved != null) onNotify("Exported PNG Card to $saved")
+                            if (saved != null) onNotify(Strings.exportedPngCardTo(saved))
                         }
                     }
                 )
@@ -139,11 +139,11 @@ internal fun WorldBookAndCardsSubpage(
         }
 
         SepiaSectionCard(
-            title = "Active session character / scenario card",
+            title = Strings.activeSessionCharacterScenarioCard,
             headerAction = {
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
-                        text = "Apply to session",
+                        text = Strings.applyToSession,
                         compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = {
@@ -155,12 +155,12 @@ internal fun WorldBookAndCardsSubpage(
                             )
                             onUpdateSession { it.copy(activeCard = card) }
                             if (card.name.isNotBlank()) onSaveCardToLibrary(card)
-                            onNotify("Applied card '${card.name}'.")
+                            onNotify(Strings.appliedCard(card.name))
                         }
                     )
                     if (activeSession.activeCard != null) {
                         SepiaButton(
-                            text = "Detach",
+                            text = Strings.detach,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { onUpdateSession { it.copy(activeCard = null) } }
@@ -170,16 +170,16 @@ internal fun WorldBookAndCardsSubpage(
             }
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-                SepiaTextField(value = cardName, onValueChange = { cardName = it }, label = "Name ({{char}})")
-                SepiaTextField(value = cardDesc, onValueChange = { cardDesc = it }, label = "Description / persona", singleLine = false, minHeight = 70.dp)
-                SepiaTextField(value = cardFirstMes, onValueChange = { cardFirstMes = it }, label = "Opening greeting (first_mes)", singleLine = false, minHeight = 60.dp)
+                SepiaTextField(value = cardName, onValueChange = { cardName = it }, label = Strings.nameChar)
+                SepiaTextField(value = cardDesc, onValueChange = { cardDesc = it }, label = Strings.descriptionPersona, singleLine = false, minHeight = 70.dp)
+                SepiaTextField(value = cardFirstMes, onValueChange = { cardFirstMes = it }, label = Strings.openingGreetingFirstMes, singleLine = false, minHeight = 60.dp)
             }
         }
 
         // Saved Character Cards Library & System Prompt Presets Library
         if (appState.savedCards.isNotEmpty()) {
             SepiaSectionCard(
-                title = "Saved Character & Scenario Cards Library (${appState.savedCards.size})"
+                title = Strings.savedCharacterScenarioCardsLibrary(appState.savedCards.size)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     appState.savedCards.forEach { savedCard ->
@@ -195,24 +195,24 @@ internal fun WorldBookAndCardsSubpage(
                         ) {
                             Column(modifier = Modifier.weight(1f).padding(end = Space.s8)) {
                                 BasicText(
-                                    text = savedCard.name.ifBlank { "Untitled Card" },
+                                    text = savedCard.name.ifBlank { Strings.untitledCard },
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = if (isActive) p.accent else p.primaryInk)
                                 )
                                 BasicText(
-                                    text = savedCard.description.ifBlank { "No description" },
+                                    text = savedCard.description.ifBlank { Strings.noDescription },
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiLabelStyle
                                 )
                             }
                             SepiaButton(
-                                text = if (isActive) "✓ Active" else "Apply",
+                                text = if (isActive) Strings.active else Strings.apply,
                                 compact = true,
                                 style = if (isActive) SepiaButtonStyle.SECONDARY else SepiaButtonStyle.OUTLINE,
                                 onClick = {
                                     val mergedFrags = (activeSession.fragments + savedCard.embeddedFragments).distinctBy { it.title }
                                     onUpdateSession { it.copy(activeCard = savedCard, fragments = mergedFrags) }
-                                    onNotify("Applied card '${savedCard.name}'.")
+                                    onNotify(Strings.appliedCard(savedCard.name))
                                 }
                             )
                         }
@@ -223,11 +223,11 @@ internal fun WorldBookAndCardsSubpage(
 
         if (appState.systemPromptPresets.isNotEmpty() || activeSession.systemPrompt.isNotBlank()) {
             SepiaSectionCard(
-                title = "System Prompt Presets Library (${appState.systemPromptPresets.size})",
+                title = Strings.systemPromptPresetsLibrary(appState.systemPromptPresets.size),
                 headerAction = {
                     if (activeSession.systemPrompt.isNotBlank()) {
                         SepiaButton(
-                            text = "+ Save current prompt",
+                            text = Strings.saveCurrentPrompt,
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = {
@@ -238,7 +238,7 @@ internal fun WorldBookAndCardsSubpage(
                                     systemPrompt = activeSession.systemPrompt
                                 )
                                 onSavePresetToLibrary(preset)
-                                onNotify("Saved '${preset.name}' to System Prompt Presets.")
+                                onNotify(Strings.savedToSystemPromptPresets(preset.name))
                             }
                         )
                     }
@@ -247,7 +247,7 @@ internal fun WorldBookAndCardsSubpage(
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     if (appState.systemPromptPresets.isEmpty()) {
                         BasicText(
-                            text = "No saved presets yet. Import a .PNG/.JSON prompt preset or click '+ save current Prompt'.",
+                            text = Strings.noSavedPresetsYetImport,
                             style = p.uiLabelStyle
                         )
                     }
@@ -267,17 +267,17 @@ internal fun WorldBookAndCardsSubpage(
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                                 SepiaButton(
-                                    text = "Apply",
+                                    text = Strings.apply,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = {
                                         onUpdateSession { it.copy(systemPrompt = preset.systemPrompt) }
-                                        onNotify("Applied System Prompt '${preset.name}'.")
+                                        onNotify(Strings.appliedSystemPrompt(preset.name))
                                     }
                                 )
                                 SepiaButton(
                                     text = "×",
-                                    contentDescription = "Delete preset",
+                                    contentDescription = Strings.deletePreset,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onDeletePresetFromLibrary(preset.id) }
@@ -293,33 +293,33 @@ internal fun WorldBookAndCardsSubpage(
         val displayedFragments = if (editingGlobalWorldBook) appState.globalWorldBook else activeSession.fragments
 
         SepiaSectionCard(
-            title = "World Book entries (${displayedFragments.size} entries)"
+            title = Strings.worldBookEntriesEntries(displayedFragments.size)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaChip(
-                        label = "This chat (${activeSession.fragments.size})",
+                        label = Strings.thisChat(activeSession.fragments.size),
                         selected = !editingGlobalWorldBook,
                         onClick = { editingGlobalWorldBook = false }
                     )
                     SepiaChip(
-                        label = "Global World Book (${appState.globalWorldBook.size})",
+                        label = Strings.globalWorldBook(appState.globalWorldBook.size),
                         selected = editingGlobalWorldBook,
                         onClick = { editingGlobalWorldBook = true }
                     )
                 }
                 if (win.isCompact) {
-                    SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry title", modifier = Modifier.fillMaxWidth())
-                    SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger keywords (comma-separated)", modifier = Modifier.fillMaxWidth())
+                    SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = Strings.entryTitle, modifier = Modifier.fillMaxWidth())
+                    SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = Strings.triggerKeywordsCommaSeparated, modifier = Modifier.fillMaxWidth())
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-                        SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry title", modifier = Modifier.weight(1f))
-                        SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger keywords (comma-separated)", modifier = Modifier.weight(1f))
+                        SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = Strings.entryTitle, modifier = Modifier.weight(1f))
+                        SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = Strings.triggerKeywordsCommaSeparated, modifier = Modifier.weight(1f))
                     }
                 }
-                SepiaTextField(value = fragContent, onValueChange = { fragContent = it }, label = "Entry text", singleLine = false, minHeight = 56.dp)
+                SepiaTextField(value = fragContent, onValueChange = { fragContent = it }, label = Strings.entryText, singleLine = false, minHeight = 56.dp)
                 SepiaButton(
-                    text = if (editingGlobalWorldBook) "+ Add to Global World Book" else "+ Add to chat World Book",
+                    text = if (editingGlobalWorldBook) Strings.addToGlobalWorldBook else Strings.addToChatWorldBook,
                     compact = true,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
@@ -381,7 +381,7 @@ internal fun WorldBookAndCardsSubpage(
                             )
                             SepiaButton(
                                 text = "×",
-                                contentDescription = "Remove entry",
+                                contentDescription = Strings.removeEntry,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {

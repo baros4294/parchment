@@ -33,27 +33,27 @@ internal fun UtilityUsageSummary(records: List<ApiUsageRecord>) {
     var expanded by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(Space.s6)) {
         val cost = SessionSpendSummary(metrics, 0.0, 0).label
-        BasicText("Background requests: ${metrics.reportedRequests} · $cost", style = palette.uiBodyStyle)
-        SepiaButton(if (expanded) "Hide background usage" else "Show background usage", compact = true,
+        BasicText(Strings.backgroundRequests(metrics.reportedRequests, cost), style = palette.uiBodyStyle)
+        SepiaButton(if (expanded) Strings.hideBackgroundUsage else Strings.showBackgroundUsage, compact = true,
             style = SepiaButtonStyle.GHOST, onClick = { expanded = !expanded })
         if (expanded) Column(Modifier.heightIn(max = 200.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(Space.s6)) {
             records.groupBy { it.purpose }.forEach { (purpose, group) ->
                 val part = aggregateApiUsageRecords(group)
                 val label = when (purpose) {
-                    "title" -> "Titles"
-                    "summary" -> "Summaries"
-                    "compaction" -> "Compaction"
-                    "translation" -> "Translation"
-                    "draft" -> "Reply drafts"
-                    else -> "Other background requests"
+                    "title" -> Strings.titles
+                    "summary" -> Strings.summaries
+                    "compaction" -> Strings.compaction
+                    "translation" -> Strings.translation
+                    "draft" -> Strings.replyDrafts
+                    else -> Strings.otherBackgroundRequests
                 }
-                BasicText("$label · ${part.reportedRequests} requests", style = palette.uiBodyStyle)
-                BasicText("Input ${part.inputTokens} · output ${part.outputTokens} · reasoning ${part.reasoningTokens}", style = palette.uiLabelStyle)
-                BasicText("Cache read ${part.cachedInputTokens} · cache write ${part.cacheCreationInputTokens} · usage ${if (part.usageIsComplete) "complete" else "partial"}", style = palette.uiLabelStyle)
+                BasicText(Strings.requests(label, part.reportedRequests), style = palette.uiBodyStyle)
+                BasicText(Strings.inputOutputReasoning(part.inputTokens, part.outputTokens, part.reasoningTokens), style = palette.uiLabelStyle)
+                BasicText(Strings.cacheReadCacheWriteUsage(part.cachedInputTokens, part.cacheCreationInputTokens, if (part.usageIsComplete) "complete" else "partial"), style = palette.uiLabelStyle)
                 BasicText(SessionSpendSummary(part, 0.0, 0).label, style = palette.uiLabelStyle)
                 if (part.unpricedCostComponents.isNotEmpty()) BasicText(
-                    "Unpriced: ${part.unpricedCostComponents.sorted().joinToString(", ")}", style = palette.uiLabelStyle)
+                    Strings.unpriced(part.unpricedCostComponents.sorted().joinToString(", ")), style = palette.uiLabelStyle)
             }
         }
     }

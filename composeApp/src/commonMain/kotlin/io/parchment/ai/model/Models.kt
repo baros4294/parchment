@@ -547,7 +547,8 @@ data class PreferencesConfig(
     val deleteMessagesBelowWhenRegenerating: Boolean = true,
     val deletePreviousMessageWhenRegenerating: Boolean = false,
     val confirmBeforeRegenerating: Boolean = false,
-    val confirmBeforeDeletingChat: Boolean = true,
+    // Off by default: deleting a chat offers Undo instead.
+    val confirmBeforeDeletingChat: Boolean = false,
     val keepMessageVersionsWhenForking: Boolean = true,
     val showChatListDates: Boolean = true,
     val newChatWhenSwitchingAssistants: Boolean = false,

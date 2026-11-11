@@ -29,7 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -41,7 +40,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+internal fun FloatingNotification(
+    message: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** An action offered with the message, such as "Undo"; null shows none. */
+    actionLabel: String? = null,
+    onAction: () -> Unit = {}
+) {
     val palette = LocalParchmentPalette.current
     var lastMessage by remember { mutableStateOf(message) }
     SideEffect { if (message.isNotBlank()) lastMessage = message }
@@ -55,7 +61,7 @@ internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifi
     ) {
         Row(
             modifier = Modifier
-                .shadow(Elevation.overlay, shape)
+                .overlayShadow(shape)
                 .clip(shape)
                 .background(palette.elevatedBg)
                 .border(LineWidth.hairline, palette.border.copy(alpha = 0.7f), shape)
@@ -71,12 +77,15 @@ internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifi
                 style = palette.uiBodyStyle.copy(fontSize = 14.sp, color = palette.primaryInk, fontWeight = FontWeight.Medium),
                 modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())
             )
+            if (actionLabel != null) {
+                SepiaButton(text = actionLabel, compact = true, style = SepiaButtonStyle.OUTLINE, onClick = onAction)
+            }
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
                     .clickable(role = Role.Button, onClick = onDismiss)
-                    .semantics { contentDescription = "Dismiss notification" },
+                    .semantics { contentDescription = Strings.dismissNotification },
                 contentAlignment = Alignment.Center
             ) { KissVectorIcon(KissIcon.CLOSE, palette.mutedInk, size = IconSize.lg) }
         }

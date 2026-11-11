@@ -489,15 +489,6 @@ fun SepiaChip(
     }
 }
 
-/** A small preview of a theme: its page color with its accent at the center. */
-@Composable
-fun ThemeSwatch(canvas: Color, accent: Color) {
-    Box(
-        Modifier.size(22.dp).clip(CircleShape).background(canvas).border(LineWidth.emphasis, LocalParchmentPalette.current.border, CircleShape),
-        contentAlignment = Alignment.Center
-    ) { Box(Modifier.size(9.dp).clip(CircleShape).background(accent)) }
-}
-
 private const val HOVER_HINT_DELAY_MS = 450L
 
 /** Centers a hint under its control, flipping above it and staying inside the window. */
@@ -1220,7 +1211,7 @@ fun SepiaContextGaugeRing(
             overflow = TextOverflow.Ellipsis,
             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk)
         )
-        HoverHint("How much of this model's context the chat uses. Click for the breakdown.", gaugeHovered)
+        HoverHint(Strings.howMuchOfThisModelS, gaugeHovered)
     }
 }
 
@@ -1325,7 +1316,7 @@ fun SepiaSearchableModelPicker(
     onSelectModel: (profileId: String, modelId: String) -> Unit,
     modifier: Modifier = Modifier,
     maxListHeight: Dp = 280.dp,
-    placeholder: String = "🔍 Search models"
+    placeholder: String = Strings.searchModels
 ) {
     val p = LocalParchmentPalette.current
     var searchQuery by remember { mutableStateOf("") }
@@ -1413,7 +1404,7 @@ fun SepiaSearchableModelPicker(
             if (searchQuery.isNotEmpty() || selectedProviderFilter.isNotEmpty() || selectedVendorFilter.isNotEmpty()) {
                 SepiaButton(
                     text = "×",
-                    contentDescription = "Clear search",
+                    contentDescription = Strings.clearSearch,
                     compact = true,
                     style = SepiaButtonStyle.GHOST,
                     onClick = {
@@ -1434,7 +1425,7 @@ fun SepiaSearchableModelPicker(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 SepiaChip(
-                    label = "All Providers (${allOptions.size})",
+                    label = Strings.allProviders2(allOptions.size),
                     selected = selectedProviderFilter.isEmpty(),
                     onClick = {
                         selectedProviderFilter = ""
@@ -1463,7 +1454,7 @@ fun SepiaSearchableModelPicker(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 SepiaChip(
-                    label = "All families",
+                    label = Strings.allFamilies,
                     selected = selectedVendorFilter.isEmpty(),
                     onClick = { selectedVendorFilter = "" }
                 )
@@ -1490,9 +1481,9 @@ fun SepiaSearchableModelPicker(
             ) {
                 BasicText(
                     text = if (allOptions.isEmpty()) {
-                        "No models configured yet. Open 'Manage Providers & Models' to fetch or add models."
+                        Strings.noModelsConfiguredYetOpenManage
                     } else {
-                        "No models match '$searchQuery'."
+                        Strings.noModelsMatch(searchQuery)
                     },
                     style = p.uiLabelStyle
                 )
@@ -1964,7 +1955,7 @@ fun SepiaFileDiffCard(
                 if (diffLines.isNotEmpty()) {
                     SepiaButton(
                         text = if (showDiffBody) "▴" else "▾",
-                        contentDescription = if (showDiffBody) "Hide changes" else "Show changes",
+                        contentDescription = if (showDiffBody) Strings.hideChanges else Strings.showChanges,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = { showDiffBody = !showDiffBody }

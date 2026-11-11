@@ -42,12 +42,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up JDK 25 (Temurin)
-        uses: actions/setup-java@v6.2.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: "temurin"
           java-version: "25"
@@ -113,13 +113,24 @@ jobs:
             cp androidApp/build/outputs/mapping/release/mapping.txt dist/Parchment-Android-R8-mapping.txt
           fi
 
+      # The SBOM lists every library in the app (CycloneDX). It never blocks a release: if the plugin can't run,
+      # the release ships without it and this step shows the error.
+      - name: Generate SBOM
+        if: ${{ github.event_name != 'pull_request' }}
+        continue-on-error: true
+        run: |
+          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom --no-daemon --no-configuration-cache -PappVersion=0.0.0
+          SBOM=$(find build composeApp/build androidApp/build -path '*cyclonedx*' -name '*.json' 2>/dev/null | head -1)
+          [[ -n "$SBOM" ]] && cp "$SBOM" dist/Parchment-SBOM.cdx.json
+
       - name: Upload Android APK Artifact
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Parchment-Android-APK
           path: |
             dist/Parchment-Android-Universal.apk
             dist/Parchment-Android-R8-mapping.txt
+            dist/Parchment-SBOM.cdx.json
           if-no-files-found: error
 
       - name: Remove Staged Private Signer
@@ -167,12 +178,12 @@ jobs:
           "number=$number" >> $env:GITHUB_OUTPUT
 
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up JDK 25 (Temurin)
-        uses: actions/setup-java@v6.2.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: "temurin"
           java-version: "25"
@@ -219,7 +230,7 @@ jobs:
           iscc.exe "/DMyAppVersion=$appVer" installer\windows-installer.iss
 
       - name: Upload Windows EXE Installer Artifact
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Parchment-Windows-EXE-Installer
           path: build/installer/Parchment-Windows-x64-Setup.exe
@@ -252,7 +263,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Download Android APK Artifact
-        uses: actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Parchment-Android-APK
           path: release-assets
@@ -260,21 +271,43 @@ jobs:
           github-token: ${{ inputs.reuse_android_run && github.token || '' }}
 
       - name: Download Windows EXE Installer Artifact
-        uses: actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Parchment-Windows-EXE-Installer
           path: release-assets
 
+      - name: Checkout Changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+          path: source
+
+      # Release notes are the changelog's Unreleased section; SHA256SUMS.txt lets anyone check a download.
+      - name: Prepare Release Notes and Checksums
+        run: |
+          awk '/^## Unreleased/{on=1; next} /^## /{on=0} on' source/CHANGELOG.md > notes.md
+          [[ -s notes.md ]] || echo "See CHANGELOG.md." > notes.md
+          {
+            echo
+            echo "Android releases use a private signing identity. Legacy installations signed with the exposed repository key require an explicit backup/export and migration before installation."
+            echo "See the [release-signing and migration guide](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/RELEASE_SIGNING.md). Installs already using the private identity can update normally."
+            echo
+            echo "Check a download with \`sha256sum -c SHA256SUMS.txt\` (or \`Get-FileHash\` on Windows)."
+          } >> notes.md
+          (cd release-assets && sha256sum Parchment-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
       - name: Create or Update GitHub Release for In-App OTA Updater
-        uses: softprops/action-gh-release@v3.0.4
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: ${{ steps.rel.outputs.tag }}
-          body: |
-            Android releases use a private signing identity. Legacy installations signed with the exposed repository key require an explicit backup/export and migration before installation.
-            See the [release-signing and migration guide](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE_SIGNING.md). Installs already using the private identity can update normally.
+          body_path: notes.md
           files: |
             release-assets/Parchment-Android-Universal.apk
             release-assets/Parchment-Android-R8-mapping.txt
+            release-assets/Parchment-SBOM.cdx.json
             release-assets/Parchment-Windows-x64-Setup.exe
+            release-assets/SHA256SUMS.txt
+          fail_on_unmatched_files: false
           generate_release_notes: true

@@ -113,7 +113,7 @@ internal fun ProvidersSubpage(
                     SepiaTextField(
                         value = providerSearch,
                         onValueChange = { providerSearch = it },
-                        placeholder = "🔍 Search providers…",
+                        placeholder = Strings.searchProviders,
                         minHeight = 34.dp,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -175,7 +175,7 @@ internal fun ProvidersSubpage(
                                         .padding(horizontal = Space.s6, vertical = Space.s2)
                                 ) {
                                     BasicText(
-                                        text = if (statusOn) "On" else "Off",
+                                        text = if (statusOn) "On" else Strings.off,
                                         style = p.uiLabelStyle.copy(
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
@@ -188,7 +188,7 @@ internal fun ProvidersSubpage(
                     }
 
                     SepiaButton(
-                        text = "+ Add provider",
+                        text = Strings.addProvider,
                         style = SepiaButtonStyle.OUTLINE,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = { showAddProviderMenu = !showAddProviderMenu }
@@ -229,7 +229,7 @@ internal fun ProvidersSubpage(
                     // Mobile Hierarchical Provider List -> Provider Detail Subpage Drill-Down
                     if (mobileEditingProfileId == null) {
                         BasicText(
-                            text = "Select a provider profile to configure",
+                            text = Strings.selectAProviderProfileTo,
                             style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                         )
                         appState.profiles.forEach { prof ->
@@ -282,7 +282,7 @@ internal fun ProvidersSubpage(
                                             text = prof.name,
                                             style = p.uiHeaderStyle.copy(fontSize = 15.sp)
                                         )
-                                        val modelCountInfo = if (prof.savedModels.isNotEmpty()) "${prof.savedModels.size} models" else prof.defaultModel.ifBlank { "No models yet" }
+                                        val modelCountInfo = if (prof.savedModels.isNotEmpty()) "${prof.savedModels.size} models" else prof.defaultModel.ifBlank { Strings.noModelsYet }
                                         BasicText(
                                             text = "${prof.protocol.displayName.substringBefore(" API")} • $modelCountInfo",
                                             maxLines = 1,
@@ -302,7 +302,7 @@ internal fun ProvidersSubpage(
                                             .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         BasicText(
-                                            text = if (statusOn) "On" else "Off",
+                                            text = if (statusOn) "On" else Strings.off,
                                             style = p.uiLabelStyle.copy(
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
@@ -316,7 +316,7 @@ internal fun ProvidersSubpage(
                         }
 
                         SepiaButton(
-                            text = "+ Add provider profile",
+                            text = Strings.addProviderProfile,
                             style = SepiaButtonStyle.OUTLINE,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { showAddProviderMenu = !showAddProviderMenu }
@@ -346,7 +346,7 @@ internal fun ProvidersSubpage(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SepiaButton(
-                                text = "← All providers",
+                                text = Strings.allProviders,
                                 compact = true,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = { mobileEditingProfileId = null }
@@ -406,16 +406,16 @@ internal fun ProvidersSubpage(
                                 SepiaTextField(
                                     value = providerNameBuffer,
                                     onValueChange = { providerNameBuffer = it },
-                                    placeholder = "Provider Name…",
+                                    placeholder = Strings.providerName,
                                     minHeight = 32.dp,
                                     modifier = Modifier.width(210.dp)
                                 )
                                 SepiaButton(
-                                    text = "Save",
+                                    text = Strings.save,
                                     compact = true,
                                     style = SepiaButtonStyle.PRIMARY,
                                     onClick = {
-                                        val cleanName = providerNameBuffer.trim().ifBlank { "Custom Provider" }
+                                        val cleanName = providerNameBuffer.trim().ifBlank { Strings.customProvider }
                                         onUpdateProfileById(activeProfile.id) { it.copy(name = cleanName) }
                                         isRenamingProvider = false
                                     }
@@ -447,7 +447,7 @@ internal fun ProvidersSubpage(
                             }
                         }
                         SepiaButton(
-                            text = "⚙ Advanced",
+                            text = Strings.advanced,
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = { showProtocolSettingsSubpage = true }
@@ -455,7 +455,7 @@ internal fun ProvidersSubpage(
                         if (appState.profiles.size > 1) {
                             SepiaButton(
                                 text = "🗑",
-                                contentDescription = "Delete provider",
+                                contentDescription = Strings.deleteProvider,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -467,7 +467,7 @@ internal fun ProvidersSubpage(
                     }
                     SepiaToggleSwitch(
                         checked = activeProfile.enabled,
-                        label = "Enable provider ${activeProfile.name}",
+                        label = Strings.enableProvider(activeProfile.name),
                         onCheckedChange = { en -> onUpdateProfileById(activeProfile.id) { it.copy(enabled = en) } }
                     )
                 }
@@ -479,17 +479,17 @@ internal fun ProvidersSubpage(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        BasicText(text = "API key", style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold, color = p.narrationInk))
+                        BasicText(text = Strings.apiKey, style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold, color = p.narrationInk))
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                             SepiaButton(
                                 text = if (showApiKey) "🙈" else "👁",
-                                contentDescription = if (showApiKey) "Hide API key" else "Show API key",
+                                contentDescription = if (showApiKey) Strings.hideApiKey else Strings.showApiKey,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { showApiKey = !showApiKey }
                             )
                             SepiaButton(
-                                text = if (isTestingOrFetching) "Testing…" else "♡ Test",
+                                text = if (isTestingOrFetching) Strings.testing else Strings.test,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -500,10 +500,10 @@ internal fun ProvidersSubpage(
                                             onSuccess = { list ->
                                                 val ms = PlatformBridge.currentTimeMillis() - start
                                                 val secStr = formatDurationFromMs(ms)
-                                                onNotify("✓ Connection OK ($secStr • ${list.size} models reachable)")
+                                                onNotify(Strings.connectionOkModelsReachable(secStr, list.size))
                                             },
                                             onFailure = { err ->
-                                                onNotify("✕ Connection Test Failed: ${err.message}")
+                                                onNotify(Strings.connectionTestFailed(err.message))
                                                 isTestingOrFetching = false
                                             }
                                         )
@@ -519,7 +519,7 @@ internal fun ProvidersSubpage(
                                 onUpdateProfileById(activeProfile.id) { it.copy(apiKey = newVal.trim()) }
                             }
                         },
-                        placeholder = "🔑 Paste API key (toggle visibility above to edit masked key)…",
+                        placeholder = Strings.pasteApiKeyToggleVisibility,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -533,13 +533,13 @@ internal fun ProvidersSubpage(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            text = "Server URL",
+                            text = Strings.serverUrl,
                             style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold, color = p.narrationInk)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                             if (activeProfile.baseUrl.isNotEmpty()) {
                                 SepiaButton(
-                                    text = "× Clear URL",
+                                    text = Strings.clearUrl,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onUpdateProfileById(activeProfile.id) { it.copy(baseUrl = "") } }
@@ -547,7 +547,7 @@ internal fun ProvidersSubpage(
                             }
                             if (activeProfile.baseUrl != activeProfile.protocol.defaultBaseUrl) {
                                 SepiaButton(
-                                    text = "↺ Default URL",
+                                    text = Strings.defaultUrl,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = {
@@ -567,11 +567,11 @@ internal fun ProvidersSubpage(
                     if (activeProfile.protocol.isCustomWire) {
                         Spacer(Modifier.height(Space.s6))
                         BasicText(
-                            text = "API format",
+                            text = Strings.apiFormat,
                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold)
                         )
                         BasicText(
-                            text = "Parchment uses the URL above exactly as typed. Choose the format your service uses. Its documentation will say, and most use OpenAI Chat Completions.",
+                            text = Strings.parchmentUsesTheUrlAbove,
                             style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                         )
                         Spacer(Modifier.height(Space.s4))
@@ -589,7 +589,7 @@ internal fun ProvidersSubpage(
                         if (activeProfile.customDialect.isBlank()) {
                             Spacer(Modifier.height(Space.s4))
                             BasicText(
-                                text = "Choose a format to start chatting.",
+                                text = Strings.chooseAFormatToStart,
                                 style = p.uiLabelStyle.copy(color = p.danger, fontSize = 11.sp)
                             )
                         }
@@ -598,7 +598,29 @@ internal fun ProvidersSubpage(
 
                 Spacer(Modifier.height(Space.s4))
 
-                // Models Section Header (Matching Screenshot 9: `Models (count)` + `🔍` `+` `🗑` `🔄 Fetch`)
+                // Fetch asks the provider for its models; used by the header button and the empty list.
+                val fetchModels: () -> Unit = {
+                    isTestingOrFetching = true
+                    scope.launch {
+                        AiProviderEngine.fetchAvailableModels(activeProfile).fold(
+                            onSuccess = { fetched ->
+                                val merged = (activeProfile.savedModels + fetched).distinct()
+                                // Never replace a default model the user already chose. If there is none, pick a chat
+                                // model (skipping deep-research and embedding models).
+                                val preferredDefault = activeProfile.defaultModel.ifBlank { pickBestInitialChatModel(merged) }
+                                onUpdateProfile { it.copy(savedModels = merged, defaultModel = preferredDefault) }
+                                onNotify(Strings.fetchedModels(fetched.size))
+                                isTestingOrFetching = false
+                            },
+                            onFailure = { err ->
+                                onNotify(Strings.fetchFailed(err.message))
+                                isTestingOrFetching = false
+                            }
+                        )
+                    }
+                }
+
+                // Models header: count, search, add, clear and Fetch.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -606,7 +628,7 @@ internal fun ProvidersSubpage(
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalAlignment = Alignment.CenterVertically) {
                         BasicText(
-                            text = "Models",
+                            text = Strings.models,
                             style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                         )
                         Box(
@@ -625,7 +647,7 @@ internal fun ProvidersSubpage(
                     Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                         SepiaButton(
                             text = "+",
-                            contentDescription = "Add model",
+                            contentDescription = Strings.addModel,
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = { showAddModelBox = !showAddModelBox }
@@ -633,43 +655,20 @@ internal fun ProvidersSubpage(
                         if (activeProfile.savedModels.isNotEmpty()) {
                             SepiaButton(
                                 text = "🗑",
-                                contentDescription = "Remove all saved models",
+                                contentDescription = Strings.removeAllSavedModels,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
                                     onUpdateProfile { it.copy(savedModels = emptyList()) }
-                                    onNotify("Cleared model list for ${activeProfile.name}.")
+                                    onNotify(Strings.clearedModelListFor(activeProfile.name))
                                 }
                             )
                         }
                         SepiaButton(
-                            text = if (isTestingOrFetching) "Fetching…" else "🔄 Fetch",
+                            text = if (isTestingOrFetching) Strings.fetching else Strings.fetch,
                             compact = true,
                             style = SepiaButtonStyle.PRIMARY,
-                            onClick = {
-                                isTestingOrFetching = true
-                                scope.launch {
-                                    AiProviderEngine.fetchAvailableModels(activeProfile).fold(
-                                        onSuccess = { fetched ->
-                                            val merged = (activeProfile.savedModels + fetched).distinct()
-                                            // Never replace a default model the user already chose.
-                                            // If defaultModel is blank, pick a chat model (skipping deep-research/embedding)
-                                            val preferredDefault = activeProfile.defaultModel.ifBlank {
-                                                pickBestInitialChatModel(merged)
-                                            }
-                                            onUpdateProfile {
-                                                it.copy(savedModels = merged, defaultModel = preferredDefault)
-                                            }
-                                            onNotify("Fetched ${fetched.size} models.")
-                                            isTestingOrFetching = false
-                                        },
-                                        onFailure = { err ->
-                                            onNotify("Fetch failed: ${err.message}")
-                                            isTestingOrFetching = false
-                                        }
-                                    )
-                                }
-                            }
+                            onClick = fetchModels
                         )
                     }
                 }
@@ -684,12 +683,12 @@ internal fun ProvidersSubpage(
                         SepiaTextField(
                             value = manualModelToAdd,
                             onValueChange = { manualModelToAdd = it },
-                            placeholder = "Enter model ID…",
+                            placeholder = Strings.enterModelId,
                             monospace = true,
                             modifier = Modifier.weight(1f)
                         )
                         SepiaButton(
-                            text = "Add & select",
+                            text = Strings.addSelect,
                             style = SepiaButtonStyle.PRIMARY,
                             onClick = {
                                 val clean = manualModelToAdd.trim()
@@ -699,7 +698,7 @@ internal fun ProvidersSubpage(
                                     onUpdateSession { it.copy(modelOverride = clean, profileId = activeProfile.id) }
                                     manualModelToAdd = ""
                                     showAddModelBox = false
-                                    onNotify("Selected model: $clean")
+                                    onNotify(Strings.selectedModel(clean))
                                 }
                             }
                         )
@@ -724,14 +723,14 @@ internal fun ProvidersSubpage(
                         SepiaTextField(
                             value = modelSearch,
                             onValueChange = { modelSearch = it },
-                            placeholder = "🔍 Filter ${activeProfile.savedModels.size} models…",
+                            placeholder = Strings.filterModels(activeProfile.savedModels.size),
                             minHeight = 34.dp,
                             modifier = Modifier.weight(1f)
                         )
                         if (modelSearch.isNotEmpty() || selectedVendorFamily.isNotEmpty()) {
                             SepiaButton(
                                 text = "×",
-                                contentDescription = "Clear search",
+                                contentDescription = Strings.clearSearch,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = {
@@ -751,7 +750,7 @@ internal fun ProvidersSubpage(
                         verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         SepiaChip(
-                            label = "All Families (${activeProfile.savedModels.size})",
+                            label = Strings.allFamilies2(activeProfile.savedModels.size),
                             selected = selectedVendorFamily.isEmpty(),
                             onClick = { selectedVendorFamily = "" }
                         )
@@ -790,16 +789,29 @@ internal fun ProvidersSubpage(
                     verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     if (visibleModels.isEmpty()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
-                            modifier = Modifier.padding(Space.s8)
+                        // Say why the list is empty, and offer the fix right here.
+                        val nothingSaved = activeProfile.savedModels.isEmpty()
+                        Column(
+                            modifier = Modifier.padding(Space.s8),
+                            verticalArrangement = Arrangement.spacedBy(Space.s8)
                         ) {
-                            KissVectorIcon(icon = KissIcon.REFRESH, tint = p.mutedInk, size = 13.dp)
                             BasicText(
-                                text = "No models added yet. Type a model ID above or click Fetch.",
+                                text = when {
+                                    !nothingSaved -> Strings.noModelsMatchTheSearchOr
+                                    needsApiKey(activeProfile) -> Strings.addTheApiKeyAboveThen
+                                    else -> Strings.noModelsYetFetchThemFrom(activeProfile.name)
+                                },
                                 style = p.uiLabelStyle
                             )
+                            if (nothingSaved && !needsApiKey(activeProfile)) {
+                                SepiaButton(
+                                    text = if (isTestingOrFetching) Strings.fetching else Strings.fetchModels,
+                                    compact = true,
+                                    enabled = !isTestingOrFetching,
+                                    style = SepiaButtonStyle.SECONDARY,
+                                    onClick = fetchModels
+                                )
+                            }
                         }
                     } else {
                         visibleModels.forEach { modelId ->
@@ -882,14 +894,14 @@ internal fun ProvidersSubpage(
                                     }
                                     SepiaButton(
                                         text = "⚙",
-                                        contentDescription = "Model settings",
+                                        contentDescription = Strings.modelSettings,
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { selectedModelForConfigSubpage = modelId }
                                     )
                                     SepiaButton(
                                         text = "—",
-                                        contentDescription = "Remove model",
+                                        contentDescription = Strings.removeModel,
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = {
@@ -933,21 +945,21 @@ internal fun ProviderProtocolSubpage(
             verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             BasicText(
-                text = "Advanced settings for ${profile.name}",
+                text = Strings.advancedSettingsFor(profile.name),
                 style = p.uiHeaderStyle,
                 modifier = Modifier.padding(top = Space.s4, end = Space.s8)
             )
-            SepiaButton(text = "← Back to provider", compact = true, style = SepiaButtonStyle.PRIMARY, onClick = onBack)
+            SepiaButton(text = Strings.backToProvider, compact = true, style = SepiaButtonStyle.PRIMARY, onClick = onBack)
         }
 
         SepiaSectionCard(
-            title = "Name, format and address"
+            title = Strings.nameFormatAndAddress
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
                     value = profile.name,
                     onValueChange = { n -> onUpdateProfile { it.copy(name = n) } },
-                    label = "Provider display name",
+                    label = Strings.providerDisplayName,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Column(Modifier.fillMaxWidth().selectableGroup()) {
@@ -962,14 +974,14 @@ internal fun ProviderProtocolSubpage(
                 SepiaTextField(
                     value = profile.endpointPathOverride,
                     onValueChange = { ep -> onUpdateProfile { it.copy(endpointPathOverride = ep.trim()) } },
-                    label = "Custom path (optional, default ${profile.protocol.defaultEndpointPath})",
+                    label = Strings.customPathOptionalDefault(profile.protocol.defaultEndpointPath),
                     placeholder = profile.protocol.defaultEndpointPath,
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (profile.protocol.isCustomWire) {
                     BasicText(
-                        text = "API format",
+                        text = Strings.apiFormat,
                         style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.SemiBold)
                     )
                     Column(Modifier.fillMaxWidth().selectableGroup()) {
@@ -992,7 +1004,7 @@ internal fun ProviderProtocolSubpage(
                     }
                 }
                 SepiaToggleRow(
-                    title = "Auto-Fetch models on startup when saved list is empty",
+                    title = Strings.autoFetchModelsOnStartup,
                     checked = profile.autoFetchModels,
                     onCheckedChange = { af -> onUpdateProfile { it.copy(autoFetchModels = af) } }
                 )
@@ -1004,20 +1016,20 @@ internal fun ProviderProtocolSubpage(
                         onCheckedChange = { store -> onUpdateProfile { it.copy(storeServerSide = store, useStatefulChaining = it.useStatefulChaining && store) } }
                     )
                     SepiaToggleRow(
-                        title = "Let the provider remember this conversation",
-                        subtitle = "Off by default: full history is sent locally and nothing is stored provider-side.",
+                        title = Strings.letTheProviderRememberThis,
+                        subtitle = Strings.offByDefaultFullHistory,
                         checked = profile.useStatefulChaining,
                         onCheckedChange = { sc -> onUpdateProfile { it.copy(useStatefulChaining = sc) } }
                     )
                     SepiaToggleRow(
-                        title = "Background poll & stream recovery",
-                        subtitle = "Recovers a dropped stream. Needs provider storage.",
+                        title = Strings.backgroundPollStreamRecovery,
+                        subtitle = Strings.recoversADroppedStreamNeeds,
                         checked = profile.useBackgroundLongDecode,
                         onCheckedChange = { bg -> onUpdateProfile { it.copy(useBackgroundLongDecode = bg) } }
                     )
                 }
                 SepiaToggleRow(
-                    title = "Try the older API if this one is missing",
+                    title = Strings.tryTheOlderApiIf,
                     checked = profile.useLegacyFallbackEndpoint,
                     onCheckedChange = { leg -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = leg) } }
                 )
@@ -1025,7 +1037,7 @@ internal fun ProviderProtocolSubpage(
         }
 
         SepiaSectionCard(
-            title = "Reply settings (blank = provider default, 0 = no limit)"
+            title = Strings.replySettingsBlankProviderDefault
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
@@ -1040,8 +1052,8 @@ internal fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
                             }
                         },
-                        label = "Creativity, called temperature (blank = default)",
-                        placeholder = "Omitted",
+                        label = Strings.creativityCalledTemperatureBlankDefault,
+                        placeholder = Strings.omitted,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1056,8 +1068,8 @@ internal fun ProviderProtocolSubpage(
                                 trimmed.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
                             }
                         },
-                        label = "Word variety, called Top-P (blank = default)",
-                        placeholder = "Omitted",
+                        label = Strings.wordVarietyCalledTopP,
+                        placeholder = Strings.omitted,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1074,8 +1086,8 @@ internal fun ProviderProtocolSubpage(
                             trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(maxOutputTokens = num) } }
                         }
                     },
-                    label = "Reply limit in tokens (0 or blank = none)",
-                    placeholder = "Unlimited",
+                    label = Strings.replyLimitInTokens0,
+                    placeholder = Strings.unlimited,
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1090,13 +1102,13 @@ internal fun ProviderProtocolSubpage(
                             trimmed.toIntOrNull()?.let { num -> onUpdateProfile { it.copy(thinkingBudgetTokens = num) } }
                         }
                     },
-                    label = "Legacy thinking budget (pre-4.7 only — blank = adaptive)",
-                    placeholder = "Adaptive",
+                    label = Strings.legacyThinkingBudgetPre4,
+                    placeholder = Strings.adaptive,
                     monospace = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 BasicText(
-                    text = "Deprecated: Claude 4.7+ rejects budget_tokens with HTTP 400. Leave blank to use adaptive thinking steered by effort.",
+                    text = Strings.deprecatedClaude47Rejects,
                     style = p.uiLabelStyle.copy(color = p.mutedInk, fontSize = 11.sp)
                 )
 
@@ -1107,7 +1119,7 @@ internal fun ProviderProtocolSubpage(
                     ) {
                         KissVectorIcon(icon = KissIcon.WARNING, tint = p.accentSecondary, size = IconSize.md)
                         BasicText(
-                            text = "Anthropic requires a limit, so Parchment sends a very high one when this is blank.",
+                            text = Strings.anthropicRequiresALimitSo,
                             style = p.uiLabelStyle.copy(color = p.accentSecondary),
                             modifier = Modifier.weight(1f)
                         )
@@ -1117,7 +1129,7 @@ internal fun ProviderProtocolSubpage(
                 SepiaTextField(
                     value = profile.customHeadersRaw,
                     onValueChange = { h -> onUpdateProfile { it.copy(customHeadersRaw = h) } },
-                    label = "Custom HTTP headers (one 'Header: Value' per line)",
+                    label = Strings.customHttpHeadersOneHeader,
                     singleLine = false,
                     monospace = true,
                     minHeight = 56.dp,
@@ -1127,7 +1139,7 @@ internal fun ProviderProtocolSubpage(
                 SepiaTextField(
                     value = profile.rawJsonExtraBody,
                     onValueChange = { b -> onUpdateProfile { it.copy(rawJsonExtraBody = b) } },
-                    label = "Extra request options (JSON, for advanced use)",
+                    label = Strings.extraRequestOptionsJsonFor,
                     singleLine = false,
                     monospace = true,
                     minHeight = 64.dp,
@@ -1235,12 +1247,12 @@ private fun ModelConfigSubpage(
             verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             BasicText(
-                text = "Model Settings — $modelId",
+                text = Strings.modelSettings2(modelId),
                 style = p.uiHeaderStyle,
                 modifier = Modifier.padding(top = Space.s4, end = Space.s8)
             )
             SepiaButton(
-                text = "← Back to models",
+                text = Strings.backToModels,
                 compact = true,
                 style = SepiaButtonStyle.PRIMARY,
                 onClick = {
@@ -1251,10 +1263,10 @@ private fun ModelConfigSubpage(
         }
 
         SepiaSectionCard(
-            title = "Conversation and reply limits",
+            title = Strings.conversationAndReplyLimits,
             headerAction = {
                 SepiaButton(
-                    text = "Fill in from model catalog",
+                    text = Strings.fillInFromModelCatalog,
                     compact = true,
                     style = SepiaButtonStyle.SECONDARY,
                     onClick = {
@@ -1271,9 +1283,9 @@ private fun ModelConfigSubpage(
                                     writePriceText = syncedPricing.cacheWritePerM?.toString() ?: ""
                                     longWritePriceText = syncedPricing.longCacheWritePerM?.toString() ?: ""
                                     saveSpec(spec)
-                                    onNotify("Synced $modelId from the model catalog.")
+                                    onNotify(Strings.syncedFromTheModelCatalog(modelId))
                                 },
-                                onFailure = { err -> onNotify("Model catalog: ${err.message}") }
+                                onFailure = { err -> onNotify(Strings.modelCatalog(err.message)) }
                             )
                         }
                     }
@@ -1282,22 +1294,22 @@ private fun ModelConfigSubpage(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(value = ctxText, onValueChange = { ctxText = it; saveSpec() },
-                    label = "Conversation limit in tokens (0 = none)", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.conversationLimitInTokens0, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = maxOutText, onValueChange = { maxOutText = it; saveSpec() },
-                    label = "Reply limit in tokens (blank = default)", monospace = true, modifier = Modifier.fillMaxWidth())
-                BasicText("Prices are USD per million tokens. Blank means unknown; 0 means free.", style = p.uiLabelStyle)
+                    label = Strings.replyLimitInTokensBlank2, monospace = true, modifier = Modifier.fillMaxWidth())
+                BasicText(Strings.pricesAreUsdPerMillionTokens, style = p.uiLabelStyle)
                 SepiaTextField(value = inPriceText, onValueChange = { inPriceText = it; saveSpec() },
-                    label = "Input", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.input, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = outPriceText, onValueChange = { outPriceText = it; saveSpec() },
-                    label = "Output", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.output, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = cachePriceText, onValueChange = { cachePriceText = it; saveSpec() },
-                    label = "Reused input", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.reusedInput, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = writePriceText, onValueChange = { writePriceText = it; saveSpec() },
-                    label = "Saved for reuse", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.savedForReuse, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = longWritePriceText, onValueChange = { longWritePriceText = it; saveSpec() },
-                    label = "Saved longer for reuse", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.savedLongerForReuse, monospace = true, modifier = Modifier.fillMaxWidth())
                 SepiaTextField(value = thinkPriceText, onValueChange = { thinkPriceText = it; saveSpec() },
-                    label = "Reasoning", monospace = true, modifier = Modifier.fillMaxWidth())
+                    label = Strings.reasoning, monospace = true, modifier = Modifier.fillMaxWidth())
             }
         }
     }

@@ -1,0 +1,55 @@
+name: Quality signals
+
+# For pull requests: test coverage (Kover) and the rendered UI gallery, uploaded so a reviewer can compare
+# the screens with the previous run's. Runs on GitHub's machines; nothing here gates a release.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage-and-gallery:
+    name: Coverage and UI gallery
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: "temurin"
+          java-version: "25"
+          cache: "gradle"
+
+      # Runs every desktop test once, instrumented, with the gallery rendering turned on.
+      - name: Tests with Coverage
+        run: |
+          ./gradlew --init-script .github/scripts/kover.init.gradle.kts \
+            :composeApp:koverXmlReport :composeApp:koverHtmlReport :composeApp:koverLog \
+            -Pparchment.gallery=true --no-daemon --no-configuration-cache --max-workers=2
+
+      - name: Upload Coverage Report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-report
+          path: composeApp/build/reports/kover/
+          if-no-files-found: warn
+
+      - name: Upload UI Gallery
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-gallery
+          path: .parchment-local/verification/gallery/*.png
+          if-no-files-found: warn

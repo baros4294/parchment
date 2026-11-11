@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
@@ -386,7 +388,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                 if (!stepEmittedOutput && roundToolCalls.isEmpty() && errMsg.contains("http 400")) {
                     if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("topp") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                         stripSamplingOnRetry = true
-                        onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                        onStatus(Strings.endpointRejectedSamplingParametersRetryingWith)
                         continue
                     }
                     if (!forceImageModalityOnRetry && !omitImageModalityOnRetry &&
@@ -395,21 +397,21 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                     ) {
                         forceImageModalityOnRetry = true
                         recordDiscoveredModality(cleanModel, listOf("text", "image"))
-                        onStatus("Model outputs images — enabling TEXT + IMAGE responseModalities…")
+                        onStatus(Strings.modelOutputsImagesEnablingTextImage)
                         continue
                     }
                     if (!omitImageModalityOnRetry && (modelOutputsImages || forceImageModalityOnRetry) &&
                         (errMsg.contains("responsemodalities") || errMsg.contains("response_modalities"))
                     ) {
                         omitImageModalityOnRetry = true
-                        onStatus("Endpoint rejected responseModalities — retrying with text modality…")
+                        onStatus(Strings.endpointRejectedResponsemodalitiesRetryingWithText)
                         continue
                     }
                     if (!disableMixedToolsOnRetry && hasBuiltInTools && activeWorkspaceTools.isNotEmpty() &&
                         (errMsg.contains("validated") || errMsg.contains("includeserversidetoolinvocations") || errMsg.contains("tool") || errMsg.contains("function_declarations") || errMsg.contains("google_search"))
                     ) {
                         disableMixedToolsOnRetry = true
-                        onStatus("Endpoint rejected mixed built-in + function tools — retrying with workspace tools…")
+                        onStatus(Strings.endpointRejectedMixedBuiltInFunction)
                         continue
                     }
                     if (!upgradeMinimalToLowOnRetry && !useBudgetDialectOnRetry &&
@@ -417,17 +419,17 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                         (errMsg.contains("minimal") || errMsg.contains("thinkinglevel") || errMsg.contains("thinking_level"))
                     ) {
                         upgradeMinimalToLowOnRetry = true
-                        onStatus("Model rejected MINIMAL thinkingLevel — stepping up to LOW…")
+                        onStatus(Strings.modelRejectedMinimalThinkinglevelSteppingUp)
                         continue
                     }
                     if (!useBudgetDialectOnRetry && (errMsg.contains("thinkinglevel") || errMsg.contains("thinking_level"))) {
                         useBudgetDialectOnRetry = true
-                        onStatus("Model uses thinkingBudget dialect — switching from thinkingLevel to thinkingBudget…")
+                        onStatus(Strings.modelUsesThinkingbudgetDialectSwitchingFrom)
                         continue
                     }
                     if (!simplifyThinkingOnRetry && (errMsg.contains("thinking") || errMsg.contains("thinkinglevel") || errMsg.contains("thinkingbudget"))) {
                         simplifyThinkingOnRetry = true
-                        onStatus("Endpoint rejected thinkingConfig — retrying with default thinking…")
+                        onStatus(Strings.endpointRejectedThinkingconfigRetryingWithDefault)
                         continue
                     }
                     if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
@@ -435,7 +437,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                             errMsg.contains("signature") || errMsg.contains("functioncall") || errMsg.contains("function_call") || errMsg.contains("tool type"))
                     ) {
                         foldHistoricalToolsOnRetry = true
-                        onStatus("Endpoint rejected historical tool/signature context — folding prior tool history into compact text & retrying…")
+                        onStatus(Strings.endpointRejectedHistoricalToolSignatureContext)
                         continue
                     }
                 }
@@ -473,7 +475,7 @@ internal suspend fun AiProviderEngine.executeGeminiGenerateContentLoop(
                         add(buildJsonObject { put("text", stopHookPrompt) })
                     }
                 })
-                onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                onStatus(Strings.goalWorkCheckContinuingIncompleteChecklist)
                 continue
             }
             break

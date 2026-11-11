@@ -172,7 +172,7 @@ internal fun InlineSvgArtifactPreview(rawSvg: String) {
     ) {
         if (scene == null || scene.drawItems.isEmpty()) {
             BasicText(
-                text = "SVG source ready (tap Save to export .svg or Code to inspect markup).",
+                text = Strings.svgSourceReadyTapSave,
                 style = p.uiLabelStyle
             )
         } else {

@@ -76,9 +76,9 @@ internal fun ParchmentSidebar(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 placeholder = when (selectedTab) {
-                    SidebarTab.ASSISTANTS -> "🔍 Search assistants…"
-                    SidebarTab.PINNED -> "🔍 Search pinned…"
-                    SidebarTab.TOPICS -> "🔍 Search chats…"
+                    SidebarTab.ASSISTANTS -> Strings.searchAssistants
+                    SidebarTab.PINNED -> Strings.searchPinned
+                    SidebarTab.TOPICS -> Strings.searchChats
                 },
                 minHeight = 36.dp,
                 modifier = Modifier.weight(1f)
@@ -103,7 +103,7 @@ internal fun ParchmentSidebar(
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(Space.s4)
         ) {
-            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats", SidebarTab.PINNED to "Pinned").forEach { (tab, label) ->
+            listOf(SidebarTab.ASSISTANTS to Strings.assistants, SidebarTab.TOPICS to Strings.chats, SidebarTab.PINNED to Strings.pinned).forEach { (tab, label) ->
                 val isSel = selectedTab == tab
                 val tabInteraction = remember { MutableInteractionSource() }
                 val tabHovered by tabInteraction.collectIsHoveredAsState()
@@ -164,7 +164,7 @@ internal fun ParchmentSidebar(
                 if (filteredAssistants.isEmpty()) {
                     item {
                         BasicText(
-                            text = "No matching assistants found. Tap '+' above to create a new assistant.",
+                            text = Strings.noMatchingAssistantsFoundTap,
                             style = p.uiLabelStyle,
                             modifier = Modifier.padding(Space.s8)
                         )
@@ -222,7 +222,7 @@ internal fun ParchmentSidebar(
                         }
                         SepiaButton(
                             text = "⚙",
-                            contentDescription = "Edit assistant",
+                            contentDescription = Strings.editAssistant,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { onEditAssistantInSettings(asst.id) }
@@ -273,7 +273,7 @@ internal fun ParchmentSidebar(
                     }
                     KissVectorIcon(icon = hdrIcon, tint = p.accent, size = 13.dp)
                     BasicText(
-                        text = if (historySearch.inProgress) "Searching full history…" else "${activeAssistant.name} (${assistantTopics.size})",
+                        text = if (historySearch.inProgress) Strings.searchingFullHistory else "${activeAssistant.name} (${assistantTopics.size})",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold)
@@ -281,8 +281,8 @@ internal fun ParchmentSidebar(
                 }
                 if (assistantTopics.size > 1 || assistantTopics.any { it.messages.isNotEmpty() || it.title != "New Chat" }) {
                     SepiaButton(
-                        text = "Clear all",
-                        hint = "Delete every chat for this assistant",
+                        text = Strings.clearAll,
+                        hint = Strings.deleteEveryChatForThis,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = onDeleteAllTopicsForAssistant
@@ -356,7 +356,7 @@ internal fun ParchmentSidebar(
                         if (isCompactScreen) {
                             SepiaButton(
                                 text = if (showRowActions) "▴" else "⋯",
-                                contentDescription = if (showRowActions) "Hide chat actions" else "Chat actions",
+                                contentDescription = if (showRowActions) Strings.hideChatActions else Strings.chatActions,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { touchActionsChatId = if (showRowActions) null else sess.id }
@@ -365,7 +365,7 @@ internal fun ParchmentSidebar(
                         if (showRowActions) Row(horizontalArrangement = Arrangement.spacedBy(Space.s2), verticalAlignment = Alignment.CenterVertically) {
                             SepiaButton(
                                 text = "📌",
-                                contentDescription = if (sess.isPinned) "Unpin chat" else "Pin chat",
+                                contentDescription = if (sess.isPinned) Strings.unpinChat else Strings.pinChat,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { onTogglePinSession(sess.id) }
@@ -373,8 +373,8 @@ internal fun ParchmentSidebar(
                             if (sess.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "✦",
-                                    contentDescription = "Regenerate title",
-                                    hint = "Write a new title from this chat",
+                                    contentDescription = Strings.regenerateTitle,
+                                    hint = Strings.writeANewTitleFrom,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onRegenerateSessionTitle(sess.id) }
@@ -382,7 +382,7 @@ internal fun ParchmentSidebar(
                             }
                             SepiaButton(
                                 text = "🗑",
-                                contentDescription = "Delete chat",
+                                contentDescription = Strings.deleteChat,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { onDeleteSession(sess.id) }
@@ -397,7 +397,7 @@ internal fun ParchmentSidebar(
             SepiaDivider()
 
             SepiaButton(
-                text = "⚙ Settings",
+                text = Strings.settings3,
                 style = SepiaButtonStyle.GHOST,
                 modifier = Modifier.fillMaxWidth(),
                 onClick = onOpenSettings

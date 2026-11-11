@@ -82,19 +82,19 @@ internal fun AssistantsSubpage(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 BasicText(
-                    text = "Edit Assistant — ${editingAssistant.name}",
+                    text = Strings.editAssistant2(editingAssistant.name),
                     style = p.uiHeaderStyle,
                     modifier = Modifier.weight(1f).padding(end = Space.s8)
                 )
                 SepiaButton(
-                    text = "← All assistants",
+                    text = Strings.allAssistants,
                     compact = true,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = { editingAssistantId = null }
                 )
             }
 
-            SepiaSectionCard(title = "Assistant identity & system prompt") {
+            SepiaSectionCard(title = Strings.assistantIdentitySystemPrompt) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(Space.s12),
@@ -108,7 +108,7 @@ internal fun AssistantsSubpage(
                         SepiaTextField(
                             value = editingAssistant.name,
                             onValueChange = { nm -> updateCurrent { it.copy(name = nm) } },
-                            label = "Assistant name",
+                            label = Strings.assistantName,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -134,8 +134,8 @@ internal fun AssistantsSubpage(
                     SepiaTextField(
                         value = editingAssistant.systemPrompt,
                         onValueChange = { sp -> updateCurrent { it.copy(systemPrompt = sp) } },
-                        label = "Instructions (kept across chats)",
-                        placeholder = "Enter system prompt (optional)…",
+                        label = Strings.instructionsKeptAcrossChats,
+                        placeholder = Strings.enterSystemPromptOptional,
                         singleLine = false,
                         minHeight = 140.dp,
                         maxHeight = 520.dp,
@@ -145,7 +145,7 @@ internal fun AssistantsSubpage(
                     SepiaTextField(
                         value = editingAssistant.authorsNote,
                         onValueChange = { an -> updateCurrent { it.copy(authorsNote = an) } },
-                        label = "Default Author's note / Post-History injection (optional)",
+                        label = Strings.defaultAuthorSNotePost,
                         singleLine = false,
                         minHeight = 60.dp,
                         maxHeight = 320.dp,
@@ -154,13 +154,13 @@ internal fun AssistantsSubpage(
                 }
             }
             SepiaSectionCard(
-                title = "Assistant model, thinking effort & workspace"
+                title = Strings.assistantModelThinkingEffortWorkspace
             ) {
                 val scope = rememberCoroutineScope()
                 val followsGlobalModel = editingAssistant.defaultModelId.isBlank()
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     SepiaToggleRow(
-                        title = "Follow global default model",
+                        title = Strings.followGlobalDefaultModel,
                         checked = followsGlobalModel,
                         onCheckedChange = { follow ->
                             if (follow) {
@@ -188,19 +188,19 @@ internal fun AssistantsSubpage(
                         )
                     }
                     SepiaDivider()
-                    SepiaAdaptiveRow(label = "Thinking effort override") {
+                    SepiaAdaptiveRow(label = Strings.thinkingEffortOverride) {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                             listOf(
-                                "" to "Inherit",
-                                "none" to "None",
-                                "low" to "Low",
-                                "medium" to "Medium",
-                                "high" to "High",
+                                "" to Strings.inherit,
+                                "none" to Strings.none,
+                                "low" to Strings.low,
+                                "medium" to Strings.medium,
+                                "high" to Strings.high,
                                 "xhigh" to "XHigh",
-                                "max" to "Max",
-                                "adaptive" to "Adaptive",
-                                "auto" to "Auto"
+                                "max" to Strings.max,
+                                "adaptive" to Strings.adaptive,
+                                "auto" to Strings.auto
                             ).forEach { (effVal, effLabel) ->
                                 SepiaChip(
                                     label = effLabel,
@@ -209,7 +209,7 @@ internal fun AssistantsSubpage(
                                 )
                             }
                             SepiaChip(
-                                label = "Custom…",
+                                label = Strings.custom,
                                 selected = showCustomAssistantEffort,
                                 onClick = {
                                     showCustomAssistantEffort = !showCustomAssistantEffort
@@ -225,7 +225,7 @@ internal fun AssistantsSubpage(
                                     customAssistantEffortDraft = raw
                                     updateCurrent { it.copy(thinkingEffort = raw.trim()) }
                                 },
-                                placeholder = "Raw effort value (e.g. adaptive, auto, budget:4096)",
+                                placeholder = Strings.rawEffortValueEG,
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -246,7 +246,7 @@ internal fun AssistantsSubpage(
             }
 
             SepiaSectionCard(
-                title = "Assistant sampling & context overrides (blank = follow profile, 0 = ∞)"
+                title = Strings.assistantSamplingContextOverridesBlank
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
@@ -257,8 +257,8 @@ internal fun AssistantsSubpage(
                                 val t = v.trim()
                                 updateCurrent { it.copy(temperature = if (t.isEmpty()) null else t.toDoubleOrNull()) }
                             },
-                            label = "Creativity, called temperature (blank = default)",
-                            placeholder = "Omitted",
+                            label = Strings.creativityCalledTemperatureBlankDefault,
+                            placeholder = Strings.omitted,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -269,8 +269,8 @@ internal fun AssistantsSubpage(
                                 val t = v.trim()
                                 updateCurrent { it.copy(topP = if (t.isEmpty()) null else t.toDoubleOrNull()) }
                             },
-                            label = "Word variety, called Top-P (blank = default)",
-                            placeholder = "Omitted",
+                            label = Strings.wordVarietyCalledTopP,
+                            placeholder = Strings.omitted,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -282,8 +282,8 @@ internal fun AssistantsSubpage(
                             val t = v.trim()
                             updateCurrent { it.copy(maxOutputTokens = if (t.isEmpty()) null else t.toIntOrNull()) }
                         },
-                        label = "Reply limit in tokens (blank or 0 = none)",
-                        placeholder = "Unlimited",
+                        label = Strings.replyLimitInTokensBlank,
+                        placeholder = Strings.unlimited,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -294,8 +294,8 @@ internal fun AssistantsSubpage(
                             val n = v.trim().toIntOrNull() ?: 0
                             updateCurrent { it.copy(contextMessageLimit = n.coerceAtLeast(0)) }
                         },
-                        label = "History message limit (0 = unlimited)",
-                        placeholder = "0 = unlimited",
+                        label = Strings.historyMessageLimit0Unlimited,
+                        placeholder = Strings.n0Unlimited,
                         monospace = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -312,7 +312,7 @@ internal fun AssistantsSubpage(
             verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             BasicText(
-                text = "Assistants",
+                text = Strings.assistants,
                 style = p.uiHeaderStyle.copy(fontSize = 19.sp),
                 modifier = Modifier.padding(top = Space.s2, end = Space.s8)
             )
@@ -321,7 +321,7 @@ internal fun AssistantsSubpage(
                 verticalArrangement = Arrangement.spacedBy(Space.s6)
             ) {
                 SepiaButton(
-                    text = "+ New assistant",
+                    text = Strings.newAssistant,
                     compact = true,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
@@ -340,8 +340,8 @@ internal fun AssistantsSubpage(
 
         if (appState.assistants.isEmpty()) {
             SepiaSectionCard(
-                title = "Default assistant active",
-                subtitle = "Click '+ New Assistant' above to create additional assistant profiles."
+                title = Strings.defaultAssistantActive,
+                subtitle = Strings.clickNewAssistantAboveTo
             ) {}
         }
 
@@ -354,7 +354,7 @@ internal fun AssistantsSubpage(
                     .clip(shape)
                     .background(p.cardBg)
                     .border(if (isSelected) 1.dp else LineWidth.hairline, if (isSelected) p.accent else p.border.copy(alpha = 0.75f), shape)
-                    .clickable(role = Role.Button, onClickLabel = "Edit assistant") { editingAssistantId = asst.id }
+                    .clickable(role = Role.Button, onClickLabel = Strings.editAssistant) { editingAssistantId = asst.id }
                     .semantics { selected = isSelected }
                     .padding(Space.s16),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -387,19 +387,19 @@ internal fun AssistantsSubpage(
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                     SepiaButton(
                         text = "📋",
-                        contentDescription = "Duplicate assistant",
+                        contentDescription = Strings.duplicateAssistant,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
                             val now = PlatformBridge.currentTimeMillis()
                             val copy = asst.copy(id = "asst-$now", name = "${asst.name} Copy")
                             onUpdateAssistants(appState.assistants + copy, appState.activeAssistantId)
-                            onNotify("Duplicated '${asst.name}'.")
+                            onNotify(Strings.duplicated(asst.name))
                         }
                     )
                     SepiaButton(
                         text = "🗑",
-                        contentDescription = "Delete assistant",
+                        contentDescription = Strings.deleteAssistant,
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
@@ -408,7 +408,7 @@ internal fun AssistantsSubpage(
                             }
                             val nextActive = if (appState.activeAssistantId == asst.id) remaining.first().id else appState.activeAssistantId
                             onUpdateAssistants(remaining, nextActive)
-                            onNotify("Deleted assistant '${asst.name}'.")
+                            onNotify(Strings.deletedAssistant(asst.name))
                         }
                     )
                 }

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,7 +40,6 @@ import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.network.OtaUpdateEngine
-import kotlinx.coroutines.launch
 
 // ============================================================================================
 // Settings search, item by item
@@ -320,18 +318,18 @@ internal fun GlobalSettingsSearchResultsSubpage(
         ) {
             KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = 17.dp)
             BasicText(
-                text = "Settings search results for \"$searchQuery\"",
+                text = Strings.settingsSearchResultsFor(searchQuery),
                 style = p.uiHeaderStyle.copy(fontSize = 18.sp)
             )
         }
 
         if (!hasAnyResult) {
             SepiaSectionCard(
-                title = "No matching settings found for \"$searchQuery\"",
-                subtitle = "Try a word like 'font' or 'model'."
+                title = Strings.noMatchingSettingsFoundFor(searchQuery),
+                subtitle = Strings.tryAWordLikeFont
             ) {
                 SepiaButton(
-                    text = "Open preferences →",
+                    text = Strings.openPreferences,
                     compact = true,
                     style = SepiaButtonStyle.OUTLINE,
                     onClick = { onJumpToCategory(SettingsCategory.PREFERENCES) }
@@ -341,11 +339,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (anyPrefMatch) {
             SepiaSectionCard(
-                title = "Preferences & appearance",
-                subtitle = "Chat item display, typography, Markdown/LaTeX rendering, and behavior toggles",
+                title = Strings.preferencesAppearance,
+                subtitle = Strings.chatItemDisplayTypographyMarkdown,
                 headerAction = {
                     SepiaButton(
-                        text = "Open preferences →",
+                        text = Strings.openPreferences,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.PREFERENCES) }
@@ -357,7 +355,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         ThemePresetChoices(theme, onUpdateTheme)
                     }
                     if (hitAccentColor) {
-                        SepiaAdaptiveRow(label = "Accent color") {
+                        SepiaAdaptiveRow(label = Strings.accentColor) {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(Modifier.selectableGroup()) { AccentSwatches(theme, onUpdateTheme) }
                         }
@@ -376,7 +374,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     proseSizeText = v
                                     v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(proseFontSizeSp = it)) }
                                 },
-                                label = "Prose font size (sp)",
+                                label = Strings.proseFontSizeSp,
                                 monospace = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -386,7 +384,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     codeSizeText = v
                                     v.toFloatOrNull()?.takeIf { it > 4f }?.let { onUpdateTheme(theme.copy(codeFontSizeSp = it)) }
                                 },
-                                label = "Code font size (sp)",
+                                label = Strings.codeFontSizeSp,
                                 monospace = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -396,17 +394,17 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     maxWidthText = v
                                     v.toFloatOrNull()?.takeIf { it >= 300f }?.let { onUpdateTheme(theme.copy(maxReadingWidthDp = it)) }
                                 },
-                                label = "Max reading width (dp)",
+                                label = Strings.maxReadingWidthDp,
                                 monospace = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
                     if (hitLayoutStyle) {
-                        SepiaAdaptiveRow(label = "Message layout style") {
+                        SepiaAdaptiveRow(label = Strings.messageLayoutStyle) {
                             Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 SepiaChip(
-                                    label = "Bubbles",
+                                    label = Strings.bubbles,
                                     selected = prefs.defaultViewMode == ViewMode.EDITORIAL_TURNS,
                                     onClick = {
                                         onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.EDITORIAL_TURNS))
@@ -414,7 +412,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     }
                                 )
                                 SepiaChip(
-                                    label = "Page",
+                                    label = Strings.page,
                                     selected = prefs.defaultViewMode == ViewMode.MANUSCRIPT,
                                     onClick = {
                                         onUpdatePreferences(prefs.copy(defaultViewMode = ViewMode.MANUSCRIPT))
@@ -426,272 +424,272 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (hitProviderCapsule) {
                         SepiaToggleRow(
-                            title = "Show provider in model capsule",
+                            title = Strings.showProviderInModelCapsule,
                             checked = prefs.showProviderInModelCapsule,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderInModelCapsule = it)) }
                         )
                     }
                     if (hitTitleBarAvatar) {
                         SepiaToggleRow(
-                            title = "Show assistant avatar in title bar",
+                            title = Strings.showAssistantAvatarInTitle,
                             checked = prefs.showAssistantAvatarInTitleBar,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showAssistantAvatarInTitleBar = it)) }
                         )
                     }
                     if (hitUserAvatar) {
                         SepiaToggleRow(
-                            title = "Show user avatar",
+                            title = Strings.showUserAvatar,
                             checked = prefs.showUserAvatar,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showUserAvatar = it)) }
                         )
                     }
                     if (hitUserName) {
                         SepiaToggleRow(
-                            title = "Show user name",
+                            title = Strings.showUserName,
                             checked = prefs.showUserName,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showUserName = it)) }
                         )
                     }
                     if (hitUserTimestamp) {
                         SepiaToggleRow(
-                            title = "Show user timestamp",
+                            title = Strings.showUserTimestamp,
                             checked = prefs.showUserTimestamp,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showUserTimestamp = it)) }
                         )
                     }
                     if (hitUserActions) {
                         SepiaToggleRow(
-                            title = "Show user message actions",
+                            title = Strings.showUserMessageActions,
                             checked = prefs.showUserMessageActions,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showUserMessageActions = it)) }
                         )
                     }
                     if (hitModelIcon) {
                         SepiaToggleRow(
-                            title = "Show model icon / avatar",
+                            title = Strings.showModelIconAvatar,
                             checked = prefs.showModelIcon,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showModelIcon = it)) }
                         )
                     }
                     if (hitModelName) {
                         SepiaToggleRow(
-                            title = "Show model name",
+                            title = Strings.showModelName,
                             checked = prefs.showModelName,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showModelName = it)) }
                         )
                     }
                     if (hitModelTimestamp) {
                         SepiaToggleRow(
-                            title = "Show model timestamp",
+                            title = Strings.showModelTimestamp,
                             checked = prefs.showModelTimestamp,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showModelTimestamp = it)) }
                         )
                     }
                     if (hitProviderAfterModel) {
                         SepiaToggleRow(
-                            title = "Show provider after model name",
+                            title = Strings.showProviderAfterModelName,
                             checked = prefs.showProviderAfterModelName,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showProviderAfterModelName = it)) }
                         )
                     }
                     if (hitTokenStats) {
                         SepiaToggleRow(
-                            title = "Show usage stats",
+                            title = Strings.showUsageStats,
                             checked = prefs.showTokenAndContextStats,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showTokenAndContextStats = it)) }
                         )
                     }
                     if (hitTokensEntireTurn) {
                         SepiaToggleRow(
-                            title = "Count usage for the whole reply",
+                            title = Strings.countUsageForTheWhole,
                             checked = prefs.showTokensForEntireTurn,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showTokensForEntireTurn = it)) }
                         )
                     }
                     if (hitThinkingCards) {
                         SepiaToggleRow(
-                            title = "Show thinking cards",
+                            title = Strings.showThinkingCards,
                             checked = prefs.showThinkingCards,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showThinkingCards = it)) }
                         )
                     }
                     if (hitToolCards) {
                         SepiaToggleRow(
-                            title = "Show tool cards",
+                            title = Strings.showToolCards,
                             checked = prefs.showToolCards,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showToolCards = it)) }
                         )
                     }
                     if (hitReasoningButton) {
                         SepiaToggleRow(
-                            title = "Show thinking level on the button",
+                            title = Strings.showThinkingLevelOnThe,
                             checked = prefs.showReasoningLevelOnButton,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showReasoningLevelOnButton = it)) }
                         )
                     }
                     if (hitInlineDollar) {
                         SepiaToggleRow(
-                            title = "Inline $...$ Rendering",
+                            title = Strings.inlineRendering,
                             checked = prefs.inlineDollarMathRendering,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(inlineDollarMathRendering = it)) }
                         )
                     }
                     if (hitMathFormula) {
                         SepiaToggleRow(
-                            title = "Math formula rendering",
+                            title = Strings.mathFormulaRendering,
                             checked = prefs.mathFormulaRendering,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(mathFormulaRendering = it)) }
                         )
                     }
                     if (hitUserMd) {
                         SepiaToggleRow(
-                            title = "Render user messages with Markdown",
+                            title = Strings.renderUserMessagesWithMarkdown,
                             checked = prefs.renderUserMessagesWithMarkdown,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(renderUserMessagesWithMarkdown = it)) }
                         )
                     }
                     if (hitReasoningMd) {
                         SepiaToggleRow(
-                            title = "Format thinking text (headings, math)",
+                            title = Strings.formatThinkingTextHeadingsMath,
                             checked = prefs.renderReasoningWithMarkdown,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(renderReasoningWithMarkdown = it)) }
                         )
                     }
                     if (hitAssistantMd) {
                         SepiaToggleRow(
-                            title = "Render assistant messages with Markdown",
+                            title = Strings.renderAssistantMessagesWithMarkdown,
                             checked = prefs.renderAssistantMessagesWithMarkdown,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(renderAssistantMessagesWithMarkdown = it)) }
                         )
                     }
                     if (hitDialogueInk) {
                         SepiaToggleRow(
-                            title = "Highlight spoken \"dialogue\" & *narration* ink",
+                            title = Strings.highlightSpokenDialogueNarrationInk,
                             checked = theme.highlightDialogueAndNarration,
                             onCheckedChange = { onUpdateTheme(theme.copy(highlightDialogueAndNarration = it)) }
                         )
                     }
                     if (hitAutoCollapseCode) {
                         SepiaToggleRow(
-                            title = "Auto-collapse code blocks",
+                            title = Strings.autoCollapseCodeBlocks,
                             checked = prefs.autoCollapseCodeBlocks,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseCodeBlocks = it)) }
                         )
                     }
                     if (hitCollapseLong) {
                         SepiaToggleRow(
-                            title = "Collapse long messages (> 1,800 chars)",
+                            title = Strings.collapseLongMessages1800,
                             checked = prefs.collapseLongMessages,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(collapseLongMessages = it)) }
                         )
                     }
                     if (hitAutoTopics) {
                         SepiaToggleRow(
-                            title = "Auto switch to topics",
+                            title = Strings.autoSwitchToTopics,
                             checked = prefs.autoSwitchToTopics,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoSwitchToTopics = it)) }
                         )
                     }
                     if (hitAutoCollapseThink) {
                         SepiaToggleRow(
-                            title = "Auto-collapse thinking",
+                            title = Strings.autoCollapseThinking,
                             checked = prefs.autoCollapseThinking,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCollapseThinking = it)) }
                         )
                     }
                     if (hitToolSummary) {
                         SepiaToggleRow(
-                            title = "Show tool result summary",
+                            title = Strings.showToolResultSummary,
                             checked = prefs.showToolResultSummary,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showToolResultSummary = it)) }
                         )
                     }
                     if (hitDeleteBelowRegen) {
                         SepiaToggleRow(
-                            title = "Delete messages below when regenerating",
+                            title = Strings.deleteMessagesBelowWhenRegenerating,
                             checked = prefs.deleteMessagesBelowWhenRegenerating,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(deleteMessagesBelowWhenRegenerating = it)) }
                         )
                     }
                     if (hitDeletePrevRegen) {
                         SepiaToggleRow(
-                            title = "Delete previous message when regenerating",
+                            title = Strings.deletePreviousMessageWhenRegenerating,
                             checked = prefs.deletePreviousMessageWhenRegenerating,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(deletePreviousMessageWhenRegenerating = it)) }
                         )
                     }
                     if (hitConfirmRegen) {
                         SepiaToggleRow(
-                            title = "Confirm before regenerating",
+                            title = Strings.confirmBeforeRegenerating,
                             checked = prefs.confirmBeforeRegenerating,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeRegenerating = it)) }
                         )
                     }
                     if (hitConfirmDelete) {
                         SepiaToggleRow(
-                            title = "Confirm before deleting or clearing chats",
+                            title = Strings.confirmBeforeDeletingOrClearing,
                             checked = prefs.confirmBeforeDeletingChat,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(confirmBeforeDeletingChat = it)) }
                         )
                     }
                     if (hitKeepForkVersions) {
                         SepiaToggleRow(
-                            title = "Keep message versions when branching",
+                            title = Strings.keepMessageVersionsWhenBranching,
                             checked = prefs.keepMessageVersionsWhenForking,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(keepMessageVersionsWhenForking = it)) }
                         )
                     }
                     if (hitChatListDates) {
                         SepiaToggleRow(
-                            title = "Show chat list dates",
+                            title = Strings.showChatListDates,
                             checked = prefs.showChatListDates,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(showChatListDates = it)) }
                         )
                     }
                     if (hitNewChatSwitchAsst) {
                         SepiaToggleRow(
-                            title = "New chat when switching assistants",
+                            title = Strings.newChatWhenSwitchingAssistants,
                             checked = prefs.newChatWhenSwitchingAssistants,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(newChatWhenSwitchingAssistants = it)) }
                         )
                     }
                     if (hitNewChatDeleteTopic) {
                         SepiaToggleRow(
-                            title = "New chat after deleting topic",
+                            title = Strings.newChatAfterDeletingTopic,
                             checked = prefs.newChatAfterDeletingTopic,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(newChatAfterDeletingTopic = it)) }
                         )
                     }
                     if (hitNewChatLaunch) {
                         SepiaToggleRow(
-                            title = "New chat on launch",
+                            title = Strings.newChatOnLaunch,
                             checked = prefs.newChatOnLaunch,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(newChatOnLaunch = it)) }
                         )
                     }
                     if (hitAutoScrollOnOpen) {
                         SepiaToggleRow(
-                            title = "Auto-scroll to bottom when opening a chat",
+                            title = Strings.autoScrollToBottomWhen,
                             checked = prefs.autoScrollToBottomOnOpen,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoScrollToBottomOnOpen = it)) }
                         )
                     }
                     if (hitAutoFollowBottom) {
                         SepiaToggleRow(
-                            title = "Auto-follow bottom while streaming",
+                            title = Strings.autoFollowBottomWhileStreaming,
                             checked = prefs.autoFollowBottom,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoFollowBottom = it)) }
                         )
                     }
                     if (hitAutoCompactLimit) {
                         SepiaToggleRow(
-                            title = "Shorten the conversation automatically when it's 85% full",
+                            title = Strings.shortenTheConversationAutomaticallyWhen,
                             checked = prefs.autoCompactWhenNearContextLimit,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(autoCompactWhenNearContextLimit = it)) }
                         )
                     }
                     if (hitNavMinimap) {
-                        SepiaAdaptiveRow(label = "Message navigation minimap") {
+                        SepiaAdaptiveRow(label = Strings.messageNavigationMinimap) {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 MessageNavVisibility.entries.forEach { mode ->
@@ -705,7 +703,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         }
                     }
                     if (hitSendShortcut) {
-                        SepiaAdaptiveRow(label = "Send shortcut (desktop)") {
+                        SepiaAdaptiveRow(label = Strings.sendShortcutDesktop) {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 SendShortcutMode.entries.forEach { mode ->
@@ -720,7 +718,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (hitPasteLongFile) {
                         SepiaToggleRow(
-                            title = "Paste long text as file attachment",
+                            title = Strings.pasteLongTextAsFile,
                             checked = prefs.pasteLongTextAsFile,
                             onCheckedChange = { onUpdatePreferences(prefs.copy(pasteLongTextAsFile = it)) }
                         )
@@ -731,11 +729,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (anyProviderMatch) {
             SepiaSectionCard(
-                title = "Providers, Proxy, & Models (${activeProfile.name})",
-                subtitle = "API keys, advanced settings and model choice",
+                title = Strings.providersProxyModels(activeProfile.name),
+                subtitle = Strings.apiKeysAdvancedSettingsAnd,
                 headerAction = {
                     SepiaButton(
-                        text = "Open providers →",
+                        text = Strings.openProviders,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.PROVIDERS) }
@@ -747,8 +745,8 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         SepiaTextField(
                             value = activeProfile.apiKey,
                             onValueChange = { k -> onUpdateProfile { it.copy(apiKey = k) } },
-                            label = "API Key (${activeProfile.name})",
-                            placeholder = "sk-... or AIza...",
+                            label = Strings.apiKey2(activeProfile.name),
+                            placeholder = Strings.skOrAiza,
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -757,7 +755,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         SepiaTextField(
                             value = activeProfile.baseUrl,
                             onValueChange = { u -> onUpdateProfile { it.copy(baseUrl = u) } },
-                            label = "Server URL (${activeProfile.name})",
+                            label = Strings.serverUrl2(activeProfile.name),
                             monospace = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -770,21 +768,21 @@ internal fun GlobalSettingsSearchResultsSubpage(
                             onCheckedChange = { store -> onUpdateProfile { it.copy(storeServerSide = store, useStatefulChaining = it.useStatefulChaining && store) } }
                         )
                         SepiaToggleRow(
-                            title = "Let the provider remember this conversation",
+                            title = Strings.letTheProviderRememberThis,
                             checked = activeProfile.useStatefulChaining,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useStatefulChaining = v) } }
                         )
                     }
                     if (hitLongDecode) {
                         SepiaToggleRow(
-                            title = "Background poll & stream recovery",
+                            title = Strings.backgroundPollStreamRecovery,
                             checked = activeProfile.useBackgroundLongDecode,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useBackgroundLongDecode = v) } }
                         )
                     }
                     if (hitLegacyFallback) {
                         SepiaToggleRow(
-                            title = "Try the older API if this one is missing",
+                            title = Strings.tryTheOlderApiIf,
                             checked = activeProfile.useLegacyFallbackEndpoint,
                             onCheckedChange = { v -> onUpdateProfile { it.copy(useLegacyFallbackEndpoint = v) } }
                         )
@@ -800,7 +798,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     if (v.trim().isEmpty()) onUpdateProfile { it.copy(temperature = null) }
                                     else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(temperature = num) } }
                                 },
-                                label = "Creativity, called temperature (blank = default)",
+                                label = Strings.creativityCalledTemperatureBlankDefault,
                                 monospace = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -811,7 +809,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                     if (v.trim().isEmpty()) onUpdateProfile { it.copy(topP = null) }
                                     else v.toDoubleOrNull()?.let { num -> onUpdateProfile { it.copy(topP = num) } }
                                 },
-                                label = "Word variety, called Top-P (blank = default)",
+                                label = Strings.wordVarietyCalledTopP,
                                 monospace = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -821,17 +819,17 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                             SepiaChip(
-                                label = "🌐 Web search",
+                                label = Strings.webSearch,
                                 selected = activeProfile.enableWebSearch,
                                 onClick = { onUpdateProfile { it.copy(enableWebSearch = !it.enableWebSearch) } }
                             )
                             SepiaChip(
-                                label = "💻 Code execution",
+                                label = Strings.codeExecution,
                                 selected = activeProfile.enableCodeExecution,
                                 onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
                             )
                             SepiaChip(
-                                label = "🔗 URL context",
+                                label = Strings.urlContext,
                                 selected = activeProfile.enableUrlContext,
                                 onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                             )
@@ -839,7 +837,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (matchingModels.isNotEmpty()) {
                         BasicText(
-                            text = "Matching Models (${matchingModels.size}):",
+                            text = Strings.matchingModels(matchingModels.size),
                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
                         )
                         matchingModels.take(8).forEach { (prof, modelId) ->
@@ -854,7 +852,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                         onSelectProfile(prof.id)
                                         onUpdateProfileById(prof.id) { it.copy(defaultModel = modelId) }
                                         onUpdateSession { it.copy(profileId = prof.id, modelOverride = modelId) }
-                                        onNotify("Switched active model to ${prof.name} • $modelId")
+                                        onNotify(Strings.switchedActiveModelTo(prof.name, modelId))
                                     }
                                     .padding(horizontal = Space.s10, vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -893,11 +891,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (anyWorkspaceMatch) {
             SepiaSectionCard(
-                title = "Workspace and agent tools",
-                subtitle = "Approvals and local tool access",
+                title = Strings.workspaceAndAgentTools,
+                subtitle = Strings.approvalsAndLocalToolAccess,
                 headerAction = {
                     SepiaButton(
-                        text = "Open workspace →",
+                        text = Strings.openWorkspace,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.WORKSPACE) }
@@ -905,18 +903,18 @@ internal fun GlobalSettingsSearchResultsSubpage(
                 }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-                    BasicText("Approval, file access, web access and shell permissions are controlled per assistant and chat.", style = p.uiLabelStyle)
+                    BasicText(Strings.approvalFileAccessWebAccessAnd, style = p.uiLabelStyle)
                 }
             }
         }
 
         if (anyDefaultModelMatch) {
             SepiaSectionCard(
-                title = "Default models (global, title, summary, translation)",
-                subtitle = "Task-specific model assignments and title prompt template",
+                title = Strings.defaultModelsGlobalTitleSummary,
+                subtitle = Strings.taskSpecificModelAssignmentsAnd,
                 headerAction = {
                     SepiaButton(
-                        text = "Open default models →",
+                        text = Strings.openDefaultModels,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.DEFAULT_MODEL) }
@@ -926,21 +924,21 @@ internal fun GlobalSettingsSearchResultsSubpage(
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     if (hitTitleModel || hitGlobalModel) {
                         SepiaToggleRow(
-                            title = "Title generation: follow global choice",
+                            title = Strings.titleGenerationFollowGlobalChoice,
                             checked = appState.defaultModels.titleFollowGlobal,
                             onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(titleFollowGlobal = it)) }
                         )
                     }
                     if (hitSummaryModel || hitGlobalModel) {
                         SepiaToggleRow(
-                            title = "Summary & context compression: follow global choice",
+                            title = Strings.summaryContextCompressionFollowGlobal,
                             checked = appState.defaultModels.summaryFollowGlobal,
                             onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(summaryFollowGlobal = it)) }
                         )
                     }
                     if (hitTranslationModel || hitGlobalModel) {
                         SepiaToggleRow(
-                            title = "Translation: follow global choice",
+                            title = Strings.translationFollowGlobalChoice,
                             checked = appState.defaultModels.translationFollowGlobal,
                             onCheckedChange = { onUpdateDefaultModels(appState.defaultModels.copy(translationFollowGlobal = it)) }
                         )
@@ -951,11 +949,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (matchingAssistants.isNotEmpty()) {
             SepiaSectionCard(
-                title = "Assistants (${matchingAssistants.size} matched)",
-                subtitle = "Saved assistants, their instructions and reply settings",
+                title = Strings.assistantsMatched(matchingAssistants.size),
+                subtitle = Strings.savedAssistantsTheirInstructionsAnd,
                 headerAction = {
                     SepiaButton(
-                        text = "Open assistants →",
+                        text = Strings.openAssistants,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.ASSISTANTS) }
@@ -977,11 +975,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (matchingLore.isNotEmpty() || hitWorldBookGeneral) {
             SepiaSectionCard(
-                title = "World Book & character cards",
-                subtitle = "Character cards and world notes that appear when keywords come up",
+                title = Strings.worldBookCharacterCards,
+                subtitle = Strings.characterCardsAndWorldNotes,
                 headerAction = {
                     SepiaButton(
-                        text = "Open World Book →",
+                        text = Strings.openWorldBook,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.WORLD_BOOK) }
@@ -997,11 +995,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
 
         if (hitOtaBackup) {
             SepiaSectionCard(
-                title = "Backup & updates",
-                subtitle = "Installed v${OtaUpdateEngine.currentAppVersion} • Backups and updates",
+                title = Strings.backupUpdates,
+                subtitle = Strings.installedVBackupsAndUpdates(OtaUpdateEngine.currentAppVersion),
                 headerAction = {
                     SepiaButton(
-                        text = "Open backup & updates",
+                        text = Strings.openBackupUpdates,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
                         onClick = { onJumpToCategory(SettingsCategory.BACKUP_OTA) }
@@ -1010,12 +1008,12 @@ internal fun GlobalSettingsSearchResultsSubpage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SepiaToggleRow(
-                        title = "Check for updates at launch",
+                        title = Strings.checkForUpdatesAtLaunch,
                         checked = appState.autoCheckOtaOnStartup,
                         onCheckedChange = { onUpdateOtaSettings(appState.otaGithubRepo, it) }
                     )
                     SepiaButton(
-                        text = "↻ Check for update now",
+                        text = Strings.checkForUpdateNow,
                         compact = true,
                         style = SepiaButtonStyle.PRIMARY,
                         onClick = onCheckOtaNow

@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -338,7 +340,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                 var interactionObj = JsonObject(emptyMap())
                 while ((status == "in_progress" || status == "queued" || status == "processing") && interactionIdToPoll.isNotBlank()) {
                     pollCount++
-                    onStatus("Background Poll Recovery ($status • poll #$pollCount)…", interactionIdToPoll)
+                    onStatus(Strings.backgroundPollRecoveryPoll(status, pollCount), interactionIdToPoll)
                     delay(2000L)
                     val pollUrl = buildUrlWithAuthQuery(profile, "$base${path.substringBefore("?")}/$interactionIdToPoll")
                     val pollResp = httpClient.get(pollUrl) {
@@ -439,7 +441,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                                         parseProviderUsage(UsageDialect.GEMINI_INTERACTIONS, interactionSub?.get("usage") as? JsonObject))
                                     val st = interactionSub?.get("status")?.jsonPrimitive?.contentOrNull
                                         ?: evObj["status"]?.jsonPrimitive?.contentOrNull ?: "streaming"
-                                    onStatus("Interaction $st", currentPrevInteractionId)
+                                    onStatus(Strings.interaction(st), currentPrevInteractionId)
                                 }
                                 "content.start", "step.start" -> {
                                     onUsage(usageRequestId, "", UsageDialect.GEMINI_INTERACTIONS,
@@ -801,24 +803,24 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                     if (useChainedId) {
                         currentPrevInteractionId = ""
                         currentContinuationToken = ""
-                        onStatus("Stateful interaction chain rejected — retrying step with full conversation history…", "")
+                        onStatus(Strings.statefulInteractionChainRejectedRetryingStep, "")
                         continue
                     }
                     if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                         stripSamplingOnRetry = true
-                        onStatus("Endpoint rejected sampling parameters — retrying with model defaults…", currentPrevInteractionId)
+                        onStatus(Strings.endpointRejectedSamplingParametersRetryingWith, currentPrevInteractionId)
                         continue
                     }
                     if (!upgradeMinimalToLowOnRetry && profile.thinkingEffort.equals("minimal", ignoreCase = true) &&
                         (errMsg.contains("minimal") || errMsg.contains("thinking_level") || errMsg.contains("thinking"))
                     ) {
                         upgradeMinimalToLowOnRetry = true
-                        onStatus("Model does not support minimal thinking_level — stepping up to low…", currentPrevInteractionId)
+                        onStatus(Strings.modelDoesNotSupportMinimalThinking, currentPrevInteractionId)
                         continue
                     }
                     if (!simplifyThinkingOnRetry && (errMsg.contains("thinking") || errMsg.contains("thinking_level"))) {
                         simplifyThinkingOnRetry = true
-                        onStatus("Endpoint rejected thinking_level — retrying with automatic thinking…", currentPrevInteractionId)
+                        onStatus(Strings.endpointRejectedThinkingLevelRetryingWith, currentPrevInteractionId)
                         continue
                     }
                     if (!forceImageResponseFormatOnRetry && !omitResponseFormatOnRetry &&
@@ -826,17 +828,17 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                     ) {
                         forceImageResponseFormatOnRetry = true
                         recordDiscoveredModality(model, listOf("text", "image"))
-                        onStatus("Model outputs images — enabling image response_format…", currentPrevInteractionId)
+                        onStatus(Strings.modelOutputsImagesEnablingImageResponse, currentPrevInteractionId)
                         continue
                     }
                     if (!omitResponseFormatOnRetry && (errMsg.contains("response_format") || errMsg.contains("image_size") || errMsg.contains("aspect_ratio"))) {
                         omitResponseFormatOnRetry = true
-                        onStatus("Endpoint rejected response_format — retrying without response_format…", currentPrevInteractionId)
+                        onStatus(Strings.endpointRejectedResponseFormatRetryingWithout, currentPrevInteractionId)
                         continue
                     }
                     if (!omitBuiltInToolsOnRetry && (errMsg.contains("google_search") || errMsg.contains("url_context") || errMsg.contains("built-in") || errMsg.contains("multiple tools"))) {
                         omitBuiltInToolsOnRetry = true
-                        onStatus("Endpoint rejected mixed built-in + function tools — retrying with workspace tools…", currentPrevInteractionId)
+                        onStatus(Strings.endpointRejectedMixedBuiltInFunction, currentPrevInteractionId)
                         continue
                     }
                     if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
@@ -844,7 +846,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                             errMsg.contains("signature") || errMsg.contains("function_call") || errMsg.contains("tool type"))
                     ) {
                         foldHistoricalToolsOnRetry = true
-                        onStatus("Endpoint rejected historical tool/signature context — folding prior tool history into compact text & retrying…", currentPrevInteractionId)
+                        onStatus(Strings.endpointRejectedHistoricalToolSignatureContext, currentPrevInteractionId)
                         continue
                     }
                 }
@@ -853,7 +855,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                 ) {
                     currentPrevInteractionId = ""
                     currentContinuationToken = ""
-                    onStatus("Stateful interaction chain rejected — retrying step with full conversation history…", "")
+                    onStatus(Strings.statefulInteractionChainRejectedRetryingStep, "")
                     continue
                 }
                 if (profile.useBackgroundLongDecode && currentPrevInteractionId.isNotBlank() && isTransientOrProxyTimeoutError(e)) {
@@ -894,7 +896,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
             currentContinuationToken = roundContinuationToken
             pendingToolResults = emptyList()
             pendingStopHookPrompt = ""
-            onStatus("Long Decode Hop completed — continuing via continuation_token…", currentPrevInteractionId)
+            onStatus(Strings.longDecodeHopCompletedContinuingVia, currentPrevInteractionId)
             continue
         }
         currentContinuationToken = ""
@@ -939,7 +941,7 @@ internal suspend fun AiProviderEngine.executeGeminiInteractionsLoop(
                         })
                     }
                 })
-                onStatus("Goal Work-Check: continuing incomplete checklist steps…", currentPrevInteractionId)
+                onStatus(Strings.goalWorkCheckContinuingIncompleteChecklist, currentPrevInteractionId)
                 continue
             }
             break

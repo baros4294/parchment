@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
@@ -497,33 +499,33 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                 if (!stepEmittedOutput && !hasAnyToolUse && errMsg.contains("http 400")) {
                     if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("top_k") || errMsg.contains("sampling"))) {
                         stripSamplingOnRetry = true
-                        onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                        onStatus(Strings.endpointRejectedSamplingParametersRetryingWith)
                         continue
                     }
                     if (!omitNativeWebSearchOnRetry && profile.enableWebSearch &&
                         (errMsg.contains("web_search_20250305") || errMsg.contains("web_search"))
                     ) {
                         omitNativeWebSearchOnRetry = true
-                        onStatus("Endpoint does not support native web_search_20250305 — falling back to local web_fetch tool…")
+                        onStatus(Strings.endpointDoesNotSupportNativeWeb)
                         continue
                     }
                     if (useAdaptiveMode && thinkingModeOverride != "budget" &&
                         (errMsg.contains("adaptive") || errMsg.contains("output_config") || errMsg.contains("effort") || errMsg.contains("display"))
                     ) {
                         thinkingModeOverride = "budget"
-                        onStatus("Endpoint does not support adaptive thinking — retrying with budget_tokens thinking…")
+                        onStatus(Strings.endpointDoesNotSupportAdaptiveThinking)
                         continue
                     }
                     if (useBudgetMode && thinkingModeOverride != "adaptive" &&
                         (errMsg.contains("budget_tokens") || errMsg.contains("enabled") || errMsg.contains("thinking"))
                     ) {
                         thinkingModeOverride = "adaptive"
-                        onStatus("Model uses adaptive thinking — switching from budget_tokens to adaptive thinking…")
+                        onStatus(Strings.modelUsesAdaptiveThinkingSwitchingFrom)
                         continue
                     }
                     if (thinkingModeOverride != "omit" && (errMsg.contains("thinking") || errMsg.contains("budget_tokens") || errMsg.contains("output_config") || errMsg.contains("effort"))) {
                         thinkingModeOverride = "omit"
-                        onStatus("Endpoint rejected thinking configuration — retrying with default model configuration…")
+                        onStatus(Strings.endpointRejectedThinkingConfigurationRetryingWith)
                         continue
                     }
                     if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
@@ -531,7 +533,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                             errMsg.contains("tool_result") || errMsg.contains("invalid_request"))
                     ) {
                         foldHistoricalToolsOnRetry = true
-                        onStatus("Endpoint rejected historical thinking/tool blocks — folding prior tool history into compact text & retrying…")
+                        onStatus(Strings.endpointRejectedHistoricalThinkingToolBlocks)
                         continue
                     }
                 }
@@ -614,7 +616,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                     put("role", "assistant")
                     put("content", JsonArray(assistantContentBlocksForToolLoop))
                 })
-                onStatus("Continuing a long-running step…")
+                onStatus(Strings.continuingALongRunningStep)
                 continue
             }
             val stopHookPrompt = circuitBreaker.evaluateStopHookPrompt()
@@ -634,7 +636,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                         })
                     }
                 })
-                onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                onStatus(Strings.goalWorkCheckContinuingIncompleteChecklist)
                 continue
             }
             break
@@ -932,7 +934,9 @@ private fun AiProviderEngine.compactAnthropicExtraMessages(messages: List<JsonOb
     return messages.mapIndexed { idx, obj ->
         val role = obj["role"]?.jsonPrimitive?.contentOrNull
         val contentArr = obj["content"] as? JsonArray
-        if (role == "user" && contentArr != null && total - idx > 16) {
+        // Which results to shorten is decided in batches by compactStaleToolOutputText. A window sliding with
+        // every step here rewrote one older result per step and missed the prompt cache almost every time.
+        if (role == "user" && contentArr != null) {
             val updatedArr = buildJsonArray {
                 for (el in contentArr) {
                     val bObj = el as? JsonObject

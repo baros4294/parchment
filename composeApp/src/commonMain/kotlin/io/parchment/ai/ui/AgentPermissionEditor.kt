@@ -77,41 +77,41 @@ internal fun AgentPermissionEditor(
     val policy = overrides.applyTo(defaults)
     val backgroundNotice by PlatformBridge.backgroundExecutionNotice.collectAsState()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s10)) {
-        BasicText("Agent permissions", style = palette.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
+        BasicText(Strings.agentPermissions, style = palette.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         if (onReset != null) {
             BasicText(
                 if (overrides == AgentPermissionOverrides()) "Following assistant defaults" else "Chat overrides are active",
                 style = palette.uiLabelStyle
             )
-            SepiaButton(text = "Follow assistant defaults", modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            SepiaButton(text = Strings.followAssistantDefaults, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = onReset)
         }
-        PermissionOption("Enable agent tools", policy.toolsEnabled, { onChange(overrides.copy(toolsEnabled = it)) },
+        PermissionOption(Strings.enableAgentTools, policy.toolsEnabled, { onChange(overrides.copy(toolsEnabled = it)) },
             subtitle = if (onReset != null && overrides.toolsEnabled == null) "Follows assistant default" else "")
-        if (!policy.toolsEnabled) BasicText("Agent tools are off. The choices below are saved for when tools are enabled.", style = palette.uiLabelStyle)
-        BasicText("Approval", style = palette.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
+        if (!policy.toolsEnabled) BasicText(Strings.agentToolsAreOffTheChoices, style = palette.uiLabelStyle)
+        BasicText(Strings.approval, style = palette.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
         Column(Modifier.selectableGroup()) {
             ToolApprovalMode.entries.forEach { mode ->
                 PermissionOption(mode.label, policy.approvalMode == mode, { onChange(overrides.copy(approvalMode = mode)) }, choice = true,
                     subtitle = if (onReset != null && overrides.approvalMode == null && defaults.approvalMode == mode) "Assistant default" else "")
             }
         }
-        BasicText("File access", style = palette.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
+        BasicText(Strings.fileAccess, style = palette.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
         Column(Modifier.selectableGroup()) { WorkspaceMode.entries.forEach { mode ->
             val label = when (mode) {
-                WorkspaceMode.OFF -> "Off"
-                WorkspaceMode.READ_ONLY -> "Read files"
-                WorkspaceMode.READ_WRITE -> "Read and edit files"
+                WorkspaceMode.OFF -> Strings.off
+                WorkspaceMode.READ_ONLY -> Strings.readFiles
+                WorkspaceMode.READ_WRITE -> Strings.readAndEditFiles
             }
             PermissionOption(label, policy.workspaceMode == mode, { onChange(overrides.copy(workspaceMode = mode)) }, choice = true,
                 subtitle = if (onReset != null && overrides.workspaceMode == null && defaults.workspaceMode == mode) "Assistant default" else "")
         } }
-        SelectionContainer { BasicText(policy.workspacePath.ifBlank { "No folder chosen" }, style = palette.monoStyle) }
+        SelectionContainer { BasicText(policy.workspacePath.ifBlank { Strings.noFolderChosen }, style = palette.monoStyle) }
         if (policy.workspacePath.isNotBlank() && policy.workspaceMode == WorkspaceMode.OFF) {
-            BasicText("Folder saved; file access is off.", style = palette.uiLabelStyle)
+            BasicText(Strings.folderSavedFileAccessIsOff, style = palette.uiLabelStyle)
         }
         SepiaButton(
-            text = if (policy.workspacePath.isBlank()) "Choose folder…" else "Change folder…",
+            text = if (policy.workspacePath.isBlank()) Strings.chooseFolder else Strings.changeFolder,
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
             style = SepiaButtonStyle.OUTLINE,
             onClick = {
@@ -125,26 +125,26 @@ internal fun AgentPermissionEditor(
             }
         )
         if (policy.workspacePath.isNotBlank()) SepiaButton(
-            text = "Unmount folder", compact = true, style = SepiaButtonStyle.GHOST,
+            text = Strings.unmountFolder, compact = true, style = SepiaButtonStyle.GHOST,
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), wrapText = true,
             onClick = { onChange(overrides.copy(workspacePath = "", workspaceMode = WorkspaceMode.OFF)) }
         )
         SepiaDivider()
-        PermissionOption("Allow web search and URL fetching", policy.webAccess, { onChange(overrides.copy(webAccess = it)) },
+        PermissionOption(Strings.allowWebSearchAndUrlFetching, policy.webAccess, { onChange(overrides.copy(webAccess = it)) },
             subtitle = if (onReset != null && overrides.webAccess == null) "Follows assistant default" else "")
-        BasicText("This controls whether the agent can use the web. Messages to your AI provider always go through.", style = palette.uiLabelStyle)
-        BasicText("Approval modes use local web tools. Provider managed code execution requires ‘Run allowed tools without asking’.", style = palette.uiLabelStyle)
+        BasicText(Strings.thisControlsWhetherTheAgentCan, style = palette.uiLabelStyle)
+        BasicText(Strings.approvalModesUseLocalWebTools, style = palette.uiLabelStyle)
         Column(Modifier.selectableGroup()) { ShellAccess.entries.forEach { access ->
             PermissionOption(access.label, policy.shellAccess == access, { onChange(overrides.copy(shellAccess = access)) }, choice = true,
                 subtitle = if (onReset != null && overrides.shellAccess == null && defaults.shellAccess == access) "Assistant default" else "")
         } }
         BasicText(
-            "File tools use the chosen folder. Commands run with the app's full access and can reach other files and the network. Commands need a chosen folder with edit access; OS command confinement is not available.",
+            Strings.fileToolsUseTheChosenFolder,
             style = palette.uiLabelStyle
         )
-        PermissionOption("Let the agent see and control this device", policy.computerAccess, { onChange(overrides.copy(computerAccess = it)) },
-            subtitle = "Off by default. Screenshots go to your AI provider, and every action asks you first, whatever the setting above. On Android, also turn on Parchment in Accessibility settings.")
-        BasicText("Keep-awake requests follow active work and pause during approval-only waits. Device sleep and battery settings can still pause the app.", style = palette.uiLabelStyle)
+        PermissionOption(Strings.letTheAgentSeeAndControl, policy.computerAccess, { onChange(overrides.copy(computerAccess = it)) },
+            subtitle = Strings.offByDefaultScreenshotsGo)
+        BasicText(Strings.keepAwakeRequestsFollowActiveWork, style = palette.uiLabelStyle)
         if (backgroundNotice.isNotBlank()) BasicText(backgroundNotice, style = palette.uiLabelStyle)
     }
 }
@@ -170,18 +170,18 @@ internal fun AgentToolRegistry(
         tools.filter { tool -> words.all { it in "${tool.name} ${tool.description}".lowercase() } }
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s10)) {
-        BasicText("${available.size} of ${tools.size} tools available", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
-        BasicText("Per-tool choices also require the access configured above.", style = p.uiLabelStyle)
-        SepiaTextField(query, { query = it }, placeholder = "Search tool names and descriptions",
+        BasicText(Strings.ofToolsAvailable(available.size, tools.size), style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
+        BasicText(Strings.perToolChoicesAlsoRequireThe, style = p.uiLabelStyle)
+        SepiaTextField(query, { query = it }, placeholder = Strings.searchToolNamesAndDescriptions,
             modifier = Modifier.fillMaxWidth(), singleLine = true, minHeight = 48.dp)
-        if (matches.isEmpty()) BasicText("No matching tools.", style = p.uiLabelStyle)
+        if (matches.isEmpty()) BasicText(Strings.noMatchingTools, style = p.uiLabelStyle)
         matches.forEach { tool ->
             val allowed = policy.toolOverrides[tool.name] != false
             val status = when {
-                !policy.toolsEnabled -> "Agent tools are off."
-                !allowed -> "Disabled by saved tool choice."
+                !policy.toolsEnabled -> Strings.agentToolsAreOff
+                !allowed -> Strings.disabledBySavedToolChoice
                 tool.name in available -> "Available · ${if (policy.approvalMode == ToolApprovalMode.NEVER) "runs without asking" else "approval policy applies"}"
-                else -> AgentPermissionGate.denial(ToolAccessScope(policy, goalModeActive), tool.name, "{}") ?: "Unavailable in this run."
+                else -> AgentPermissionGate.denial(ToolAccessScope(policy, goalModeActive), tool.name, "{}") ?: Strings.unavailableInThisRun
             }
             SepiaDivider()
             PermissionOption(tool.name, allowed, { enabled ->
@@ -204,15 +204,15 @@ internal fun UserQuestionPanel(broker: ToolApprovalBroker?, chatTitle: String) {
     ) {
         questions.forEach { question ->
             var typed by remember(question.requestId) { mutableStateOf("") }
-            SepiaSectionCard(title = "Question for you", subtitle = chatTitle) {
+            SepiaSectionCard(title = Strings.questionForYou, subtitle = chatTitle) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SelectionContainer { BasicText(question.question, style = palette.uiBodyStyle) }
                     val actionModifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                     question.options.forEach { option ->
                         SepiaButton(option, modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = { scope.launch { broker.answerQuestion(question.requestId, option) } })
                     }
-                    SepiaTextField(value = typed, onValueChange = { typed = it }, placeholder = "Type your answer", modifier = Modifier.fillMaxWidth())
-                    SepiaButton("Send answer", modifier = actionModifier, wrapText = true, enabled = typed.isNotBlank(), style = SepiaButtonStyle.PRIMARY, onClick = { scope.launch { broker.answerQuestion(question.requestId, typed.trim()) } })
+                    SepiaTextField(value = typed, onValueChange = { typed = it }, placeholder = Strings.typeYourAnswer, modifier = Modifier.fillMaxWidth())
+                    SepiaButton(Strings.sendAnswer, modifier = actionModifier, wrapText = true, enabled = typed.isNotBlank(), style = SepiaButtonStyle.PRIMARY, onClick = { scope.launch { broker.answerQuestion(question.requestId, typed.trim()) } })
                 }
             }
         }
@@ -231,7 +231,7 @@ internal fun ToolApprovalPanel(broker: ToolApprovalBroker?, chatTitle: String) {
         verticalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
         requests.forEach { request ->
-            SepiaSectionCard(title = "Approval · $chatTitle", subtitle = request.toolName) {
+            SepiaSectionCard(title = Strings.approval2(chatTitle), subtitle = request.toolName) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SelectionContainer {
                         BasicText(
@@ -240,14 +240,14 @@ internal fun ToolApprovalPanel(broker: ToolApprovalBroker?, chatTitle: String) {
                             style = palette.monoStyle
                         )
                     }
-                    BasicText("Workspace: ${request.scope.policy.workspacePath.ifBlank { "None" }}", style = palette.uiLabelStyle)
-                    if (request.toolName == "shell_exec") BasicText("Full process access · filesystem and network are not confined", style = palette.uiLabelStyle)
+                    BasicText(Strings.workspace(request.scope.policy.workspacePath.ifBlank { Strings.none }), style = palette.uiLabelStyle)
+                    if (request.toolName == "shell_exec") BasicText(Strings.fullProcessAccessFilesystemAndNetwork, style = palette.uiLabelStyle)
                     if (request.toolName == "computer_use") BasicText(WorkspaceHarness.describeToolCallIntent(request.toolName, request.argumentsJson), style = palette.uiBodyStyle)
                     val actionModifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                    SepiaButton("Allow once", modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.PRIMARY, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.ALLOW_ONCE) } })
-                    if (request.toolName != "computer_use") SepiaButton("Allow this exact action for this run", modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.ALLOW_EXACT_ACTION_FOR_RUN) } })
-                    SepiaButton("Deny", modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.DENY) } })
-                    SepiaButton("Stop run", modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.DANGER, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.STOP) } })
+                    SepiaButton(Strings.allowOnce, modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.PRIMARY, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.ALLOW_ONCE) } })
+                    if (request.toolName != "computer_use") SepiaButton(Strings.allowThisExactActionForThis, modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.ALLOW_EXACT_ACTION_FOR_RUN) } })
+                    SepiaButton(Strings.deny, modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.OUTLINE, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.DENY) } })
+                    SepiaButton(Strings.stopRun, modifier = actionModifier, wrapText = true, style = SepiaButtonStyle.DANGER, onClick = { scope.launch { broker.respond(request.requestId, ToolApprovalDecision.STOP) } })
                 }
             }
         }

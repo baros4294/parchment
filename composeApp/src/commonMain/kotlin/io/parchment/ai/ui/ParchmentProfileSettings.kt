@@ -8,6 +8,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -57,14 +68,14 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     val picture = rememberFileImage(prefs.profilePicturePath).bitmap
-    SepiaSectionCard(title = "Your profile") {
+    SepiaSectionCard(title = Strings.yourProfile) {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             ProfilePicture(picture, 56.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 SepiaTextField(
                     value = prefs.profileName,
                     onValueChange = { onUpdatePreferences(prefs.copy(profileName = it, showUserName = prefs.showUserName || it.isNotBlank())) },
-                    placeholder = "Your name",
+                    placeholder = Strings.yourName,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
@@ -75,13 +86,13 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
                             scope.launch {
                                 val picked = PlatformBridge.pickFileForImport(listOf("png", "jpg", "jpeg", "webp")) ?: return@launch
                                 if (picked.oversized) {
-                                    onNotify("That picture is too large.")
+                                    onNotify(Strings.thatPictureIsTooLarge)
                                     return@launch
                                 }
                                 val extension = picked.fileName.substringAfterLast('.', "png").lowercase()
                                 val saved = PlatformBridge.saveGeneratedMediaFile("profile-picture-${PlatformBridge.currentTimeMillis()}.$extension", picked.bytes)
                                 if (withContext(Dispatchers.Default) { PlatformBridge.loadImageBitmapFromFile(saved) } == null) {
-                                    onNotify("That file could not be read as a picture.")
+                                    onNotify(Strings.thatFileCouldNotBeRead)
                                     return@launch
                                 }
                                 onUpdatePreferences(prefs.copy(profilePicturePath = saved, showUserAvatar = true))
@@ -90,7 +101,7 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
                     )
                     if (picture != null) {
                         SepiaButton(
-                            text = "Remove",
+                            text = Strings.remove,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = { onUpdatePreferences(prefs.copy(profilePicturePath = "")) }
@@ -99,7 +110,7 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
                 }
             }
         }
-        BasicText("Shown on your messages. Models see your name in chats that don't set their own.", style = p.uiLabelStyle)
+        BasicText(Strings.shownOnYourMessagesModelsSee, style = p.uiLabelStyle)
     }
 }
 
@@ -109,7 +120,7 @@ internal fun SpendLimitCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
     var limit by remember(prefs.chatSpendLimitUsd) {
         mutableStateOf(if (prefs.chatSpendLimitUsd > 0.0) prefs.chatSpendLimitUsd.toString() else "")
     }
-    SepiaSectionCard(title = "Spend limit") {
+    SepiaSectionCard(title = Strings.spendLimit) {
         Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
             SepiaTextField(
                 value = limit,
@@ -118,10 +129,10 @@ internal fun SpendLimitCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
                     val amount = if (typed.isBlank()) 0.0 else typed.trim().toDoubleOrNull()
                     if (amount != null && amount >= 0.0) onUpdatePreferences(prefs.copy(chatSpendLimitUsd = amount))
                 },
-                placeholder = "No limit (USD per chat)",
+                placeholder = Strings.noLimitUsdPerChat,
                 modifier = Modifier.fillMaxWidth()
             )
-            BasicText("Stops a chat before its next request once it reaches this amount. Your messages stay. Uses the estimated cost, so models without prices are not limited.", style = p.uiLabelStyle)
+            BasicText(Strings.stopsAChatBeforeItsNext, style = p.uiLabelStyle)
         }
     }
 }
@@ -130,13 +141,49 @@ internal fun SpendLimitCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
 internal fun ThemePresetChoices(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit) {
     val p = LocalParchmentPalette.current
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-        BasicText("Color mode & preset", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-        Column(Modifier.fillMaxWidth().selectableGroup()) {
+        BasicText(Strings.colorModePreset, style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
+        // Small previews instead of a list of names, so themes can be compared at a glance.
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
+            Modifier.fillMaxWidth().selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(Space.s8),
+            verticalArrangement = Arrangement.spacedBy(Space.s8)
+        ) {
             ThemeConfig.PRESETS.forEach { preset ->
-                SepiaChoiceRow(preset.name.substringBefore(" ("), theme.name == preset.name,
-                    onClick = { onUpdateTheme(preset) },
-                    leading = { ThemeSwatch(parseHexColor(preset.canvasBgHex), parseHexColor(preset.accentHex)) })
+                ThemePreviewCard(preset, selected = theme.name == preset.name, onClick = { onUpdateTheme(preset) })
             }
         }
+    }
+}
+
+/** A miniature of the app in [preset]: sidebar, page, a line of text and the accent rule. */
+@Composable
+private fun ThemePreviewCard(preset: ThemeConfig, selected: Boolean, onClick: () -> Unit) {
+    val p = LocalParchmentPalette.current
+    val shape = RoundedCornerShape(Radius.r10)
+    val pageShape = RoundedCornerShape(Radius.r6)
+    Column(
+        Modifier
+            .textScaledWidth(132.dp)
+            .kissClickable(role = Role.RadioButton, selected = selected, pressScale = 0.97f, hoverScale = 1.01f, onClick = onClick)
+            .clip(shape)
+            .border(if (selected) LineWidth.selected else LineWidth.hairline, if (selected) p.accent else p.border, shape)
+            .padding(Space.s6),
+        verticalArrangement = Arrangement.spacedBy(Space.s6)
+    ) {
+        // The miniature is decoration: screen readers hear only the theme's name.
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(pageShape).background(parseHexColor(preset.canvasBgHex)).clearAndSetSemantics {}) {
+            Box(Modifier.width(Space.s24).fillMaxHeight().background(parseHexColor(preset.sheetBgHex)))
+            Column(Modifier.padding(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s4)) {
+                BasicText(Strings.aa, style = p.uiBodyStyle.copy(color = parseHexColor(preset.primaryInkHex), fontWeight = FontWeight.SemiBold))
+                Box(Modifier.width(40.dp).height(Space.s4).clip(RoundedCornerShape(Radius.pill)).background(parseHexColor(preset.accentHex)))
+            }
+        }
+        BasicText(
+            preset.name.substringBefore(" ("),
+            style = p.uiLabelStyle.copy(color = if (selected) p.accent else p.primaryInk, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

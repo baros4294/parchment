@@ -422,7 +422,7 @@ fun LiteraryProseRenderer(
                                     )
                                     val lineCount = remember(block.code) { countLinesFast(block.code) }
                                     BasicText(
-                                        text = "${block.language.ifBlank { "code" }} ($lineCount lines)",
+                                        text = Strings.lines(block.language.ifBlank { "code" }, lineCount),
                                         style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                     )
                                 }
@@ -544,7 +544,7 @@ fun LiteraryProseRenderer(
                                         size = IconSize.sm
                                     )
                                     BasicText(
-                                        text = "Table ($colCount cols × ${block.rows.size} rows)",
+                                        text = Strings.tableColsRows(colCount, block.rows.size),
                                         style = p.uiLabelStyle.copy(fontSize = 10.5.sp)
                                     )
                                 }

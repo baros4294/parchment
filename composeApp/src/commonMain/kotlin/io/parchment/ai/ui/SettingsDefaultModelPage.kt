@@ -48,11 +48,11 @@ internal fun DefaultModelSubpage(
             .padding(if (win.isCompact) 12.dp else 20.dp),
         verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
-        BasicText(text = "Default models", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
+        BasicText(text = Strings.defaultModels, style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
         // 1. Global Default Chat Model
         SepiaSectionCard(
-            title = "1. Global default model"
+            title = Strings.n1GlobalDefaultModel
         ) {
             SepiaSearchableModelPicker(
                 profiles = appState.profiles,
@@ -64,7 +64,7 @@ internal fun DefaultModelSubpage(
                     onSelectProfile(profId)
                     onUpdateProfileById(profId) { it.copy(defaultModel = modelId) }
                     onUpdateSession { it.copy(profileId = profId, modelOverride = modelId) }
-                    onNotify("Set Global Default Model to $profName • $modelId")
+                    onNotify(Strings.setGlobalDefaultModelTo(profName, modelId))
                 },
                 maxListHeight = 240.dp
             )
@@ -72,11 +72,11 @@ internal fun DefaultModelSubpage(
 
         // 2. Title Summary Model
         SepiaSectionCard(
-            title = "2. Title generation model"
+            title = Strings.n2TitleGenerationModel
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaToggleRow(
-                    title = "Follow global choice (use current global model)",
+                    title = Strings.followGlobalChoiceUseCurrent,
                     checked = defaultModels.titleFollowGlobal,
                     onCheckedChange = { onUpdateDefaultModels(defaultModels.copy(titleFollowGlobal = it)) }
                 )
@@ -94,7 +94,7 @@ internal fun DefaultModelSubpage(
                 SepiaTextField(
                     value = defaultModels.titlePromptTemplate,
                     onValueChange = { onUpdateDefaultModels(defaultModels.copy(titlePromptTemplate = it)) },
-                    label = "Title generation prompt",
+                    label = Strings.titleGenerationPrompt,
                     singleLine = false,
                     minHeight = 52.dp,
                     modifier = Modifier.fillMaxWidth()
@@ -104,11 +104,11 @@ internal fun DefaultModelSubpage(
 
         // 3. Summary / Context Compression Model
         SepiaSectionCard(
-            title = "3. Summary & context compression model"
+            title = Strings.n3SummaryContextCompressionModel
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaToggleRow(
-                    title = "Follow global choice (use current global model)",
+                    title = Strings.followGlobalChoiceUseCurrent,
                     checked = defaultModels.summaryFollowGlobal,
                     onCheckedChange = { onUpdateDefaultModels(defaultModels.copy(summaryFollowGlobal = it)) }
                 )
@@ -128,14 +128,14 @@ internal fun DefaultModelSubpage(
 
         // 4. Translation Model & Target Language
         SepiaSectionCard(
-            title = "4. Translation model & target language"
+            title = Strings.n4TranslationModelTargetLanguage
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
                     value = defaultModels.translationTargetLanguage,
                     onValueChange = { lang -> onUpdateDefaultModels(defaultModels.copy(translationTargetLanguage = lang)) },
-                    label = "Target language for In-Chat translation",
-                    placeholder = "English, vietnamese, japanese, Spanish…",
+                    label = Strings.targetLanguageForInChat,
+                    placeholder = Strings.englishVietnameseJapaneseSpanish,
                     modifier = Modifier.fillMaxWidth()
                 )
                 @OptIn(ExperimentalLayoutApi::class)
@@ -150,7 +150,7 @@ internal fun DefaultModelSubpage(
                 }
                 SepiaDivider()
                 SepiaToggleRow(
-                    title = "Follow global choice (use current global model)",
+                    title = Strings.followGlobalChoiceUseCurrent,
                     checked = defaultModels.translationFollowGlobal,
                     onCheckedChange = { onUpdateDefaultModels(defaultModels.copy(translationFollowGlobal = it)) }
                 )

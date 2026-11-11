@@ -24,7 +24,7 @@ Colors come from `ThemeConfig`, so every preset keeps working. Parchment & Espre
 | Accent | `#8B5A2B` | The rule, primary actions, selection |
 | Danger | `#A62B2B` | Errors and destructive actions |
 
-Everything else lives in `ui/DesignTokens.kt`. New UI uses these names, not literal numbers; older screens move over as each one is reworked (13.4).
+Everything else lives in `ui/DesignTokens.kt`. New UI uses these names, not literal numbers; older screens move over when they are next reworked.
 
 - **Space:** 2, 4, 6, 8, 10, 12, 16, 24, 48 dp (`Space.s8`); 48 is also the smallest touch target. Related items sit closer than unrelated ones.
 - **Type:** 11, 12, 13, 14, 15, 16, 17, 19, 21 sp. Nothing below 11. Text grows with the system text size, up to 200%.
@@ -42,28 +42,22 @@ Everything else lives in `ui/DesignTokens.kt`. New UI uses these names, not lite
 
 Studied 2026-11 (iA Writer, Things, Linear, Raycast, Bear, Craft, Apple Design Award criteria). Ideas only, never assets or branding. Each lesson names the Parchment change it leads to.
 
-| Lesson | Seen in | Parchment change |
+| Lesson | Seen in | In Parchment |
 |---|---|---|
-| Typography is the interface: a reading measure, a clear type scale, nothing competing with the text | iA Writer, Bear | Keep the reading width; one type scale (above); quieter chrome around replies (13.4) |
-| Calm by default: secondary actions recede until wanted | Things, Linear | Already: controls on hover. Next: fold rarely used composer chips into one menu (13.4) |
-| Keyboard first: every action reachable without a pointer, one palette to find them | Linear, Raycast | Ctrl+K command palette and shortcuts for main actions (13.5) |
-| Undo instead of asking | Things, Linear | Reversible deletes undo from a notice instead of a confirm dialog (13.5) |
-| Empty states teach the next step | Things, Craft | First run without a provider becomes a guided setup (13.4) |
-| Motion explains, briefly; it never delays | Linear, Things | Short timings above; Reduce motion makes all of it instant (13.3, 13.7) |
-| Inclusive by design, not by audit | Apple Design Awards (Inclusivity) | Screen reader passes, 200% text, contrast on every theme (13.6) |
-| Density that scales: compact on a phone, airy on a desktop | Linear, Craft | One spacing scale, applied per surface (13.4) |
+| Typography is the interface: a reading measure, a clear type scale, nothing competing with the text | iA Writer, Bear | One reading width and one type scale (above) |
+| Calm by default: secondary actions recede until wanted | Things, Linear | Controls appear on hover; at large text the phone composer moves its actions to a second row |
+| Keyboard first: every action reachable without a pointer, one palette to find them | Linear, Raycast | Ctrl+K command palette; Ctrl+N, Ctrl+, and Ctrl+B |
+| Undo instead of asking | Things, Linear | Deleted chats come back from Undo on the notice; the confirm dialog is optional |
+| Empty states teach the next step | Things, Craft | Without a key, the empty chat leads into provider setup; empty lists say why and offer the fix |
+| Motion explains, briefly; it never delays | Linear, Things | Short timings above; Reduce motion makes all of it instant |
+| Inclusive by design, not by audit | Apple Design Awards (Inclusivity) | 200% text, tested contrast on every theme, labeled controls; screen-reader passes by the user |
+| Density that scales: compact on a phone, airy on a desktop | Linear, Craft | One spacing scale; columns grow with text size |
 
 ## Audit, 2026-11
 
 Taken from the gallery (light and dark, phone and desktop, 100% and 200% text) and ranked by harm. Each item names the task that fixes it; remove it once fixed.
 
-Fixed so far: columns and icons too small at 200% text, and the hard-to-see disabled Send button in dark.
-
-1. **200% text, phone:** the composer wraps Tools onto a second row and the chat title shows only two words. Collapse rarely used composer controls into one menu (13.4).
-2. **Destructive actions in quiet places:** "Clear all" sits beside a single chat with no undo. Undo instead of confirm, and a less prominent place (13.5).
-3. **First run:** the empty chat says what to do but not how to add a provider; with no provider it should lead into setup (13.4).
-4. **Settings, Providers:** three columns on a desktop leave the middle one mostly empty; the models empty state relies on an icon (13.4).
-5. **Settings, Appearance:** themes are a long list of radio rows; small previews would let people compare them at a glance (13.4).
+All eight issues are fixed: columns, icons and the phone composer at large text; the disabled button in dark; Undo for deleted chats; a first run that leads to provider setup; a models list that explains itself; theme previews. Two smaller notes remain: at 200% text the phone shows only the start of the chat title, and Providers' middle column is mostly empty with few providers. Run a new audit after the next large UI change.
 
 Sources: [How we redesigned the Linear UI](https://linear.app/now/how-we-redesigned-the-linear-ui), [iA Writer vs Word](https://ia.net/topics/writer-vs-word), [Apple Design Awards](https://developer.apple.com/design/awards/).
 
@@ -84,6 +78,8 @@ The window uses the native caption, so minimize, maximize, Snap Layouts and roun
 ## Words on screen
 
 Write for a capable person who is not a developer. Say what a control does, not how it works.
+
+Interface text lives in `ui/Strings.kt`, one table for translation: a `val` for fixed text, a function for text with values (`Strings.clearedMessagesIn(title)`). Add new text there, not in a screen.
 
 | Instead of | Say |
 |---|---|

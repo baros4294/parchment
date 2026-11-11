@@ -59,7 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -75,9 +74,7 @@ import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.MessageNavVisibility
-import io.parchment.ai.model.MessageNode
 import io.parchment.ai.model.MessageRole
-import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
@@ -143,7 +140,7 @@ internal fun ManuscriptViewport(
     onInspectGeneratedImage: (GeneratedMediaItem) -> Unit,
     onExportChatMarkdown: () -> Unit,
     onExportChatJson: () -> Unit = {},
-    onOpenPricingSettings: () -> Unit,
+    onOpenProviderSettings: () -> Unit,
     onSend: () -> Unit,
     onSendGuidedDirection: () -> Unit,
     onSteerNow: () -> Unit,
@@ -166,6 +163,7 @@ internal fun ManuscriptViewport(
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val reduceMotion = LocalReduceMotion.current
     var showMinimapTreeModal by remember { mutableStateOf(false) }
     var showContextBreakdownPopover by remember { mutableStateOf(false) }
 
@@ -336,122 +334,16 @@ internal fun ManuscriptViewport(
     ) {
         // Chat notes and memory, opened from Notes in the top bar.
         AnimatedVisibility(visible = showSessionInspector) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState())
-                    .background(p.elevatedBg.copy(alpha = 0.45f))
-                    .padding(horizontal = 14.dp, vertical = Space.s8),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Column(
-                    modifier = Modifier
-                        .widthIn(max = p.maxReadingWidth)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(Radius.r10))
-                        .background(p.cardBg)
-                        .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
-                        .padding(Space.s12),
-                    verticalArrangement = Arrangement.spacedBy(Space.s8)
-                ) {
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(Space.s6)
-                    ) {
-                        BasicText(
-                            text = "Chat notes & memory",
-                            style = p.uiHeaderStyle.copy(fontSize = 15.sp),
-                            modifier = Modifier.padding(top = Space.s4)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
-                            if (activeSession.messages.isNotEmpty()) {
-                                SepiaButton(
-                                    text = "Export .MD",
-                                    compact = true,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = onExportChatMarkdown
-                                )
-                                SepiaButton(
-                                    text = "Clear chat",
-                                    compact = true,
-                                    style = SepiaButtonStyle.GHOST,
-                                    onClick = onRequestClearCurrentChat
-                                )
-                            }
-                            SepiaButton(
-                                text = "×",
-                                contentDescription = "Close session inspector",
-                                compact = true,
-                                style = SepiaButtonStyle.GHOST,
-                                onClick = onToggleSessionInspector
-                            )
-                        }
-                    }
-                    SepiaDivider()
-                    SepiaTextField(
-                        value = activeSession.systemPrompt,
-                        onValueChange = { sp -> onUpdateSession { it.copy(systemPrompt = sp) } },
-                        label = "Extra instructions for this chat",
-                        placeholder = "Optional instructions added specifically to this conversation…",
-                        singleLine = false,
-                        minHeight = 64.dp,
-                        maxHeight = 320.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    SepiaTextField(
-                        value = activeSession.authorsNote,
-                        onValueChange = { note -> onUpdateSession { it.copy(authorsNote = note) } },
-                        label = "Style & tone reminder",
-                        placeholder = "Optional reminder kept near the end of the conversation…",
-                        singleLine = false,
-                        minHeight = 52.dp,
-                        maxHeight = 260.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(Space.s6)
-                    ) {
-                        BasicText(
-                            text = "Chat summary & memory",
-                            style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                            modifier = Modifier.padding(top = Space.s4, end = Space.s8)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
-                            val canCompactSession = activeSession.messages.count { it.includedInContext } > 1 ||
-                                activeSession.messages.any { it.includedInContext && it.activeVariant.toolCalls.isNotEmpty() }
-                            SepiaButton(
-                                text = if (isStreaming) "✦ Summarize & Resume" else "✦ Summarize",
-                                compact = true,
-                                enabled = activeSession.messages.isNotEmpty(),
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = onAutoSummarizeStory
-                            )
-                            SepiaButton(
-                                text = if (isStreaming) "⚡ Shorten and continue" else "⚡ Shorten conversation",
-                                compact = true,
-                                enabled = canCompactSession,
-                                style = SepiaButtonStyle.SECONDARY,
-                                onClick = onCompactContext
-                            )
-                        }
-                    }
-                    SepiaTextField(
-                        value = activeSession.storySummary,
-                        onValueChange = { sum -> onUpdateSession { it.copy(storySummary = sum) } },
-                        placeholder = "Key facts or summary remembered across long chats…",
-                        singleLine = false,
-                        minHeight = 110.dp,
-                        maxHeight = 380.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
+            ChatNotesPanel(
+                activeSession = activeSession,
+                isStreaming = isStreaming,
+                onUpdateSession = onUpdateSession,
+                onExportChatMarkdown = onExportChatMarkdown,
+                onRequestClearCurrentChat = onRequestClearCurrentChat,
+                onToggleSessionInspector = onToggleSessionInspector,
+                onAutoSummarizeStory = onAutoSummarizeStory,
+                onCompactContext = onCompactContext
+            )
         }
 
         // The message list and the floating message navigator.
@@ -498,59 +390,7 @@ internal fun ManuscriptViewport(
 
                 if (activeSession.messages.isEmpty()) {
                     item {
-                        val activeModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }
-                        val card = activeSession.activeCard ?: activeAssistant.activeCard
-                        val displayName = card?.name?.takeIf { it.isNotBlank() }
-                            ?: activeAssistant.name.takeIf { it.isNotBlank() }
-                            ?: "Ready"
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 44.dp)
-                                .rubricMark(p.accent)
-                                .padding(start = Space.s16, top = Space.s4, bottom = Space.s4),
-                            verticalArrangement = Arrangement.spacedBy(Space.s6)
-                        ) {
-                            if (activeAssistant.iconEmoji != "💬") {
-                                SepiaAvatarCircle(symbol = activeAssistant.iconEmoji, selected = true, sizeDp = 40.dp)
-                            }
-                            BasicText(
-                                text = if (displayName == "Default Assistant") "Start with a question, a draft or a file." else displayName,
-                                style = p.uiHeaderStyle.copy(fontSize = 21.sp, lineHeight = 28.sp)
-                            )
-                            BasicText(
-                                text = activeModel.ifBlank { "Choose a model in Settings" },
-                                style = p.uiLabelStyle.copy(color = p.mutedInk)
-                            )
-                            if (card != null && card.firstMessage.isNotBlank()) {
-                                Spacer(Modifier.height(Space.s4))
-                                SepiaButton(
-                                    text = "Start opening scene",
-                                    compact = true,
-                                    style = SepiaButtonStyle.PRIMARY,
-                                    onClick = {
-                                        val now = PlatformBridge.currentTimeMillis()
-                                        val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
-                                        if (allGreetings.isNotEmpty()) {
-                                            val greetingNode = MessageNode(
-                                                id = "node-greeting-$now",
-                                                role = MessageRole.ASSISTANT,
-                                                variants = allGreetings.mapIndexed { idx, g ->
-                                                    MessageVariant(
-                                                        id = "var-greeting-$idx-$now",
-                                                        content = g.replace("{{char}}", card.name)
-                                                            .replace("{{user}}", activeSession.withProfileName(preferences).userName),
-                                                        modelUsed = "Card Greeting #${idx + 1}",
-                                                        createdAt = now
-                                                    )
-                                                }
-                                            )
-                                            onUpdateSession { it.copy(messages = listOf(greetingNode)) }
-                                        }
-                                    }
-                                )
-                            }
-                        }
+                        EmptyChatIntro(activeSession, activeAssistant, activeProfile, preferences, onUpdateSession, onOpenProviderSettings)
                     }
                 }
 
@@ -716,10 +556,10 @@ internal fun ManuscriptViewport(
                                 KissVectorIcon(icon = KissIcon.VOLUME_ON, tint = p.accent, size = 13.dp)
                             }
                             val liveStatusLabel = when {
-                                isVoiceListening -> "Listening…"
-                                isStreaming -> "Live Audio Active…"
-                                isLiveVoiceMode -> "Live Audio: ON"
-                                else -> "Live Audio Ready"
+                                isVoiceListening -> Strings.listening
+                                isStreaming -> Strings.liveAudioActive
+                                isLiveVoiceMode -> Strings.liveAudioOn
+                                else -> Strings.liveAudioReady
                             }
                             BasicText(
                                 text = liveStatusLabel,
@@ -748,7 +588,7 @@ internal fun ManuscriptViewport(
                                         size = IconSize.sm
                                     )
                                     BasicText(
-                                        text = if (isVoiceListening) "Pause Mic" else "Speak",
+                                        text = if (isVoiceListening) Strings.pauseMic else Strings.speak,
                                         style = p.uiLabelStyle.copy(
                                             color = if (isVoiceListening) onFillInk(p.accent) else p.primaryInk,
                                             fontWeight = FontWeight.SemiBold,
@@ -778,7 +618,7 @@ internal fun ManuscriptViewport(
                                     ) {
                                         KissVectorIcon(icon = KissIcon.PLAY, tint = p.accent, size = 11.dp)
                                         BasicText(
-                                            text = "Continue",
+                                            text = Strings.continueLabel,
                                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Medium, fontSize = 11.sp)
                                         )
                                     }
@@ -802,7 +642,7 @@ internal fun ManuscriptViewport(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.STOP, tint = p.danger, size = 11.dp)
                                     BasicText(
-                                        text = "Stop",
+                                        text = Strings.stop2,
                                         style = p.uiLabelStyle.copy(color = p.danger, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                     )
                                 }
@@ -820,7 +660,7 @@ internal fun ManuscriptViewport(
                                     .padding(horizontal = 7.dp, vertical = 3.dp)
                             ) {
                                 BasicText(
-                                    text = if (isLiveVoiceMode) "End Live" else "Start Live",
+                                    text = if (isLiveVoiceMode) Strings.endLive else Strings.startLive,
                                     style = p.uiLabelStyle.copy(
                                         color = if (isLiveVoiceMode) p.accent else p.mutedInk,
                                         fontWeight = FontWeight.SemiBold,
@@ -882,7 +722,7 @@ internal fun ManuscriptViewport(
                                 size = IconSize.sm
                             )
                             BasicText(
-                                text = "Latest",
+                                text = Strings.latest,
                                 style = p.uiLabelStyle.copy(
                                     color = onFillInk(p.accent),
                                     fontWeight = FontWeight.Bold,
@@ -948,13 +788,13 @@ internal fun ManuscriptViewport(
                                 ) {
                                     KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = IconSize.md)
                                     BasicText(
-                                        text = "Message Map (${filteredMapItems.size}/${activeSession.messages.size})",
+                                        text = Strings.messageMap(filteredMapItems.size, activeSession.messages.size),
                                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
                                     )
                                 }
                                 SepiaButton(
                                     text = "×",
-                                    contentDescription = "Close conversation map",
+                                    contentDescription = Strings.closeConversationMap,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { showMinimapTreeModal = false }
@@ -963,7 +803,7 @@ internal fun ManuscriptViewport(
                             SepiaTextField(
                                 value = mapFilterQuery,
                                 onValueChange = { mapFilterQuery = it },
-                                placeholder = "🔍 Filter turns…",
+                                placeholder = Strings.filterTurns,
                                 singleLine = true,
                                 minHeight = 30.dp,
                                 modifier = Modifier.fillMaxWidth()
@@ -975,7 +815,7 @@ internal fun ManuscriptViewport(
                             ) {
                                 filteredMapItems.forEach { (idx, mNode) ->
                                     val isAsst = mNode.role == MessageRole.ASSISTANT
-                                    val roleBadge = if (isAsst) "AI" else "You"
+                                    val roleBadge = if (isAsst) "AI" else Strings.you
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -984,7 +824,7 @@ internal fun ManuscriptViewport(
                                             .kissClickable(pressScale = 0.98f) {
                                                 minimapInteractionTick++
                                                 scope.launch {
-                                                    listState.animateScrollToItem(idx + 1)
+                                                    listState.scrollToItemWithMotion(idx + 1, reduceMotion)
                                                 }
                                             }
                                             .padding(7.dp),
@@ -1020,7 +860,7 @@ internal fun ManuscriptViewport(
                                                                             }
                                                                         )
                                                                     }
-                                                                    scope.launch { listState.animateScrollToItem(idx + 1) }
+                                                                    scope.launch { listState.scrollToItemWithMotion(idx + 1, reduceMotion) }
                                                                 }
                                                                 .padding(horizontal = 5.dp, vertical = 1.dp)
                                                         ) {
@@ -1038,7 +878,7 @@ internal fun ManuscriptViewport(
                                             }
                                         }
                                         BasicText(
-                                            text = stripMarkdownToPlainText(mNode.activeVariant.content).ifBlank { "(Media / Empty)" },
+                                            text = stripMarkdownToPlainText(mNode.activeVariant.content).ifBlank { Strings.mediaEmpty },
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.narrationInk)
@@ -1062,32 +902,32 @@ internal fun ManuscriptViewport(
                         // Extreme Jump Top
                         SepiaButton(
                             text = "⤒",
-                            contentDescription = "Jump to first message",
+                            contentDescription = Strings.jumpToFirstMessage,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
                                 minimapInteractionTick++
-                                scope.launch { listState.animateScrollToItem(0) }
+                                scope.launch { listState.scrollToItemWithMotion(0, reduceMotion) }
                             }
                         )
                         // Jump Previous Message
                         SepiaButton(
                             text = "↑",
-                            contentDescription = "Previous message",
+                            contentDescription = Strings.previousMessage,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
                                 minimapInteractionTick++
                                 scope.launch {
                                     val cur = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
-                                    listState.animateScrollToItem(cur)
+                                    listState.scrollToItemWithMotion(cur, reduceMotion)
                                 }
                             }
                         )
                         // Toggle Tree & Swipe Map
                         SepiaButton(
                             text = "🗺",
-                            contentDescription = "Conversation map",
+                            contentDescription = Strings.conversationMap,
                             compact = true,
                             style = if (showMinimapTreeModal) SepiaButtonStyle.PRIMARY else SepiaButtonStyle.GHOST,
                             onClick = {
@@ -1098,21 +938,21 @@ internal fun ManuscriptViewport(
                         // Jump Next Message
                         SepiaButton(
                             text = "↓",
-                            contentDescription = "Next message",
+                            contentDescription = Strings.nextMessage,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
                                 minimapInteractionTick++
                                 scope.launch {
                                     val next = (listState.firstVisibleItemIndex + 1).coerceAtMost(activeSession.messages.size)
-                                    listState.animateScrollToItem(next)
+                                    listState.scrollToItemWithMotion(next, reduceMotion)
                                 }
                             }
                         )
                         // Extreme Jump Bottom
                         SepiaButton(
                             text = "⤓",
-                            contentDescription = "Jump to latest message",
+                            contentDescription = Strings.jumpToLatestMessage,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
@@ -1161,7 +1001,7 @@ internal fun ManuscriptViewport(
                 // 1. Live status while streaming: the headline and its detail on separate lines.
                 var statusExpanded by remember { mutableStateOf(false) }
                 AnimatedVisibility(visible = isStreaming) {
-                    val rawStatus = streamingStatus.ifBlank { "Generating reply…" }
+                    val rawStatus = streamingStatus.ifBlank { Strings.generatingReply }
                     val (statusHeadline, statusDetail) = remember(rawStatus) {
                         when {
                             rawStatus.contains('\n') -> {
@@ -1183,7 +1023,7 @@ internal fun ManuscriptViewport(
                             .clip(RoundedCornerShape(Radius.r8))
                             .background(p.sheetBg.copy(alpha = 0.78f))
                             .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
-                            .clickable(role = Role.Button, onClickLabel = if (statusExpanded) "Collapse status" else "Expand status") { statusExpanded = !statusExpanded }
+                            .clickable(role = Role.Button, onClickLabel = if (statusExpanded) Strings.collapseStatus else Strings.expandStatus) { statusExpanded = !statusExpanded }
                             .padding(horizontal = Space.s10, vertical = Space.s6),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
@@ -1245,7 +1085,7 @@ internal fun ManuscriptViewport(
                         verticalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         BasicText(
-                            text = "Queued Next (${queuedPrompts.size} — auto-sends after reply):",
+                            text = Strings.queuedNextAutoSendsAfterReply(queuedPrompts.size),
                             style = p.uiLabelStyle.copy(color = p.accentSecondary, fontWeight = FontWeight.SemiBold)
                         )
                         queuedPrompts.forEach { qItem ->
@@ -1264,14 +1104,14 @@ internal fun ManuscriptViewport(
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                                     SepiaButton(
-                                        text = "⚡ Send now",
+                                        text = Strings.sendNow2,
                                         compact = true,
                                         style = SepiaButtonStyle.SECONDARY,
                                         onClick = { onSteerQueuedPromptNow(qItem) }
                                     )
                                     SepiaButton(
                                         text = "×",
-                                        contentDescription = "Remove queued prompt",
+                                        contentDescription = Strings.removeQueuedPrompt,
                                         compact = true,
                                         style = SepiaButtonStyle.GHOST,
                                         onClick = { onRemoveQueuedPrompt(qItem.id) }
@@ -1329,38 +1169,38 @@ internal fun ManuscriptViewport(
                                 verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 SepiaChip(
-                                    label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
+                                    label = if (isGoalModeEnabled) Strings.goalModeOn else Strings.goalMode,
                                     selected = isGoalModeEnabled,
                                     onClick = onToggleGoalMode
                                 )
                                 SepiaChip(
-                                    label = if (isLiveVoiceMode) "🔊 Live Voice: ON" else "🎙 Live Voice",
+                                    label = if (isLiveVoiceMode) Strings.liveVoiceOn else Strings.liveVoice,
                                     selected = isLiveVoiceMode,
                                     onClick = onToggleLiveVoiceMode
                                 )
                                 if (activeProfile.protocol == ProviderProtocol.GEMINI_INTERACTIONS) {
                                     SepiaChip(
-                                        label = "💻 Code exec",
+                                        label = Strings.codeExec,
                                         selected = activeProfile.enableCodeExecution,
                                         onClick = { onUpdateProfile { it.copy(enableCodeExecution = !it.enableCodeExecution) } }
                                     )
                                     SepiaChip(
-                                        label = "🔗 URL context",
+                                        label = Strings.urlContext,
                                         selected = activeProfile.enableUrlContext,
                                         onClick = { onUpdateProfile { it.copy(enableUrlContext = !it.enableUrlContext) } }
                                     )
                                 }
                                 SepiaChip(
                                     label = if (showAllHarnessToolsInComposer) {
-                                        "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▴"
+                                        Strings.tools2(activeHarnessToolNames.size, allHarnessTools.size)
                                     } else {
-                                        "🔧 ${activeHarnessToolNames.size}/${allHarnessTools.size} Tools ▾"
+                                        Strings.tools3(activeHarnessToolNames.size, allHarnessTools.size)
                                     },
                                     selected = showAllHarnessToolsInComposer || activeHarnessToolNames.isNotEmpty(),
                                     onClick = { showAllHarnessToolsInComposer = !showAllHarnessToolsInComposer }
                                 )
                                 SepiaChip(
-                                    label = if (showPrefillBox) "▾ Start the reply with: on" else "▸ Start the reply with…",
+                                    label = if (showPrefillBox) Strings.startTheReplyWithOn else Strings.startTheReplyWith,
                                     selected = showPrefillBox || assistantPrefillInput.isNotBlank(),
                                     onClick = onTogglePrefillBox
                                 )
@@ -1380,12 +1220,12 @@ internal fun ManuscriptViewport(
                                 verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 BasicText(
-                                    text = "Co-Writing helpers:",
+                                    text = Strings.coWritingHelpers,
                                     style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
                                     modifier = Modifier.padding(top = 5.dp, end = Space.s4)
                                 )
                                 SepiaButton(
-                                    text = "✍ Draft my reply",
+                                    text = Strings.draftMyReply,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = {
@@ -1394,7 +1234,7 @@ internal fun ManuscriptViewport(
                                     }
                                 )
                                 SepiaButton(
-                                    text = "🧭 Guide next reply",
+                                    text = Strings.guideNextReply,
                                     compact = true,
                                     enabled = hasTypedInput,
                                     style = SepiaButtonStyle.SECONDARY,
@@ -1432,7 +1272,7 @@ internal fun ManuscriptViewport(
                                     .clip(RoundedCornerShape(Radius.r8))
                                     .background(p.cardBg)
                                     .border(LineWidth.hairline, p.accent.copy(alpha = 0.7f), RoundedCornerShape(Radius.r8))
-                                    .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
+                                    .clickable(role = Role.Button, onClickLabel = Strings.openAttachment) { onInspectAttachment(att) }
                                     .padding(horizontal = Space.s6, vertical = Space.s4),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(Space.s6)
@@ -1463,7 +1303,7 @@ internal fun ManuscriptViewport(
                                 )
                                 SepiaButton(
                                     text = "×",
-                                    contentDescription = "Remove attachment",
+                                    contentDescription = Strings.removeAttachment,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { onRemoveAttachment(att.id) }
@@ -1477,7 +1317,7 @@ internal fun ManuscriptViewport(
                     SepiaTextField(
                         value = assistantPrefillInput,
                         onValueChange = onAssistantPrefillChange,
-                        placeholder = "Start the AI's reply with these exact words…",
+                        placeholder = Strings.startTheAiSReply,
                         singleLine = false,
                         maxLines = 3,
                         minHeight = 36.dp,
@@ -1640,7 +1480,7 @@ internal fun ManuscriptViewport(
                                             size = 10.dp
                                         )
                                         BasicText(
-                                            text = if (spec.takesArgument) "arg" else "Run",
+                                            text = if (spec.takesArgument) "arg" else Strings.run,
                                             style = p.monoStyle.copy(
                                                 fontSize = 11.sp,
                                                 color = p.narrationInk,
@@ -1699,7 +1539,7 @@ internal fun ManuscriptViewport(
                         list.add(
                             Triple(
                                 "📎 @file",
-                                "Pick & attach a local file, image, or PDF…",
+                                Strings.pickAttachALocalFileImage,
                                 {
                                     replaceTrailingAt("")
                                     onAddAttachment()
@@ -1712,9 +1552,9 @@ internal fun ManuscriptViewport(
                             Triple(
                                 "📂 @mount",
                                 if (effectiveWorkspacePath.isBlank()) {
-                                    "Choose a folder for the agent to work in…"
+                                    Strings.chooseAFolderForTheAgent
                                 } else {
-                                    "Change the agent's folder ($effectiveWorkspacePath)…"
+                                    Strings.changeTheAgentSFolder(effectiveWorkspacePath)
                                 },
                                 {
                                     replaceTrailingAt("")
@@ -1756,7 +1596,7 @@ internal fun ManuscriptViewport(
                             list.add(
                                 Triple(
                                     "📎 @${att.fileName}",
-                                    "Re-attach from this conversation (${att.mimeType})",
+                                    Strings.reAttachFromThisConversation(att.mimeType),
                                     {
                                         onReattachExistingAttachment(att)
                                         replaceTrailingAt("@${att.fileName} ")
@@ -1907,9 +1747,9 @@ internal fun ManuscriptViewport(
                     value = userPromptInput,
                     onValueChange = onUserPromptChange,
                     placeholder = if (isStreaming) {
-                        "Type a follow-up to send now or queue for later…"
+                        Strings.typeAFollowUpToSend
                     } else {
-                        "Message $targetName…"
+                        Strings.message(targetName)
                     },
                     singleLine = false,
                     borderless = true,
@@ -1951,7 +1791,7 @@ internal fun ManuscriptViewport(
                         canSummarize = activeSession.messages.isNotEmpty(),
                         onCompactContext = onCompactContext,
                         onSummarizeStory = onAutoSummarizeStory,
-                        onOpenPricingSettings = onOpenPricingSettings,
+                        onOpenPricingSettings = onOpenProviderSettings,
                         onClose = { showContextBreakdownPopover = false }
                     )
                 }
@@ -1976,7 +1816,7 @@ internal fun ManuscriptViewport(
                 val toolsChipLabel = if (win.isCompact) {
                     if (hasActiveTools) "🔧 •" else "🔧"
                 } else {
-                    if (hasActiveTools) "🔧 Tools •" else "🔧 Tools"
+                    if (hasActiveTools) Strings.tools4 else Strings.tools5
                 }
 
                 val activeComposerModelId = activeSession.modelOverride
@@ -1988,189 +1828,43 @@ internal fun ManuscriptViewport(
                 ) {
                     AiProviderEngine.resolveModelModalityProfile(activeProfile, activeComposerModelId)
                 }
-                val leftChipsComposable: @Composable (Modifier) -> Unit = { rowMod ->
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        modifier = rowMod,
-                        horizontalArrangement = Arrangement.spacedBy(if (win.isCompact) 3.dp else 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(Space.s4)
-                    ) {
-                        SepiaChip(
-                            label = "📎",
-                            contentDescription = "Attach files",
-                            selected = pendingAttachments.isNotEmpty(),
-                            onClick = onAddAttachment
-                        )
-                        SepiaChip(
-                            label = "🎙",
-                            contentDescription = "Voice input",
-                            selected = isVoiceListening || isLiveVoiceMode,
-                            onClick = onTriggerVoiceInput
-                        )
-                        if (activeModalityProfile.isAnyImageModel) {
-                            AspectControl("🖼", activeProfile.mediaAspectRatio.ifBlank { "1:1" }, IMAGE_ASPECTS) { ratio -> onUpdateProfile { it.copy(mediaAspectRatio = ratio) } }
-                            val currentRes = activeProfile.mediaResolution.ifBlank { "1K" }
-                            ResolutionControl(currentRes, listOf("1K", "2K", "4K"), currentRes in listOf("2K", "4K")) { res -> onUpdateProfile { it.copy(mediaResolution = res) } }
-                        }
-                        if (activeModalityProfile.isAnyVideoModel) {
-                            AspectControl("🎬", activeProfile.mediaAspectRatio.ifBlank { "16:9" }, VIDEO_ASPECTS) { ratio -> onUpdateProfile { it.copy(mediaAspectRatio = ratio) } }
-                            val currentRes = when (activeProfile.mediaResolution) {
-                                "2K" -> "1080p"
-                                "", "512", "1K" -> "720p"
-                                else -> activeProfile.mediaResolution
-                            }
-                            ResolutionControl(currentRes, listOf("720p", "1080p", "4K"), currentRes in listOf("1080p", "4K")) { res -> onUpdateProfile { it.copy(mediaResolution = res) } }
-                            DurationControl(activeProfile.videoDurationSeconds) { seconds -> onUpdateProfile { it.copy(videoDurationSeconds = seconds) } }
-                            SepiaChip(
-                                label = if (activeProfile.videoGenerateAudio) "🔊 Audio" else "🔇 Mute",
-                                selected = activeProfile.videoGenerateAudio,
-                                onClick = {
-                                    onUpdateProfile { it.copy(videoGenerateAudio = !it.videoGenerateAudio) }
-                                }
-                            )
-                        }
-                        if (activeModalityProfile.isAnyAudioModel) {
-                            VoiceControl(activeProfile.audioVoice.ifBlank { "alloy" }) { voice -> onUpdateProfile { it.copy(audioVoice = voice) } }
-                            if (activeModalityProfile.isDedicatedAudioTts) {
-                                SpeechSpeedControl(activeProfile.audioSpeed) { speed -> onUpdateProfile { it.copy(audioSpeed = speed) } }
-                            }
-                        }
-                        if (!activeModalityProfile.isDedicatedImage &&
-                            !activeModalityProfile.isDedicatedVideo &&
-                            !activeModalityProfile.isDedicatedAudioTts
-                        ) {
-                            ThinkingControl(thinkingLabel, activeProfile.thinkingEffort) { level -> onUpdateProfile { it.copy(thinkingEffort = level) } }
-                        }
-                        SepiaChip(
-                            label = toolsChipLabel,
-                            contentDescription = "Tools",
-                            hint = "Web search, workspace and other tools for this chat",
-                            selected = showComposerToolsDrawer || hasActiveTools,
-                            onClick = { onComposerToolsDrawerChange(!showComposerToolsDrawer) }
-                        )
-                    }
-                }
-
-                if (win.isCompact && isStreaming) {
-                    // When streaming on compact mobile, use 2 full-width SpaceBetween rows so Stop/Queue/Steer never cramp or leave dead space
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(Space.s6)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            leftChipsComposable(Modifier.weight(1f))
-                            if (preferences.showTokenAndContextStats) {
-                                Spacer(Modifier.width(Space.s6))
-                                SepiaContextGaugeRing(
-                                    usedTokens = liveContextTokens,
-                                    contextLimitTokens = contextBreakdown.contextLimitTokens,
-                                    sessionCostUsd = sessionTotalCostUsd,
-                                    sessionCostLabel = sessionSpend.label,
-                                    onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SepiaButton(
-                                text = "■ Stop",
-                                hint = "Stop this reply",
-                                compact = true,
-                                style = SepiaButtonStyle.DANGER,
-                                onClick = onStopStream
-                            )
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(Space.s6),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                SepiaButton(
-                                    text = "⏳ Queue",
-                                    hint = "Send this after the current reply finishes",
-                                    compact = true,
-                                    enabled = hasTypedInput,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = onQueuePrompt
-                                )
-                                SepiaButton(
-                                    text = "⚡ Send now ↵",
-                                    hint = "Send this now to guide the current reply",
-                                    compact = true,
-                                    enabled = hasTypedInput,
-                                    style = SepiaButtonStyle.PRIMARY,
-                                    onClick = onSteerNow
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    // One full-width row on desktop, and on phones while idle.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        leftChipsComposable(Modifier.weight(1f))
-
-                        Spacer(Modifier.width(Space.s6))
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (preferences.showTokenAndContextStats) {
-                                SepiaContextGaugeRing(
-                                    usedTokens = liveContextTokens,
-                                    contextLimitTokens = contextBreakdown.contextLimitTokens,
-                                    sessionCostUsd = sessionTotalCostUsd,
-                                    sessionCostLabel = sessionSpend.label,
-                                    onClick = { showContextBreakdownPopover = !showContextBreakdownPopover }
-                                )
-                            }
-
-                            if (isStreaming) {
-                                SepiaButton(
-                                    text = "■ Stop",
-                                    hint = "Stop this reply",
-                                    compact = true,
-                                    style = SepiaButtonStyle.DANGER,
-                                    onClick = onStopStream
-                                )
-                                SepiaButton(
-                                    text = "⏳ Queue",
-                                    hint = "Send this after the current reply finishes",
-                                    compact = true,
-                                    enabled = hasTypedInput,
-                                    style = SepiaButtonStyle.OUTLINE,
-                                    onClick = onQueuePrompt
-                                )
-                                SepiaButton(
-                                    text = "⚡ Send now ↵",
-                                    hint = "Send this now to guide the current reply",
-                                    compact = true,
-                                    enabled = hasTypedInput,
-                                    style = SepiaButtonStyle.PRIMARY,
-                                    onClick = onSteerNow
-                                )
-                            } else {
-                                SepiaButton(
-                                    text = "Send ↵",
-                                    compact = true,
-                                    enabled = hasTypedInput,
-                                    style = SepiaButtonStyle.PRIMARY,
-                                    onClick = onSend
-                                )
-                            }
-                        }
-                    }
-                }
+                ComposerToolbar(
+                    activeProfile = activeProfile,
+                    activeModalityProfile = activeModalityProfile,
+                    preferences = preferences,
+                    pendingAttachments = pendingAttachments,
+                    isVoiceListening = isVoiceListening,
+                    isLiveVoiceMode = isLiveVoiceMode,
+                    isStreaming = isStreaming,
+                    hasTypedInput = hasTypedInput,
+                    hasActiveTools = hasActiveTools,
+                    showComposerToolsDrawer = showComposerToolsDrawer,
+                    thinkingLabel = thinkingLabel,
+                    toolsChipLabel = toolsChipLabel,
+                    liveContextTokens = liveContextTokens,
+                    contextLimitTokens = contextBreakdown.contextLimitTokens,
+                    sessionTotalCostUsd = sessionTotalCostUsd,
+                    sessionCostLabel = sessionSpend.label,
+                    onAddAttachment = onAddAttachment,
+                    onTriggerVoiceInput = onTriggerVoiceInput,
+                    onUpdateProfile = onUpdateProfile,
+                    onComposerToolsDrawerChange = onComposerToolsDrawerChange,
+                    onToggleContextBreakdown = { showContextBreakdownPopover = !showContextBreakdownPopover },
+                    onStopStream = onStopStream,
+                    onQueuePrompt = onQueuePrompt,
+                    onSteerNow = onSteerNow,
+                    onSend = onSend
+                )
             }
         }
     }
+}
+
+
+/** True when the provider needs a key and has none. A server on this computer (Ollama, LM Studio) needs no key. */
+internal fun needsApiKey(profile: ProviderProfile): Boolean {
+    if (profile.apiKey.isNotBlank()) return false
+    val authority = profile.baseUrl.trim().substringAfter("://").substringBefore('/').lowercase()
+    val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
+    return host !in setOf("localhost", "127.0.0.1", "[::1]", "0.0.0.0")
 }

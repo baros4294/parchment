@@ -57,13 +57,13 @@ import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.platform.PlatformBridge
 
 enum class SettingsCategory(val icon: String, val label: String) {
-    PREFERENCES("🖥", "Preferences"),
-    PROVIDERS("🖧", "Providers"),
-    ASSISTANTS("🤖", "Assistant"),
-    DEFAULT_MODEL("♡", "Default Model"),
-    WORKSPACE("📂", "Workspace"),
-    WORLD_BOOK("📖", "World Book & Cards"),
-    BACKUP_OTA("☁", "Storage & Updates")
+    PREFERENCES("🖥", Strings.preferences),
+    PROVIDERS("🖧", Strings.providers2),
+    ASSISTANTS("🤖", Strings.assistant),
+    DEFAULT_MODEL("♡", Strings.defaultModel),
+    WORKSPACE("📂", Strings.workspace2),
+    WORLD_BOOK("📖", Strings.worldBookCards),
+    BACKUP_OTA("☁", Strings.storageUpdates)
 }
 
 internal const val PROVIDER_STORAGE_TITLE = "Keep Responses on Provider Servers"
@@ -126,11 +126,11 @@ fun ParchmentSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            text = "Settings",
+                            text = Strings.settings,
                             style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                         )
                         SepiaButton(
-                            text = "← Chat",
+                            text = Strings.chat,
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = onClose
@@ -147,14 +147,14 @@ fun ParchmentSettingsScreen(
                         SepiaTextField(
                             value = settingsSearchQuery,
                             onValueChange = { settingsSearchQuery = it },
-                            placeholder = "🔍 Search all settings…",
+                            placeholder = Strings.searchAllSettings,
                             minHeight = 36.dp,
                             modifier = Modifier.weight(1f)
                         )
                         if (settingsSearchQuery.isNotEmpty()) {
                             SepiaButton(
                                 text = "×",
-                                contentDescription = "Clear search",
+                                contentDescription = Strings.clearSearch,
                                 compact = true,
                                 style = SepiaButtonStyle.GHOST,
                                 onClick = { settingsSearchQuery = "" }
@@ -321,16 +321,16 @@ fun ParchmentSettingsScreen(
             }
 
             fun categorySubtitle(cat: SettingsCategory): String = when (cat) {
-                SettingsCategory.PREFERENCES -> "Theme (${appState.theme.name.substringBefore(" (")}), fonts, display & behavior"
+                SettingsCategory.PREFERENCES -> Strings.themeFontsDisplayBehavior(appState.theme.name.substringBefore(" ("))
                 SettingsCategory.PROVIDERS -> "${activeProfile.name} • ${plural(appState.profiles.size, "provider profile")}"
                 SettingsCategory.ASSISTANTS -> "${plural(appState.assistants.size, "assistant persona")} & system prompts"
                 SettingsCategory.DEFAULT_MODEL -> {
-                    val curModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { "Not selected" }
-                    "Global, topic title, summary & translation ($curModel)"
+                    val curModel = activeSession.modelOverride.ifBlank { activeProfile.defaultModel }.ifBlank { Strings.notSelected }
+                    Strings.globalTopicTitleSummaryTranslation(curModel)
                 }
-                SettingsCategory.WORKSPACE -> "Agent approvals, file access, web and shell controls"
-                SettingsCategory.WORLD_BOOK -> "Character cards (PNG/JSON) & ${plural(appState.globalWorldBook.size + activeSession.fragments.size, "lore fragment")}"
-                SettingsCategory.BACKUP_OTA -> "Storage, backups and app updates (v${OtaUpdateEngine.currentAppVersion})"
+                SettingsCategory.WORKSPACE -> Strings.agentApprovalsFileAccessWebAnd
+                SettingsCategory.WORLD_BOOK -> Strings.characterCardsPngJson(plural(appState.globalWorldBook.size + activeSession.fragments.size, "lore fragment"))
+                SettingsCategory.BACKUP_OTA -> Strings.storageBackupsAndAppUpdatesV(OtaUpdateEngine.currentAppVersion)
             }
 
             Column(
@@ -376,7 +376,7 @@ fun ParchmentSettingsScreen(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 SepiaButton(
-                                    text = "← Settings",
+                                    text = Strings.settings2,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
                                     onClick = { mobileOpenedCategory = null }
@@ -399,13 +399,13 @@ fun ParchmentSettingsScreen(
                             ) {
                                 KissVectorIcon(icon = KissIcon.SETTINGS, tint = p.accent, size = 17.dp)
                                 BasicText(
-                                    text = "Settings",
+                                    text = Strings.settings,
                                     style = p.uiHeaderStyle.copy(fontSize = 18.sp)
                                 )
                             }
                         }
                         SepiaButton(
-                            text = "← Chat",
+                            text = Strings.chat,
                             compact = true,
                             style = SepiaButtonStyle.GHOST,
                             onClick = onClose
@@ -421,14 +421,14 @@ fun ParchmentSettingsScreen(
                             SepiaTextField(
                                 value = settingsSearchQuery,
                                 onValueChange = { settingsSearchQuery = it },
-                                placeholder = "🔍 Search all settings…",
+                                placeholder = Strings.searchAllSettings,
                                 minHeight = 36.dp,
                                 modifier = Modifier.weight(1f)
                             )
                             if (settingsSearchQuery.isNotEmpty()) {
                                 SepiaButton(
                                     text = "×",
-                                    contentDescription = "Clear search",
+                                    contentDescription = Strings.clearSearch,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
                                     onClick = { settingsSearchQuery = "" }

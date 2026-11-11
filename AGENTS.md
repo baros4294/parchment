@@ -49,7 +49,7 @@ Otherwise choose the conservative option and say so.
 
 ## Boundaries
 
-- Each TODO batch ends with one build and test run and one local commit. Push only when every TODO is finished and the user agrees (2026-11-11).
+- One build and test run per batch. Finish every open TODO, then commit and push once (user, 2026-11-11). After a flaky failure, rerun only that test, not the whole `final`.
 - Preserve user data, permissions, opaque signatures, explicit model choices and the installed Windows app.
 - Use Compose Foundation and existing icons. Check MEMORY before changing storage, protocol or platform contracts.
 - Keep secrets, keys and personal data out of the repository, logs and requests to outside services.

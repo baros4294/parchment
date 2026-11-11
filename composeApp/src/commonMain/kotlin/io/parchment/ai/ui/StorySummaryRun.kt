@@ -28,13 +28,13 @@ internal fun StorySummaryHost.triggerAutoSummarizeStory(autoMuteOlderTurns: Bool
 
     val sumStatus = when {
         wasStreaming && autoMuteOlderTurns ->
-            "Pausing the agent to shorten the conversation ($summaryModel)…"
+            Strings.pausingTheAgentToShortenThe(summaryModel)
         wasStreaming ->
-            "Stopping agent — summarizing continuity & auto-resuming ($summaryModel)…"
+            Strings.stoppingAgentSummarizingContinuityAutoResuming(summaryModel)
         autoMuteOlderTurns ->
-            "Shortening the conversation ($summaryModel)…"
+            Strings.shorteningTheConversation(summaryModel)
         else ->
-            "Summarizing story continuity into memory ($summaryModel)…"
+            Strings.summarizingStoryContinuityIntoMemory(summaryModel)
     }
 
     val sumJob = appRunLeases.launch(appProcessScope, summaryModel) {
@@ -101,20 +101,20 @@ internal fun StorySummaryHost.triggerAutoSummarizeStory(autoMuteOlderTurns: Bool
                 val latestSess = appState.sessions.find { it.id == targetSessId }
                 shouldResumeTurnIndex = latestSess?.messages?.indexOfLast { it.role == MessageRole.ASSISTANT } ?: -1
                 bannerNotification = if (autoMuteOlderTurns) {
-                    "Conversation shortened. Continuing."
+                    Strings.conversationShortenedContinuing2
                 } else {
-                    "Updated Continuity Memory — auto-resuming agent."
+                    Strings.updatedContinuityMemoryAutoResumingAgent
                 }
             } else {
                 bannerNotification = if (autoMuteOlderTurns) {
-                    "Conversation shortened. Older messages are summarized and no longer sent."
+                    Strings.conversationShortenedOlderMessagesAreSummarized
                 } else {
-                    "Updated Rolling Continuity Memory."
+                    Strings.updatedRollingContinuityMemory
                 }
             }
         } catch (e: Throwable) {
             if (e !is kotlinx.coroutines.CancellationException) {
-                bannerNotification = "Couldn't shorten the conversation: ${e.message}"
+                bannerNotification = Strings.couldnTShortenTheConversation(e.message)
             }
         } finally {
             if (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && shouldResumeTurnIndex >= 0) {

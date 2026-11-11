@@ -1,5 +1,7 @@
 package io.parchment.ai.network
 
+import io.parchment.ai.ui.Strings
+
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
@@ -469,41 +471,41 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                 if (!stepEmittedOutput && errMsg.contains("http 400")) {
                     if (useChainedId) {
                         currentPrevResponseId = ""
-                        onStatus("Stateful response chain rejected — retrying step with full history…")
+                        onStatus(Strings.statefulResponseChainRejectedRetryingStep)
                         continue
                     }
                     if (!omitEncryptedContentIncludeOnRetry && (errMsg.contains("encrypted_content") || errMsg.contains("include"))) {
                         omitEncryptedContentIncludeOnRetry = true
-                        onStatus("Endpoint rejected reasoning.encrypted_content include — retrying without include…")
+                        onStatus(Strings.endpointRejectedReasoningEncryptedContentInclude)
                         continue
                     }
                     if (!useLegacyWebSearchPreviewOnRetry && profile.enableWebSearch &&
                         (errMsg.contains("web_search") && !errMsg.contains("web_search_preview"))
                     ) {
                         useLegacyWebSearchPreviewOnRetry = true
-                        onStatus("Endpoint uses legacy web_search_preview tool — switching automatically…")
+                        onStatus(Strings.endpointUsesLegacyWebSearchPreview)
                         continue
                     }
                     if (useLegacyWebSearchPreviewOnRetry && !omitOpenAiNativeWebSearchOnRetry && profile.enableWebSearch &&
                         errMsg.contains("web_search")
                     ) {
                         omitOpenAiNativeWebSearchOnRetry = true
-                        onStatus("Endpoint does not support native web search — switching to free local web_search cascade…")
+                        onStatus(Strings.endpointDoesNotSupportNativeWeb2)
                         continue
                     }
                     if (!omitImageGenToolOnRetry && modelOutputsImages && errMsg.contains("image_generation")) {
                         omitImageGenToolOnRetry = true
-                        onStatus("Endpoint rejected image_generation tool — retrying without image_generation tool…")
+                        onStatus(Strings.endpointRejectedImageGenerationToolRetrying)
                         continue
                     }
                     if (!omitReasoningOnRetry && (errMsg.contains("reasoning") || errMsg.contains("effort") || errMsg.contains("summary"))) {
                         omitReasoningOnRetry = true
-                        onStatus("Endpoint rejected reasoning parameter — retrying without reasoning config…")
+                        onStatus(Strings.endpointRejectedReasoningParameterRetryingWithout)
                         continue
                     }
                     if (!stripSamplingOnRetry && (errMsg.contains("temperature") || errMsg.contains("top_p") || errMsg.contains("sampling"))) {
                         stripSamplingOnRetry = true
-                        onStatus("Endpoint rejected sampling parameters — retrying with model defaults…")
+                        onStatus(Strings.endpointRejectedSamplingParametersRetryingWith)
                         continue
                     }
                     if (!foldHistoricalToolsOnRetry && hasHistoricalToolsOrSigs &&
@@ -511,7 +513,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                             errMsg.contains("function_call") || errMsg.contains("call_id"))
                     ) {
                         foldHistoricalToolsOnRetry = true
-                        onStatus("Endpoint rejected historical tool/reasoning items — folding prior tool history into compact text & retrying…")
+                        onStatus(Strings.endpointRejectedHistoricalToolReasoningItems)
                         continue
                     }
                 }
@@ -519,7 +521,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                     (errMsg.contains("http 404") || errMsg.contains("previous_response_id") || errMsg.contains("no tool call found"))
                 ) {
                     currentPrevResponseId = ""
-                    onStatus("Stateful response chain rejected — retrying step with full history…")
+                    onStatus(Strings.statefulResponseChainRejectedRetryingStep)
                     continue
                 }
                 if (!stepEmittedOutput && turnToolCalls.isEmpty() && isTransientOrProxyTimeoutError(e)) {
@@ -574,7 +576,7 @@ internal suspend fun AiProviderEngine.executeOpenAiResponsesLoop(
                     put("role", "user")
                     put("content", stopHookPrompt)
                 })
-                onStatus("Goal Work-Check: continuing incomplete checklist steps…")
+                onStatus(Strings.goalWorkCheckContinuingIncompleteChecklist)
                 continue
             }
             break
