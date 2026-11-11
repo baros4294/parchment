@@ -39,4 +39,4 @@ Official references fetched for this review:
 - [Gemini CLI Ask User tool](https://geminicli.com/docs/tools/ask-user/): explicit choice/text questions and human input.
 - [MCP tools specification](https://modelcontextprotocol.io/specification/latest/server/tools): discovery, schemas and human control; annotations are untrusted.
 - [Character Card V3 specification](https://github.com/kwaroran/character-card-spec-v3/blob/main/SPEC_V3.md): required fields, preferred `ccv3` import and asset/CHARX contracts.
-- Provider, platform, pricing and build references remain in [TODO](../PARCHMENT_TODO.md); re-read the affected source before implementing a protocol change.
+- Provider, platform, pricing and build references remain in [TODO](../TODO.md); re-read the affected source before implementing a protocol change.

@@ -19,7 +19,7 @@ Thanks for helping. This page covers the principles, the setup and how to land a
 
 ## Find your way
 
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the source sets and packages and says where to change what. Read the matching section of [PARCHMENT_MEMORY.md](PARCHMENT_MEMORY.md) before changing storage, protocols or platform code.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the source sets and packages and says where to change what. Read the matching section of [MEMORY.md](MEMORY.md) before changing storage, protocols or platform code.
 
 ## Build and test
 
@@ -42,7 +42,7 @@ Add `--dry-run` to see what a build command would run. Failures print compiler e
 
 - Keep a change to one behavior, with a test when it fixes a real failure.
 - Run `python scripts/verify.py affected` and make sure it passes.
-- Update [PARCHMENT_TODO.md](PARCHMENT_TODO.md) if you finish or find work, and MEMORY only for a new lasting rule.
+- Update [TODO.md](TODO.md) if you finish or find work, and MEMORY only for a new lasting rule.
 - Describe what changed, how you checked it and what you didn't check.
 
 Release signing is covered in [docs/RELEASE_SIGNING.md](docs/RELEASE_SIGNING.md).

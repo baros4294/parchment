@@ -4,11 +4,15 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
+- **Source:** main at 2f2f51b; all tracked work is done.
+- **Last verified:** 2026-11-11, `verify.py affected` passed (385 tests).
+- **Next action:** None open. Add a task under Open tasks before starting new work.
+
 ## Execution order
 
 Confirmed critical or high defects always go first. Otherwise small, clear fixes come before long audits.
 
-Remaining: the open items above, as the user chooses.
+Nothing open.
 
 ## Open tasks
 

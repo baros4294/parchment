@@ -1,6 +1,6 @@
 # Parchment architecture
 
-A map for anyone changing the code. Rules that must not break live in [PARCHMENT_MEMORY.md](../PARCHMENT_MEMORY.md); the look and the words live in [DESIGN.md](DESIGN.md).
+A map for anyone changing the code. Rules that must not break live in [MEMORY.md](../MEMORY.md); the look and the words live in [DESIGN.md](DESIGN.md).
 
 ## Shape
 

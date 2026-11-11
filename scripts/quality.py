@@ -24,7 +24,7 @@ SECRET_SUFFIXES = (".jks", ".keystore", ".p12", ".pfx")
 SECRET_NAMES = ("local.properties", ".env")
 MAX_KOTLIN_LINES = 3000
 MAX_REPORTED_PER_RULE = 15
-DOC_BUDGETS = {"AGENTS.md": 4500, "PARCHMENT_TODO.md": 16000, "PARCHMENT_MEMORY.md": 11500}
+DOC_BUDGETS = {"AGENTS.md": 4500, "TODO.md": 16000, "MEMORY.md": 11500}
 STATUS_FIELDS = ("**Source:**", "**Last verified", "**Next action:**")
 STATUS_HEADING = "## Current status"
 MAX_STATUS_CHARS = 1400
@@ -37,7 +37,7 @@ BANNED_PATTERNS = (
     (re.compile(r"androidx\.compose\.material"), "Compose Foundation only: Material is not allowed."),
     (re.compile(r"\bGlobalScope\b"), "Use an owned coroutine scope, not GlobalScope."),
     (re.compile(r"(?<![\w.])println\("), "Do not leave console output in app code."),
-    (re.compile(r"\bFIXME\b|(?<![\w.])TODO\("), "Track unfinished work in PARCHMENT_TODO.md."),
+    (re.compile(r"\bFIXME\b|(?<![\w.])TODO\("), "Track unfinished work in TODO.md."),
     (re.compile(r"\.clickable\(enabled = false\)"), "Use blockTapThrough(); a disabled clickable merges reader semantics."),
     (re.compile(r"\bproviderProtocol = \w+\.protocol\b"), "Stamp resolveWireProtocol(profile); a Custom profile's stored protocol hides its real wire."),
 )
@@ -224,21 +224,21 @@ def check_docs(files: dict[str, bytes]) -> list[Problem]:
             problems.append(Problem("docs", path, 0, f"{len(files[path])} bytes exceeds the {budget} byte budget. Condense it; do not raise the budget."))
     if "AGENTS.md" in files and b"scripts/verify.py" not in files["AGENTS.md"]:
         problems.append(Problem("docs", "AGENTS.md", 0, "Must tell readers to use scripts/verify.py."))
-    todo_bytes = files.get("PARCHMENT_TODO.md")
+    todo_bytes = files.get("TODO.md")
     if todo_bytes is None:
         return problems
     todo = todo_bytes.decode("utf-8", "replace")
     status = status_block(todo)
     if not status:
-        problems.append(Problem("docs", "PARCHMENT_TODO.md", 0, f"Missing the '{STATUS_HEADING}' section."))
+        problems.append(Problem("docs", "TODO.md", 0, f"Missing the '{STATUS_HEADING}' section."))
     for field in STATUS_FIELDS:
         if status and field not in status:
-            problems.append(Problem("docs", "PARCHMENT_TODO.md", 0, f"Current status must include {field}"))
+            problems.append(Problem("docs", "TODO.md", 0, f"Current status must include {field}"))
     if len(status) > MAX_STATUS_CHARS:
-        problems.append(Problem("docs", "PARCHMENT_TODO.md", 0, f"Current status is {len(status)} characters; keep it under {MAX_STATUS_CHARS}."))
+        problems.append(Problem("docs", "TODO.md", 0, f"Current status is {len(status)} characters; keep it under {MAX_STATUS_CHARS}."))
     for task_id, count in collections.Counter(_TASK_ID.findall(todo)).items():
         if count > 1:
-            problems.append(Problem("docs", "PARCHMENT_TODO.md", 0, f"Task {task_id} appears {count} times."))
+            problems.append(Problem("docs", "TODO.md", 0, f"Task {task_id} appears {count} times."))
     return problems
 
 

@@ -254,7 +254,7 @@ def command_status(_: argparse.Namespace) -> int:
     changed = changed_paths(fingerprint(), ledger.get("baseline", {}))
     print(f"Not yet verified: {len(changed)} file(s); next check: {next_check(changed)}")
     print()
-    print(quality.status_block((REPO / "PARCHMENT_TODO.md").read_text(encoding="utf-8")))
+    print(quality.status_block((REPO / "TODO.md").read_text(encoding="utf-8")))
     return 0
 
 

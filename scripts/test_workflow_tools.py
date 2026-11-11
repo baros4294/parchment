@@ -16,7 +16,7 @@ import verify  # noqa: E402
 MAIN = "composeApp/src/commonMain/kotlin/io/parchment/ai/ui/Sample.kt"
 TEST = "composeApp/src/commonTest/kotlin/io/parchment/ai/ui/SampleTest.kt"
 GOOD_TODO = "# T\n\n## Current status\n\n- **Source:** a\n- **Last verified:** b\n- **Next action:** c\n\n## Open\n\n- [ ] **1.1 Task:** x\n"
-GOOD_DOCS = {"AGENTS.md": b"use scripts/verify.py", "PARCHMENT_TODO.md": GOOD_TODO.encode(), "PARCHMENT_MEMORY.md": b"m"}
+GOOD_DOCS = {"AGENTS.md": b"use scripts/verify.py", "TODO.md": GOOD_TODO.encode(), "MEMORY.md": b"m"}
 
 
 def rules(problems: list[quality.Problem]) -> list[str]:
@@ -99,11 +99,11 @@ class DocumentRules(unittest.TestCase):
 
     def test_status_fields_are_required(self):
         todo = GOOD_TODO.replace("- **Next action:** c\n", "")
-        self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "PARCHMENT_TODO.md": todo.encode()})))
+        self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "TODO.md": todo.encode()})))
 
     def test_duplicate_task_ids_are_rejected(self):
         todo = GOOD_TODO + "- [x] **1.1 Again:** y\n"
-        self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "PARCHMENT_TODO.md": todo.encode()})))
+        self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "TODO.md": todo.encode()})))
 
     def test_status_block_stops_at_the_next_section(self):
         self.assertNotIn("Open", quality.status_block(GOOD_TODO))
@@ -116,7 +116,7 @@ class SecretRules(unittest.TestCase):
 
 class BuildDecision(unittest.TestCase):
     def test_docs_and_tooling_need_no_build(self):
-        self.assertFalse(verify.needs_build(["README.md", "docs/x.md", "PARCHMENT_TODO.md", "scripts/verify.py", ".github/workflows/a.yml"]))
+        self.assertFalse(verify.needs_build(["README.md", "docs/x.md", "TODO.md", "scripts/verify.py", ".github/workflows/a.yml"]))
 
     def test_any_app_source_or_build_input_runs_the_full_check(self):
         for path in (MAIN, TEST, "composeApp/build.gradle.kts", "composeApp/src/androidMain/AndroidManifest.xml", "gradle/libs.versions.toml", "gradle.properties"):
