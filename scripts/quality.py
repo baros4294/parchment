@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -250,6 +251,36 @@ def check_secrets(paths: list[str]) -> list[Problem]:
     ]
 
 
+_MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_FENCE = re.compile(r"```.*?```", re.S)
+_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.M)
+
+
+def heading_anchors(markdown: str) -> set[str]:
+    """GitHub's anchors: lower case, punctuation dropped, spaces to hyphens."""
+    return {re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-") for h in _HEADING.findall(_FENCE.sub("", markdown))}
+
+
+def check_links(files: dict[str, bytes]) -> list[Problem]:
+    """Relative links in Markdown must reach a tracked file, and #anchors a real heading."""
+    problems = []
+    docs = {p: d.decode("utf-8", "replace") for p, d in files.items() if p.endswith(".md")}
+    for path, text in docs.items():
+        for number, line in enumerate(_FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text).splitlines(), 1):
+            for target in _MD_LINK.findall(line):
+                if re.match(r"[a-z][a-z0-9+.-]*:", target, re.I):
+                    continue  # http, https, mailto: outside the repository
+                file_part, _, anchor = target.partition("#")
+                resolved = (Path(path).parent / file_part).as_posix() if file_part else path
+                resolved = posixpath.normpath(resolved)
+                exists = resolved in files or any(p.startswith(resolved.rstrip("/") + "/") for p in files)
+                if not exists:
+                    problems.append(Problem("docs", path, number, f"Broken link: {target}"))
+                elif anchor and resolved in docs and anchor.lower() not in heading_anchors(docs[resolved]):
+                    problems.append(Problem("docs", path, number, f"Missing anchor: {target}"))
+    return problems
+
+
 def check_files(files: dict[str, bytes], baseline: dict) -> list[Problem]:
     texts = {p: d.decode("utf-8", "replace").replace("\r\n", "\n").lstrip("﻿") for p, d in files.items() if is_kotlin(p)}
     return (
@@ -259,6 +290,7 @@ def check_files(files: dict[str, bytes], baseline: dict) -> list[Problem]:
         + check_file_sizes(texts, baseline)
         + check_banned(texts)
         + check_docs(files)
+        + check_links(files)
         + check_secrets(sorted(files))
     )
 

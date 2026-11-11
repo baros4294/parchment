@@ -120,6 +120,18 @@ class SecretRules(unittest.TestCase):
         self.assertEqual(["secrets", "secrets"], rules(quality.check_secrets(["keystore/app.jks", "local.properties", "src/a.kt"])))
 
 
+class LinkRules(unittest.TestCase):
+    def test_relative_links_and_anchors_must_resolve(self):
+        files = {
+            "README.md": b"[ok](docs/A.md#build-and-test) [web](https://example.com/x) [dir](docs/)\n```\n[skip](missing.md)\n```\n",
+            "docs/A.md": b"# Title\n## Build and test\n[up](../README.md) [self](#title)\n",
+        }
+        self.assertEqual([], quality.check_links(files))
+        broken = {**files, "README.md": b"[gone](docs/B.md) [bad](docs/A.md#nowhere)\n"}
+        messages = [p.message for p in quality.check_links(broken)]
+        self.assertEqual(["Broken link: docs/B.md", "Missing anchor: docs/A.md#nowhere"], messages)
+
+
 class PerfParsing(unittest.TestCase):
     def test_android_start_and_memory_come_from_adb_output(self):
         self.assertEqual(812, perf.parse_total_time("Status: ok\nLaunchState: COLD\nTotalTime: 812\nWaitTime: 830\n"))

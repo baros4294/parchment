@@ -15,10 +15,11 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 - Attach images, PDFs, audio, video and code by picking, pasting or dropping files.
 - Reasoning, tool steps and text stay in the order they happened.
 - Branches, versions, rewind, story summaries, author notes and full-history search.
+- Pin replies and find them again in the sidebar, for one chat or all of them.
 - Character cards (V2/V3, PNG or JSON) and a World Book whose entries trigger on keywords.
 - Read aloud, dictation, and `/` commands such as `/goal`, `/compact` and `/continue`.
 - Composer controls for thinking effort and, for image and video models, aspect ratio, resolution and duration, with custom values.
-- The Parchment theme by default, with a native Windows 11 title bar.
+- Separate text and code fonts, including your own .ttf or .otf, and a native Windows 11 title bar.
 
 **Providers**
 - OpenAI Responses and Chat Completions, Anthropic Messages, and Gemini Interactions and generateContent, plus any compatible service through a custom provider.
@@ -36,36 +37,34 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 **Everyday reliability**
 - Atomic saves with backups, so a crash never leaves a half-written chat.
 - Long runs keep going while the app is in the background, within what the system allows.
+- Built for low-end hardware: a 4 MB Android app, a quick desktop start, and a lighter mode on devices with under 4 GB of memory.
 - In-app updates check size and SHA-256 before installing.
 
-Open work is tracked in [TODO.md](TODO.md).
+## Privacy
+
+There are no accounts, analytics or telemetry. Your chats, settings and keys stay on your device. Parchment connects to:
+
+- **Your providers**, with your keys, when you send a message or list models.
+- **Public model catalogs** (models.dev, OpenRouter, Vercel AI Gateway, AI/ML API and LiteLLM) when a model's limits or prices are unknown. No key or chat content is sent.
+- **GitHub**, for the update check in release builds (it can be turned off), AI lab logos, and skills you install from a link.
+- **The MCP registry** while you search it in Settings, and the **MCP servers** you add.
+- **Web search and pages** (DuckDuckGo, Wikipedia, Hacker News search or a page the model fetches) only when web tools are on and you allow the call.
 
 ## Build from source
 
-You need JDK 21, the Android SDK (API 36) and Python 3.10 or later.
-
-```powershell
-# Run the desktop app
-$env:JAVA_HOME = "$env:USERPROFILE\.jdks\temurin-21"
-.\gradlew.bat :composeApp:run --no-daemon
-
-# Run all checks and build both release apps (needs the private Android signer)
-. .\scripts\load-private-signer.ps1
-python scripts/verify.py final
-```
-
-Android releases are signed with a private key; there is no repository key. See [release signing](docs/RELEASE_SIGNING.md) before building a signed APK or updating an older install.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the tools you need and every build and test command. Android releases are signed with a private key that is not in the repository; see [release signing](docs/RELEASE_SIGNING.md).
 
 ## Documentation
 
 | Read | For |
 |---|---|
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Principles, setup and how to submit a change |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Principles, setup, build commands and how to submit a change |
 | [AGENTS.md](AGENTS.md) | The working rules for people and AI agents |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the code is laid out and where to change what |
 | [docs/DESIGN.md](docs/DESIGN.md) | The visual design, tokens, icons and wording |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Speed, memory and size budgets, and how to measure them |
 | [MEMORY.md](MEMORY.md) | Contracts that must not break |
-| [docs/FEATURE_COVERAGE.md](docs/FEATURE_COVERAGE.md) | What is implemented, partial or missing |
+| [TODO.md](TODO.md) | Current status, open work and known gaps |
 
 ## Acknowledgements
 

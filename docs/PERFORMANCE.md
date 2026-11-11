@@ -5,7 +5,7 @@ Parchment is built for low-end hardware first. Measure with `python scripts/veri
 ## Reference devices
 
 - **Low-end Windows:** 2 cores, 4 GB RAM. **Low-end Android:** API 26, 2 cores, 2 GB RAM (emulator profile).
-- **Everyday:** the development PC and the OnePlus PLZ110 (Android 17).
+- **Everyday:** the development PC (i5-1135G7, 7.7 GB) and a OnePlus 15T (Android 17), which the user checks by hand.
 
 Under 4 GB of RAM, or with Android's low-RAM flag, the app runs in low-memory mode: smaller image caches and streaming redrawn at about 30 frames a second instead of every frame.
 

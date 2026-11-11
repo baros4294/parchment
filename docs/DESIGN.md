@@ -37,7 +37,7 @@ The app icon is one nib over a line of ink. `installer/parchment-icon.ico`, `res
 
 ## Windows
 
-The window uses the native caption, so minimize, maximize, Snap Layouts and rounded corners are the system's own. `WindowsChrome` tints it to the theme and hides the caption text and icon from drawing, while the taskbar and Alt+Tab keep the name.
+The window uses the native caption, so minimize, maximize, Snap Layouts and rounded corners are the system's own. `WindowsChrome` tints it and its text to the theme. The caption shows the app icon and "chat title — Parchment" (or "Settings — Parchment"); while a reply generates it shows the run's progress instead.
 
 ## Reviewing changes
 

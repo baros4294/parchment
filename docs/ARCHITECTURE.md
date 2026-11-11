@@ -39,7 +39,7 @@ Retries, mid-stream recovery and the empty-answer nudge live in `streamGeneratio
 
 ## Storage
 
-Settings are in `parchment-settings.json`, and each chat is in `chats/<id>/chat.json` with its media beside it. On Windows the folder is `%LOCALAPPDATA%\ParchmentAI`. A `parchment-portable-data` folder in the working directory takes precedence. Inactive chats are kept in memory as small stubs and loaded in full when opened (`ParchmentStatePersistence.kt`). Every write is staged and atomically replaced (`jvmShared/platform/AtomicFileStorage.kt`).
+Settings are in `parchment-settings.json` with earlier copies in `backups/`, and each chat is in `chats/<id>/chat.json` with its media beside it. On Windows the folder is `%LOCALAPPDATA%\ParchmentAI`. A `parchment-portable-data` folder in the working directory takes precedence. Inactive chats are kept in memory as small stubs and loaded in full when opened (`ParchmentStatePersistence.kt`). Every write is staged and atomically replaced (`jvmShared/platform/AtomicFileStorage.kt`).
 
 ## Tools and safety
 
@@ -60,6 +60,6 @@ Settings are in `parchment-settings.json`, and each chat is in `chats/<id>/chat.
 | What is saved and how | `ui/ParchmentStatePersistence.kt`, `jvmShared/platform/` |
 | Builds and releases | `.github/workflows/build-installers.yml`, `docs/RELEASE_SIGNING.md` |
 
-## Checks
+## Releases
 
-`scripts/verify.py` is the only way to build and test (see [AGENTS.md](../AGENTS.md)). `scripts/quality.py` runs with it and enforces encoding, unused imports, dead code, file sizes and doc budgets. CI builds both apps on each push to `main` and publishes them as a GitHub release that the in-app updater reads.
+CI (`.github/workflows/build-installers.yml`) builds both apps on each push to `main` that changes code and publishes them as a GitHub release, which the in-app updater reads. A manual run can rebuild only the Windows installer and reuse an earlier run's APK. Building and testing locally is covered in [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-test).

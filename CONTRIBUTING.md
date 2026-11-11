@@ -13,9 +13,16 @@ Thanks for helping. This page covers the principles, the setup and how to land a
 
 ## Setup
 
-- JDK 21 (Temurin)
-- Android SDK, API 36
-- Python 3.10 or later, standard library only
+| Tool | Get it | Then |
+|---|---|---|
+| JDK 25 (Temurin) | [adoptium.net](https://adoptium.net/temurin/releases/?version=25) | Set `JAVA_HOME` to the JDK folder and add its `bin` to `PATH` |
+| Android SDK command-line tools | [developer.android.com](https://developer.android.com/studio#command-tools) | Unzip to `%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest`, set `ANDROID_HOME` and `ANDROID_SDK_ROOT` to the `Sdk` folder, add `cmdline-tools\latest\bin` and `platform-tools` to `PATH` |
+| Android packages | `sdkmanager --licenses`, then `sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"` | |
+| Python 3.10 or later | [python.org](https://www.python.org/downloads/) | Standard library only |
+
+Gradle and Kotlin need no install: `gradlew.bat` fetches the right versions.
+
+Run the desktop app with `.\gradlew.bat :composeApp:run`. Create an empty `composeApp\parchment-portable-data` folder first and the run keeps its chats and settings there instead of in your real data folder.
 
 ## Find your way
 
@@ -23,7 +30,7 @@ Thanks for helping. This page covers the principles, the setup and how to land a
 
 ## Build and test
 
-`scripts/verify.py` is the only build and test entry point. It finds the JDK and SDK, and it remembers what has already passed.
+`scripts/verify.py` is the only build and test entry point. It uses `JAVA_HOME` and `ANDROID_HOME`, and it remembers what has already passed.
 
 | Need | Command |
 |---|---|
@@ -38,7 +45,7 @@ Thanks for helping. This page covers the principles, the setup and how to land a
 
 Add `--dry-run` to see what a build command would run. Failures print compiler errors and failed tests, and full logs are in `.parchment-local/verification/`.
 
-`scripts/quality.py` enforces encoding, unused imports, dead code, file-size limits, banned patterns, documentation budgets and tracked secrets. Don't raise a limit in `scripts/quality-baseline.json` to get a pass.
+`scripts/quality.py` enforces encoding, unused imports, dead code, file-size limits, banned patterns, documentation budgets, working links and tracked secrets. Don't raise a limit in `scripts/quality-baseline.json` to get a pass.
 
 ## Submitting a change
 

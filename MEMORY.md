@@ -11,14 +11,14 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 
 ## Project and build
 
-- JDK C:/Users/Baros/.jdks/temurin-21 (the inherited JAVA_HOME is JDK 8); Android SDK %LOCALAPPDATA%/Android/Sdk as ANDROID_HOME and ANDROID_SDK_ROOT.
+- Toolchain (2026-11-11): Temurin JDK 25 in Program Files/Eclipse Adoptium as JAVA_HOME; SDK %LOCALAPPDATA%/Android/Sdk as ANDROID_HOME. verify.py skips a stale inherited JAVA_HOME (an old JDK 8 path).
 - scripts/verify.py is the only entry point: it supplies JDK/SDK, version 2.0.64/264, two workers and the configuration cache (not final: signer task); logs and ledger in .parchment-local/verification/.
 - Keep org.gradle.daemon=false (memory bloat); Gradle heap 2560 MB.
 - PowerShell scripts stay ASCII.
 - Never copy builds into %LOCALAPPDATA%/Programs/Parchment. Only CI builds (-PofficialRelease=true) check for or install OTA updates. Dev runs keep data in ignored parchment-portable-data.
 - Android release uses R8 and resource shrinking (composeApp/proguard-rules.pro); keep each release's mapping.txt.
 - Android: keep big suspend bodies split into local suspend functions (cancelling a 565-register coroutine aborted).
-- Android signing is private-env-only: dot-source scripts/load-private-signer.ps1; never regenerate the ignored key (fingerprint 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574). The legacy key is rejected (docs/RELEASE_SIGNING.md); blank key passwords use the store password; keep the four CI signer secrets until that fix ships.
+- Android signing is private-env-only: dot-source scripts/load-private-signer.ps1; never regenerate the ignored key (fingerprint 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574). The legacy key is rejected (docs/RELEASE_SIGNING.md); blank key passwords use the store password (shipped).
 - Packaged desktop uses AppCDS: jlink base archive + `$APPDIR/parchment.jsa`, rebuilt after updates.
 
 ## Protocols and harness
@@ -56,7 +56,7 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 
 ## Persistence
 
-- Layout: parchment-settings.json, backups/, chats/<id>/chat.json and per-chat media/. Keep safe legacy migration and portable relative export paths.
+- Keep safe legacy migration and portable relative export paths (layout: ARCHITECTURE.md).
 - ChatSession.isCompactStub is transient. Hydrate from the pending full payload before disk; never save, generate or export from an unavailable full chat. Merge background loads without replacing edits or resurrecting deletions.
 - Stub message ids stay unique (the chat list keys on them). Pinned messages keep their real id and a preview in stubs, so the Pinned list never loads chats. `pinned` is saved only when true.
 - appDiskWriter keeps the latest dirty revision per chat, settings and deletion, clears only matching successes and retries failures with backoff.

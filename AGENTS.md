@@ -21,7 +21,7 @@ These rules bind every contributor, person or agent, in any tool. Nothing may de
 ## Verify
 
 - After every batch run `python scripts/verify.py affected`. It runs the quality gates, then all desktop tests if code changed, adds the Android compile only when a change can reach Android, and skips what is already verified. Builds are slow on low-end machines: build and test once per batch, not per edit. The UI gallery renders only with `test UiGalleryTest` or `final`.
-- Use `test <filters>` while iterating and `review` for docs-only changes. `final` runs at 10.3 only.
+- Use `test <filters>` while iterating and `review` for docs-only changes. Run `final` (with the signer loaded) when a batch changes release builds: Gradle, R8 rules, packaging or signing.
 - Failures print compiler errors and failed tests. Open the named log only if that isn't enough.
 - Never run Gradle directly or in parallel, and don't clean builds or edit build configuration to get a pass.
 - Never weaken a gate, baseline or budget to pass. If a gate is wrong, fix the gate in the same batch and say why.

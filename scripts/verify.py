@@ -141,14 +141,29 @@ def single_run() -> Iterator[None]:
         yield
 
 
+def variable_candidates(name: str) -> list[str]:
+    """The process value, then the user's and machine's saved Windows values: a shell opened before
+    JAVA_HOME or ANDROID_HOME changed still carries the old, possibly deleted, value."""
+    values = [os.environ.get(name, "")]
+    if os.name == "nt":
+        import winreg
+        for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                          (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+            with contextlib.suppress(OSError), winreg.OpenKey(root, key) as handle:
+                values.append(str(winreg.QueryValueEx(handle, name)[0]))
+    return [v for v in values if v]
+
+
 def gradle_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    jdk = Path.home() / ".jdks" / "temurin-21"
-    if (jdk / "bin").is_dir():
+    jdk = next((Path(v) for v in variable_candidates("JAVA_HOME") if (Path(v) / "bin" / "java.exe").is_file()
+                or (Path(v) / "bin" / "java").is_file()), None)
+    if jdk:
         environment["JAVA_HOME"] = str(jdk)
         environment["PATH"] = str(jdk / "bin") + os.pathsep + environment.get("PATH", "")
-    sdk = Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk"
-    if sdk.is_dir():
+    default_sdk = str(Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk")
+    sdk = next((Path(v) for v in [*variable_candidates("ANDROID_HOME"), default_sdk] if Path(v).is_dir()), None)
+    if sdk:
         environment["ANDROID_HOME"] = environment["ANDROID_SDK_ROOT"] = str(sdk)
     return environment
 

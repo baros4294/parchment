@@ -1,18 +1,18 @@
 # Parchment TODO
 
-Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and locally verified; finished tasks are removed once released.
+Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and verified; finished tasks go once released.
 
 ## Current status
 
-- **Source:** batch 12 checkpoint on main (pushed 2026-11-11; CI publishes the next release).
-- **Last verified:** 2026-11-11, `verify.py final` and `affected` passed (390 tests, signed R8 APK, package); `perf`: start 1.55 s with 300 chats, idle 289 MB, APK 4.2 MB. The R8 build has not run on a phone yet.
-- **Next action:** batch 13, starting with 13.1 research.
+- **Source:** batch 14 docs checkpoint on main (2026-11-11). JDK 25 and a fresh Android SDK are installed; Gradle 8.13 cannot run on JDK 25, so builds fail until 16.2.
+- **Last verified:** 2026-11-11, `verify.py review` passed (gates, 35 tool tests, link check). Last build: batch 12 `final` and `perf` (390 tests; start 1.44 s with 300 chats, idle 274 MB, APK 4.2 MB, installer 56.5 MB).
+- **Next action:** batch 16, starting with 16.2 (Gradle that runs on JDK 25).
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Measure before optimizing; one surface at a time.
 
-13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 14 → 15 → 11.7.
+16 → 14.2 and the 14.3 screenshots (need a working build) → 12.13 → 13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
 
 ## Open tasks
 
@@ -44,9 +44,9 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 
 ### Documentation
 
-- [ ] **14.1 One owner per fact:** README (what and how to install), CONTRIBUTING (how to contribute), ARCHITECTURE (code map), DESIGN (look), PERFORMANCE (budgets), MEMORY (contracts), TODO (progress). Remove duplicates and stale lines, merge or retire FEATURE_COVERAGE.md, check every claim against the code, and add a link and anchor check to quality.py.
-- [ ] **14.2 Code comments:** keep the why, cut the promotional and all-caps comments, and correct ones the code no longer matches.
-- [ ] **14.3 README:** current screenshots (light, dark, phone), a short feature tour and a privacy note listing every network call the app makes.
+- [x] **14.1 One owner per fact:** README (what, features, privacy), CONTRIBUTING (setup for JDK 25 and the SDK, commands), ARCHITECTURE (code map, storage, releases), DESIGN, PERFORMANCE, MEMORY, TODO. FEATURE_COVERAGE.md retired into README and Known gaps; stale JDK 21, 10.3 and signing notes fixed; quality.py checks links and anchors; verify.py reads JAVA_HOME and ANDROID_HOME.
+- [ ] **14.2 Code comments:** keep the why, cut the promotional and all-caps comments, and correct ones the code no longer matches. Needs a build, so it runs after 16.
+- [ ] **14.3 README:** done: feature tour and a privacy note listing every network call. Open: current screenshots (light, dark, phone) once the gallery builds again.
 
 ### Open-source essentials
 
@@ -56,9 +56,21 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 - [ ] **15.4 Quality signals:** coverage report (Kover) and UI screenshot comparison in CI.
 - [ ] **15.5 Localization ready:** move interface strings into one resource table; no new language until the table is complete.
 
+### Toolchain and dependencies, bleeding edge
+
+- [ ] **16.1 JDK 25 LTS:** the user replaces JDK 8 with Temurin 25. Point verify.py, README, MEMORY and CI (setup-java) at it; the packaged runtime is jlinked from it.
+- [ ] **16.2 Build tools:** latest Gradle (9.1+ is needed to run on JDK 25), AGP, Kotlin and Compose Multiplatform; Android compile and target SDK to the newest stable.
+- [ ] **16.3 Libraries:** latest Ktor, OkHttp, coroutines, serialization, AndroidX and JNA; read each changelog for breaking changes and remove workarounds the new versions make unneeded.
+- [ ] **16.4 JDK 25 runtime wins:** measure the AOT cache (`-XX:AOTCache`, which supersedes AppCDS) and compact object headers against today's 1.44 s and 274 MB; keep only what measures better.
+- [ ] **16.5 Verify:** one `final` and `perf` run, then a checkpoint; record new versions in MEMORY.
+
 ### Carried over
 
 - [ ] **11.7 Signature sanitization audit:** check every provider's reasoning-signature rules against its current spec; signatures stay opaque and are never translated.
+## Known gaps
+
+Not planned yet; open a task before working on one. CHARX card archives are not supported, and a card with over 512 KB of data imports without keeping its original copy. There are no reusable persona profiles. Voice is dictation and read-aloud, not a full-duplex live session. On Android, MCP servers must be HTTP; local commands are desktop-only. Shell runs with your full account access and is not sandboxed.
+
 ## Sources
 
 Reuse these; consult a changed external contract once.
@@ -71,5 +83,6 @@ Reuse these; consult a changed external contract once.
 - **Windows:** learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate; /nf-winbase-powersetrequest
 - **Android:** developer.android.com/develop/background-work/services/fgs/service-types; /fgs/timeout; /training/monitoring-device-state/doze-standby; /tools/adb; /reference/android/system/Os; /develop/ui/views/notifications/notification-permission
 - **JVM and processes:** docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Path.html; /java/lang/Process.html; pubs.opengroup.org/onlinepubs/9799919799/functions/kill.html
+- **Formats:** modelcontextprotocol.io/specification/latest/server/tools; github.com/kwaroran/character-card-spec-v3/blob/main/SPEC_V3.md
 - **Security and GitHub:** cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html; docs.github.com/en/rest/releases/assets (asset digest is nullable, observed as `sha256:<hex>`)
 - **Build:** kotlinlang.org/docs/gradle-compilation-and-caches.html; docs.gradle.org/8.13/userguide/configuration_cache.html; docs.oracle.com/en/java/javase/21/vm/class-data-sharing.html
