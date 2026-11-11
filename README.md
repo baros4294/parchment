@@ -8,6 +8,12 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 
 **Download:** [Windows installer (`.exe`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Windows-x64-Setup.exe) · [Android (`.apk`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Android-Universal.apk)
 
+<p>
+  <img src="docs/images/desktop-chat.png" alt="Parchment on Windows, light theme" width="49%">
+  <img src="docs/images/desktop-chat-dark.png" alt="Parchment on Windows, dark theme" width="49%">
+</p>
+<p align="center"><img src="docs/images/phone-chat.png" alt="Parchment on Android" width="30%"></p>
+
 ## What it does
 
 **Chat and writing**

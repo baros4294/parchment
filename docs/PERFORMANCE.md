@@ -20,7 +20,7 @@ Under 4 GB of RAM, or with Android's low-RAM flag, the app runs in low-memory mo
 | Android idle PSS | 150 MB | not measured | needs a phone |
 | Frame time while streaming, p95 | 16 ms desktop, 33 ms low-end Android | not measured | not measured yet |
 
-"Now" is the 2026-11-11 batch 12 measurement on an i5-1135G7 with 7.7 GB. On JDK 25 (batch 16) the same run measures 1.51 s and 268 MB. JDK 25's compact object headers started 1 s slower for 2 MB less memory, so they stay off.
+"Now" is the 2026-11-11 batch 12 measurement on an i5-1135G7 with 7.7 GB. On JDK 25 (batch 16) the same run measures 1.51 s and 268 MB. JDK 25's compact object headers started 1 s slower for 2 MB less memory, so they stay off. With ProGuard-shrunk desktop jars (35.1 MB to 22.2 MB) it measures 1.54 s and 286 MB.
 
 Only change a budget with the user's agreement, and record why.
 
@@ -29,5 +29,5 @@ Only change a budget with the user's agreement, and record why.
 - Before the first frame the app reads only the settings and the open chat; everything else loads afterwards, one chat at a time, and inactive chats are kept as small stubs.
 - The packaged desktop app uses class-data sharing: a base archive in the runtime and an app archive written on the first launch after an update.
 - Bundled fonts are subset: JetBrains Mono without the Nerd Font icons (0.9 MB instead of 9.4 MB).
-- Android release builds are shrunk with R8 and resource shrinking.
+- Android release builds are shrunk with R8 and resource shrinking; desktop releases with ProGuard (shrinking only).
 - The update check waits a few seconds after start-up.

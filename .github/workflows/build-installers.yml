@@ -108,12 +108,18 @@ jobs:
         run: |
           mkdir -p dist
           cp androidApp/build/outputs/apk/"$ANDROID_BUILD_VARIANT"/*.apk dist/Parchment-Android-Universal.apk
+          # R8 renames classes, so a release's crash reports can only be read with its own mapping file.
+          if [[ "$ANDROID_BUILD_VARIANT" == release ]]; then
+            cp androidApp/build/outputs/mapping/release/mapping.txt dist/Parchment-Android-R8-mapping.txt
+          fi
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v7.0.2
         with:
           name: Parchment-Android-APK
-          path: dist/Parchment-Android-Universal.apk
+          path: |
+            dist/Parchment-Android-Universal.apk
+            dist/Parchment-Android-R8-mapping.txt
           if-no-files-found: error
 
       - name: Remove Staged Private Signer
@@ -191,7 +197,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/quality.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python .github/scripts/run_gradle.py -- :composeApp:desktopTest :composeApp:createDistributable `
+          python .github/scripts/run_gradle.py -- :composeApp:desktopTest :composeApp:createReleaseDistributable `
             "-PappVersion=$appVer" `
             "-PappVersionCode=$appCode" `
             "-PgithubRepo=$env:GITHUB_REPOSITORY" `
@@ -269,5 +275,6 @@ jobs:
             See the [release-signing and migration guide](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE_SIGNING.md). Installs already using the private identity can update normally.
           files: |
             release-assets/Parchment-Android-Universal.apk
+            release-assets/Parchment-Android-R8-mapping.txt
             release-assets/Parchment-Windows-x64-Setup.exe
           generate_release_notes: true

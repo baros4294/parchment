@@ -4,15 +4,15 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** batch 16 checkpoint on main (2026-11-11): JDK 25, Gradle 9.7.1, AGP 9.3.3, Kotlin 2.4.21, Compose 1.12.2, androidApp split.
-- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (390 tests, signed R8 APK 4.3 MB, package); packaged start 1.51 s with 300 chats, idle 268 MB.
-- **Next action:** the 14.3 screenshots, then 12.13.
+- **Source:** batch 17 committed locally (2026-11-11), not pushed: all TODOs are pushed together at the end.
+- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (signed R8 APK 4.3 MB, ProGuard-shrunk package); packaged start 1.54 s with 300 chats, idle 286 MB.
+- **Next action:** 13.1–13.3.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Measure before optimizing; one surface at a time.
 
-14.3 screenshots → 12.13 → 13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
+13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
 
 ## Open tasks
 
@@ -29,9 +29,9 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 - [ ] **12.8 Codebase:** split the 2,000+ line UI files by feature and render settings search from the pages' own rows (1,000 duplicated lines); done with 13.4 so the screens can be checked.
 - [x] **12.9 Phone check:** the R8 release runs on the phone without crashes and starts instantly. The user checks Android on their own and reports problems (2026-11-11); no agent phone runs.
 - [x] **12.12 Windows size:** drop the never-used `classes_nocoops.jsa` (12 MB) and compress the installer with lzma2/ultra64; desktop start 1.44 s, idle 274 MB.
-- [ ] **12.13 Desktop shrinking:** ProGuard for the desktop release jars (about 25 MB) with keep rules for JNA, Ktor's engine lookup and serialization; test the packaged app before release.
+- [x] **12.13 Desktop shrinking:** ProGuard 7.10 shrinks the release jars from 35.1 MB to 22.2 MB (keep rules in compose-desktop.pro). JDK 25 has no jmods, so the build extracts the JDK classes for it once; the packaged app starts and opens chats.
 - [x] **12.14 Flaky Shell tests:** their hang limits are 60 s, so a cold runner's PowerShell start-up no longer fails them; saves retry for 5 s instead of 2.3 s.
-- [ ] **12.11 Crash reports:** attach each release's R8 mapping.txt in CI so phone stack traces can be decoded.
+- [ ] **12.11 Crash reports:** done in CI: each release attaches `Parchment-Android-R8-mapping.txt`. Open: confirm it on the next release.
 
 ### UI and UX
 
@@ -47,7 +47,7 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 
 - [x] **14.1 One owner per fact:** README (what, features, privacy), CONTRIBUTING (setup for JDK 25 and the SDK, commands), ARCHITECTURE (code map, storage, releases), DESIGN, PERFORMANCE, MEMORY, TODO. FEATURE_COVERAGE.md retired into README and Known gaps; stale JDK 21, 10.3 and signing notes fixed; quality.py checks links and anchors; verify.py reads JAVA_HOME and ANDROID_HOME.
 - [x] **14.2 Code comments:** about 120 shouting or promotional comments rewritten in plain words; four imports only comments had kept "used" removed.
-- [ ] **14.3 README:** done: feature tour and a privacy note listing every network call. Open: current screenshots (light, dark, phone) once the gallery builds again.
+- [x] **14.3 README:** feature tour, a privacy note listing every network call, and light, dark and phone screenshots from the UI gallery (docs/images).
 
 ### Open-source essentials
 

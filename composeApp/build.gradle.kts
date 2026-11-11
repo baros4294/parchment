@@ -121,6 +121,28 @@ tasks.withType<Test>().configureEach {
     systemProperty("parchment.gallery", renderGallery.get())
 }
 
+// JDK 25 builds ship without jmods (JEP 493), which is where Compose points ProGuard for the JDK's own classes.
+// Extract the java.* modules from the runtime image once instead and hand them to ProGuard as library classes.
+val jdkLibraryClasses = tasks.register<Exec>("extractJdkLibraryClasses") {
+    val jdk = File(System.getProperty("java.home"))
+    val outDir = layout.buildDirectory.dir("jdk-library-classes")
+    val classesDir = outDir.map { it.dir("classes").asFile }
+    val proFile = outDir.map { it.file("jdk-library.pro").asFile }
+    inputs.file(jdk.resolve("lib/modules"))
+    outputs.dir(classesDir)
+    outputs.file(proFile)
+    executable = jdk.resolve("bin/jimage" + if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "").path
+    argumentProviders.add(CommandLineArgumentProvider {
+        listOf("extract", "--dir", classesDir.get().path,
+            "--include", "regex:/(java\\.[a-z.]+|jdk\\.unsupported|jdk\\.crypto\\.ec)/.*\\.class", jdk.resolve("lib/modules").path)
+    })
+    doFirst { classesDir.get().deleteRecursively() }
+    doLast {
+        val modules = classesDir.get().listFiles()!!.filter { it.isDirectory }.sortedBy { it.name }
+        proFile.get().writeText(modules.joinToString("\n") { "-libraryjars '${it.path.replace('\\', '/')}'(!module-info.class)" } + "\n")
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "io.parchment.ai.MainKt"
@@ -142,6 +164,16 @@ compose.desktop {
             // JNA (title bar, memory check) and Skia call native code; JDK 25 warns and later JDKs will block it.
             "--enable-native-access=ALL-UNNAMED"
         )
+
+        // Releases (createReleaseDistributable) drop unused code from the jars. Shrinking only: no renaming or
+        // optimization passes, which are where ProGuard tends to break Kotlin.
+        buildTypes.release.proguard {
+            version.set("7.10.0")
+            isEnabled.set(true)
+            obfuscate.set(false)
+            optimize.set(false)
+            configurationFiles.from(project.file("compose-desktop.pro"), jdkLibraryClasses.map { it.outputs.files.filter { f -> f.name.endsWith(".pro") } })
+        }
 
         nativeDistributions {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)

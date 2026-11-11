@@ -20,7 +20,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 PACKAGE = "io.parchment.ai"
-APP_DIR_PARTS = ("composeApp", "build", "compose", "binaries", "main", "app", "Parchment")
+APP_DIR_PARTS = ("composeApp", "build", "compose", "binaries", "main-release", "app", "Parchment")
 APK_PARTS = ("androidApp", "build", "outputs", "apk", "release", "androidApp-release.apk")
 CHATS, MESSAGES = 300, 40
 IDLE_SECONDS = 10

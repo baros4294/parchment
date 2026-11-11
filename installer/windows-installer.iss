@@ -1,5 +1,5 @@
 ; Parchment — Minimal Zero-Trace Windows Installer (Inno Setup)
-; Automatically compiled in GitHub Actions after ./gradlew createDistributable
+; Compiled in GitHub Actions after ./gradlew createReleaseDistributable (ProGuard-shrunk jars)
 
 #define MyAppName "Parchment"
 #ifndef MyAppVersion
@@ -33,7 +33,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\composeApp\build\compose\binaries\main\app\Parchment\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\composeApp\build\compose\binaries\main-release\app\Parchment\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

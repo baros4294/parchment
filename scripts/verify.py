@@ -46,7 +46,7 @@ DESKTOP_TEST = ":composeApp:desktopTest"
 # The shared module's Android code compiles in :composeApp; :androidApp only packages the APK (AGP 9).
 ANDROID_COMPILE = ":composeApp:compileAndroidMain"
 # The release APK build compiles all Android code, so a separate compile here would only repeat it.
-FINAL_TASKS = (DESKTOP_TEST, ":androidApp:assembleRelease", ":composeApp:createDistributable")
+FINAL_TASKS = (DESKTOP_TEST, ":androidApp:assembleRelease", ":composeApp:createReleaseDistributable")
 SIGNER_VARIABLES = ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS")
 MAX_COMPILE_ERRORS = 25
 MAX_FAILED_TESTS = 20
@@ -371,10 +371,11 @@ def command_final(args: argparse.Namespace) -> int:
 def command_perf(args: argparse.Namespace) -> int:
     """Budgets live in docs/PERFORMANCE.md; this prints and keeps the latest numbers."""
     if args.dry_run:
-        print("Gradle: :composeApp:createDistributable, then scripts/perf.py")
+        print("Gradle: :composeApp:createReleaseDistributable, then scripts/perf.py")
         return 0
     with single_run():
-        outcome = run_gradle("perf", [":composeApp:createDistributable"], args.app_version, args.app_version_code)
+        # The release package is what users install: ProGuard-shrunk jars, the same runtime and launcher.
+        outcome = run_gradle("perf", [":composeApp:createReleaseDistributable"], args.app_version, args.app_version_code)
     if not outcome.passed:
         report("perf", outcome)
         return 1
