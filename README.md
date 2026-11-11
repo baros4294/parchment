@@ -35,13 +35,6 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 - Long runs keep going while the app is in the background, within what the system allows.
 - In-app updates check size and SHA-256 before installing.
 
-## Status and limits
-
-- **Last full check (2026-11-11):** 385 desktop tests, the Android compile, a signed release APK and the Windows app image all pass.
-- **Run on real hardware:** Windows 11 and an Android 17 phone. Covered: chat switching, Stop, keyboard and rotation, background and return, process death, two chats at once, approval cards, and computer and phone control.
-- **Not yet checked on real hardware:** real provider round trips with API keys, an in-app update install, Android Shell descendant cleanup, compaction during a phone run, Doze, screen readers, system animation scale, denied notifications, and third-party MCP servers.
-- **Practical limits:** operating-system sleep and battery policy can suspend a run, and some Android phones cut the network soon after the app leaves the screen, so a run may pause until you return. Shell has the app's full OS permissions, is not sandboxed, and is outside the web-tool controls. Computer control needs Android's Accessibility permission and covers the main display on Windows.
-
 Open work is tracked in [TODO.md](TODO.md).
 
 ## Build from source
