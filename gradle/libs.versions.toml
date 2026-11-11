@@ -2,7 +2,7 @@
 # Newest stable versions that work together (2026-11-11). Kotlin 2.4.21 supports AGP up to 9.3.x and
 # Gradle up to 9.7.x, so AGP 9.5 and Gradle 9.9 wait for a Kotlin release that covers them.
 jna = "5.19.1"
-agp = "9.3.3"
+agp = "9.5.1"
 android-compileSdk = "37"
 android-minSdk = "26"
 android-targetSdk = "37"
