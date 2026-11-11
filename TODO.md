@@ -4,9 +4,9 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** main at 2f2f51b; all tracked work is done.
-- **Last verified:** 2026-11-11, `verify.py affected` passed (385 tests).
-- **Next action:** None open. Add a task under Open tasks before starting new work.
+- **Source:** main at 2d78473 plus local 11.1–11.6, not yet committed.
+- **Last verified:** 2026-11-11, `verify.py affected` passed (389 tests); 11.1–11.6 checked in the running desktop app. The AppCDS release build is not yet seen in CI or an installed update.
+- **Next action:** None open. After the next release, confirm the CI build has `runtime/bin/server/classes.jsa` and the installed app starts faster from its second launch.
 
 ## Execution order
 
@@ -15,6 +15,13 @@ Confirmed critical or high defects always go first. Otherwise small, clear fixes
 Nothing open.
 
 ## Open tasks
+
+- [x] **11.1 Sidebar memory:** a wide window reopens with the sidebar as you left it; phones start closed.
+- [x] **11.2 Code font:** Text font and Code font rows with bundled choices and a custom .ttf/.otf; settings search shows both.
+- [x] **11.3 MCP search:** compact rows in a bounded scrolling list, Show more, and a No token needed filter.
+- [x] **11.4 Pinned replies:** pin a reply; a sidebar Pinned tab lists this chat's or all chats' pins and jumps to them. Pins live on the message, so they follow branching, export and import.
+- [x] **11.5 Windows title bar:** the native caption shows the app icon and "chat — Parchment" (or Settings) in the theme's ink; a run's progress replaces it while running. Merging the app bar into the caption was declined.
+- [x] **11.6 Build and launch time:** packaged app with 300 chats starts in 1.65 s instead of 3.1 s (AppCDS; the first launch after an update is slower once). verify.py's everyday checks use the configuration cache: a no-op Gradle call takes 7.0 s instead of 13.6 s. Start-up already loads only settings and the open chat.
 
 ## Sources
 

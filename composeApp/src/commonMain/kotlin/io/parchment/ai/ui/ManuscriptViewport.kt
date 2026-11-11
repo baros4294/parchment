@@ -57,6 +57,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -161,7 +162,9 @@ internal fun ManuscriptViewport(
     onUpdateProfile: ((ProviderProfile) -> ProviderProfile) -> Unit,
     onRegenerateNode: (Int) -> Unit,
     onTranslateNode: (Int) -> Unit = {},
-    onContinueAssistantNode: (Int) -> Unit
+    onContinueAssistantNode: (Int) -> Unit,
+    jumpToNodeId: String = "",
+    onJumpHandled: () -> Unit = {}
 ) {
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
@@ -187,7 +190,7 @@ internal fun ManuscriptViewport(
     LaunchedEffect(activeSession.id, preferences.autoScrollToBottomOnOpen) {
         userDisengagedAutoFollow = false
         userScrollPausedUntilMs = 0L
-        if (activeSession.messages.isNotEmpty()) {
+        if (activeSession.messages.isNotEmpty() && jumpToNodeId.isBlank()) {
             if (preferences.autoScrollToBottomOnOpen) {
                 jumpToBottomEdge()
                 kotlinx.coroutines.delay(16L)
@@ -196,6 +199,18 @@ internal fun ManuscriptViewport(
                 listState.scrollToItem(0)
             }
         }
+    }
+
+    // Opening a pinned reply: wait for the full chat (stubs hold only previews), then put that message at the top.
+    LaunchedEffect(activeSession.id, jumpToNodeId, activeSession.isCompactStub) {
+        if (jumpToNodeId.isBlank() || activeSession.isCompactStub) return@LaunchedEffect
+        val index = activeSession.messages.indexOfFirst { it.id == jumpToNodeId }
+        if (index >= 0) {
+            userDisengagedAutoFollow = true
+            withFrameNanos { }
+            listState.scrollToItem(index + 1) // Item 0 is the top spacer.
+        }
+        onJumpHandled()
     }
 
     LaunchedEffect(isStreaming) {
@@ -562,6 +577,7 @@ internal fun ManuscriptViewport(
                         inputPricePerM = activeProfile.inputPricePerM,
                         outputPricePerM = activeProfile.outputPricePerM,
                         isActivelyThinkingThisNode = isStreaming && isCurrentlyThinkingPhase && streamingTargetNodeId == node.id,
+                        onTogglePin = { onUpdateSession { sess -> sess.togglePinned(node.id) } },
                         onSelectVariant = { newIdx ->
                             onUpdateSession { sess ->
                                 sess.copy(

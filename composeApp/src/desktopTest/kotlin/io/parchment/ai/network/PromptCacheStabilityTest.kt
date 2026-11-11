@@ -75,7 +75,7 @@ class PromptCacheStabilityTest {
         val shares = sharedPrefixShare(requests)
         val average = shares.average()
         val broken = shares.count { it < 0.5 }
-        val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "PARCHMENT_TODO.md").isFile }
+        val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "TODO.md").isFile }
         File(repo, ".parchment-local/verification/cache-stability.txt").apply { parentFile.mkdirs() }.writeText(
             "steps=$steps average_shared_prefix=${"%.3f".format(average)} steps_under_half=$broken total_request_chars=${requests.sumOf { it.length }}\n"
         )

@@ -6,7 +6,7 @@ import com.sun.jna.Pointer
 
 /**
  * Themes the real Windows caption, which keeps native animations, Snap Layouts and rounded corners.
- * The caption text and icon are hidden from drawing only, so the taskbar and Alt+Tab keep the app name.
+ * The caption shows the app icon and the window title (the open chat), drawn in the theme's ink.
  */
 internal object WindowsChrome {
     private const val DARK_MODE = 20
@@ -15,20 +15,13 @@ internal object WindowsChrome {
     private const val CAPTION_COLOR = 35
     private const val TEXT_COLOR = 36
     private const val ROUND_CORNERS = 2
-    private const val NON_CLIENT_ATTRIBUTES = 1
-    private const val HIDE_CAPTION_AND_ICON = 3
 
     private interface Dwm : Library {
         fun DwmSetWindowAttribute(window: Pointer, attribute: Int, value: IntArray, size: Int): Int
     }
 
-    private interface UxTheme : Library {
-        fun SetWindowThemeAttribute(window: Pointer, type: Int, options: IntArray, size: Int): Int
-    }
-
     private val isWindows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
     private val dwm by lazy { Native.load("dwmapi", Dwm::class.java) }
-    private val uxTheme by lazy { Native.load("uxtheme", UxTheme::class.java) }
 
     private fun colorRef(argb: Int): Int =
         ((argb and 0xFF) shl 16) or (argb and 0xFF00) or ((argb shr 16) and 0xFF)
@@ -44,10 +37,7 @@ internal object WindowsChrome {
                 "corners" to attribute(CORNERS, ROUND_CORNERS),
                 "caption" to attribute(CAPTION_COLOR, colorRef(captionArgb)),
                 "text" to attribute(TEXT_COLOR, colorRef(inkArgb)),
-                "border" to attribute(BORDER_COLOR, colorRef(borderArgb)),
-                "hideCaption" to uxTheme.SetWindowThemeAttribute(
-                    window, NON_CLIENT_ATTRIBUTES, intArrayOf(HIDE_CAPTION_AND_ICON, HIDE_CAPTION_AND_ICON), Int.SIZE_BYTES * 2
-                )
+                "border" to attribute(BORDER_COLOR, colorRef(borderArgb))
             )
         }.getOrDefault(emptyMap())
     }

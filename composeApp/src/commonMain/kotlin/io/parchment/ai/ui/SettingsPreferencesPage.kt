@@ -58,6 +58,69 @@ internal fun AccentSwatches(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> 
     }
 }
 
+private val TEXT_FONTS = listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd")
+private val CODE_FONTS = listOf("JetBrainsMono Nerd", "Inter", "Serif")
+
+/** The text and code font pickers, shared by Preferences and settings search. */
+@Composable
+internal fun FontChoiceRows(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit, onNotify: (String) -> Unit) {
+    FontChoiceRow(
+        label = "Text font",
+        fonts = TEXT_FONTS,
+        family = theme.proseFontFamily,
+        customPath = theme.customProseFontPath,
+        onChoose = { onUpdateTheme(theme.copy(proseFontFamily = it, customProseFontPath = "")) },
+        onCustom = { onUpdateTheme(theme.copy(customProseFontPath = it)) },
+        onNotify = onNotify
+    )
+    FontChoiceRow(
+        label = "Code font",
+        fonts = CODE_FONTS,
+        family = theme.codeFontFamily,
+        customPath = theme.customCodeFontPath,
+        onChoose = { onUpdateTheme(theme.copy(codeFontFamily = it, customCodeFontPath = "")) },
+        onCustom = { onUpdateTheme(theme.copy(customCodeFontPath = it)) },
+        onNotify = onNotify
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FontChoiceRow(
+    label: String,
+    fonts: List<String>,
+    family: String,
+    customPath: String,
+    onChoose: (String) -> Unit,
+    onCustom: (String) -> Unit,
+    onNotify: (String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val customName = customPath.substringAfterLast('/').substringAfterLast('\\')
+    SepiaAdaptiveRow(label = label) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            fonts.forEach { f ->
+                SepiaChip(label = f, selected = customPath.isBlank() && family.equals(f, ignoreCase = true), onClick = { onChoose(f) })
+            }
+            if (customName.isNotBlank()) SepiaChip(label = customName, selected = true, onClick = {})
+            SepiaButton(
+                text = "📂 .TTF/.OTF",
+                compact = true,
+                style = SepiaButtonStyle.OUTLINE,
+                onClick = {
+                    scope.launch {
+                        val picked = PlatformBridge.pickFontFile("Choose a ${label.lowercase()} (.ttf or .otf)")
+                        if (!picked.isNullOrBlank()) {
+                            onCustom(picked)
+                            onNotify("${label} set to ${picked.substringAfterLast('/').substringAfterLast('\\')}.")
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
 @Composable
 internal fun PreferencesSubpage(
     prefs: PreferencesConfig,
@@ -71,7 +134,6 @@ internal fun PreferencesSubpage(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
-    val scope = rememberCoroutineScope()
     var showCustomColorHexDrawer by remember { mutableStateOf(false) }
 
     fun matchesSearch(vararg terms: String): Boolean {
@@ -192,36 +254,7 @@ internal fun PreferencesSubpage(
 
                     SepiaDivider()
 
-                    // App Font & Code Font (FlowRow so all font chips & .TTF/.OTF button fit on mobile!)
-                    SepiaAdaptiveRow(label = "App / prose font") {
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd").forEach { f ->
-                                SepiaChip(
-                                    label = f,
-                                    selected = theme.customProseFontPath.isBlank() && theme.proseFontFamily.equals(f, ignoreCase = true),
-                                    onClick = { onUpdateTheme(theme.copy(proseFontFamily = f, customProseFontPath = "")) }
-                                )
-                            }
-                            SepiaButton(
-                                text = "📂 .TTF/.OTF",
-                                compact = true,
-                                style = SepiaButtonStyle.OUTLINE,
-                                onClick = {
-                                    scope.launch {
-                                        val picked = PlatformBridge.pickFontFile("Select Prose Font (.ttf / .otf)")
-                                        if (!picked.isNullOrBlank()) {
-                                            onUpdateTheme(theme.copy(customProseFontPath = picked))
-                                            onNotify("Loaded custom font: $picked")
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                    }
+                    FontChoiceRows(theme, onUpdateTheme, onNotify)
 
                     // Typography Sizes (No artificial clamping when typing! Stacked cleanly on mobile so labels never truncate)
                     var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }

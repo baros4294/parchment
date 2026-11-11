@@ -81,7 +81,7 @@ class AgentPermissionUiTest {
     }
     private fun save(scene: ImageComposeScene, name: String, frameTimeNanos: Long = 1_000_000_000L) {
         val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }
-            .first { File(it, "PARCHMENT_TODO.md").isFile }
+            .first { File(it, "TODO.md").isFile }
         val file = File(repo, ".parchment-local/verification/permissions/$name.png")
         file.parentFile.mkdirs()
         scene.render(frameTimeNanos).use { image -> file.writeBytes(requireNotNull(image.encodeToData()).bytes) }

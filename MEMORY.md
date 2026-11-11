@@ -15,14 +15,14 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 
 - Pins: AGP 8.13.2, Kotlin 2.3.21, Compose 1.10.3, Ktor 3.5.2; Android min/compile/target SDK 26/36/36.
 - JDK: C:/Users/Baros/.jdks/temurin-21 (inherited JAVA_HOME/PATH point to JDK 8). Android SDK: %LOCALAPPDATA%/Android/Sdk; set ANDROID_HOME and ANDROID_SDK_ROOT in the same shell.
-- scripts/verify.py is the only entry point: it supplies JDK/SDK, version flags 2.0.64/264 and two workers, and keeps logs and its ledger in .parchment-local/verification/.
+- scripts/verify.py is the only entry point: it supplies JDK/SDK, version flags 2.0.64/264, two workers and the configuration cache (not final: signer task), and keeps logs and its ledger in .parchment-local/verification/.
 - Keep org.gradle.daemon=false (an earlier daemon caused memory bloat). Gradle heap is 2560 MB, separate from the app's 1024 MB.
 - Text files are UTF-8 without a BOM and use LF, except .bat and .iss. PowerShell scripts stay ASCII.
 - Never replace or copy builds into %LOCALAPPDATA%/Programs/Parchment. Installed Windows updates use GitHub Release OTA; test workspace artifacts.
 - Release uses DEX/lintVital; minification and shrinking are disabled, so do not call it R8 verification. generateBuildConfig declares appVersion, appVersionCode and githubRepo inputs.
 - Android aborted cancelling a 565-register coroutine; keep big suspend bodies split into local suspend functions.
 - Android signing is private-env-only: dot-source scripts/load-private-signer.ps1 and never regenerate the ignored local key. Public fingerprint: 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574. The legacy key is rejected; docs/RELEASE_SIGNING.md covers migration. Unset or blank key passwords resolve to the store password. All four encrypted CI signer secrets stay configured until a release ships that fix.
-- Desktop JVM flags: `-Xms32m -Xmx1024m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:-ShrinkHeapInSteps -XX:G1PeriodicGCInterval=8000 -XX:+G1PeriodicGCInvokesConcurrent`
+- Desktop JVM flags live in composeApp/build.gradle.kts (1 GB cap, G1 uncommit). The packaged app adds AppCDS: jlink base + `$APPDIR/parchment.jsa`, rebuilt on update.
 
 ## Protocols and harness
 
@@ -65,7 +65,7 @@ Kotlin Multiplatform/Compose Foundation app for Windows and Android. Shared code
 
 - Layout: parchment-settings.json, backups/, chats/<id>/chat.json and per-chat media/. Keep safe legacy migration and portable relative export paths.
 - ChatSession.isCompactStub is transient. Hydrate from the full pending payload before disk. Never save, generate or export from an unavailable full chat. Merge background loads without replacing edits or resurrecting deletions.
-- Stub messages keep unique ids: the chat list keys on them.
+- Stub ids stay unique (chat list keys); pinned keep id + preview. `pinned` saved only if true.
 - appDiskWriter keeps the latest dirty revision per chat, settings and deletion, clears only matching successes and retries failures with backoff.
 - AtomicFileStorage and SnapshotFileStorage stage, sync and atomically replace, with no truncate fallback. Preserve valid backups and failed migration inputs; reject dot IDs, escapes and collisions. Close NIO readers before decoding to avoid Windows replacement starvation.
 - Strip attachment base64 only when the resolved local file is readable and nonempty.

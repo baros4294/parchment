@@ -104,7 +104,8 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @OptIn(ExperimentalEncodingApi::class)
 @Composable
 fun ParchmentApp(
-    desktopWindowHeader: (@Composable () -> Unit)? = null
+    /** Desktop window hook; it receives what the window caption should name: the open chat or Settings. */
+    desktopWindowHeader: (@Composable (captionTitle: String) -> Unit)? = null
 ) {
     val uiScope = rememberCoroutineScope()
 
@@ -114,8 +115,9 @@ fun ParchmentApp(
     var isSettingsOpen by remember { mutableStateOf(false) }
     var activeSettingsCategory by remember { mutableStateOf(SettingsCategory.PREFERENCES) }
     var startMobileSettingsAtRoot by remember { mutableStateOf(true) }
-    var showSidebar by remember { mutableStateOf(!PlatformBridge.isAndroid) }
+    var showSidebar by remember { mutableStateOf(!PlatformBridge.isAndroid && appState.preferences.sidebarOpen) }
     var sidebarTab by remember { mutableStateOf(SidebarTab.TOPICS) }
+    var pendingPinJump by remember { mutableStateOf<PinnedReply?>(null) }
     var showSessionInspector by remember { mutableStateOf(false) }
     var showRightFilesSidebar by remember { mutableStateOf(false) }
     var showQuickModelPopover by remember { mutableStateOf(false) }
@@ -1711,7 +1713,7 @@ fun ParchmentApp(
                         )
                 ) {
                     if (desktopWindowHeader != null) {
-                        desktopWindowHeader()
+                        desktopWindowHeader(if (isSettingsOpen) "Settings" else activeSession.title)
                     }
 
                     // 1. Top Editorial Header Bar (Hidden whenever Settings is open on both Desktop & Mobile so there is ONLY ONE `← Chat` button!)
@@ -1749,7 +1751,10 @@ fun ParchmentApp(
                             backgroundStreamingCount = bgStreamingCount,
                             onOpenMobileTabSwitcher = { showMobileTabSwitcher = true },
                             onNewChatTab = { createNewTopicForAssistant(activeAssistant, openInNewTab = true) },
-                            onToggleSidebar = { showSidebar = !showSidebar },
+                            onToggleSidebar = {
+                                showSidebar = !showSidebar
+                                if (!isCompactScreen) persist(appState.copy(preferences = appState.preferences.copy(sidebarOpen = showSidebar)))
+                            },
                             onToggleSessionInspector = { showSessionInspector = !showSessionInspector },
                             onToggleRightFilesSidebar = { showRightFilesSidebar = !showRightFilesSidebar },
                             onToggleQuickModelPopover = { showQuickModelPopover = !showQuickModelPopover },
@@ -2020,6 +2025,12 @@ fun ParchmentApp(
                             },
                             onSelectSession = { sessId ->
                                 switchToTab(sessId)
+                                if (isCompactScreen) showSidebar = false
+                            },
+                            onOpenPinnedReply = { pin ->
+                                pendingPinJump = pin
+                                switchToTab(pin.sessionId)
+                                isSettingsOpen = false
                                 if (isCompactScreen) showSidebar = false
                             },
                             onNewTopic = {
@@ -2535,7 +2546,9 @@ fun ParchmentApp(
                                     onTranslateNode = { nodeIndex ->
                                         triggerTranslateNode(nodeIndex)
                                     },
-                                    onContinueAssistantNode = ::continueAssistantNodeAt
+                                    onContinueAssistantNode = ::continueAssistantNodeAt,
+                                    jumpToNodeId = pendingPinJump?.takeIf { it.sessionId == activeSession.id }?.nodeId.orEmpty(),
+                                    onJumpHandled = { pendingPinJump = null }
                                 )
                                 }
                             }

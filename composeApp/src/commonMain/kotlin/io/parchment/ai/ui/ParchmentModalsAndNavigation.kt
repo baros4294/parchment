@@ -760,6 +760,7 @@ internal fun ParchmentSidebar(
     onEditAssistantInSettings: (String) -> Unit,
     onCreateNewAssistant: () -> Unit,
     onSelectSession: (String) -> Unit,
+    onOpenPinnedReply: (PinnedReply) -> Unit,
     onNewTopic: () -> Unit,
     onTogglePinSession: (String) -> Unit,
     onRegenerateSessionTitle: (String) -> Unit,
@@ -784,7 +785,11 @@ internal fun ParchmentSidebar(
             SepiaTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = if (selectedTab == SidebarTab.ASSISTANTS) "🔍 Search assistants…" else "🔍 Search chats…",
+                placeholder = when (selectedTab) {
+                    SidebarTab.ASSISTANTS -> "🔍 Search assistants…"
+                    SidebarTab.PINNED -> "🔍 Search pinned…"
+                    SidebarTab.TOPICS -> "🔍 Search chats…"
+                },
                 minHeight = 36.dp,
                 modifier = Modifier.weight(1f)
             )
@@ -808,7 +813,7 @@ internal fun ParchmentSidebar(
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats").forEach { (tab, label) ->
+            listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats", SidebarTab.PINNED to "Pinned").forEach { (tab, label) ->
                 val isSel = selectedTab == tab
                 val tabInteraction = remember { MutableInteractionSource() }
                 val tabHovered by tabInteraction.collectIsHoveredAsState()
@@ -846,7 +851,9 @@ internal fun ParchmentSidebar(
             }
         }
 
-        if (selectedTab == SidebarTab.ASSISTANTS) {
+        if (selectedTab == SidebarTab.PINNED) {
+            PinnedRepliesPanel(appState.sessions, activeSession.id, searchQuery, onOpenPinnedReply)
+        } else if (selectedTab == SidebarTab.ASSISTANTS) {
             val filteredAssistants = remember(appState.assistants, searchQuery) {
                 val q = searchQuery.trim()
                 if (q.isEmpty()) appState.assistants

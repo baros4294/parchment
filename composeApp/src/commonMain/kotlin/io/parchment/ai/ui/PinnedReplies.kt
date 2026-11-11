@@ -1,0 +1,112 @@
+package io.parchment.ai.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import io.parchment.ai.model.ChatSession
+
+/** Long enough for two lines in the sidebar; chat stubs keep this much of each pinned reply. */
+internal const val PIN_PREVIEW_CHARS = 280
+
+private val WHITESPACE = Regex("\\s+")
+
+internal data class PinnedReply(
+    val sessionId: String,
+    val sessionTitle: String,
+    val nodeId: String,
+    val preview: String
+)
+
+/** Pins in message order within each chat, newest chat first. Stubs list their pins without being loaded. */
+internal fun pinnedReplies(sessions: List<ChatSession>, onlySessionId: String? = null): List<PinnedReply> =
+    sessions
+        .asSequence()
+        .filter { onlySessionId == null || it.id == onlySessionId }
+        .sortedByDescending { it.updatedAt }
+        .flatMap { session ->
+            session.messages.asSequence().filter { it.pinned }.map { node ->
+                val preview = stripMarkdownToPlainText(node.activeVariant.content.take(PIN_PREVIEW_CHARS))
+                    .replace(WHITESPACE, " ")
+                    .trim()
+                PinnedReply(session.id, session.title, node.id, preview.ifBlank { "Reply without text" })
+            }
+        }
+        .toList()
+
+internal fun ChatSession.togglePinned(nodeId: String): ChatSession =
+    copy(messages = messages.map { if (it.id == nodeId) it.copy(pinned = !it.pinned) else it })
+
+/** The sidebar's Pinned tab: this chat's pins or every chat's, filtered by the sidebar search. */
+@Composable
+internal fun ColumnScope.PinnedRepliesPanel(
+    sessions: List<ChatSession>,
+    activeSessionId: String,
+    searchQuery: String,
+    onOpen: (PinnedReply) -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    var allChats by remember { mutableStateOf(false) }
+    val query = searchQuery.trim()
+    val pins = remember(sessions, activeSessionId, allChats, query) {
+        pinnedReplies(sessions, onlySessionId = if (allChats) null else activeSessionId).filter {
+            query.isEmpty() || it.preview.contains(query, ignoreCase = true) || it.sessionTitle.contains(query, ignoreCase = true)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        SepiaChip("This chat", selected = !allChats, onClick = { allChats = false })
+        SepiaChip("All chats", selected = allChats, onClick = { allChats = true })
+    }
+    if (pins.isEmpty()) {
+        BasicText(
+            text = when {
+                query.isNotEmpty() -> "No pinned replies match your search."
+                allChats -> "No pinned replies yet. Use the pin under a reply to keep it here."
+                else -> "No pinned replies in this chat. Use the pin under a reply to keep it here."
+            },
+            style = p.uiLabelStyle,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+        return
+    }
+    LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        items(pins, key = { "${it.sessionId}/${it.nodeId}" }) { pin ->
+            val interaction = remember { MutableInteractionSource() }
+            val hovered by interaction.collectIsHoveredAsState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .kissClickable(pressScale = 0.98f, interactionSource = interaction, onClick = { onOpen(pin) })
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (hovered) p.accent.copy(alpha = 0.06f) else Color.Transparent)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (allChats) {
+                    BasicText(pin.sessionTitle, style = p.uiLabelStyle.copy(fontSize = 11.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                BasicText(pin.preview, style = p.uiBodyStyle.copy(fontSize = 13.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}

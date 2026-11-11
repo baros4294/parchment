@@ -1,9 +1,17 @@
 package io.parchment.ai.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -12,8 +20,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.parchment.ai.harness.McpRegistry
 import io.parchment.ai.harness.McpServerState
@@ -45,11 +56,16 @@ internal fun McpServerConnections(servers: List<McpServerConfig>) {
 @Composable
 private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (PreferencesConfig) -> Unit) {
     val p = LocalParchmentPalette.current
+    val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<RegistryServer>>(emptyList()) }
+    var nextCursor by remember { mutableStateOf("") }
+    var loadingMore by remember { mutableStateOf(false) }
+    var tokenFreeOnly by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("Search the public MCP directory.") }
     LaunchedEffect(query) {
         val term = query.trim()
+        nextCursor = ""
         if (term.length < 2) {
             results = emptyList()
             message = "Search the public MCP directory."
@@ -60,6 +76,7 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
         searchMcpRegistry(term).fold(
             { page ->
                 results = page.servers
+                nextCursor = page.nextCursor
                 message = if (page.servers.isEmpty()) "No servers you can add directly were found." else ""
             },
             { error ->
@@ -69,24 +86,76 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
             }
         )
     }
+    val shown = if (tokenFreeOnly) results.filter { !it.needsToken } else results
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BasicText("Find a server", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         BasicText("Anyone can publish to this directory. Check who made a server before you switch it on.", style = p.uiLabelStyle)
         SepiaTextField(query, { query = it }, placeholder = "Search, for example github", modifier = Modifier.fillMaxWidth())
-        if (message.isNotEmpty()) BasicText(message, style = p.uiLabelStyle)
-        results.forEach { server ->
-            val added = prefs.mcpServers.any { it.url == server.url }
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                BasicText(server.title.ifBlank { server.name }, style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
-                BasicText(server.name, style = p.uiLabelStyle)
-                if (server.description.isNotBlank()) BasicText(server.description, style = p.uiBodyStyle)
-                if (server.needsToken) BasicText("Needs an access token from its maker.", style = p.uiLabelStyle)
-                SepiaButton(if (added) "Added" else "Add", compact = true, enabled = !added, onClick = {
-                    val entry = McpServerConfig("mcp-${PlatformBridge.currentTimeMillis()}", server.title.ifBlank { server.name.substringAfterLast('/') }, url = server.url)
-                    onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + entry))
-                })
+        if (results.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SepiaChip("No token needed", selected = tokenFreeOnly, onClick = { tokenFreeOnly = !tokenFreeOnly })
+                BasicText(plural(shown.size, "server"), style = p.uiLabelStyle)
             }
         }
+        if (message.isNotEmpty()) BasicText(message, style = p.uiLabelStyle)
+        if (shown.isNotEmpty() || nextCursor.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(p.cardBg)
+                    .border(0.75.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(10.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                shown.forEachIndexed { index, server ->
+                    if (index > 0) SepiaDivider()
+                    McpRegistryRow(server, added = prefs.mcpServers.any { it.url == server.url }) {
+                        val entry = McpServerConfig("mcp-${PlatformBridge.currentTimeMillis()}", server.title.ifBlank { server.name.substringAfterLast('/') }, url = server.url)
+                        onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + entry))
+                    }
+                }
+                if (nextCursor.isNotEmpty()) {
+                    SepiaButton(if (loadingMore) "Loading…" else "Show more", compact = true, style = SepiaButtonStyle.GHOST, enabled = !loadingMore, modifier = Modifier.padding(vertical = 6.dp), onClick = {
+                        val term = query.trim()
+                        val cursor = nextCursor
+                        loadingMore = true
+                        scope.launch {
+                            searchMcpRegistry(term, cursor).fold(
+                                { page ->
+                                    if (query.trim() == term) {
+                                        results = (results + page.servers).distinctBy { it.name }
+                                        nextCursor = page.nextCursor
+                                    }
+                                },
+                                { error ->
+                                    if (error is CancellationException) throw error
+                                    message = "More servers could not be loaded. Try again."
+                                }
+                            )
+                            loadingMore = false
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
+/** One line for the name, one muted line for the publisher and token need, two lines of description. */
+@Composable
+private fun McpRegistryRow(server: RegistryServer, added: Boolean, onAdd: () -> Unit) {
+    val p = LocalParchmentPalette.current
+    val title = server.title.ifBlank { server.name.substringAfterLast('/') }
+    val details = listOfNotNull(server.name.takeIf { it != title }, "Needs a token".takeIf { server.needsToken }).joinToString(" · ")
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            BasicText(title, style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (details.isNotEmpty()) BasicText(details, style = p.uiLabelStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (server.description.isNotBlank()) BasicText(server.description, style = p.uiLabelStyle.copy(color = p.primaryInk), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        SepiaButton(if (added) "Added" else "Add", compact = true, enabled = !added, onClick = onAdd)
     }
 }
 

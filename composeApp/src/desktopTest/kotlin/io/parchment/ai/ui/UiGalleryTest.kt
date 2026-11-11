@@ -40,7 +40,7 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 class UiGalleryTest {
     private val output = File(
-        generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "PARCHMENT_TODO.md").isFile },
+        generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "TODO.md").isFile },
         ".parchment-local/verification/gallery"
     ).apply { mkdirs() }
 

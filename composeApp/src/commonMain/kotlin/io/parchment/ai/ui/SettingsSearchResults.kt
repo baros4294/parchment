@@ -70,7 +70,7 @@ internal fun countCategorySearchMatches(
             val items = listOf(
                 hit("Color Mode & Preset", "Appearance & Fonts", "theme", "sepia", "dark", "light", "ivory", "oxford", "candlelight", "midnight", "oled"),
                 hit("Accent Color", "Appearance & Fonts", "swatch", "hex", "canvas", "ink", "card color"),
-                hit("App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "ttf", "otf", "custom font"),
+                hit("Text Font", "Code Font", "App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "monospace", "ttf", "otf", "custom font"),
                 hit("Prose Font Size", "Code Font Size", "Max Reading Width", "Appearance & Fonts", "sp", "dp", "typography"),
                 hit("Message Layout Style", "Card Bubbles", "Clean Page", "Chat item display", "manuscript", "editorial turns", "view mode"),
                 hit("Show provider in model capsule", "Chat item display", "header", "top bar"),
@@ -200,7 +200,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
     // 1. PREFERENCES INDIVIDUAL ITEM MATCHES (Every single setting in PreferencesSubpage!)
     val hitColorMode = hit("Color Mode & Preset", "Appearance & Fonts", "theme", "sepia", "dark", "light", "ivory", "oxford", "candlelight", "midnight", "oled")
     val hitAccentColor = hit("Accent Color", "Appearance & Fonts", "swatch", "hex", "canvas", "ink", "card color")
-    val hitAppFont = hit("App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "ttf", "otf", "custom font")
+    val hitAppFont = hit("Text Font", "Code Font", "App / Prose Font", "Appearance & Fonts", "inter", "serif", "latex", "jetbrainsmono", "monospace", "ttf", "otf", "custom font")
     val hitFontSizes = hit("Prose Font Size", "Code Font Size", "Max Reading Width", "Appearance & Fonts", "sp", "dp", "typography")
 
     val hitLayoutStyle = hit("Message Layout Style", "Card Bubbles", "Clean Page", "Chat item display", "manuscript", "editorial turns", "view mode")
@@ -363,18 +363,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         }
                     }
                     if (hitAppFont) {
-                        SepiaAdaptiveRow(label = "App / prose font") {
-                            @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd").forEach { f ->
-                                    SepiaChip(
-                                        label = f,
-                                        selected = theme.customProseFontPath.isBlank() && theme.proseFontFamily.equals(f, ignoreCase = true),
-                                        onClick = { onUpdateTheme(theme.copy(proseFontFamily = f, customProseFontPath = "")) }
-                                    )
-                                }
-                            }
-                        }
+                        FontChoiceRows(theme, onUpdateTheme, onNotify)
                     }
                     if (hitFontSizes) {
                         var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }

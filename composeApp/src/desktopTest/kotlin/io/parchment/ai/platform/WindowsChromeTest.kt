@@ -14,7 +14,7 @@ class WindowsChromeTest {
         try {
             frame.addNotify()
             val results = WindowsChrome.applyCaption(Native.getComponentID(frame), 0xF4ECD8, 0x261C14, 0xD5C4A1, dark = false)
-            assertEquals(0, results["hideCaption"], "caption text must be hidden: $results")
+            assertEquals(0, results["text"], "caption text must take the theme's ink: $results")
             assertEquals(0, results["darkMode"], "caption buttons must follow the theme: $results")
         } finally { frame.dispose() }
     }

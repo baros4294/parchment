@@ -65,7 +65,7 @@ class SharedActionSemanticsUiTest {
 
     private fun save(scene: ImageComposeScene, name: String) {
         val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }
-            .first { File(it, "PARCHMENT_TODO.md").isFile }
+            .first { File(it, "TODO.md").isFile }
         val file = File(repo, ".parchment-local/verification/actions/$name.png")
         file.parentFile.mkdirs()
         scene.render(64_000_000L).use { image -> file.writeBytes(requireNotNull(image.encodeToData()).bytes) }

@@ -232,3 +232,22 @@ compose.desktop {
         }
     }
 }
+
+// Faster desktop start: the bundled runtime gets a base class-data-sharing archive, and the packaged app keeps
+// its own archive of the classes it loads beside its files (rebuilt automatically after an update).
+// Packaged app only; the dev run is unaffected. Measured 2026-11-11: about 3.1 s to 2.0 s with 300 chats.
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJLinkTask>().configureEach {
+    freeArgs.add("--generate-cds-archive")
+    // jlink builds the archive with the image's own java.exe, which --strip-native-commands removes first.
+    // Compose has no public switch, so turn stripping off here (this fails loudly if Compose renames it)
+    // and delete the launchers afterwards: the app starts through Parchment.exe and jvm.dll.
+    @Suppress("UNCHECKED_CAST")
+    (javaClass.getMethod("getStripNativeCommands\$compose").invoke(this) as Property<Boolean>).set(false)
+    val runtimeBin = destinationDir.dir("bin")
+    doLast {
+        runtimeBin.get().asFile.listFiles { file -> file.extension.equals("exe", ignoreCase = true) }?.forEach { it.delete() }
+    }
+}
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
+    freeArgs.addAll("--java-options", "-XX:+AutoCreateSharedArchive", "--java-options", "-XX:SharedArchiveFile=\$APPDIR/parchment.jsa")
+}

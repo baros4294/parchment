@@ -11,5 +11,6 @@ Thumbs.db
 *.jks
 *.p12
 .parchment-local/
+parchment-portable-data/
 __pycache__/
 *.py[cod]

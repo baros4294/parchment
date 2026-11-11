@@ -112,14 +112,28 @@ private fun attachDropTargetRecursively(component: Component, createTarget: () -
     }
 }
 
+/** "Chat — Parchment" while idle; a run's progress text (which starts with the app name) replaces it. */
+internal fun windowCaption(runStatus: String, captionTitle: String): String {
+    val idle = runStatus.isBlank() || runStatus == "Parchment"
+    val title = captionTitle.trim()
+    return when {
+        !idle -> runStatus
+        title.isEmpty() -> "Parchment"
+        else -> "$title — Parchment"
+    }
+}
+
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 fun main() {
     // Enable hardware VSync so Skia renders smoothly at the monitor's native refresh rate (60Hz / 120Hz / 144Hz / 240Hz)
     System.setProperty("skiko.vsync.enabled", "true")
 
     application {
-        var windowTitle by remember { mutableStateOf("Parchment") }
-        PlatformBridge.windowStatusCallback = { newTitle -> windowTitle = newTitle }
+        // Idle, the caption names the open chat; during a run it shows the run's progress instead.
+        var runStatus by remember { mutableStateOf("Parchment") }
+        var captionTitle by remember { mutableStateOf("") }
+        PlatformBridge.windowStatusCallback = { newTitle -> runStatus = newTitle }
+        val windowTitle = windowCaption(runStatus, captionTitle)
 
     val initialGeom = remember { loadSavedWindowGeometry() }
 
@@ -288,7 +302,8 @@ fun main() {
                 window.minimumSize = Dimension(640, 480)
             }
             ParchmentApp(
-                desktopWindowHeader = {
+                desktopWindowHeader = { title ->
+                    LaunchedEffect(title) { captionTitle = title }
                     val p = LocalParchmentPalette.current
                     LaunchedEffect(window, p.canvasBg, p.primaryInk, p.border) {
                         WindowsChrome.applyCaption(

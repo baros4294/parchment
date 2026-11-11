@@ -120,6 +120,7 @@ internal fun MessageTurnItem(
     onSelectVariant: (Int) -> Unit,
     onSaveEditedText: (String, Boolean, Boolean) -> Unit,
     onToggleContextMute: () -> Unit,
+    onTogglePin: () -> Unit = {},
     onDeleteCurrentVariant: () -> Unit = {},
     onDeleteNode: () -> Unit,
     onForkHere: () -> Unit,
@@ -1386,6 +1387,17 @@ internal fun MessageTurnItem(
                         style = SepiaButtonStyle.GHOST,
                         onClick = onRegenerate
                     )
+                    }
+                    // A pinned reply always shows its pin, so the state is visible even where other actions are folded away.
+                    if (isAssistant && (!win.isCompact || isLatestTurn || showMoreActions || node.pinned)) {
+                        SepiaButton(
+                            text = "📌",
+                            contentDescription = if (node.pinned) "Unpin reply" else "Pin reply",
+                            hint = if (node.pinned) "Remove from Pinned in the sidebar" else "Keep this reply in Pinned in the sidebar",
+                            compact = true,
+                            style = if (node.pinned) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.GHOST,
+                            onClick = onTogglePin
+                        )
                     }
                     SepiaButton(
                         text = if (showMoreActions) "▴" else "⋯",

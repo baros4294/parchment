@@ -137,8 +137,11 @@ def gradle_environment() -> dict[str, str]:
     return environment
 
 
-def gradle_flags(version: str, code: str) -> list[str]:
-    return ["--no-daemon", "--max-workers=2", "-Pkotlin.compiler.execution.strategy=in-process",
+def gradle_flags(version: str, code: str, configuration_cache: bool = True) -> list[str]:
+    # The configuration cache halves each call's fixed cost (13.6 s to 7.0 s, measured 2026-11-11). final keeps it off:
+    # validatePrivateReleaseSigner is not cache-compatible, and release signing is not worth risking for speed.
+    cache = ["--configuration-cache"] if configuration_cache else []
+    return ["--no-daemon", "--max-workers=2", "-Pkotlin.compiler.execution.strategy=in-process", *cache,
             f"-PappVersion={version}", f"-PappVersionCode={code}", "--console=plain", "--quiet"]
 
 
@@ -181,13 +184,13 @@ def read_test_results(folder: Path, since: float) -> tuple[int, list[str]]:
     return total, failed
 
 
-def run_gradle(name: str, tasks: list[str], version: str, code: str) -> Outcome:
+def run_gradle(name: str, tasks: list[str], version: str, code: str, configuration_cache: bool = True) -> Outcome:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     wrapper = str(REPO / ("gradlew.bat" if os.name == "nt" else "gradlew"))
     log = STATE_DIR / f"{name}.log"
     started = time.time()
     with open(log, "w", encoding="utf-8", errors="replace") as output:
-        exit_code = subprocess.run([wrapper, *tasks, *gradle_flags(version, code)], cwd=REPO, env=gradle_environment(),
+        exit_code = subprocess.run([wrapper, *tasks, *gradle_flags(version, code, configuration_cache)], cwd=REPO, env=gradle_environment(),
                                    stdout=output, stderr=subprocess.STDOUT, shell=False).returncode
     log_text = log.read_text(encoding="utf-8", errors="replace")
     total, failed = read_test_results(TEST_RESULTS, started - 1)
@@ -322,7 +325,7 @@ def command_final(args: argparse.Namespace) -> int:
         return 1
     current = fingerprint()
     with single_run():
-        outcome = run_gradle("final", list(FINAL_TASKS), args.app_version, args.app_version_code)
+        outcome = run_gradle("final", list(FINAL_TASKS), args.app_version, args.app_version_code, configuration_cache=False)
     summary = report("final", outcome)
     ledger = load_ledger()
     if outcome.passed:

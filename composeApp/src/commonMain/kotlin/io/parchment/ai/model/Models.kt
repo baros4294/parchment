@@ -1,6 +1,8 @@
 package io.parchment.ai.model
 
 import androidx.compose.runtime.Immutable
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
@@ -315,7 +317,11 @@ data class MessageNode(
     val role: MessageRole,
     val variants: List<MessageVariant>,
     val activeVariantIndex: Int = 0,
-    val includedInContext: Boolean = true
+    val includedInContext: Boolean = true,
+    /** Pinned replies are listed in the sidebar. Written only when true, so unpinned chats save as before. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val pinned: Boolean = false
 ) {
     val activeVariant: MessageVariant
         get() = variants.getOrElse(activeVariantIndex.coerceIn(0, (variants.size - 1).coerceAtLeast(0))) {
@@ -547,6 +553,8 @@ data class PreferencesConfig(
     val newChatWhenSwitchingAssistants: Boolean = false,
     val newChatAfterDeletingTopic: Boolean = true,
     val newChatOnLaunch: Boolean = false,
+    /** The last sidebar state chosen on a wide window; phones always start closed. */
+    val sidebarOpen: Boolean = true,
     val messageNavButtons: MessageNavVisibility = MessageNavVisibility.WHILE_SCROLLING,
     val sendShortcut: SendShortcutMode = SendShortcutMode.ENTER,
     val pasteLongTextAsFile: Boolean = false,

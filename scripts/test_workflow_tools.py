@@ -114,6 +114,12 @@ class SecretRules(unittest.TestCase):
         self.assertEqual(["secrets", "secrets"], rules(quality.check_secrets(["keystore/app.jks", "local.properties", "src/a.kt"])))
 
 
+class GradleFlags(unittest.TestCase):
+    def test_everyday_checks_use_the_configuration_cache_and_final_does_not(self):
+        self.assertIn("--configuration-cache", verify.gradle_flags("1", "1"))
+        self.assertNotIn("--configuration-cache", verify.gradle_flags("1", "1", configuration_cache=False))
+
+
 class BuildDecision(unittest.TestCase):
     def test_docs_and_tooling_need_no_build(self):
         self.assertFalse(verify.needs_build(["README.md", "docs/x.md", "TODO.md", "scripts/verify.py", ".github/workflows/a.yml"]))

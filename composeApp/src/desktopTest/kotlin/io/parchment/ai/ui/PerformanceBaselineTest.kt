@@ -89,7 +89,7 @@ class PerformanceBaselineTest {
         measure("decode_chat_${encoded.length}_chars") { compactStateJson.decodeFromString(ChatSession.serializer(), encoded) }
         measure("tokenize_20000_chars") { O200kTokenizer.countTokens("Tokenize this sentence once. ".repeat(690), cacheResult = false) }
 
-        val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "PARCHMENT_TODO.md").isFile }
+        val repo = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }.first { File(it, "TODO.md").isFile }
         val fonts = repo.resolve("composeApp/src").walkTopDown().filter { it.isFile && it.extension == "ttf" }.toList()
         measure("read_${fonts.size}_fonts_${fonts.sumOf { it.length() } / 1024}_kb") { fonts.forEach { it.readBytes() } }
 

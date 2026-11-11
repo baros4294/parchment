@@ -62,7 +62,8 @@ internal val compactStateJson = Json {
 
 enum class SidebarTab {
     ASSISTANTS,
-    TOPICS
+    TOPICS,
+    PINNED
 }
 
 sealed interface DeleteConfirmRequest {
@@ -547,12 +548,26 @@ internal fun dehydrateChatSessionToCompactStub(session: ChatSession): ChatSessio
                 attachments = refAttachments,
                 mediaItems = refMedia
             )
-        )
+        ),
+        pinned = lastNode.pinned
     )
     val stubList = ArrayList<MessageNode>(msgCount)
     for (i in 0 until msgCount - 1) {
-        // The chat list needs a unique id for each row, and a stub is on screen until the real chat loads.
-        stubList.add(MessageNode(id = "stub-node-$i", role = MessageRole.USER, variants = listOf(EMPTY_STUB_VARIANT)))
+        val node = session.messages[i]
+        // Pinned replies keep their id and a preview so the all-chats pin list works without loading the chat.
+        stubList.add(
+            if (node.pinned) {
+                MessageNode(
+                    id = node.id,
+                    role = node.role,
+                    variants = listOf(MessageVariant(id = node.activeVariant.id, content = node.activeVariant.content.take(PIN_PREVIEW_CHARS))),
+                    pinned = true
+                )
+            } else {
+                // The chat list needs a unique id for each row, and a stub is on screen until the real chat loads.
+                MessageNode(id = "stub-node-$i", role = MessageRole.USER, variants = listOf(EMPTY_STUB_VARIANT))
+            }
+        )
     }
     stubList.add(stubLastNode)
     return session.copy(
