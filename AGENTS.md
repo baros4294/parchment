@@ -52,6 +52,8 @@ Otherwise choose the conservative option and say so.
 ## Boundaries
 
 - One build and test run per batch. Finish every open TODO, then commit and push once (user, 2026-11-11). After a flaky failure, rerun only that test, not the whole `final`.
+- The user checks Android on their own phone and reports problems; don't run checks on a phone. Fix device quirks generically; no brand- or model-specific notices in the app.
+- Edit files with your editing tools, not patch scripts; a script is fine for large mechanical changes if you say so first. Announce any new gate or limit before adding it.
 - Preserve user data, permissions, opaque signatures, explicit model choices and the installed Windows app.
 - Use Compose Foundation and existing icons. Check MEMORY before changing storage, protocol or platform contracts.
 - Keep secrets, keys and personal data out of the repository, logs and requests to outside services.
