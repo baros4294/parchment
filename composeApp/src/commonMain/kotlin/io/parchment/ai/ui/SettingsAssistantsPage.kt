@@ -84,7 +84,7 @@ internal fun AssistantsSubpage(
                 BasicText(
                     text = "Edit Assistant — ${editingAssistant.name}",
                     style = p.uiHeaderStyle,
-                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                    modifier = Modifier.weight(1f).padding(end = Space.s8)
                 )
                 SepiaButton(
                     text = "← All assistants",
@@ -95,9 +95,9 @@ internal fun AssistantsSubpage(
             }
 
             SepiaSectionCard(title = "Assistant identity & system prompt") {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s12),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         SepiaAvatarCircle(
@@ -115,8 +115,8 @@ internal fun AssistantsSubpage(
 
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         listOf(
                             "💬", "🤖", "🧪", "✏️", "📚", "⚡",
@@ -158,7 +158,7 @@ internal fun AssistantsSubpage(
             ) {
                 val scope = rememberCoroutineScope()
                 val followsGlobalModel = editingAssistant.defaultModelId.isBlank()
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     SepiaToggleRow(
                         title = "Follow global default model",
                         checked = followsGlobalModel,
@@ -190,7 +190,7 @@ internal fun AssistantsSubpage(
                     SepiaDivider()
                     SepiaAdaptiveRow(label = "Thinking effort override") {
                         @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                             listOf(
                                 "" to "Inherit",
                                 "none" to "None",
@@ -218,7 +218,7 @@ internal fun AssistantsSubpage(
                             )
                         }
                         if (showCustomAssistantEffort) {
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(Space.s6))
                             SepiaTextField(
                                 value = customAssistantEffortDraft,
                                 onValueChange = { raw ->
@@ -248,8 +248,8 @@ internal fun AssistantsSubpage(
             SepiaSectionCard(
                 title = "Assistant sampling & context overrides (blank = follow profile, 0 = ∞)"
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                         SepiaTextField(
                             value = tempText,
                             onValueChange = { v ->
@@ -309,16 +309,16 @@ internal fun AssistantsSubpage(
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             BasicText(
                 text = "Assistants",
                 style = p.uiHeaderStyle.copy(fontSize = 19.sp),
-                modifier = Modifier.padding(top = 2.dp, end = 8.dp)
+                modifier = Modifier.padding(top = Space.s2, end = Space.s8)
             )
             FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(Space.s8),
+                verticalArrangement = Arrangement.spacedBy(Space.s6)
             ) {
                 SepiaButton(
                     text = "+ New assistant",
@@ -347,16 +347,16 @@ internal fun AssistantsSubpage(
 
         appState.assistants.forEach { asst ->
             val isSelected = asst.id == appState.activeAssistantId
-            val shape = RoundedCornerShape(12.dp)
+            val shape = RoundedCornerShape(Radius.r12)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(shape)
                     .background(p.cardBg)
-                    .border(if (isSelected) 1.dp else 0.75.dp, if (isSelected) p.accent else p.border.copy(alpha = 0.75f), shape)
+                    .border(if (isSelected) 1.dp else LineWidth.hairline, if (isSelected) p.accent else p.border.copy(alpha = 0.75f), shape)
                     .clickable(role = Role.Button, onClickLabel = "Edit assistant") { editingAssistantId = asst.id }
                     .semantics { selected = isSelected }
-                    .padding(16.dp),
+                    .padding(Space.s16),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -384,7 +384,7 @@ internal fun AssistantsSubpage(
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                     SepiaButton(
                         text = "📋",
                         contentDescription = "Duplicate assistant",

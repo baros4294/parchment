@@ -1,7 +1,6 @@
 package io.parchment.ai.ui
 
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -119,7 +118,7 @@ fun ParchmentSettingsScreen(
                         .fillMaxHeight()
                         .background(p.sheetBg.copy(alpha = 0.65f))
                         .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -138,11 +137,11 @@ fun ParchmentSettingsScreen(
                         )
                     }
 
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(Space.s4))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s4),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         SepiaTextField(
@@ -162,7 +161,7 @@ fun ParchmentSettingsScreen(
                             )
                         }
                     }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(Space.s6))
 
                     val categoryMatchCounts = remember(settingsSearchQuery, appState, activeProfile, activeSession) {
                         val q = settingsSearchQuery.trim()
@@ -176,7 +175,7 @@ fun ParchmentSettingsScreen(
                         val isSelected = selectedCategory == cat
                         val matchCount = categoryMatchCounts[cat] ?: 0
                         val isHighlightedBySearch = settingsSearchQuery.isNotBlank() && matchCount > 0
-                        val shape = RoundedCornerShape(10.dp)
+                        val shape = RoundedCornerShape(Radius.r10)
                         val catIcon = remember(cat.icon) { parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS }
                         val interactionSource = remember { MutableInteractionSource() }
                         val isHovered by interactionSource.collectIsHoveredAsState()
@@ -205,12 +204,12 @@ fun ParchmentSettingsScreen(
                                     }
                                 )
                                 .then(if (isSelected) Modifier.rubricMark(p.accent, verticalInset = 9.dp) else Modifier)
-                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                                .padding(horizontal = Space.s12, vertical = 9.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s10),
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.weight(1f)
                             ) {
@@ -230,9 +229,9 @@ fun ParchmentSettingsScreen(
                             if (settingsSearchQuery.isNotBlank() && matchCount > 0) {
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
+                                        .clip(RoundedCornerShape(Radius.pill))
                                         .background(p.accent.copy(alpha = 0.18f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .padding(horizontal = Space.s6, vertical = Space.s2)
                                 ) {
                                     BasicText(
                                         text = matchCount.toString(),
@@ -246,7 +245,7 @@ fun ParchmentSettingsScreen(
 
                 Box(
                     modifier = Modifier
-                        .width(0.85.dp)
+                        .width(LineWidth.hairline)
                         .fillMaxHeight()
                         .background(p.border.copy(alpha = 0.7f))
                 )
@@ -254,7 +253,7 @@ fun ParchmentSettingsScreen(
                 // Right Subpage Viewport
                 Crossfade(
                     targetState = selectedCategory,
-                    animationSpec = tween(160),
+                    animationSpec = motionTween(Motion.STANDARD),
                     modifier = Modifier.weight(1f).fillMaxHeight()
                 ) { cat ->
                     SettingsSubpageContent(
@@ -361,8 +360,8 @@ fun ParchmentSettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(p.sheetBg.copy(alpha = 0.85f))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = Space.s12, vertical = Space.s10),
+                    verticalArrangement = Arrangement.spacedBy(Space.s8)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -373,7 +372,7 @@ fun ParchmentSettingsScreen(
                         if (openedCat != null && settingsSearchQuery.isBlank()) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s8),
                                 modifier = Modifier.weight(1f)
                             ) {
                                 SepiaButton(
@@ -396,7 +395,7 @@ fun ParchmentSettingsScreen(
                         } else {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s8)
                             ) {
                                 KissVectorIcon(icon = KissIcon.SETTINGS, tint = p.accent, size = 17.dp)
                                 BasicText(
@@ -416,7 +415,7 @@ fun ParchmentSettingsScreen(
                     if (mobileOpenedCategory == null || settingsSearchQuery.isNotBlank()) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SepiaTextField(
@@ -442,7 +441,7 @@ fun ParchmentSettingsScreen(
 
                 Crossfade(
                     targetState = Pair(mobileOpenedCategory, settingsSearchQuery.isNotBlank()),
-                    animationSpec = tween(160),
+                    animationSpec = motionTween(Motion.STANDARD),
                     modifier = Modifier.weight(1f).fillMaxWidth()
                 ) { (openedCat, isSearching) ->
                     if (isSearching || openedCat != null) {
@@ -488,20 +487,20 @@ fun ParchmentSettingsScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                .padding(horizontal = Space.s12, vertical = Space.s12),
+                            verticalArrangement = Arrangement.spacedBy(Space.s10)
                         ) {
                             SettingsCategory.entries.forEach { cat ->
                                 val catIcon = remember(cat.icon) {
                                     parseKissLabelIcons(cat.icon).leadingIcon ?: KissIcon.SETTINGS
                                 }
-                                val cardShape = RoundedCornerShape(12.dp)
+                                val cardShape = RoundedCornerShape(Radius.r12)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(cardShape)
                                         .background(p.cardBg)
-                                        .border(0.75.dp, p.border, cardShape)
+                                        .border(LineWidth.hairline, p.border, cardShape)
                                         .kissClickable(pressScale = 0.985f) {
                                             selectedCategory = cat
                                             mobileOpenedCategory = cat
@@ -511,23 +510,23 @@ fun ParchmentSettingsScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Row(
-                                        modifier = Modifier.weight(1f).padding(end = 10.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.weight(1f).padding(end = Space.s10),
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s12),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Box(
                                             modifier = Modifier
                                                 .size(36.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(Radius.r8))
                                                 .background(p.accent.copy(alpha = 0.14f))
-                                                .border(0.75.dp, p.accent.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
+                                                .border(LineWidth.hairline, p.accent.copy(alpha = 0.45f), RoundedCornerShape(Radius.r8)),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             KissVectorIcon(icon = catIcon, tint = p.accent, size = 17.dp)
                                         }
                                         Column(
                                             modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            verticalArrangement = Arrangement.spacedBy(Space.s2)
                                         ) {
                                             BasicText(
                                                 text = cat.label,

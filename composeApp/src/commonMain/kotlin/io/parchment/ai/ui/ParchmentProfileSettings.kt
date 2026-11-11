@@ -46,7 +46,7 @@ internal fun ProfilePicture(picture: ImageBitmap?, size: Dp) {
         Image(picture, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(size).clip(CircleShape))
     } else {
         Box(
-            Modifier.size(size).clip(CircleShape).background(p.elevatedBg).border(0.75.dp, p.border, CircleShape),
+            Modifier.size(size).clip(CircleShape).background(p.elevatedBg).border(LineWidth.hairline, p.border, CircleShape),
             contentAlignment = Alignment.Center
         ) { KissVectorIcon(KissIcon.USER, tint = p.narrationInk, size = size * 0.56f) }
     }
@@ -60,14 +60,14 @@ internal fun ProfileCard(prefs: PreferencesConfig, onUpdatePreferences: (Prefere
     SepiaSectionCard(title = "Your profile") {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             ProfilePicture(picture, 56.dp)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 SepiaTextField(
                     value = prefs.profileName,
                     onValueChange = { onUpdatePreferences(prefs.copy(profileName = it, showUserName = prefs.showUserName || it.isNotBlank())) },
                     placeholder = "Your name",
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = if (picture == null) "Choose picture" else "Change picture",
                         compact = true,
@@ -110,7 +110,7 @@ internal fun SpendLimitCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
         mutableStateOf(if (prefs.chatSpendLimitUsd > 0.0) prefs.chatSpendLimitUsd.toString() else "")
     }
     SepiaSectionCard(title = "Spend limit") {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
             SepiaTextField(
                 value = limit,
                 onValueChange = { typed ->
@@ -129,7 +129,7 @@ internal fun SpendLimitCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
 @Composable
 internal fun ThemePresetChoices(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> Unit) {
     val p = LocalParchmentPalette.current
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
         BasicText("Color mode & preset", style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium))
         Column(Modifier.fillMaxWidth().selectableGroup()) {
             ThemeConfig.PRESETS.forEach { preset ->

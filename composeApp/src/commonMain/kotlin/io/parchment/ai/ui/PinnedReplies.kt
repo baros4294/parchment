@@ -75,7 +75,7 @@ internal fun ColumnScope.PinnedRepliesPanel(
             query.isEmpty() || it.preview.contains(query, ignoreCase = true) || it.sessionTitle.contains(query, ignoreCase = true)
         }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
         SepiaChip("This chat", selected = !allChats, onClick = { allChats = false })
         SepiaChip("All chats", selected = allChats, onClick = { allChats = true })
     }
@@ -87,18 +87,18 @@ internal fun ColumnScope.PinnedRepliesPanel(
                 else -> "No pinned replies in this chat. Use the pin under a reply to keep it here."
             },
             style = p.uiLabelStyle,
-            modifier = Modifier.padding(horizontal = 4.dp)
+            modifier = Modifier.padding(horizontal = Space.s4)
         )
         return
     }
-    LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
         items(pins, key = { "${it.sessionId}/${it.nodeId}" }) { pin ->
             val interaction = remember { MutableInteractionSource() }
             val hovered by interaction.collectIsHoveredAsState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(Radius.r8))
                     .background(if (hovered) p.accent.copy(alpha = 0.06f) else Color.Transparent),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -106,8 +106,8 @@ internal fun ColumnScope.PinnedRepliesPanel(
                     modifier = Modifier
                         .weight(1f)
                         .kissClickable(pressScale = 0.98f, interactionSource = interaction, onClick = { onOpen(pin) })
-                        .padding(start = 10.dp, top = 7.dp, bottom = 7.dp, end = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                        .padding(start = Space.s10, top = 7.dp, bottom = 7.dp, end = Space.s4),
+                    verticalArrangement = Arrangement.spacedBy(Space.s2)
                 ) {
                     if (allChats) {
                         BasicText(pin.sessionTitle, style = p.uiLabelStyle.copy(fontSize = 11.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)

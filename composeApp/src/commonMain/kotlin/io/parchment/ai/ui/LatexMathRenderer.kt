@@ -224,22 +224,22 @@ object LatexMathRenderer {
             }
         }
 
-        val shape = RoundedCornerShape(6.dp)
+        val shape = RoundedCornerShape(Radius.r6)
         Column(
             modifier = modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp)
+                .padding(vertical = Space.s6)
                 .clip(shape)
                 .background(p.cardBg)
                 .border(1.dp, p.border, shape)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = Space.s16, vertical = Space.s12)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 displayRows.forEach { nodes ->
                     Row(
@@ -257,14 +257,14 @@ object LatexMathRenderer {
                                 is DisplayMathNode.StackedFraction -> {
                                     Column(
                                         modifier = Modifier
-                                            .padding(horizontal = 4.dp)
+                                            .padding(horizontal = Space.s4)
                                             .width(IntrinsicSize.Max),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         BasicText(
                                             text = node.numerator,
                                             style = p.mathStyle.copy(fontSize = (p.config.proseFontSizeSp * 0.96f).sp),
-                                            modifier = Modifier.padding(horizontal = 4.dp)
+                                            modifier = Modifier.padding(horizontal = Space.s4)
                                         )
                                         Box(
                                             modifier = Modifier
@@ -275,14 +275,14 @@ object LatexMathRenderer {
                                         BasicText(
                                             text = node.denominator,
                                             style = p.mathStyle.copy(fontSize = (p.config.proseFontSizeSp * 0.96f).sp),
-                                            modifier = Modifier.padding(horizontal = 4.dp)
+                                            modifier = Modifier.padding(horizontal = Space.s4)
                                         )
                                     }
                                 }
                                 is DisplayMathNode.MatrixNode -> {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 4.dp)
+                                        modifier = Modifier.padding(horizontal = Space.s4)
                                     ) {
                                         if (node.leftDelim.isNotEmpty()) {
                                             BasicText(
@@ -291,8 +291,8 @@ object LatexMathRenderer {
                                             )
                                         }
                                         Column(
-                                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                                            modifier = Modifier.padding(horizontal = 6.dp)
+                                            verticalArrangement = Arrangement.spacedBy(Space.s4),
+                                            modifier = Modifier.padding(horizontal = Space.s6)
                                         ) {
                                             node.rows.forEach { rowCells ->
                                                 Row(
@@ -323,7 +323,7 @@ object LatexMathRenderer {
             }
 
             var copiedTex by remember(cleaned) { mutableStateOf(false) }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(Space.s6))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End

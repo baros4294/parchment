@@ -46,7 +46,7 @@ internal fun DefaultModelSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         BasicText(text = "Default models", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
@@ -74,7 +74,7 @@ internal fun DefaultModelSubpage(
         SepiaSectionCard(
             title = "2. Title generation model"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaToggleRow(
                     title = "Follow global choice (use current global model)",
                     checked = defaultModels.titleFollowGlobal,
@@ -106,7 +106,7 @@ internal fun DefaultModelSubpage(
         SepiaSectionCard(
             title = "3. Summary & context compression model"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaToggleRow(
                     title = "Follow global choice (use current global model)",
                     checked = defaultModels.summaryFollowGlobal,
@@ -130,7 +130,7 @@ internal fun DefaultModelSubpage(
         SepiaSectionCard(
             title = "4. Translation model & target language"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
                     value = defaultModels.translationTargetLanguage,
                     onValueChange = { lang -> onUpdateDefaultModels(defaultModels.copy(translationTargetLanguage = lang)) },
@@ -139,7 +139,7 @@ internal fun DefaultModelSubpage(
                     modifier = Modifier.fillMaxWidth()
                 )
                 @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     listOf("English", "Vietnamese", "Japanese", "Chinese", "Korean", "Spanish", "French", "German").forEach { lang ->
                         SepiaChip(
                             label = lang,

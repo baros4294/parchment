@@ -168,7 +168,7 @@ internal fun BackupAndOtaSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         BasicText(text = "Storage, backup & updates", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
@@ -177,7 +177,7 @@ internal fun BackupAndOtaSubpage(
             title = "Storage & file manager (${allStoredFiles.size} files • ${formatBytesCompact(totalBytes)})",
             subtitle = PlatformBridge.getAppStorageDirectoryPath(),
             headerAction = {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = "📂 Open folder",
                         compact = true,
@@ -194,7 +194,7 @@ internal fun BackupAndOtaSubpage(
                 }
             }
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 // Visual Storage Breakdown Bar by Category
                 val catTotals = remember(allStoredFiles) {
                     io.parchment.ai.model.StorageFileCategory.entries.associateWith { cat ->
@@ -206,9 +206,9 @@ internal fun BackupAndOtaSubpage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(9.dp)
-                        .clip(RoundedCornerShape(999.dp))
+                        .clip(RoundedCornerShape(Radius.pill))
                         .background(p.elevatedBg)
-                        .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+                        .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.pill))
                 ) {
                     io.parchment.ai.model.StorageFileCategory.entries.forEach { cat ->
                         val catBytes = catTotals[cat] ?: 0L
@@ -234,8 +234,8 @@ internal fun BackupAndOtaSubpage(
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     SepiaChip(
                         label = "All (${allStoredFiles.size} • ${formatBytesCompact(totalBytes)})",
@@ -290,7 +290,7 @@ internal fun BackupAndOtaSubpage(
                 // Search bar for files
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Space.s6),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     SepiaTextField(
@@ -317,18 +317,18 @@ internal fun BackupAndOtaSubpage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 320.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.r8))
                         .background(p.sheetBg.copy(alpha = 0.55f))
-                        .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.r8))
                         .verticalScroll(rememberScrollState())
-                        .padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .padding(Space.s8),
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     if (filteredStorageFiles.isEmpty()) {
                         BasicText(
                             text = "No matching files in storage.",
                             style = p.uiLabelStyle.copy(color = p.mutedInk),
-                            modifier = Modifier.padding(8.dp)
+                            modifier = Modifier.padding(Space.s8)
                         )
                     }
                     filteredStorageFiles.forEach { item ->
@@ -353,16 +353,16 @@ internal fun BackupAndOtaSubpage(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(p.cardBg)
-                                .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                                .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
+                                .padding(horizontal = Space.s10, vertical = 7.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
-                                modifier = Modifier.weight(1f).padding(end = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f).padding(end = Space.s8),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s8),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 KissVectorIcon(icon = itemIcon, tint = p.accent, size = 14.dp)
@@ -386,7 +386,7 @@ internal fun BackupAndOtaSubpage(
                                 }
                             }
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s4),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 SepiaButton(
@@ -453,7 +453,7 @@ internal fun BackupAndOtaSubpage(
             title = "App updates",
             subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformBridge.platformName}"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
                     value = appState.otaGithubRepo,
                     onValueChange = { repo -> onUpdateOtaSettings(repo, appState.autoCheckOtaOnStartup) },
@@ -510,14 +510,14 @@ internal fun BackupAndOtaSubpage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
-                                .clip(RoundedCornerShape(999.dp))
+                                .clip(RoundedCornerShape(Radius.pill))
                                 .background(p.border.copy(alpha = 0.45f))
                         ) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth((otaState.progressPercent / 100f).coerceIn(0.02f, 1f))
                                     .height(6.dp)
-                                    .clip(RoundedCornerShape(999.dp))
+                                    .clip(RoundedCornerShape(Radius.pill))
                                     .background(p.accent)
                             )
                         }
@@ -538,9 +538,9 @@ internal fun BackupAndOtaSubpage(
             title = "Portable chats & media export / import (Per-Chat folder & .zip bundles)",
             subtitle = PlatformBridge.getChatsStorageDirectoryPath()
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = "📦 Export All Chats + Media (${appState.sessions.size} Chats .zip)",
                         style = SepiaButtonStyle.PRIMARY,
@@ -621,9 +621,9 @@ internal fun BackupAndOtaSubpage(
             title = "Settings, providers & assistants backup (.json)",
             subtitle = "${PlatformBridge.getAppStorageDirectoryPath()}/parchment-settings.json"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = "📤 Export settings & assistants (.json)",
                         style = SepiaButtonStyle.PRIMARY,

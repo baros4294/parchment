@@ -3,8 +3,6 @@ package io.parchment.ai.ui
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -102,7 +100,7 @@ internal fun DesktopBrowserTabBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(p.sheetBg.copy(alpha = 0.88f))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .padding(horizontal = Space.s10, vertical = Space.s4),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -110,7 +108,7 @@ internal fun DesktopBrowserTabBar(
             modifier = Modifier
                 .weight(1f, fill = false)
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(Space.s6),
             verticalAlignment = Alignment.CenterVertically
         ) {
             openTabIds.forEach { tabId ->
@@ -126,7 +124,7 @@ internal fun DesktopBrowserTabBar(
                 } else {
                     rawTitle
                 }
-                val tabShape = RoundedCornerShape(8.dp)
+                val tabShape = RoundedCornerShape(Radius.r8)
 
                 Row(
                     modifier = Modifier
@@ -181,7 +179,7 @@ internal fun DesktopBrowserTabBar(
             )
         }
 
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(Space.s8))
 
         SepiaButton(
             text = "⊞ ${openTabIds.size} Tabs",
@@ -238,7 +236,7 @@ internal fun MobileTabSwitcherModal(
         val sheetShape = if (isCompactScreen) {
             RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
         } else {
-            RoundedCornerShape(12.dp)
+            RoundedCornerShape(Radius.r12)
         }
         Column(
             modifier = Modifier
@@ -249,26 +247,26 @@ internal fun MobileTabSwitcherModal(
                 .border(1.dp, p.border, sheetShape)
                 .blockTapThrough()
                 .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(Space.s10)
         ) {
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(Space.s8),
+                    modifier = Modifier.padding(top = Space.s4)
                 ) {
-                    KissVectorIcon(icon = KissIcon.TABS, tint = p.accent, size = 16.dp)
+                    KissVectorIcon(icon = KissIcon.TABS, tint = p.accent, size = IconSize.lg)
                     BasicText(
                         text = "Open Tabs (${openTabIds.size})" + if (runningTotal > 0) " • $runningTotal active" else "",
                         style = p.uiHeaderStyle.copy(fontSize = 16.sp)
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                     if (emptyTabsCount >= 2) {
                         SepiaButton(
                             text = "🗑 Empty ($emptyTabsCount)",
@@ -309,12 +307,12 @@ internal fun MobileTabSwitcherModal(
             val rows = remember(filteredTabIds, columns) { filteredTabIds.chunked(columns) }
             LazyColumn(
                 modifier = Modifier.heightIn(max = win.heightDp * 0.68f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s10)
             ) {
                 itemsIndexed(rows) { _, rowPair ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s10)
                     ) {
                         rowPair.forEach { tabId ->
                             val sess = appState.sessions.find { it.id == tabId }
@@ -337,15 +335,15 @@ internal fun MobileTabSwitcherModal(
                                     modifier = Modifier
                                         .weight(1f)
                                         .heightIn(min = 122.dp)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(Radius.r12))
                                         .background(p.cardBg)
                                         .border(
-                                            width = if (isSel) 1.5.dp else 0.75.dp,
+                                            width = if (isSel) LineWidth.selected else LineWidth.hairline,
                                             color = if (isSel) p.accent else p.border,
-                                            shape = RoundedCornerShape(12.dp)
+                                            shape = RoundedCornerShape(Radius.r12)
                                         )
                                         .kissClickable(pressScale = 0.98f, role = Role.Tab, selected = isSel) { onSelectTab(tabId) }
-                                        .padding(10.dp),
+                                        .padding(Space.s10),
                                     verticalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -385,7 +383,7 @@ internal fun MobileTabSwitcherModal(
                                                 KissVectorIcon(icon = KissIcon.CLOSE, tint = p.mutedInk, size = 11.dp)
                                             }
                                         }
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(Space.s2)) {
                                             BasicText(
                                                 text = asstName,
                                                 maxLines = 1,
@@ -409,7 +407,7 @@ internal fun MobileTabSwitcherModal(
                                         )
                                     }
 
-                                    Spacer(Modifier.height(6.dp))
+                                    Spacer(Modifier.height(Space.s6))
 
                                     if (streamInfo != null) {
                                         Row(
@@ -482,9 +480,9 @@ internal fun TopEditorialBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(p.canvasBg)
-            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .animateContentSize(animationSpec = motionSpring())
+            .padding(horizontal = Space.s12, vertical = Space.s8),
+        verticalArrangement = Arrangement.spacedBy(Space.s6)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -493,7 +491,7 @@ internal fun TopEditorialBar(
         ) {
             Row(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Space.s8),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 SepiaButton(
@@ -516,7 +514,7 @@ internal fun TopEditorialBar(
                 Column(modifier = Modifier.weight(1f)) {
                     if (isEditingTitle) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SepiaTextField(
@@ -572,7 +570,7 @@ internal fun TopEditorialBar(
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s4),
                         modifier = Modifier.kissClickable(hoverScale = 1.01f) { onToggleQuickModelPopover() }
                     ) {
                         BasicText(
@@ -591,10 +589,10 @@ internal fun TopEditorialBar(
                 }
             }
 
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(Space.s6))
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(Space.s6),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val win = LocalParchmentWindowSize.current
@@ -602,7 +600,7 @@ internal fun TopEditorialBar(
                     activeSession.authorsNote.isNotBlank() ||
                     activeSession.storySummary.isNotBlank()
                 if (win.isCompact && (openTabCount > 1 || backgroundStreamingCount > 0)) {
-                    val tabBadgeShape = RoundedCornerShape(6.dp)
+                    val tabBadgeShape = RoundedCornerShape(Radius.r6)
                     Box(
                         modifier = Modifier
                             .heightIn(min = 27.dp)
@@ -616,7 +614,7 @@ internal fun TopEditorialBar(
                             )
                             .kissClickable { onOpenMobileTabSwitcher() }
                             .accessibilityLabel("Open tabs: $openTabCount")
-                            .padding(horizontal = 6.dp),
+                            .padding(horizontal = Space.s6),
                         contentAlignment = Alignment.Center
                     ) {
                         Row(
@@ -677,22 +675,22 @@ internal fun TopEditorialBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(Radius.r10))
                     .background(p.cardBg)
-                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
+                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
                     .padding(11.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(top = 4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                        modifier = Modifier.padding(top = Space.s4)
                     ) {
                         KissVectorIcon(icon = KissIcon.CPU, tint = p.accent, size = 14.dp)
                         BasicText(
@@ -706,7 +704,7 @@ internal fun TopEditorialBar(
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         SepiaButton(
                             text = if (isCompactScreen) "⚙ Providers" else "⚙ Manage providers",
@@ -769,12 +767,12 @@ internal fun ParchmentSidebar(
     Column(
         modifier = modifier
             .background(p.sheetBg)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(Space.s12),
+        verticalArrangement = Arrangement.spacedBy(Space.s10)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(Space.s6),
             verticalAlignment = Alignment.CenterVertically
         ) {
             SepiaTextField(
@@ -802,11 +800,11 @@ internal fun ParchmentSidebar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(999.dp))
+                .clip(RoundedCornerShape(Radius.pill))
                 .background(p.cardBg.copy(alpha = 0.7f))
-                .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(999.dp))
+                .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), RoundedCornerShape(Radius.pill))
                 .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(Space.s4)
         ) {
             listOf(SidebarTab.ASSISTANTS to "Assistants", SidebarTab.TOPICS to "Chats", SidebarTab.PINNED to "Pinned").forEach { (tab, label) ->
                 val isSel = selectedTab == tab
@@ -823,7 +821,7 @@ internal fun ParchmentSidebar(
                             selected = isSel,
                             onClick = { onSelectTab(tab) }
                         )
-                        .clip(RoundedCornerShape(999.dp))
+                        .clip(RoundedCornerShape(Radius.pill))
                         .background(
                             when {
                                 isSel -> p.sheetBg
@@ -831,7 +829,7 @@ internal fun ParchmentSidebar(
                                 else -> Color.Transparent
                             }
                         )
-                        .padding(vertical = 6.dp),
+                        .padding(vertical = Space.s6),
                     contentAlignment = Alignment.Center
                 ) {
                     BasicText(
@@ -859,20 +857,20 @@ internal fun ParchmentSidebar(
 
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s6)
             ) {
                 if (filteredAssistants.isEmpty()) {
                     item {
                         BasicText(
                             text = "No matching assistants found. Tap '+' above to create a new assistant.",
                             style = p.uiLabelStyle,
-                            modifier = Modifier.padding(8.dp)
+                            modifier = Modifier.padding(Space.s8)
                         )
                     }
                 }
                 itemsIndexed(filteredAssistants, key = { _, a -> a.id }) { _, asst ->
                     val isSel = asst.id == activeAssistant.id
-                    val shape = RoundedCornerShape(999.dp)
+                    val shape = RoundedCornerShape(Radius.pill)
                     val rowInteraction = remember { MutableInteractionSource() }
                     val rowHovered by rowInteraction.collectIsHoveredAsState()
                     val rowPressed by rowInteraction.collectIsPressedAsState()
@@ -895,13 +893,13 @@ internal fun ParchmentSidebar(
                                     else -> Color.Transparent
                                 }
                             )
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(horizontal = Space.s10, vertical = Space.s8),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(Space.s10),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SepiaAvatarCircle(
@@ -964,9 +962,9 @@ internal fun ParchmentSidebar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.weight(1f).padding(end = 6.dp),
+                    modifier = Modifier.weight(1f).padding(end = Space.s6),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     val hdrIcon = remember(activeAssistant.iconEmoji) {
                         parseKissLabelIcons(activeAssistant.iconEmoji).leadingIcon ?: KissIcon.SPARKLES
@@ -993,11 +991,11 @@ internal fun ParchmentSidebar(
             var touchActionsChatId by remember { mutableStateOf<String?>(null) }
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s2)
             ) {
                 itemsIndexed(assistantTopics, key = { _, s -> s.id }) { _, sess ->
                     val selected = sess.id == activeSession.id
-                    val shape = RoundedCornerShape(8.dp)
+                    val shape = RoundedCornerShape(Radius.r8)
                     val rowInteraction = remember { MutableInteractionSource() }
                     var rowHasFocus by remember { mutableStateOf(false) }
                     val rowHovered by rowInteraction.collectIsHoveredAsState()
@@ -1022,14 +1020,14 @@ internal fun ParchmentSidebar(
                                 }
                             )
                             .then(if (selected) Modifier.rubricMark(p.accent, verticalInset = 9.dp) else Modifier)
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                            .padding(horizontal = Space.s10, vertical = 7.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 if (sess.isPinned) {
                                     KissVectorIcon(icon = KissIcon.PIN, tint = p.accent, size = 11.dp)
@@ -1062,7 +1060,7 @@ internal fun ParchmentSidebar(
                                 onClick = { touchActionsChatId = if (showRowActions) null else sess.id }
                             )
                         }
-                        if (showRowActions) Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (showRowActions) Row(horizontalArrangement = Arrangement.spacedBy(Space.s2), verticalAlignment = Alignment.CenterVertically) {
                             SepiaButton(
                                 text = "📌",
                                 contentDescription = if (sess.isPinned) "Unpin chat" else "Pin chat",
@@ -1137,9 +1135,9 @@ internal fun ParchmentAttachmentViewerModal(
                         .widthIn(max = 1040.dp)
                         .fillMaxWidth(0.94f)
                         .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(Radius.r12))
                         .background(p.cardBg)
-                        .border(1.dp, p.accent, RoundedCornerShape(12.dp))
+                        .border(1.dp, p.accent, RoundedCornerShape(Radius.r12))
                         .blockTapThrough()
                         .padding(14.dp),
                     verticalArrangement = Arrangement.SpaceBetween
@@ -1148,17 +1146,17 @@ internal fun ParchmentAttachmentViewerModal(
                     FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(Radius.r10))
                             .background(p.sheetBg.copy(alpha = 0.85f))
-                            .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
+                            .padding(horizontal = Space.s12, vertical = Space.s8),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         Column(modifier = Modifier.weight(1f, fill = false)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 15.dp)
                                 BasicText(
@@ -1177,8 +1175,8 @@ internal fun ParchmentAttachmentViewerModal(
 
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             SepiaButton(
                                 text = "🔍−",
@@ -1253,10 +1251,10 @@ internal fun ParchmentAttachmentViewerModal(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(top = 8.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .padding(top = Space.s8)
+                            .clip(RoundedCornerShape(Radius.r10))
                             .background(p.sheetBg.copy(alpha = 0.55f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                            .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.r10))
                             .pointerInput(item) {
                                 detectTapGestures(
                                     onDoubleTap = {
@@ -1347,23 +1345,23 @@ internal fun ParchmentAttachmentViewerModal(
                         .widthIn(max = 940.dp)
                         .fillMaxWidth(0.94f)
                         .fillMaxHeight(0.88f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(Radius.r12))
                         .background(p.cardBg)
-                        .border(1.dp, p.accent, RoundedCornerShape(12.dp))
+                        .border(1.dp, p.accent, RoundedCornerShape(Radius.r12))
                         .blockTapThrough()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .padding(Space.s16),
+                    verticalArrangement = Arrangement.spacedBy(Space.s10)
                 ) {
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         Column(modifier = Modifier.weight(1f, fill = false)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 KissVectorIcon(icon = KissIcon.FILE_TEXT, tint = p.accent, size = 15.dp)
                                 BasicText(
@@ -1381,8 +1379,8 @@ internal fun ParchmentAttachmentViewerModal(
 
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             if (isSvgContent || isMarkdownContent) {
                                 SepiaButton(
@@ -1441,10 +1439,10 @@ internal fun ParchmentAttachmentViewerModal(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.r8))
                             .background(p.sheetBg.copy(alpha = 0.65f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                            .padding(12.dp)
+                            .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.r8))
+                            .padding(Space.s12)
                             .verticalScroll(rememberScrollState())
                     ) {
                         when {
@@ -1692,8 +1690,8 @@ internal fun ParchmentRightFilesSidebar(
     Column(
         modifier = modifier
             .background(p.sheetBg)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(horizontal = Space.s12, vertical = Space.s10),
+        verticalArrangement = Arrangement.spacedBy(Space.s8)
     ) {
         // Header Row
         Row(
@@ -1759,12 +1757,12 @@ internal fun ParchmentRightFilesSidebar(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(Space.s16),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s8)
                 ) {
                     KissVectorIcon(icon = KissIcon.FOLDER, tint = p.mutedInk, size = 26.dp)
                     BasicText(
@@ -1783,7 +1781,7 @@ internal fun ParchmentRightFilesSidebar(
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s10)
             ) {
                 val showAiSection = (selectedFilter == RightVaultFilter.ALL || selectedFilter == RightVaultFilter.AI_GENERATED) &&
                     aiArtifacts.isNotEmpty()
@@ -1817,9 +1815,9 @@ internal fun ParchmentRightFilesSidebar(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(Radius.r8))
                                         .background(p.cardBg)
-                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
                                         .clickable(role = Role.Button) {
                                             val wsRoot = activeSession.workspacePath
                                             val liveText = if (wsRoot.isNotBlank()) {
@@ -1840,8 +1838,8 @@ internal fun ParchmentRightFilesSidebar(
                                                 )
                                             )
                                         }
-                                        .padding(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        .padding(Space.s10),
+                                    verticalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -1850,19 +1848,19 @@ internal fun ParchmentRightFilesSidebar(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
+                                                .clip(RoundedCornerShape(Radius.r4))
                                                 .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .padding(horizontal = Space.s6, vertical = Space.s2)
                                         ) {
                                             val parsedBadge = remember(item.actionBadge) { parseKissLabelIcons(item.actionBadge) }
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                             ) {
                                                 KissVectorIcon(
                                                     icon = parsedBadge.leadingIcon ?: KissIcon.SPARKLES,
                                                     tint = p.accent,
-                                                    size = 9.5.dp
+                                                    size = IconSize.xs
                                                 )
                                                 BasicText(
                                                     text = parsedBadge.cleanText.ifEmpty { item.actionBadge },
@@ -1877,9 +1875,9 @@ internal fun ParchmentRightFilesSidebar(
                                     }
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
-                                        KissVectorIcon(icon = KissIcon.DIFF, tint = p.accent, size = 13.5.dp)
+                                        KissVectorIcon(icon = KissIcon.DIFF, tint = p.accent, size = IconSize.md)
                                         BasicText(
                                             text = shortName,
                                             maxLines = 2,
@@ -1904,9 +1902,9 @@ internal fun ParchmentRightFilesSidebar(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(Radius.r8))
                                         .background(p.cardBg)
-                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
                                         .clickable(role = Role.Button) {
                                             if (isVideo) {
                                                 val target = media.localFilePath.ifBlank { media.remoteUrl }
@@ -1915,7 +1913,7 @@ internal fun ParchmentRightFilesSidebar(
                                                 onInspectGeneratedImage(media)
                                             }
                                         }
-                                        .padding(10.dp),
+                                        .padding(Space.s10),
                                     verticalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
                                     Row(
@@ -1925,18 +1923,18 @@ internal fun ParchmentRightFilesSidebar(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
+                                                .clip(RoundedCornerShape(Radius.r4))
                                                 .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .padding(horizontal = Space.s6, vertical = Space.s2)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                             ) {
                                                 KissVectorIcon(
                                                     icon = KissIcon.SPARKLES,
                                                     tint = p.accent,
-                                                    size = 9.5.dp
+                                                    size = IconSize.xs
                                                 )
                                                 BasicText(
                                                     text = if (isVideo) "AI video" else "AI image",
@@ -1951,12 +1949,12 @@ internal fun ParchmentRightFilesSidebar(
                                     }
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
                                         KissVectorIcon(
                                             icon = if (isVideo) KissIcon.VIDEO else KissIcon.IMAGE,
                                             tint = p.accent,
-                                            size = 13.5.dp
+                                            size = IconSize.md
                                         )
                                         BasicText(
                                             text = fileLabel,
@@ -1976,9 +1974,9 @@ internal fun ParchmentRightFilesSidebar(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(Radius.r8))
                                         .background(p.cardBg)
-                                        .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                        .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
                                         .clickable(role = Role.Button) {
                                             onInspectAttachment(
                                                 PromptAttachment(
@@ -1989,8 +1987,8 @@ internal fun ParchmentRightFilesSidebar(
                                                 )
                                             )
                                         }
-                                        .padding(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        .padding(Space.s10),
+                                    verticalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -1999,18 +1997,18 @@ internal fun ParchmentRightFilesSidebar(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
+                                                .clip(RoundedCornerShape(Radius.r4))
                                                 .background(p.accent.copy(alpha = 0.15f))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .padding(horizontal = Space.s6, vertical = Space.s2)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                             ) {
                                                 KissVectorIcon(
                                                     icon = KissIcon.SPARKLES,
                                                     tint = p.accent,
-                                                    size = 9.5.dp
+                                                    size = IconSize.xs
                                                 )
                                                 BasicText(
                                                     text = "AI ${item.language}",
@@ -2025,9 +2023,9 @@ internal fun ParchmentRightFilesSidebar(
                                     }
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
-                                        KissVectorIcon(icon = KissIcon.CODE, tint = p.accent, size = 13.5.dp)
+                                        KissVectorIcon(icon = KissIcon.CODE, tint = p.accent, size = IconSize.md)
                                         BasicText(
                                             text = item.fileName,
                                             maxLines = 2,
@@ -2091,11 +2089,11 @@ internal fun ParchmentRightFilesSidebar(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(p.cardBg)
-                                .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
+                                .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
                                 .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
-                                .padding(10.dp),
+                                .padding(Space.s10),
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Row(
@@ -2105,18 +2103,18 @@ internal fun ParchmentRightFilesSidebar(
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
+                                        .clip(RoundedCornerShape(Radius.r4))
                                         .background(p.elevatedBg)
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .padding(horizontal = Space.s6, vertical = Space.s2)
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                     ) {
                                         KissVectorIcon(
                                             icon = KissIcon.UPLOAD,
                                             tint = p.primaryInk,
-                                            size = 9.5.dp
+                                            size = IconSize.xs
                                         )
                                         BasicText(
                                             text = "Your upload",
@@ -2135,11 +2133,11 @@ internal fun ParchmentRightFilesSidebar(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
-                                    modifier = Modifier.weight(1f).padding(end = 6.dp),
+                                    modifier = Modifier.weight(1f).padding(end = Space.s6),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
-                                    KissVectorIcon(icon = fileIcon, tint = p.accent, size = 13.5.dp)
+                                    KissVectorIcon(icon = fileIcon, tint = p.accent, size = IconSize.md)
                                     BasicText(
                                         text = att.fileName,
                                         maxLines = 2,
@@ -2189,12 +2187,12 @@ internal fun ParchmentRightFilesSidebar(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(p.cardBg)
-                                .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
+                                .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
                                 .clickable(role = Role.Button, onClickLabel = "Open source") { openWebLink(src.url) }
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .padding(Space.s10),
+                            verticalArrangement = Arrangement.spacedBy(Space.s4)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -2208,9 +2206,9 @@ internal fun ParchmentRightFilesSidebar(
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .clip(RoundedCornerShape(Radius.r4))
                                             .background(p.accent.copy(alpha = 0.16f))
-                                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                            .padding(horizontal = 5.dp, vertical = Space.s2)
                                     ) {
                                         BasicText(
                                             text = "[${src.index}]",
@@ -2226,7 +2224,7 @@ internal fun ParchmentRightFilesSidebar(
                                 }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     BasicText(
                                         text = "Turn #${item.turnNumber} • $lineLabel",
@@ -2235,7 +2233,7 @@ internal fun ParchmentRightFilesSidebar(
                                     KissVectorIcon(
                                         icon = KissIcon.EXTERNAL_LINK,
                                         tint = p.accent,
-                                        size = 9.5.dp
+                                        size = IconSize.xs
                                     )
                                 }
                             }
@@ -2248,12 +2246,12 @@ internal fun ParchmentRightFilesSidebar(
                             if (quoteExcerpt.isNotBlank()) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     KissVectorIcon(
                                         icon = KissIcon.CORNER_DOWN_RIGHT,
                                         tint = p.narrationInk,
-                                        size = 9.5.dp
+                                        size = IconSize.xs
                                     )
                                     BasicText(
                                         text = "$lineLabel: \"$quoteExcerpt\"",
@@ -2335,19 +2333,19 @@ internal fun ContextWindowBreakdownPopover(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(bottom = Space.s8)
+            .clip(RoundedCornerShape(Radius.r12))
             .background(p.cardBg)
-            .border(1.dp, p.accent.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .border(1.dp, p.accent.copy(alpha = 0.75f), RoundedCornerShape(Radius.r12))
+            .padding(Space.s12),
+        verticalArrangement = Arrangement.spacedBy(Space.s8)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s2)) {
                 BasicText(
                     text = "What fills this conversation",
                     style = p.uiHeaderStyle.copy(fontSize = 15.sp)
@@ -2375,9 +2373,9 @@ internal fun ContextWindowBreakdownPopover(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(10.dp)
-                .clip(RoundedCornerShape(999.dp))
+                .clip(RoundedCornerShape(Radius.pill))
                 .background(p.elevatedBg)
-                .border(0.75.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+                .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.pill))
         ) {
             for (slice in slices) {
                 if (slice.tokens > 0) {
@@ -2406,7 +2404,7 @@ internal fun ContextWindowBreakdownPopover(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        modifier = Modifier.weight(1f).padding(end = 8.dp)
+                        modifier = Modifier.weight(1f).padding(end = Space.s8)
                     ) {
                         Box(
                             modifier = Modifier
@@ -2445,8 +2443,8 @@ internal fun ContextWindowBreakdownPopover(
         @OptIn(ExperimentalLayoutApi::class)
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+            verticalArrangement = Arrangement.spacedBy(Space.s6)
         ) {
             if (canCompact) {
                 SepiaButton(

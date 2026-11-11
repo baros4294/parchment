@@ -5,9 +5,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.draw.alpha
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -345,31 +342,31 @@ internal fun ManuscriptViewport(
                     .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState())
                     .background(p.elevatedBg.copy(alpha = 0.45f))
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 14.dp, vertical = Space.s8),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Column(
                     modifier = Modifier
                         .widthIn(max = p.maxReadingWidth)
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(Radius.r10))
                         .background(p.cardBg)
-                        .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
+                        .padding(Space.s12),
+                    verticalArrangement = Arrangement.spacedBy(Space.s8)
                 ) {
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         BasicText(
                             text = "Chat notes & memory",
                             style = p.uiHeaderStyle.copy(fontSize = 15.sp),
-                            modifier = Modifier.padding(top = 4.dp)
+                            modifier = Modifier.padding(top = Space.s4)
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalAlignment = Alignment.CenterVertically) {
                             if (activeSession.messages.isNotEmpty()) {
                                 SepiaButton(
                                     text = "Export .MD",
@@ -418,14 +415,14 @@ internal fun ManuscriptViewport(
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         BasicText(
                             text = "Chat summary & memory",
                             style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                            modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                            modifier = Modifier.padding(top = Space.s4, end = Space.s8)
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                             val canCompactSession = activeSession.messages.count { it.includedInContext } > 1 ||
                                 activeSession.messages.any { it.includedInContext && it.activeVariant.toolCalls.isNotEmpty() }
                             SepiaButton(
@@ -497,7 +494,7 @@ internal fun ManuscriptViewport(
                     if (preferences.defaultViewMode == ViewMode.MANUSCRIPT) 16.dp else if (win.isCompact) 20.dp else 12.dp
                 )
             ) {
-                item { Spacer(Modifier.height(10.dp)) }
+                item { Spacer(Modifier.height(Space.s10)) }
 
                 if (activeSession.messages.isEmpty()) {
                     item {
@@ -511,8 +508,8 @@ internal fun ManuscriptViewport(
                                 .fillMaxWidth()
                                 .padding(top = 44.dp)
                                 .rubricMark(p.accent)
-                                .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .padding(start = Space.s16, top = Space.s4, bottom = Space.s4),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             if (activeAssistant.iconEmoji != "💬") {
                                 SepiaAvatarCircle(symbol = activeAssistant.iconEmoji, selected = true, sizeDp = 40.dp)
@@ -526,7 +523,7 @@ internal fun ManuscriptViewport(
                                 style = p.uiLabelStyle.copy(color = p.mutedInk)
                             )
                             if (card != null && card.firstMessage.isNotBlank()) {
-                                Spacer(Modifier.height(4.dp))
+                                Spacer(Modifier.height(Space.s4))
                                 SepiaButton(
                                     text = "Start opening scene",
                                     compact = true,
@@ -662,7 +659,7 @@ internal fun ManuscriptViewport(
                     )
                 }
 
-                item { Spacer(Modifier.height(16.dp)) }
+                item { Spacer(Modifier.height(Space.s16)) }
             }
 
             val activeEffectiveModelId = activeSession.modelOverride
@@ -683,35 +680,35 @@ internal fun ManuscriptViewport(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = Space.s12),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 AnimatedVisibility(
                     visible = showFloatingAudioPill,
                     enter = slideInVertically(
                         initialOffsetY = { it / 2 },
-                        animationSpec = spring(stiffness = 580f, dampingRatio = Spring.DampingRatioNoBouncy)
+                        animationSpec = motionSpring(Motion.POP_STIFFNESS)
                     ) + scaleIn(
                         initialScale = 0.90f,
-                        animationSpec = spring(stiffness = 580f, dampingRatio = 0.80f)
-                    ) + fadeIn(tween(110)),
+                        animationSpec = motionSpring(Motion.POP_STIFFNESS, 0.8f)
+                    ) + fadeIn(motionTween(Motion.QUICK)),
                     exit = slideOutVertically(
                         targetOffsetY = { it / 2 },
-                        animationSpec = tween(110)
-                    ) + scaleOut(targetScale = 0.92f, animationSpec = tween(110)) + fadeOut(tween(100))
+                        animationSpec = motionTween(Motion.QUICK)
+                    ) + scaleOut(targetScale = 0.92f, animationSpec = motionTween(Motion.QUICK)) + fadeOut(motionTween(Motion.QUICK))
                 ) {
-                    val audioPillShape = RoundedCornerShape(999.dp)
+                    val audioPillShape = RoundedCornerShape(Radius.pill)
                     Box(
                         modifier = Modifier
                             .clip(audioPillShape)
                             .background(p.canvasBg.copy(alpha = 0.96f))
                             .border(1.dp, p.accent, audioPillShape)
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .padding(horizontal = Space.s10, vertical = 5.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s8)
                         ) {
                             if (isVoiceListening || isStreaming || isLiveVoiceMode) {
                                 KissStreamingPulseDot(color = p.accent)
@@ -735,20 +732,20 @@ internal fun ManuscriptViewport(
                             // Mic listen / pause toggle
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
+                                    .clip(RoundedCornerShape(Radius.pill))
                                     .background(if (isVoiceListening) p.accent else p.sheetBg)
-                                    .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
+                                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
                                     .kissClickable { onTriggerVoiceInput() }
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    .padding(horizontal = Space.s8, vertical = 3.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     KissVectorIcon(
                                         icon = KissIcon.MIC,
                                         tint = if (isVoiceListening) onFillInk(p.accent) else p.primaryInk,
-                                        size = 11.5.dp
+                                        size = IconSize.sm
                                     )
                                     BasicText(
                                         text = if (isVoiceListening) "Pause Mic" else "Speak",
@@ -767,17 +764,17 @@ internal fun ManuscriptViewport(
                             if (latestAssistantText.isNotBlank()) {
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
+                                        .clip(RoundedCornerShape(Radius.pill))
                                         .background(p.sheetBg)
-                                        .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
+                                        .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
                                         .kissClickable {
                                             PlatformBridge.speakTextAloud(latestAssistantText)
                                         }
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                        .padding(horizontal = Space.s8, vertical = 3.dp)
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                     ) {
                                         KissVectorIcon(icon = KissIcon.PLAY, tint = p.accent, size = 11.dp)
                                         BasicText(
@@ -790,18 +787,18 @@ internal fun ManuscriptViewport(
                             // Stop audio output / stream
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
+                                    .clip(RoundedCornerShape(Radius.pill))
                                     .background(p.sheetBg)
-                                    .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
+                                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
                                     .kissClickable {
                                         PlatformBridge.stopSpeakingAloud()
                                         if (isStreaming) onStopStream()
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    .padding(horizontal = Space.s8, vertical = 3.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     KissVectorIcon(icon = KissIcon.STOP, tint = p.danger, size = 11.dp)
                                     BasicText(
@@ -813,9 +810,9 @@ internal fun ManuscriptViewport(
                             // Toggle Live Voice session on/off
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
+                                    .clip(RoundedCornerShape(Radius.pill))
                                     .background(if (isLiveVoiceMode) p.accent.copy(alpha = 0.16f) else p.sheetBg)
-                                    .border(0.75.dp, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(999.dp))
+                                    .border(LineWidth.hairline, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(Radius.pill))
                                     .kissClickable {
                                         if (isLiveVoiceMode) PlatformBridge.stopSpeakingAloud()
                                         onToggleLiveVoiceMode()
@@ -840,18 +837,18 @@ internal fun ManuscriptViewport(
                     visible = isScrolledUpFromBottom,
                     enter = slideInVertically(
                         initialOffsetY = { it / 2 },
-                        animationSpec = spring(stiffness = 580f, dampingRatio = Spring.DampingRatioNoBouncy)
+                        animationSpec = motionSpring(Motion.POP_STIFFNESS)
                     ) + scaleIn(
                         initialScale = 0.90f,
-                        animationSpec = spring(stiffness = 580f, dampingRatio = 0.80f)
-                    ) + fadeIn(tween(110)),
+                        animationSpec = motionSpring(Motion.POP_STIFFNESS, 0.8f)
+                    ) + fadeIn(motionTween(Motion.QUICK)),
                     exit = slideOutVertically(
                         targetOffsetY = { it / 2 },
-                        animationSpec = tween(110)
-                    ) + scaleOut(targetScale = 0.92f, animationSpec = tween(110)) + fadeOut(tween(100))
+                        animationSpec = motionTween(Motion.QUICK)
+                    ) + scaleOut(targetScale = 0.92f, animationSpec = motionTween(Motion.QUICK)) + fadeOut(motionTween(Motion.QUICK))
                 ) {
-                    val pillOuterShape = RoundedCornerShape(999.dp)
-                    val pillInnerShape = RoundedCornerShape(999.dp)
+                    val pillOuterShape = RoundedCornerShape(Radius.pill)
+                    val pillInnerShape = RoundedCornerShape(Radius.pill)
                     // Outer frosted halo shield blocks underlying manuscript text completely
                     Box(
                         modifier = Modifier
@@ -872,9 +869,9 @@ internal fun ManuscriptViewport(
                                         jumpToBottomEdge()
                                     }
                                 }
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                                .padding(horizontal = 14.dp, vertical = Space.s6),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             if (isStreaming) {
                                 KissStreamingPulseDot(color = onFillInk(p.accent))
@@ -882,7 +879,7 @@ internal fun ManuscriptViewport(
                             KissVectorIcon(
                                 icon = KissIcon.ARROW_DOWN,
                                 tint = onFillInk(p.accent),
-                                size = 12.5.dp
+                                size = IconSize.sm
                             )
                             BasicText(
                                 text = "Latest",
@@ -906,15 +903,15 @@ internal fun ManuscriptViewport(
             Row(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 8.dp)
+                    .padding(end = Space.s8)
             ) {
                 AnimatedVisibility(
                     visible = showNavButtons || showMinimapTreeModal,
-                    enter = fadeIn(tween(160)),
-                    exit = fadeOut(tween(240))
+                    enter = fadeIn(motionTween(Motion.STANDARD)),
+                    exit = fadeOut(motionTween(Motion.SLOW))
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                     // Expandable Interactive Tree & Swipe Minimap Modal with In-Chat Turn Filter
@@ -934,11 +931,11 @@ internal fun ManuscriptViewport(
                             modifier = Modifier
                                 .width(if (win.isCompact) 255.dp else 290.dp)
                                 .heightIn(max = 410.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(Radius.r12))
                                 .background(p.cardBg)
-                                .border(1.dp, p.accent, RoundedCornerShape(12.dp))
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .border(1.dp, p.accent, RoundedCornerShape(Radius.r12))
+                                .padding(Space.s10),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -947,9 +944,9 @@ internal fun ManuscriptViewport(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
-                                    KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = 13.5.dp)
+                                    KissVectorIcon(icon = KissIcon.MAP_TREE, tint = p.accent, size = IconSize.md)
                                     BasicText(
                                         text = "Message Map (${filteredMapItems.size}/${activeSession.messages.size})",
                                         style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.Bold)
@@ -974,7 +971,7 @@ internal fun ManuscriptViewport(
                             SepiaDivider()
                             Column(
                                 modifier = Modifier.verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 filteredMapItems.forEach { (idx, mNode) ->
                                     val isAsst = mNode.role == MessageRole.ASSISTANT
@@ -982,7 +979,7 @@ internal fun ManuscriptViewport(
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(Radius.r8))
                                             .background(if (isAsst) p.sheetBg.copy(alpha = 0.65f) else p.elevatedBg.copy(alpha = 0.45f))
                                             .kissClickable(pressScale = 0.98f) {
                                                 minimapInteractionTick++
@@ -991,7 +988,7 @@ internal fun ManuscriptViewport(
                                                 }
                                             }
                                             .padding(7.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        verticalArrangement = Arrangement.spacedBy(Space.s4)
                                     ) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
@@ -1012,7 +1009,7 @@ internal fun ManuscriptViewport(
                                                         val vSel = vIdx == mNode.activeVariantIndex
                                                         Box(
                                                             modifier = Modifier
-                                                                .clip(RoundedCornerShape(4.dp))
+                                                                .clip(RoundedCornerShape(Radius.r4))
                                                                 .background(if (vSel) p.accent else p.cardBg)
                                                                 .kissClickable {
                                                                     minimapInteractionTick++
@@ -1055,11 +1052,11 @@ internal fun ManuscriptViewport(
                     // Compact Vertical Minimap Rail (`⤒`, `↑`, `🗺`, `↓`, `⤓`)
                     Column(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
+                            .clip(RoundedCornerShape(Radius.pill))
                             .background(p.cardBg.copy(alpha = 0.94f))
-                            .border(0.75.dp, p.border, RoundedCornerShape(999.dp))
-                            .padding(vertical = 4.dp, horizontal = 3.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                            .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
+                            .padding(vertical = Space.s4, horizontal = 3.dp),
+                        verticalArrangement = Arrangement.spacedBy(Space.s2),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         // Extreme Jump Top
@@ -1145,7 +1142,7 @@ internal fun ManuscriptViewport(
                 .padding(horizontal = if (win.isCompact) 10.dp else 14.dp, vertical = 7.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            val deckShape = RoundedCornerShape(12.dp)
+            val deckShape = RoundedCornerShape(Radius.r12)
             Column(
                 modifier = Modifier
                     .widthIn(max = p.maxReadingWidth)
@@ -1153,12 +1150,12 @@ internal fun ManuscriptViewport(
                     .clip(deckShape)
                     .background(p.cardBg)
                     .border(
-                        width = if (isStreaming) 1.dp else 0.75.dp,
+                        width = if (isStreaming) 1.dp else LineWidth.hairline,
                         color = if (isStreaming) p.accent else p.border.copy(alpha = 0.85f),
                         shape = deckShape
                     )
-                    .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .animateContentSize(animationSpec = motionSpring())
+                    .padding(horizontal = Space.s12, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 // 1. Live status while streaming: the headline and its detail on separate lines.
@@ -1183,11 +1180,11 @@ internal fun ManuscriptViewport(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.r8))
                             .background(p.sheetBg.copy(alpha = 0.78f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                            .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
                             .clickable(role = Role.Button, onClickLabel = if (statusExpanded) "Collapse status" else "Expand status") { statusExpanded = !statusExpanded }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = Space.s10, vertical = Space.s6),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Row(
@@ -1197,7 +1194,7 @@ internal fun ManuscriptViewport(
                         ) {
                             Row(
                                 modifier = Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s8),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 KissStreamingPulseDot(color = p.accent)
@@ -1230,7 +1227,7 @@ internal fun ManuscriptViewport(
                                     fontSize = 11.sp,
                                     lineHeight = 16.sp
                                 ),
-                                modifier = Modifier.padding(start = 16.dp)
+                                modifier = Modifier.padding(start = Space.s16)
                             )
                         }
                     }
@@ -1241,11 +1238,11 @@ internal fun ManuscriptViewport(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.r8))
                             .background(p.elevatedBg.copy(alpha = 0.7f))
-                            .border(0.75.dp, p.accentSecondary, RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                            .border(LineWidth.hairline, p.accentSecondary, RoundedCornerShape(Radius.r8))
+                            .padding(Space.s8),
+                        verticalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         BasicText(
                             text = "Queued Next (${queuedPrompts.size} — auto-sends after reply):",
@@ -1256,16 +1253,16 @@ internal fun ManuscriptViewport(
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                verticalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 BasicText(
                                     text = "• ${qItem.text}",
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     style = p.uiBodyStyle.copy(fontSize = 12.sp),
-                                    modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp)
+                                    modifier = Modifier.weight(1f, fill = false).padding(end = Space.s6)
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                                     SepiaButton(
                                         text = "⚡ Send now",
                                         compact = true,
@@ -1303,8 +1300,8 @@ internal fun ManuscriptViewport(
 
                 AnimatedVisibility(
                     visible = showComposerToolsDrawer,
-                    enter = expandVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeIn(tween(110)),
-                    exit = shrinkVertically(spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)) + fadeOut(tween(95))
+                    enter = expandVertically(motionSpring(Motion.POP_STIFFNESS)) + fadeIn(motionTween(Motion.QUICK)),
+                    exit = shrinkVertically(motionSpring(Motion.POP_STIFFNESS)) + fadeOut(motionTween(Motion.QUICK))
                 ) {
                     BoxWithConstraints {
                         val drawerMaxHeight = (maxHeight * 0.5f).coerceAtMost(420.dp)
@@ -1313,11 +1310,11 @@ internal fun ManuscriptViewport(
                                 .fillMaxWidth()
                                 .heightIn(max = drawerMaxHeight)
                                 .verticalScroll(rememberScrollState())
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(p.sheetBg.copy(alpha = 0.65f))
-                                .border(0.75.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .border(LineWidth.hairline, p.border.copy(alpha = 0.75f), RoundedCornerShape(Radius.r8))
+                                .padding(Space.s10),
+                            verticalArrangement = Arrangement.spacedBy(Space.s8)
                         ) {
                             AgentPermissionEditor(
                                 defaults = composerPermissionDefaults, overrides = composerPermissionOverrides,
@@ -1328,8 +1325,8 @@ internal fun ManuscriptViewport(
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 SepiaChip(
                                     label = if (isGoalModeEnabled) "🎯 Goal Mode: ON" else "🎯 Goal Mode",
@@ -1379,13 +1376,13 @@ internal fun ManuscriptViewport(
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 BasicText(
                                     text = "Co-Writing helpers:",
                                     style = p.uiLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                                    modifier = Modifier.padding(top = 5.dp, end = 4.dp)
+                                    modifier = Modifier.padding(top = 5.dp, end = Space.s4)
                                 )
                                 SepiaButton(
                                     text = "✍ Draft my reply",
@@ -1414,7 +1411,7 @@ internal fun ManuscriptViewport(
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s8),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         pendingAttachments.forEach { att ->
@@ -1432,13 +1429,13 @@ internal fun ManuscriptViewport(
 
                             Row(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.r8))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                    .border(LineWidth.hairline, p.accent.copy(alpha = 0.7f), RoundedCornerShape(Radius.r8))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
-                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                    .padding(horizontal = Space.s6, vertical = Space.s4),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 if (thumbBmp != null) {
                                     Image(
@@ -1447,14 +1444,14 @@ internal fun ManuscriptViewport(
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
                                             .size(34.dp)
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .border(0.75.dp, p.border, RoundedCornerShape(6.dp))
+                                            .clip(RoundedCornerShape(Radius.r6))
+                                            .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r6))
                                     )
                                 } else {
                                     KissVectorIcon(
                                         icon = attKissIcon,
                                         tint = p.accent,
-                                        size = 13.5.dp
+                                        size = IconSize.md
                                     )
                                 }
                                 BasicText(
@@ -1505,18 +1502,18 @@ internal fun ManuscriptViewport(
                 }
                 AnimatedVisibility(
                     visible = matchingSlashCommands.isNotEmpty(),
-                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(130)),
-                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(110))
+                    enter = expandVertically(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                    exit = shrinkVertically(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 224.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(Radius.r10))
                             .background(p.sheetBg.copy(alpha = 0.82f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .border(LineWidth.hairline, p.border.copy(alpha = 0.55f), RoundedCornerShape(Radius.r10))
                             .verticalScroll(rememberScrollState())
-                            .padding(6.dp),
+                            .padding(Space.s6),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         matchingSlashCommands.forEach { spec ->
@@ -1530,7 +1527,7 @@ internal fun ManuscriptViewport(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.r8))
                                     .background(
                                         when {
                                             isExact || isPressed -> p.accent.copy(alpha = 0.14f)
@@ -1539,9 +1536,9 @@ internal fun ManuscriptViewport(
                                         }
                                     )
                                     .border(
-                                        width = 0.75.dp,
+                                        width = LineWidth.hairline,
                                         color = if (isExact || isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
-                                        shape = RoundedCornerShape(8.dp)
+                                        shape = RoundedCornerShape(Radius.r8)
                                     )
                                     .kissClickable(
                                         pressScale = 0.99f,
@@ -1570,19 +1567,19 @@ internal fun ManuscriptViewport(
                                             }
                                         }
                                     )
-                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    .padding(horizontal = Space.s10, vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
-                                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f).padding(end = Space.s8),
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s8),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     KissVectorIcon(
                                         icon = parsedCmdIcon,
                                         tint = p.accent,
-                                        size = 13.5.dp
+                                        size = IconSize.md
                                     )
                                     if (win.isCompact) {
                                         Column(
@@ -1629,13 +1626,13 @@ internal fun ManuscriptViewport(
                                 }
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
+                                        .clip(RoundedCornerShape(Radius.r6))
                                         .background(p.elevatedBg.copy(alpha = 0.7f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .padding(horizontal = Space.s6, vertical = Space.s2)
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                     ) {
                                         KissVectorIcon(
                                             icon = if (spec.takesArgument) KissIcon.ARROW_RIGHT else KissIcon.SEND_ENTER,
@@ -1785,18 +1782,18 @@ internal fun ManuscriptViewport(
                 }
                 AnimatedVisibility(
                     visible = matchingAtItems.isNotEmpty(),
-                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(130)),
-                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(110))
+                    enter = expandVertically(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                    exit = shrinkVertically(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 224.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(Radius.r10))
                             .background(p.sheetBg.copy(alpha = 0.82f))
-                            .border(0.75.dp, p.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .border(LineWidth.hairline, p.border.copy(alpha = 0.55f), RoundedCornerShape(Radius.r10))
                             .verticalScroll(rememberScrollState())
-                            .padding(6.dp),
+                            .padding(Space.s6),
                         verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         matchingAtItems.forEach { (badgeLabel, descText, action) ->
@@ -1812,7 +1809,7 @@ internal fun ManuscriptViewport(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.r8))
                                     .background(
                                         when {
                                             isPressed -> p.accent.copy(alpha = 0.14f)
@@ -1821,9 +1818,9 @@ internal fun ManuscriptViewport(
                                         }
                                     )
                                     .border(
-                                        width = 0.75.dp,
+                                        width = LineWidth.hairline,
                                         color = if (isHovered) p.accent.copy(alpha = 0.55f) else Color.Transparent,
-                                        shape = RoundedCornerShape(8.dp)
+                                        shape = RoundedCornerShape(Radius.r8)
                                     )
                                     .kissClickable(
                                         pressScale = 0.99f,
@@ -1831,19 +1828,19 @@ internal fun ManuscriptViewport(
                                         interactionSource = rowInteraction,
                                         onClick = action
                                     )
-                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    .padding(horizontal = Space.s10, vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
-                                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f).padding(end = Space.s8),
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s8),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     KissVectorIcon(
                                         icon = parsedIcon,
                                         tint = p.accent,
-                                        size = 13.5.dp
+                                        size = IconSize.md
                                     )
                                     if (win.isCompact) {
                                         Column(
@@ -1895,7 +1892,7 @@ internal fun ManuscriptViewport(
                                 KissVectorIcon(
                                     icon = KissIcon.PLUS,
                                     tint = p.mutedInk,
-                                    size = 11.5.dp
+                                    size = IconSize.sm
                                 )
                             }
                         }
@@ -1996,7 +1993,7 @@ internal fun ManuscriptViewport(
                     FlowRow(
                         modifier = rowMod,
                         horizontalArrangement = Arrangement.spacedBy(if (win.isCompact) 3.dp else 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         SepiaChip(
                             label = "📎",
@@ -2058,7 +2055,7 @@ internal fun ManuscriptViewport(
                     // When streaming on compact mobile, use 2 full-width SpaceBetween rows so Stop/Queue/Steer never cramp or leave dead space
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2067,7 +2064,7 @@ internal fun ManuscriptViewport(
                         ) {
                             leftChipsComposable(Modifier.weight(1f))
                             if (preferences.showTokenAndContextStats) {
-                                Spacer(Modifier.width(6.dp))
+                                Spacer(Modifier.width(Space.s6))
                                 SepiaContextGaugeRing(
                                     usedTokens = liveContextTokens,
                                     contextLimitTokens = contextBreakdown.contextLimitTokens,
@@ -2090,7 +2087,7 @@ internal fun ManuscriptViewport(
                                 onClick = onStopStream
                             )
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 SepiaButton(
@@ -2121,7 +2118,7 @@ internal fun ManuscriptViewport(
                     ) {
                         leftChipsComposable(Modifier.weight(1f))
 
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(Space.s6))
 
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(5.dp),

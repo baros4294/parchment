@@ -4,15 +4,15 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** batch 17 committed locally (2026-11-11), not pushed: all TODOs are pushed together at the end.
-- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (signed R8 APK 4.3 MB, ProGuard-shrunk package); packaged start 1.54 s with 300 chats, idle 286 MB.
-- **Next action:** 13.1–13.3.
+- **Source:** batch 18 committed locally (2026-11-11), not pushed: all TODOs are pushed together at the end.
+- **Last verified:** 2026-11-11, `verify.py final` passed on JDK 25 (390 tests, signed R8 APK 4.3 MB, ProGuard-shrunk package); packaged start 1.54 s with 300 chats, idle 286 MB.
+- **Next action:** 12.6 and 12.8 with 13.4–13.7, starting with the DESIGN.md audit list.
 
 ## Execution order
 
 Confirmed critical or high defects always go first. Measure before optimizing; one surface at a time.
 
-13.1–13.3 → 12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
+12.6 and 12.8 with 13.4–13.7 (same files, one pass per surface) → 12.7 → 15 → 11.7.
 
 ## Open tasks
 
@@ -35,9 +35,9 @@ Confirmed critical or high defects always go first. Measure before optimizing; o
 
 ### UI and UX
 
-- [ ] **13.1 Research:** study award-winning work (Apple Design Awards, Webby and Awwwards winners, iA Writer, Things, Linear, Raycast, Craft, Bear) for hierarchy, rhythm, density, motion and empty states. Write the findings into DESIGN.md as principles, each mapped to a concrete Parchment change. Borrow ideas, never assets or branding.
-- [ ] **13.2 Audit:** capture every screen from the UI gallery in light and dark, desktop and phone, at 100% and 200% text; rank the issues against the principles.
-- [ ] **13.3 Design system:** one spacing scale, type scale, elevation, motion tokens (duration, easing, reduced motion), focus rings and icon rules in code and DESIGN.md; replace one-off values.
+- [x] **13.1 Research:** eight lessons from iA Writer, Things, Linear, Raycast, Bear, Craft and the Apple Design Award criteria, each mapped to a 13.x change, in DESIGN.md.
+- [x] **13.2 Audit:** the gallery now renders dark (it had used a light preset) and 200% text; eight ranked issues in DESIGN.md, each assigned to 13.4–13.6.
+- [x] **13.3 Design system:** `ui/DesignTokens.kt` (space, radius, line, icon, elevation, motion) in DESIGN.md. Every animation goes through `motionTween`/`motionSpring`, so Reduce motion is instant everywhere; half-step sizes snapped; on-scale literals in all UI files use tokens. Off-scale spacing moves over per surface in 13.4.
 - [ ] **13.4 Core surfaces:** chat page and composer, sidebar and tabs, settings (grouping, long pages, search), first run with no provider (guided setup), empty, loading and error states.
 - [ ] **13.5 Interaction:** command palette (Ctrl+K), keyboard shortcuts for every main action, undo instead of confirm for reversible deletes, immediate feedback, predictable back on Android, haptics where they help.
 - [ ] **13.6 Accessibility:** NVDA and TalkBack passes, keyboard-only navigation, 200% text, contrast on every theme, reduced motion honored everywhere.

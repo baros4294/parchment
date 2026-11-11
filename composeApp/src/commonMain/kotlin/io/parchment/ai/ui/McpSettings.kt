@@ -87,12 +87,12 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
         )
     }
     val shown = if (tokenFreeOnly) results.filter { !it.needsToken } else results
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
         BasicText("Find a server", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         BasicText("Anyone can publish to this directory. Check who made a server before you switch it on.", style = p.uiLabelStyle)
         SepiaTextField(query, { query = it }, placeholder = "Search, for example github", modifier = Modifier.fillMaxWidth())
         if (results.isNotEmpty()) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                 SepiaChip("No token needed", selected = tokenFreeOnly, onClick = { tokenFreeOnly = !tokenFreeOnly })
                 BasicText(plural(shown.size, "server"), style = p.uiLabelStyle)
             }
@@ -103,11 +103,11 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 380.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(Radius.r10))
                     .background(p.cardBg)
-                    .border(0.75.dp, p.border.copy(alpha = 0.75f), RoundedCornerShape(10.dp))
+                    .border(LineWidth.hairline, p.border.copy(alpha = 0.75f), RoundedCornerShape(Radius.r10))
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(horizontal = Space.s12, vertical = Space.s6)
             ) {
                 shown.forEachIndexed { index, server ->
                     if (index > 0) SepiaDivider()
@@ -117,7 +117,7 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
                     }
                 }
                 if (nextCursor.isNotEmpty()) {
-                    SepiaButton(if (loadingMore) "Loading…" else "Show more", compact = true, style = SepiaButtonStyle.GHOST, enabled = !loadingMore, modifier = Modifier.padding(vertical = 6.dp), onClick = {
+                    SepiaButton(if (loadingMore) "Loading…" else "Show more", compact = true, style = SepiaButtonStyle.GHOST, enabled = !loadingMore, modifier = Modifier.padding(vertical = Space.s6), onClick = {
                         val term = query.trim()
                         val cursor = nextCursor
                         loadingMore = true
@@ -149,8 +149,8 @@ private fun McpRegistryRow(server: RegistryServer, added: Boolean, onAdd: () -> 
     val p = LocalParchmentPalette.current
     val title = server.title.ifBlank { server.name.substringAfterLast('/') }
     val details = listOfNotNull(server.name.takeIf { it != title }, "Needs a token".takeIf { server.needsToken }).joinToString(" · ")
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Row(Modifier.fillMaxWidth().padding(vertical = Space.s8), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s12)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
             BasicText(title, style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (details.isNotEmpty()) BasicText(details, style = p.uiLabelStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (server.description.isNotBlank()) BasicText(server.description, style = p.uiLabelStyle.copy(color = p.primaryInk), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -166,7 +166,7 @@ internal fun SkillInstallCard(workspacePath: String, canWrite: Boolean, onNotify
     var link by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     SepiaSectionCard(title = "Install a skill", subtitle = "Skills teach the agent how to do a job. Paste a GitHub link to one.") {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
             SepiaTextField(link, { link = it }, placeholder = "https://github.com/owner/repo/tree/main/skill", modifier = Modifier.fillMaxWidth())
             BasicText(
                 if (workspacePath.isNotBlank() && canWrite) "It is copied into this workspace. Read a skill before you install it: its instructions guide the agent."
@@ -204,9 +204,9 @@ internal fun McpServersCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
         onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers.map { if (it.id == server.id) change(it) else it }))
     }
     SepiaSectionCard(title = "MCP servers", subtitle = "Give the agent tools from other apps. Each call follows your approval setting.") {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.s12)) {
             prefs.mcpServers.forEach { server ->
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaToggleSwitch(checked = server.enabled, onCheckedChange = { on -> update(server) { it.copy(enabled = on) } }, label = server.name.ifBlank { "New server" })
                     SepiaTextField(server.name, { text -> update(server) { it.copy(name = text) } }, placeholder = "Name", modifier = Modifier.fillMaxWidth())
                     SepiaTextField(server.url, { text -> update(server) { it.copy(url = text) } }, placeholder = "Server URL", modifier = Modifier.fillMaxWidth())

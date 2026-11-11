@@ -141,8 +141,8 @@ fun SepiaAdaptiveRow(
     val win = LocalParchmentWindowSize.current
     if (win.isCompact && forceStackOnMobile) {
         Column(
-            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = modifier.fillMaxWidth().padding(vertical = Space.s4),
+            verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             BasicText(
                 text = label,
@@ -152,14 +152,14 @@ fun SepiaAdaptiveRow(
         }
     } else {
         Row(
-            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+            modifier = modifier.fillMaxWidth().padding(vertical = Space.s4),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             BasicText(
                 text = label,
                 style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium),
-                modifier = Modifier.padding(end = 12.dp)
+                modifier = Modifier.padding(end = Space.s12)
             )
             content()
         }
@@ -176,8 +176,8 @@ enum class SepiaButtonStyle {
 
 private val KISS_SCALE_SPRING = spring<Float>(dampingRatio = 0.78f, stiffness = 680f)
 private val KISS_LIFT_SPRING = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 560f)
-private val COMPACT_BTN_SHAPE = RoundedCornerShape(8.dp)
-private val REGULAR_BTN_SHAPE = RoundedCornerShape(8.dp)
+private val COMPACT_BTN_SHAPE = RoundedCornerShape(Radius.r8)
+private val REGULAR_BTN_SHAPE = RoundedCornerShape(Radius.r8)
 
 /**
  * Clickable with feedback:
@@ -246,7 +246,7 @@ fun Modifier.kissClickable(
 }
 
 private fun Modifier.sepiaFocusRing(focused: Boolean, color: Color): Modifier =
-    if (focused) border(2.dp, color, REGULAR_BTN_SHAPE) else this
+    if (focused) border(LineWidth.focus, color, REGULAR_BTN_SHAPE) else this
 
 /** Links from model output and imported chats may only open in a browser, never as local files. */
 internal fun openWebLink(target: String) {
@@ -364,7 +364,7 @@ fun SepiaButton(
             .background(bgColor)
             .then(
                 if (borderColor != Color.Transparent) {
-                    Modifier.border(if (isPressed || isHovered) 0.75.dp else 0.75.dp, borderColor, shape)
+                    Modifier.border(if (isPressed || isHovered) LineWidth.hairline else LineWidth.hairline, borderColor, shape)
                 } else Modifier
             )
             .padding(
@@ -381,7 +381,7 @@ fun SepiaButton(
                 KissVectorIcon(
                     icon = parsed.leadingIcon,
                     tint = textColor,
-                    size = if (compact) 12.5.dp else 14.5.dp
+                    size = if (compact) IconSize.sm else IconSize.md
                 )
             }
             if (parsed.cleanText.isNotEmpty()) {
@@ -405,7 +405,7 @@ fun SepiaButton(
                 KissVectorIcon(
                     icon = parsed.trailingIcon,
                     tint = textColor,
-                    size = if (compact) 11.5.dp else 13.dp
+                    size = if (compact) IconSize.sm else 13.dp
                 )
             }
         }
@@ -449,7 +449,7 @@ fun SepiaChip(
             .accessibilityLabel(contentDescription ?: parsed.iconOnlyName())
             .clip(shape)
             .background(bg)
-            .border(if (selected || isHovered) 0.75.dp else 0.75.dp, borderCol, shape)
+            .border(if (selected || isHovered) LineWidth.hairline else LineWidth.hairline, borderCol, shape)
             .padding(horizontal = if (win.isCompact) 7.dp else 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -480,7 +480,7 @@ fun SepiaChip(
                 KissVectorIcon(
                     icon = parsed.trailingIcon,
                     tint = txtCol,
-                    size = if (parsed.trailingIcon == KissIcon.CIRCLE_DOT) 8.dp else 11.5.dp
+                    size = if (parsed.trailingIcon == KissIcon.CIRCLE_DOT) 8.dp else IconSize.sm
                 )
             }
         }
@@ -492,7 +492,7 @@ fun SepiaChip(
 @Composable
 fun ThemeSwatch(canvas: Color, accent: Color) {
     Box(
-        Modifier.size(22.dp).clip(CircleShape).background(canvas).border(1.dp, LocalParchmentPalette.current.border, CircleShape),
+        Modifier.size(22.dp).clip(CircleShape).background(canvas).border(LineWidth.emphasis, LocalParchmentPalette.current.border, CircleShape),
         contentAlignment = Alignment.Center
     ) { Box(Modifier.size(9.dp).clip(CircleShape).background(accent)) }
 }
@@ -537,7 +537,7 @@ internal fun HoverHint(text: String?, hovered: Boolean) {
             Modifier
                 .semantics { hideFromAccessibility() }
                 .widthIn(max = 280.dp)
-                .clip(RoundedCornerShape(6.dp))
+                .clip(RoundedCornerShape(Radius.r6))
                 .background(p.primaryInk)
                 .padding(horizontal = 9.dp, vertical = 5.dp)
         ) {
@@ -568,16 +568,16 @@ fun SepiaChoiceRow(
 ) {
     val p = LocalParchmentPalette.current
     Row(
-        modifier.fillMaxWidth().heightIn(min = 48.dp)
+        modifier.fillMaxWidth().heightIn(min = Space.s48)
             .selectable(selected, role = Role.RadioButton, onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 10.dp),
+            .padding(horizontal = Space.s6, vertical = Space.s10),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
         leading?.invoke()
         BasicText(label, modifier = Modifier.weight(1f), style = p.uiBodyStyle)
         KissVectorIcon(if (selected) KissIcon.CIRCLE_DOT else KissIcon.CIRCLE_EMPTY,
-            tint = if (selected) p.accent else p.mutedInk, size = 20.dp)
+            tint = if (selected) p.accent else p.mutedInk, size = IconSize.xl)
     }
 }
 
@@ -593,7 +593,7 @@ fun SepiaConfirmationCard(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(Radius.r12)
     Column(
         modifier
             .widthIn(max = 420.dp)
@@ -601,14 +601,14 @@ fun SepiaConfirmationCard(
             .heightIn(max = win.heightDp * 0.9f)
             .clip(shape)
             .background(p.cardBg)
-            .border(1.dp, p.border, shape)
+            .border(LineWidth.emphasis, p.border, shape)
             .blockTapThrough()
             .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
         Column(
             Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(Space.s12)
         ) {
             BasicText(title, style = p.uiHeaderStyle.copy(fontSize = 17.sp))
             BasicText(body, style = p.uiBodyStyle.copy(color = p.narrationInk))
@@ -617,7 +617,7 @@ fun SepiaConfirmationCard(
         FlowRow(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(Space.s8)
         ) { actions() }
     }
 }
@@ -634,7 +634,7 @@ fun SepiaAccentSwatch(color: Color, name: String, selected: Boolean, onClick: ()
     ) {
         Box(
             Modifier.size(24.dp).clip(CircleShape).background(color)
-                .border(if (selected) 2.dp else 0.75.dp, if (selected) p.primaryInk else p.border, CircleShape)
+                .border(if (selected) 2.dp else LineWidth.hairline, if (selected) p.primaryInk else p.border, CircleShape)
         )
     }
 }
@@ -656,7 +656,7 @@ fun SepiaTextField(
     onClipboardPaste: (() -> Boolean)? = null
 ) {
     val p = LocalParchmentPalette.current
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(Radius.r8)
     val textStyle = if (monospace) p.monoStyle else p.uiBodyStyle
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -679,7 +679,7 @@ fun SepiaTextField(
             isFocused -> p.accent.copy(alpha = 0.85f)
             else -> p.border.copy(alpha = 0.75f)
         },
-        animationSpec = spring(stiffness = Spring.StiffnessMedium)
+        animationSpec = motionSpring(Spring.StiffnessMedium)
     )
 
     Column(modifier = modifier) {
@@ -690,7 +690,7 @@ fun SepiaTextField(
                 modifier = Modifier.semantics { hideFromAccessibility() },
                 style = p.uiLabelStyle.copy(color = p.narrationInk, fontWeight = FontWeight.SemiBold)
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Space.s4))
         }
         BasicTextField(
             value = textFieldValue,
@@ -783,7 +783,7 @@ fun SepiaTextField(
                         .background(if (borderless) Color.Transparent else p.cardBg)
                         .then(
                             if (!borderless) {
-                                Modifier.border(if (isFocused) 1.dp else 0.75.dp, borderColor, shape)
+                                Modifier.border(if (isFocused) 1.dp else LineWidth.hairline, borderColor, shape)
                             } else Modifier
                         )
                         .padding(
@@ -837,19 +837,15 @@ fun SepiaSectionCard(
 ) {
     val p = LocalParchmentPalette.current
     val win = LocalParchmentWindowSize.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(Radius.r12)
     val cardPadding = if (win.isCompact) 13.dp else 16.dp
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(shape)
             .background(p.cardBg)
-            .border(0.75.dp, p.border.copy(alpha = 0.52f), shape)
-            .animateContentSize(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                )
-            )
+            .border(LineWidth.hairline, p.border.copy(alpha = 0.52f), shape)
+            .animateContentSize(animationSpec = motionSpring(Spring.StiffnessMedium))
             .padding(cardPadding)
     ) {
         if (title.isNotBlank() || headerAction != null) {
@@ -879,7 +875,7 @@ fun SepiaSectionCard(
             if (win.isCompact && headerAction != null) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s8)
                 ) {
                     RenderSectionTitle()
                     if (subtitle.isNotBlank()) {
@@ -899,7 +895,7 @@ fun SepiaSectionCard(
                     Column(modifier = Modifier.weight(1f).padding(end = if (headerAction != null) 8.dp else 0.dp)) {
                         RenderSectionTitle()
                         if (subtitle.isNotBlank()) {
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(Space.s2))
                             BasicText(
                                 text = subtitle,
                                 style = p.uiLabelStyle
@@ -911,9 +907,9 @@ fun SepiaSectionCard(
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.s10))
             SepiaDivider()
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(Space.s12))
         }
         content()
     }
@@ -925,7 +921,7 @@ fun SepiaDivider(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(0.6.dp)
+            .height(LineWidth.hairline)
             .background(p.border.copy(alpha = 0.42f))
     )
 }
@@ -943,7 +939,7 @@ fun SepiaAvatarCircle(
     val p = LocalParchmentPalette.current
     val bg by animateColorAsState(
         targetValue = if (selected) p.accent.copy(alpha = 0.18f) else p.sheetBg.copy(alpha = 0.85f),
-        animationSpec = spring(stiffness = Spring.StiffnessMedium)
+        animationSpec = motionSpring(Spring.StiffnessMedium)
     )
     val fgColor = if (selected) p.accent else p.primaryInk
     val parsedIcon = remember(symbol) { parseKissLabelIcons(symbol).leadingIcon }
@@ -953,7 +949,7 @@ fun SepiaAvatarCircle(
             .size(sizeDp)
             .clip(CircleShape)
             .background(bg)
-            .border(0.75.dp, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
+            .border(LineWidth.hairline, if (selected) p.accent.copy(alpha = 0.6f) else p.border.copy(alpha = 0.6f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
         if (parsedIcon != null) {
@@ -1015,21 +1011,18 @@ private fun SepiaToggleTrack(checked: Boolean) {
     val p = LocalParchmentPalette.current
     val trackColor by animateColorAsState(
         targetValue = if (checked) p.accent else p.border.copy(alpha = 0.7f),
-        animationSpec = spring(stiffness = Spring.StiffnessMedium)
+        animationSpec = motionSpring(Spring.StiffnessMedium)
     )
     val thumbBias by animateFloatAsState(
         targetValue = if (checked) 1f else 0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium
-        )
+        animationSpec = motionSpring(Spring.StiffnessMedium)
     )
 
     Box(
         modifier = Modifier
             .width(42.dp)
             .height(24.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(Radius.pill))
             .background(trackColor)
             .padding(3.dp),
         contentAlignment = Alignment.CenterStart
@@ -1067,25 +1060,25 @@ fun SepiaToggleRow(
             isHovered -> p.accent.copy(alpha = 0.06f)
             else -> Color.Transparent
         },
-        animationSpec = spring(stiffness = if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
+        animationSpec = motionSpring(if (isPressed) Spring.StiffnessHigh else Spring.StiffnessMedium)
     )
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(Radius.r8)
     val isFocused by interactionSource.collectIsFocusedAsState()
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = Space.s48)
             .clip(shape)
             .background(rowBg)
             .sepiaFocusRing(isFocused, p.accent)
             .pointerHoverIcon(PointerIcon.Hand)
             .toggleable(checked, interactionSource = interactionSource, indication = null,
                 role = Role.Switch, onValueChange = onCheckedChange)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
+            .padding(horizontal = Space.s6, vertical = Space.s8),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+        Column(modifier = Modifier.weight(1f).padding(end = Space.s12)) {
             BasicText(
                 text = title,
                 style = p.uiBodyStyle.copy(
@@ -1095,7 +1088,7 @@ fun SepiaToggleRow(
                 )
             )
             if (subtitle.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(Space.s2))
                 BasicText(
                     text = subtitle,
                     style = p.uiLabelStyle.copy(fontSize = 11.sp)
@@ -1114,31 +1107,25 @@ fun KissStreamingPulseDot(
     color: Color = LocalParchmentPalette.current.accent,
     modifier: Modifier = Modifier
 ) {
+    val dot = modifier.size(8.dp)
+    // With Reduce motion the dot holds still, and no frame-by-frame animation runs at all.
+    if (LocalReduceMotion.current) {
+        Box(dot.clip(CircleShape).background(color))
+        return
+    }
     val transition = rememberInfiniteTransition()
-    val pulseAlpha by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 750, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        )
+    val pulse = infiniteRepeatable<Float>(
+        animation = tween(durationMillis = Motion.LOOP, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
     )
-    val pulseScale by transition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 750, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        )
-    )
-    val still = LocalReduceMotion.current
+    val pulseAlpha by transition.animateFloat(initialValue = 0.35f, targetValue = 1.0f, animationSpec = pulse)
+    val pulseScale by transition.animateFloat(initialValue = 0.85f, targetValue = 1.15f, animationSpec = pulse)
     Box(
-        modifier = modifier
-            .size(8.dp)
+        modifier = dot
             .graphicsLayer {
-                scaleX = if (still) 1f else pulseScale
-                scaleY = if (still) 1f else pulseScale
-                alpha = if (still) 1f else pulseAlpha
+                scaleX = pulseScale
+                scaleY = pulseScale
+                alpha = pulseAlpha
             }
             .clip(CircleShape)
             .background(color)
@@ -1164,7 +1151,7 @@ fun SepiaContextGaugeRing(
     val targetFraction = if (isUnlimited) 0.08f else (usedTokens.toFloat() / safeLimit.toFloat()).coerceIn(0f, 1f)
     val animatedFraction by animateFloatAsState(
         targetValue = targetFraction,
-        animationSpec = spring(stiffness = Spring.StiffnessLow)
+        animationSpec = motionSpring(Spring.StiffnessLow)
     )
     val percent = (targetFraction * 100f).toInt()
 
@@ -1174,10 +1161,10 @@ fun SepiaContextGaugeRing(
             !isUnlimited && targetFraction >= 0.60f -> p.accentSecondary
             else -> p.accent
         },
-        animationSpec = tween(250)
+        animationSpec = motionTween(Motion.SLOW)
     )
 
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(Radius.r8)
     val gaugeInteraction = remember { MutableInteractionSource() }
     val gaugeHovered by gaugeInteraction.collectIsHoveredAsState()
     Row(
@@ -1185,8 +1172,8 @@ fun SepiaContextGaugeRing(
             .then(if (onClick != null) Modifier.kissClickable(interactionSource = gaugeInteraction, onClick = onClick) else Modifier)
             .clip(shape)
             .background(p.elevatedBg.copy(alpha = 0.6f))
-            .border(0.75.dp, p.border.copy(alpha = 0.65f), shape)
-            .padding(horizontal = 7.dp, vertical = 4.dp),
+            .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), shape)
+            .padding(horizontal = 7.dp, vertical = Space.s4),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
@@ -1405,7 +1392,7 @@ fun SepiaSearchableModelPicker(
         // 1. Search Bar + Clear Button
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(Space.s6),
             verticalAlignment = Alignment.CenterVertically
         ) {
             SepiaTextField(
@@ -1496,9 +1483,9 @@ fun SepiaSearchableModelPicker(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(Radius.r8))
                     .background(p.elevatedBg.copy(alpha = 0.4f))
-                    .padding(12.dp)
+                    .padding(Space.s12)
             ) {
                 BasicText(
                     text = if (allOptions.isEmpty()) {
@@ -1514,11 +1501,11 @@ fun SepiaSearchableModelPicker(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = maxListHeight)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(Radius.r8))
                     .background(p.sheetBg.copy(alpha = 0.45f))
-                    .border(0.75.dp, p.border.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
-                    .padding(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), RoundedCornerShape(Radius.r8))
+                    .padding(Space.s6),
+                verticalArrangement = Arrangement.spacedBy(Space.s4)
             ) {
                 items(
                     items = filteredOptions,
@@ -1528,7 +1515,7 @@ fun SepiaSearchableModelPicker(
                     val rowInteraction = remember { MutableInteractionSource() }
                     val isHovered by rowInteraction.collectIsHoveredAsState()
                     val isPressed by rowInteraction.collectIsPressedAsState()
-                    val rowShape = RoundedCornerShape(8.dp)
+                    val rowShape = RoundedCornerShape(Radius.r8)
 
                     Row(
                         modifier = Modifier
@@ -1550,7 +1537,7 @@ fun SepiaSearchableModelPicker(
                                 }
                             )
                             .border(
-                                width = if (isSel) 1.dp else 0.75.dp,
+                                width = if (isSel) 1.dp else LineWidth.hairline,
                                 color = when {
                                     isSel -> p.accent
                                     isHovered -> p.accent.copy(alpha = 0.55f)
@@ -1558,19 +1545,19 @@ fun SepiaSearchableModelPicker(
                                 },
                                 shape = rowShape
                             )
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                            .padding(horizontal = Space.s10, vertical = 7.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f).padding(end = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f).padding(end = Space.s8),
+                            horizontalArrangement = Arrangement.spacedBy(Space.s8),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             ModelLabSvgIcon(
                                 modelOrProvider = opt.modelId,
                                 tint = if (isSel || isHovered) p.accent else p.narrationInk,
-                                size = 14.5.dp,
+                                size = IconSize.md,
                                 fallbackProtocolName = opt.profileName
                             )
                             BasicText(
@@ -1593,9 +1580,9 @@ fun SepiaSearchableModelPicker(
                                 Box(
                                     modifier = Modifier
                                         .widthIn(max = 105.dp)
-                                        .clip(RoundedCornerShape(6.dp))
+                                        .clip(RoundedCornerShape(Radius.r6))
                                         .background(p.sheetBg)
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .padding(horizontal = Space.s6, vertical = Space.s2)
                                 ) {
                                     BasicText(
                                         text = opt.profileName,
@@ -1607,9 +1594,9 @@ fun SepiaSearchableModelPicker(
                             }
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(Radius.r6))
                                     .background(p.elevatedBg)
-                                    .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    .padding(horizontal = 5.dp, vertical = Space.s2)
                             ) {
                                 BasicText(
                                     text = if (opt.contextWindowTokens <= 0) "∞" else formatCompactTokens(opt.contextWindowTokens),
@@ -1773,7 +1760,7 @@ fun SepiaDiffLinesList(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(vertical = 4.dp),
+            .padding(vertical = Space.s4),
         verticalArrangement = Arrangement.spacedBy(1.dp)
     ) {
         diffLines.forEach { line ->
@@ -1783,12 +1770,12 @@ fun SepiaDiffLinesList(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(removedColor.copy(alpha = 0.14f))
-                            .padding(end = 10.dp),
+                            .padding(end = Space.s10),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .width(3.5.dp)
+                                .width(Space.s4)
                                 .height(20.dp)
                                 .background(removedColor)
                         )
@@ -1804,12 +1791,12 @@ fun SepiaDiffLinesList(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(addedColor.copy(alpha = 0.14f))
-                            .padding(end = 10.dp),
+                            .padding(end = Space.s10),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .width(3.5.dp)
+                                .width(Space.s4)
                                 .height(20.dp)
                                 .background(addedColor)
                         )
@@ -1828,14 +1815,14 @@ fun SepiaDiffLinesList(
                             fontFamily = p.codeFontFamily,
                             fontSize = 11.sp
                         ),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = Space.s12, vertical = Space.s2)
                     )
                 }
                 DiffLineKind.CONTEXT -> {
                     BasicText(
                         text = "  ${line.text}",
                         style = p.monoStyle.copy(color = p.narrationInk, fontSize = 12.sp),
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp)
+                        modifier = Modifier.padding(horizontal = Space.s10, vertical = 1.dp)
                     )
                 }
             }
@@ -1881,7 +1868,7 @@ fun SepiaFileDiffCard(
     val removedCount = remember(diffLines) { diffLines.count { it.kind == DiffLineKind.REMOVED } }
     var showDiffBody by remember { mutableStateOf(true) }
     val addedGreen = p.success
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(Radius.r8)
 
     Column(
         modifier = modifier
@@ -1889,7 +1876,7 @@ fun SepiaFileDiffCard(
             .clip(shape)
             .background(p.cardBg)
             .border(
-                width = 0.75.dp,
+                width = LineWidth.hairline,
                 color = if (isError) p.danger.copy(alpha = 0.7f) else p.border.copy(alpha = 0.8f),
                 shape = shape
             )
@@ -1899,7 +1886,7 @@ fun SepiaFileDiffCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(p.sheetBg.copy(alpha = 0.85f))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .padding(horizontal = Space.s10, vertical = Space.s6),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1907,14 +1894,14 @@ fun SepiaFileDiffCard(
             val shortFileName = cleanPath.substringAfterLast('/')
             val parentDir = if (cleanPath.contains('/')) cleanPath.substringBeforeLast('/') else ""
             Row(
-                modifier = Modifier.weight(1f).padding(end = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f).padding(end = Space.s8),
+                horizontalArrangement = Arrangement.spacedBy(Space.s6),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 KissVectorIcon(
                     icon = KissIcon.DIFF,
                     tint = if (isError) p.danger else p.accent,
-                    size = 13.5.dp
+                    size = IconSize.md
                 )
                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     Row(
@@ -1950,9 +1937,9 @@ fun SepiaFileDiffCard(
                 if (addedCount > 0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.r6))
                             .background(addedGreen.copy(alpha = 0.16f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = Space.s6, vertical = Space.s2)
                     ) {
                         BasicText(
                             text = "+$addedCount",
@@ -1963,9 +1950,9 @@ fun SepiaFileDiffCard(
                 if (removedCount > 0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.r6))
                             .background(p.danger.copy(alpha = 0.16f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = Space.s6, vertical = Space.s2)
                     ) {
                         BasicText(
                             text = "−$removedCount",
@@ -2000,7 +1987,7 @@ fun SepiaFileDiffCard(
             BasicText(
                 text = resultSummary,
                 style = p.monoStyle.copy(color = p.narrationInk, fontSize = 11.sp),
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = Space.s10, vertical = Space.s6)
             )
         }
     }

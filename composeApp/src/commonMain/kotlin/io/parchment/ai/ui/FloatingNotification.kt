@@ -1,7 +1,6 @@
 package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -47,23 +46,23 @@ internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifi
     var lastMessage by remember { mutableStateOf(message) }
     SideEffect { if (message.isNotBlank()) lastMessage = message }
     val visibleMessage = message.ifBlank { lastMessage }
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(Radius.r12)
     AnimatedVisibility(
         visible = message.isNotBlank(),
         modifier = modifier.widthIn(max = 560.dp),
-        enter = fadeIn(tween(160)) + slideInVertically(tween(180)) { -it / 3 },
-        exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { -it / 3 }
+        enter = fadeIn(motionTween(Motion.STANDARD)) + slideInVertically(motionTween(Motion.MEDIUM)) { -it / 3 },
+        exit = fadeOut(motionTween(Motion.STANDARD)) + slideOutVertically(motionTween(Motion.STANDARD)) { -it / 3 }
     ) {
         Row(
             modifier = Modifier
-                .shadow(8.dp, shape)
+                .shadow(Elevation.overlay, shape)
                 .clip(shape)
                 .background(palette.elevatedBg)
-                .border(0.75.dp, palette.border.copy(alpha = 0.7f), shape)
+                .border(LineWidth.hairline, palette.border.copy(alpha = 0.7f), shape)
                 .pointerInput(Unit) { detectTapGestures(onTap = {}) }
-                .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+                .padding(start = Space.s16, end = Space.s4, top = Space.s4, bottom = Space.s4)
                 .semantics { liveRegion = LiveRegionMode.Polite },
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(Space.s10),
             verticalAlignment = Alignment.CenterVertically
         ) {
             KissVectorIcon(KissIcon.CIRCLE_DOT, palette.accent, size = 14.dp)
@@ -79,7 +78,7 @@ internal fun FloatingNotification(message: String, onDismiss: () -> Unit, modifi
                     .clickable(role = Role.Button, onClick = onDismiss)
                     .semantics { contentDescription = "Dismiss notification" },
                 contentAlignment = Alignment.Center
-            ) { KissVectorIcon(KissIcon.CLOSE, palette.mutedInk, size = 16.dp) }
+            ) { KissVectorIcon(KissIcon.CLOSE, palette.mutedInk, size = IconSize.lg) }
         }
     }
 }

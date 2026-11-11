@@ -167,7 +167,7 @@ internal fun InlineSvgArtifactPreview(rawSvg: String) {
             .fillMaxWidth()
             .heightIn(min = 160.dp, max = 440.dp)
             .background(p.cardBg)
-            .padding(12.dp),
+            .padding(Space.s12),
         contentAlignment = Alignment.Center
     ) {
         if (scene == null || scene.drawItems.isEmpty()) {
@@ -182,7 +182,7 @@ internal fun InlineSvgArtifactPreview(rawSvg: String) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(aspect)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(Radius.r8))
                     .then(if (canvasBg != Color.Transparent) Modifier.background(canvasBg) else Modifier)
             ) {
                 val scaleX = size.width / scene.width.coerceAtLeast(1f)

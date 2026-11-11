@@ -3,9 +3,6 @@ package io.parchment.ai.ui
 import androidx.compose.ui.draw.alpha
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -1821,15 +1818,15 @@ fun ParchmentApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(p.cardBg)
-                                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                                        .padding(horizontal = Space.s16, vertical = 7.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     val sizeMb = (currentOta.release.assetSizeBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        modifier = Modifier.padding(top = 4.dp, end = 8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                                        modifier = Modifier.padding(top = Space.s4, end = Space.s8)
                                     ) {
                                         KissVectorIcon(icon = KissIcon.SPARKLES, tint = p.accent, size = 14.dp)
                                         BasicText(
@@ -1837,7 +1834,7 @@ fun ParchmentApp(
                                             style = p.uiBodyStyle.copy(fontWeight = FontWeight.Medium)
                                         )
                                     }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                         SepiaButton(
                                             text = "Update",
                                             compact = true,
@@ -1861,8 +1858,8 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(p.cardBg)
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    .padding(horizontal = Space.s16, vertical = Space.s8),
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 val dlMb = (currentOta.downloadedBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
                                 val totMb = (currentOta.totalBytes / (1024.0 * 1024.0) * 10).toInt() / 10.0
@@ -1873,7 +1870,7 @@ fun ParchmentApp(
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
                                         KissVectorIcon(icon = KissIcon.DOWNLOAD, tint = p.accent, size = 14.dp)
                                         BasicText(
@@ -1890,14 +1887,14 @@ fun ParchmentApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(6.dp)
-                                        .clip(RoundedCornerShape(999.dp))
+                                        .clip(RoundedCornerShape(Radius.pill))
                                         .background(p.border.copy(alpha = 0.45f))
                                 ) {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth((currentOta.progressPercent / 100f).coerceIn(0.02f, 1f))
                                             .height(6.dp)
-                                            .clip(RoundedCornerShape(999.dp))
+                                            .clip(RoundedCornerShape(Radius.pill))
                                             .background(p.accent)
                                     )
                                 }
@@ -1909,12 +1906,12 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(p.cardBg)
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    .padding(horizontal = Space.s16, vertical = Space.s8),
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s8)
                                 ) {
                                     KissStreamingPulseDot(color = p.accent)
                                     BasicText(
@@ -1926,7 +1923,7 @@ fun ParchmentApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(4.dp)
-                                        .clip(RoundedCornerShape(999.dp))
+                                        .clip(RoundedCornerShape(Radius.pill))
                                         .background(p.accent)
                                 )
                             }
@@ -1939,16 +1936,16 @@ fun ParchmentApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(p.cardBg)
-                                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                                        .padding(horizontal = Space.s16, vertical = 7.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     BasicText(
                                         text = "Update failed: ${currentOta.message}",
                                         style = p.uiBodyStyle.copy(color = p.danger, fontWeight = FontWeight.Medium),
-                                        modifier = Modifier.weight(1f, fill = false).padding(top = 4.dp, end = 8.dp)
+                                        modifier = Modifier.weight(1f, fill = false).padding(top = Space.s4, end = Space.s8)
                                     )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                         SepiaButton(
                                             text = "↻ Retry",
                                             compact = true,
@@ -2090,14 +2087,14 @@ fun ParchmentApp(
                         Row(modifier = Modifier.fillMaxSize()) {
                             AnimatedVisibility(
                                 visible = !isCompactScreen && showSidebar && !isSettingsOpen,
-                                enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
-                                exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                                enter = expandHorizontally(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                                exit = shrinkHorizontally(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                             ) {
                                 Row(modifier = Modifier.fillMaxHeight()) {
                                     sidebarComposable(Modifier.width(285.dp).fillMaxHeight())
                                     Box(
                                         modifier = Modifier
-                                            .width(0.85.dp)
+                                            .width(LineWidth.hairline)
                                             .fillMaxHeight()
                                             .background(p.border.copy(alpha = 0.7f))
                                     )
@@ -2106,7 +2103,7 @@ fun ParchmentApp(
 
                             Crossfade(
                                 targetState = isSettingsOpen,
-                                animationSpec = tween(180),
+                                animationSpec = motionTween(Motion.MEDIUM),
                                 modifier = Modifier.weight(1f).fillMaxHeight()
                             ) { settingsMode ->
                             Column(Modifier.fillMaxSize()) {
@@ -2571,13 +2568,13 @@ fun ParchmentApp(
 
                         AnimatedVisibility(
                             visible = !isCompactScreen && showRightFilesSidebar && !isSettingsOpen,
-                            enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
-                            exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                            enter = expandHorizontally(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                            exit = shrinkHorizontally(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                         ) {
                             Row(modifier = Modifier.fillMaxHeight()) {
                                 Box(
                                     modifier = Modifier
-                                        .width(0.85.dp)
+                                        .width(LineWidth.hairline)
                                         .fillMaxHeight()
                                         .background(p.border.copy(alpha = 0.7f))
                                 )
@@ -2613,8 +2610,8 @@ fun ParchmentApp(
                             Row(modifier = Modifier.fillMaxSize()) {
                                 AnimatedVisibility(
                                     visible = showSidebar && !isSettingsOpen,
-                                    enter = fadeIn(tween(150)),
-                                    exit = fadeOut(tween(130))
+                                    enter = fadeIn(motionTween(Motion.STANDARD)),
+                                    exit = fadeOut(motionTween(Motion.STANDARD))
                                 ) {
                                     Box(
                                         modifier = Modifier
@@ -2628,8 +2625,8 @@ fun ParchmentApp(
                             Row(modifier = Modifier.fillMaxHeight()) {
                                 AnimatedVisibility(
                                     visible = showSidebar && !isSettingsOpen,
-                                    enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
-                                    exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                                    enter = expandHorizontally(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                                    exit = shrinkHorizontally(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                                 ) {
                                     Row(modifier = Modifier.fillMaxHeight()) {
                                         sidebarComposable(
@@ -2652,8 +2649,8 @@ fun ParchmentApp(
                             Row(modifier = Modifier.fillMaxSize()) {
                                 AnimatedVisibility(
                                     visible = showRightFilesSidebar && !isSettingsOpen,
-                                    enter = fadeIn(tween(150)),
-                                    exit = fadeOut(tween(130))
+                                    enter = fadeIn(motionTween(Motion.STANDARD)),
+                                    exit = fadeOut(motionTween(Motion.STANDARD))
                                 ) {
                                     Box(
                                         modifier = Modifier
@@ -2667,8 +2664,8 @@ fun ParchmentApp(
                             Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.End) {
                                 AnimatedVisibility(
                                     visible = showRightFilesSidebar && !isSettingsOpen,
-                                    enter = expandHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(140)),
-                                    exit = shrinkHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                                    enter = expandHorizontally(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+                                    exit = shrinkHorizontally(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
                                 ) {
                                     Row(modifier = Modifier.fillMaxHeight()) {
                                         Box(
@@ -2714,13 +2711,13 @@ fun ParchmentApp(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(p.canvasBg.copy(alpha = 0.88f))
-                                    .border(2.dp, p.accent, RoundedCornerShape(12.dp))
-                                    .padding(24.dp),
+                                    .border(2.dp, p.accent, RoundedCornerShape(Radius.r12))
+                                    .padding(Space.s24),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    verticalArrangement = Arrangement.spacedBy(Space.s10)
                                 ) {
                                     KissVectorIcon(icon = KissIcon.UPLOAD, tint = p.accent, size = 34.dp)
                                     BasicText(
@@ -2887,7 +2884,7 @@ fun ParchmentApp(
                         FloatingNotification(
                             message = bannerNotification,
                             onDismiss = { bannerNotification = "" },
-                            modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 12.dp, vertical = 12.dp)
+                            modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = Space.s12, vertical = Space.s12)
                         )
                     }
                 }

@@ -8,9 +8,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -94,7 +91,7 @@ private fun Modifier.messageBubble(fromUser: Boolean, shrink: Boolean, fill: Col
         .then(if (shrink) Modifier.width(IntrinsicSize.Max) else Modifier)
         .clip(shape)
         .background(fill)
-        .border(0.75.dp, edge, shape)
+        .border(LineWidth.hairline, edge, shape)
         .padding(horizontal = 13.dp, vertical = 9.dp)
 }
 
@@ -179,7 +176,7 @@ internal fun MessageTurnItem(
     val turnHovered by turnHoverSource.collectIsHoveredAsState()
     var footerHasFocus by remember { mutableStateOf(false) }
     val footerVisible = win.isCompact || turnHovered || footerHasFocus || showMoreActions || activeVar.isStreaming
-    val footerAlpha by animateFloatAsState(if (footerVisible) 1f else 0f, tween(120))
+    val footerAlpha by animateFloatAsState(if (footerVisible) 1f else 0f, motionTween(Motion.QUICK))
     val showBubbles = viewMode == ViewMode.EDITORIAL_TURNS
     val isSentBubble = showBubbles && !isAssistant
 
@@ -189,21 +186,21 @@ internal fun MessageTurnItem(
             .fillMaxWidth()
             .hoverable(turnHoverSource)
             .then(
-                if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                if (!node.includedInContext) Modifier.background(p.elevatedBg.copy(alpha = 0.35f), RoundedCornerShape(Radius.r8))
                 else Modifier
             )
             .then(
-                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = motionSpring())
                 else Modifier
             )
-            .padding(vertical = 6.dp)
+            .padding(vertical = Space.s6)
     } else {
         Modifier
             .fillMaxWidth()
             .hoverable(turnHoverSource)
             .then(if (!node.includedInContext) Modifier.alpha(0.62f) else Modifier)
             .then(
-                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+                if (!activeVar.isStreaming) Modifier.animateContentSize(animationSpec = motionSpring())
                 else Modifier
             )
     }
@@ -234,10 +231,10 @@ internal fun MessageTurnItem(
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(Space.s6)
         ) {
             Row(
-                modifier = Modifier.weight(1f, fill = false).padding(top = 2.dp, end = 8.dp),
+                modifier = Modifier.weight(1f, fill = false).padding(top = Space.s2, end = Space.s8),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -327,7 +324,7 @@ internal fun MessageTurnItem(
 
             // Swipe / Branch Variant Selector (< 1 / 3 >) + Reasoning Accordion Trigger
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(Space.s4),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (node.variants.size > 1) {
@@ -397,38 +394,38 @@ internal fun MessageTurnItem(
 
         AnimatedVisibility(
             visible = showDrawer,
-            enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
-            exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+            enter = expandVertically(motionSpring()) + fadeIn(motionTween(Motion.STANDARD)),
+            exit = shrinkVertically(motionSpring()) + fadeOut(motionTween(Motion.QUICK))
         ) {
             val livePeekInfo = remember(isLivePeekOnly, activeVar.thinkingSummary, activeVar.trailingThinking, activeVar.toolCalls) {
                 if (isLivePeekOnly) extractLatestAgentPeek(activeVar) else LiveAgentPeekInfo(isToolPeek = false, title = "", body = "")
             }
             Column(
                 modifier = Modifier
-                    .padding(top = 8.dp)
+                    .padding(top = Space.s8)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(Radius.r10))
                     .background(p.sheetBg.copy(alpha = 0.58f))
-                    .border(0.75.dp, if (isActivelyThinkingThisNode) p.accent.copy(alpha = 0.8f) else p.border.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .border(LineWidth.hairline, if (isActivelyThinkingThisNode) p.accent.copy(alpha = 0.8f) else p.border.copy(alpha = 0.45f), RoundedCornerShape(Radius.r10))
+                    .padding(Space.s12),
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 // Header Row for Thinking and tool steps Drawer
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f, fill = false).padding(top = 2.dp, end = 6.dp)
+                        modifier = Modifier.weight(1f, fill = false).padding(top = Space.s2, end = Space.s6)
                     ) {
                         if (isActivelyThinkingThisNode) {
                             KissStreamingPulseDot(color = p.accent)
                         } else {
-                            KissVectorIcon(icon = KissIcon.BRAIN, tint = p.accent, size = 13.5.dp)
+                            KissVectorIcon(icon = KissIcon.BRAIN, tint = p.accent, size = IconSize.md)
                         }
                         val wordCount = countWordsFast(activeVar.thinkingSummary)
                         val toolCount = activeVar.toolCalls.size
@@ -470,13 +467,13 @@ internal fun MessageTurnItem(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp),
+                            .padding(vertical = Space.s2),
                         verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         if (livePeekInfo.title.isNotEmpty()) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 if (livePeekInfo.isToolPeek) {
                                     KissVectorIcon(
@@ -499,9 +496,9 @@ internal fun MessageTurnItem(
                                 if (livePeekInfo.isToolRunning) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .clip(RoundedCornerShape(Radius.r4))
                                             .background(p.accent.copy(alpha = 0.16f))
-                                            .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                            .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         BasicText(
                                             text = "Running",
@@ -590,16 +587,16 @@ internal fun MessageTurnItem(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.r8))
                             .background(p.cardBg)
                             .border(
-                                width = if (tc.isRunning) 1.dp else 0.75.dp,
+                                width = if (tc.isRunning) 1.dp else LineWidth.hairline,
                                 color = when {
                                     tc.isError -> p.danger.copy(alpha = 0.7f)
                                     tc.isRunning -> p.accent
                                     else -> p.border.copy(alpha = 0.75f)
                                 },
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(Radius.r8)
                             )
                             .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(5.dp)
@@ -612,8 +609,8 @@ internal fun MessageTurnItem(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
-                                modifier = Modifier.weight(1f).padding(end = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.weight(1f).padding(end = Space.s6),
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 if (tc.isRunning) {
@@ -639,9 +636,9 @@ internal fun MessageTurnItem(
                                 if (tc.isRunning) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .clip(RoundedCornerShape(Radius.r4))
                                             .background(p.accent.copy(alpha = 0.16f))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         BasicText(
                                             text = "Running",
@@ -707,8 +704,8 @@ internal fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    .padding(vertical = Space.s2),
+                                verticalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -751,8 +748,8 @@ internal fun MessageTurnItem(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .padding(vertical = Space.s2),
+                            verticalArrangement = Arrangement.spacedBy(Space.s4)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -813,7 +810,7 @@ internal fun MessageTurnItem(
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.s8))
 
         // Live Autonomous Goal & Todo Checklist Card
         val goalTracker = activeVar.goalTracker
@@ -832,30 +829,30 @@ internal fun MessageTurnItem(
             }
             Column(
                 modifier = Modifier
-                    .padding(bottom = 8.dp)
+                    .padding(bottom = Space.s8)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(Radius.r8))
                     .background(p.sheetBg.copy(alpha = 0.78f))
                     .border(
-                        width = 0.75.dp,
+                        width = LineWidth.hairline,
                         color = if (goalTracker.isCompleted) p.accentSecondary else p.accent,
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(Radius.r8)
                     )
                     .padding(11.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s6)
             ) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(Space.s4)
                 ) {
                     Row(
                         modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                     ) {
-                        KissVectorIcon(icon = KissIcon.TARGET, tint = p.accent, size = 13.5.dp)
+                        KissVectorIcon(icon = KissIcon.TARGET, tint = p.accent, size = IconSize.md)
                         BasicText(
                             text = "Goal: ${goalTracker.goalObjective.ifBlank { "Autonomous Task Checklist" }}",
                             style = p.uiLabelStyle.copy(color = p.primaryInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -863,7 +860,7 @@ internal fun MessageTurnItem(
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         KissVectorIcon(
                             icon = statusIcon,
@@ -882,7 +879,7 @@ internal fun MessageTurnItem(
                 }
                 if (goalTracker.todos.isNotEmpty()) {
                     SepiaDivider()
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.s4)) {
                         goalTracker.todos.forEach { item ->
                             val st = item.status.lowercase()
                             val rowIcon = when (st) {
@@ -898,9 +895,9 @@ internal fun MessageTurnItem(
                             }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
-                                KissVectorIcon(icon = rowIcon, tint = itemColor, size = 12.5.dp)
+                                KissVectorIcon(icon = rowIcon, tint = itemColor, size = IconSize.sm)
                                 BasicText(
                                     text = "[${item.id}] ${item.content}",
                                     style = p.uiBodyStyle.copy(
@@ -935,11 +932,11 @@ internal fun MessageTurnItem(
         val contentModifier = when {
             showBubbles -> Modifier.messageBubble(fromUser = !isAssistant, shrink = shrinkBubble, fill = if (isAssistant) p.cardBg else p.accent.copy(alpha = 0.16f), edge = if (isAssistant) p.border else Color.Transparent)
             isAssistant -> Modifier
-            else -> Modifier.rubricMark(p.accent).padding(start = 14.dp, top = 2.dp, bottom = 2.dp)
+            else -> Modifier.rubricMark(p.accent).padding(start = 14.dp, top = Space.s2, bottom = Space.s2)
         }
         Column(contentModifier) {
         if (isEditing) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 SepiaTextField(
                     value = editBuffer,
                     onValueChange = { editBuffer = it },
@@ -949,8 +946,8 @@ internal fun MessageTurnItem(
                 )
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(Space.s8),
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     if (!isAssistant) {
                         SepiaButton(
@@ -1013,7 +1010,7 @@ internal fun MessageTurnItem(
                     highlightedLineSubstring = highlightedSourceLineText
                 )
                 if (isLongCollapsible) {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(Space.s4))
                     SepiaButton(
                         text = if (isLongExpanded) "▾ Collapse Long Message" else "▸ Read Full Message (${activeVar.content.length} chars)",
                         compact = true,
@@ -1026,7 +1023,7 @@ internal fun MessageTurnItem(
 
         // Pasted / Attached Images, Videos, PDFs, Audio, & Text/Code Files in Chat Turns
         if (preferences.showFilesBelowReplies && activeVar.attachments.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Space.s8))
             val imageAtts = activeVar.attachments.filter {
                 val m = it.mimeType.lowercase()
                 val l = it.fileName.lowercase()
@@ -1035,25 +1032,25 @@ internal fun MessageTurnItem(
             }
             val otherAtts = activeVar.attachments.filterNot { it in imageAtts }
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 if (imageAtts.isNotEmpty()) {
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s10),
+                        verticalArrangement = Arrangement.spacedBy(Space.s10)
                     ) {
                         imageAtts.forEach { att ->
                             val bmp = rememberFileImage(att.localFilePath).bitmap
                             Column(
                                 modifier = Modifier
                                     .widthIn(max = 360.dp)
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(Radius.r10))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
+                                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
-                                    .padding(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    .padding(Space.s8),
+                                verticalArrangement = Arrangement.spacedBy(Space.s6)
                             ) {
                                 if (bmp != null) {
                                     Image(
@@ -1062,12 +1059,12 @@ internal fun MessageTurnItem(
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier
                                             .heightIn(max = 260.dp)
-                                            .clip(RoundedCornerShape(6.dp))
+                                            .clip(RoundedCornerShape(Radius.r6))
                                     )
                                 } else {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
                                         KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 14.dp)
                                         BasicText(
@@ -1078,7 +1075,7 @@ internal fun MessageTurnItem(
                                 }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s8)
                                 ) {
                                     BasicText(
                                         text = att.fileName,
@@ -1089,9 +1086,9 @@ internal fun MessageTurnItem(
                                     )
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                     ) {
-                                        KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = 11.5.dp)
+                                        KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = IconSize.sm)
                                         BasicText(
                                             text = "Zoom",
                                             style = p.uiLabelStyle.copy(color = p.accent, fontWeight = FontWeight.SemiBold)
@@ -1107,8 +1104,8 @@ internal fun MessageTurnItem(
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Space.s8),
+                        verticalArrangement = Arrangement.spacedBy(Space.s8)
                     ) {
                         otherAtts.forEach { att ->
                             val mime = att.mimeType.lowercase()
@@ -1131,11 +1128,11 @@ internal fun MessageTurnItem(
                             }
                             Row(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.r8))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
+                                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
                                     .clickable(role = Role.Button, onClickLabel = "Open attachment") { onInspectAttachment(att) }
-                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    .padding(horizontal = Space.s10, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
@@ -1160,8 +1157,8 @@ internal fun MessageTurnItem(
 
         // Inline Generated Images & Videos
         if (activeVar.mediaItems.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Spacer(Modifier.height(Space.s10))
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 activeVar.mediaItems.forEach { media ->
                     when (media.kind) {
                         MediaKind.IMAGE -> {
@@ -1169,11 +1166,11 @@ internal fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(Radius.r10))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.border, RoundedCornerShape(10.dp))
-                                    .padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r10))
+                                    .padding(Space.s10),
+                                verticalArrangement = Arrangement.spacedBy(Space.s8)
                             ) {
                                 if (bmp != null) {
                                     Image(
@@ -1183,7 +1180,7 @@ internal fun MessageTurnItem(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .heightIn(max = 520.dp)
-                                            .clip(RoundedCornerShape(6.dp))
+                                            .clip(RoundedCornerShape(Radius.r6))
                                             .clickable(role = Role.Button) {
                                                 onInspectGeneratedImage(media)
                                             }
@@ -1191,9 +1188,9 @@ internal fun MessageTurnItem(
                                 } else {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                     ) {
-                                        KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = 14.5.dp)
+                                        KissVectorIcon(icon = KissIcon.IMAGE, tint = p.accent, size = IconSize.md)
                                         BasicText(
                                             text = "Generated Image (${media.localFilePath.ifBlank { media.remoteUrl }})",
                                             style = p.uiBodyStyle.copy(color = p.accent)
@@ -1204,14 +1201,14 @@ internal fun MessageTurnItem(
                                 FlowRow(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     BasicText(
                                         text = "${media.mimeType}${if (media.aspectRatio.isNotBlank()) " • ${media.aspectRatio}" else ""}",
                                         style = p.uiLabelStyle,
-                                        modifier = Modifier.padding(top = 4.dp)
+                                        modifier = Modifier.padding(top = Space.s4)
                                     )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                         if (bmp != null) {
                                             SepiaButton(
                                                 text = "🔍 View & zoom",
@@ -1251,15 +1248,15 @@ internal fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(Radius.r10))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.accentSecondary, RoundedCornerShape(10.dp))
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .border(LineWidth.hairline, p.accentSecondary, RoundedCornerShape(Radius.r10))
+                                    .padding(Space.s12),
+                                verticalArrangement = Arrangement.spacedBy(Space.s8)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     KissVectorIcon(icon = KissIcon.VIDEO, tint = p.accent, size = 15.dp)
                                     BasicText(
@@ -1267,7 +1264,7 @@ internal fun MessageTurnItem(
                                         style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
@@ -1285,15 +1282,15 @@ internal fun MessageTurnItem(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(Radius.r10))
                                     .background(p.cardBg)
-                                    .border(0.75.dp, p.accentSecondary, RoundedCornerShape(10.dp))
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .border(LineWidth.hairline, p.accentSecondary, RoundedCornerShape(Radius.r10))
+                                    .padding(Space.s12),
+                                verticalArrangement = Arrangement.spacedBy(Space.s8)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     KissVectorIcon(icon = KissIcon.AUDIO, tint = p.accent, size = 15.dp)
                                     BasicText(
@@ -1301,7 +1298,7 @@ internal fun MessageTurnItem(
                                         style = p.uiHeaderStyle.copy(fontSize = 15.sp, color = p.accent)
                                     )
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     val playTarget = media.localFilePath.ifBlank { media.remoteUrl }
                                     if (playTarget.isNotBlank()) {
                                         SepiaButton(
@@ -1321,20 +1318,20 @@ internal fun MessageTurnItem(
 
         }
 
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(Space.s6))
 
         // Footer: actions on the first row, token counts on the second, so More never squeezes the buttons
         // on a narrow phone.
         if (isAssistant || preferences.showUserMessageActions) {
             Column(
                 modifier = Modifier.fillMaxWidth().alpha(footerAlpha).onFocusChanged { footerHasFocus = it.hasFocus },
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s4)
             ) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (isSentBubble) Arrangement.spacedBy(4.dp, Alignment.End) else Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = if (isSentBubble) Arrangement.spacedBy(4.dp, Alignment.End) else Arrangement.spacedBy(Space.s4),
+                    verticalArrangement = Arrangement.spacedBy(Space.s4)
                 ) {
                     var isSpeakingThisTurn by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
 
@@ -1544,9 +1541,9 @@ internal fun MessageTurnItem(
 
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
-                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = Space.s2),
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s4)
                     ) {
                         // Pill 1: output tokens, with reasoning and tool payload tokens shown separately.
                         Box(
@@ -1554,7 +1551,7 @@ internal fun MessageTurnItem(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 BasicText(
                                     text = "~${formatCompactTokens(outProseTok)} tokens",
@@ -1568,7 +1565,7 @@ internal fun MessageTurnItem(
                                     KissVectorIcon(
                                         icon = KissIcon.BRAIN,
                                         tint = p.accent,
-                                        size = 10.5.dp
+                                        size = IconSize.xs
                                     )
                                     BasicText(
                                         text = formatCompactTokens(thinkTok),
@@ -1609,7 +1606,7 @@ internal fun MessageTurnItem(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                 ) {
                                     if (m.tokensPerSec > 0.0) {
                                         KissVectorIcon(
@@ -1693,9 +1690,9 @@ internal fun MessageTurnItem(
             val userCost = (userTok / 1_000_000.0) * inputPricePerM
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).alpha(footerAlpha),
+                modifier = Modifier.fillMaxWidth().padding(top = Space.s4).alpha(footerAlpha),
                 horizontalArrangement = if (isSentBubble) Arrangement.spacedBy(5.dp, Alignment.End) else Arrangement.spacedBy(5.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s4)
             ) {
                 val attSuffix = if (activeVar.attachments.isNotEmpty()) {
                     " • ${activeVar.attachments.size} file${if (activeVar.attachments.size > 1) "s" else ""}"
@@ -1725,13 +1722,13 @@ internal fun MessageTurnItem(
         AnimatedVisibility(visible = isAssistant && showSourcesDrawer && activeVar.webSources.isNotEmpty()) {
             Column(
                 modifier = Modifier
-                    .padding(top = 8.dp)
+                    .padding(top = Space.s8)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(Radius.r10))
                     .background(p.sheetBg.copy(alpha = 0.85f))
-                    .border(0.75.dp, p.accent.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .border(LineWidth.hairline, p.accent.copy(alpha = 0.65f), RoundedCornerShape(Radius.r10))
                     .padding(11.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Space.s8)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1740,10 +1737,10 @@ internal fun MessageTurnItem(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
                         modifier = Modifier.weight(1f)
                     ) {
-                        KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accent, size = 13.5.dp)
+                        KissVectorIcon(icon = KissIcon.GLOBE, tint = p.accent, size = IconSize.md)
                         BasicText(
                             text = "Grounded Web Sources (${activeVar.webSources.size}) — Tap a source to highlight its line",
                             maxLines = 2,
@@ -1765,7 +1762,7 @@ internal fun MessageTurnItem(
 
                 SepiaDivider()
 
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     activeVar.webSources.forEach { src ->
                         val firstGroundedLine = src.groundedLines.firstOrNull().orEmpty()
                         val isSelectedLine = highlightedSourceLineText.isNotBlank() &&
@@ -1783,12 +1780,12 @@ internal fun MessageTurnItem(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(if (isSelectedLine) p.accent.copy(alpha = 0.12f) else p.cardBg)
                                 .border(
-                                    width = if (isSelectedLine) 1.dp else 0.75.dp,
+                                    width = if (isSelectedLine) 1.dp else LineWidth.hairline,
                                     color = if (isSelectedLine) p.accent else p.border,
-                                    shape = RoundedCornerShape(8.dp)
+                                    shape = RoundedCornerShape(Radius.r8)
                                 )
                                 .clickable(role = Role.Button) {
                                     if (firstGroundedLine.isNotBlank()) {
@@ -1797,8 +1794,8 @@ internal fun MessageTurnItem(
                                         openWebLink(src.url)
                                     }
                                 }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .padding(horizontal = Space.s10, vertical = Space.s8),
+                            verticalArrangement = Arrangement.spacedBy(Space.s4)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1807,14 +1804,14 @@ internal fun MessageTurnItem(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.weight(1f).padding(end = 6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                                    modifier = Modifier.weight(1f).padding(end = Space.s6)
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .clip(RoundedCornerShape(Radius.r4))
                                             .background(p.accent.copy(alpha = 0.18f))
-                                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                            .padding(horizontal = 5.dp, vertical = Space.s2)
                                     ) {
                                         BasicText(
                                             text = "[${src.index}]",
@@ -1853,22 +1850,22 @@ internal fun MessageTurnItem(
                             if (firstGroundedLine.isNotBlank()) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6)
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .clip(RoundedCornerShape(Radius.r4))
                                             .background(if (isSelectedLine) p.accent.copy(alpha = 0.24f) else p.elevatedBg)
-                                            .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                            .padding(horizontal = Space.s6, vertical = Space.s2)
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(Space.s4)
                                         ) {
                                             KissVectorIcon(
                                                 icon = KissIcon.CORNER_DOWN_RIGHT,
                                                 tint = p.accent,
-                                                size = 9.5.dp
+                                                size = IconSize.xs
                                             )
                                             BasicText(
                                                 text = lineBadgeText,
@@ -1904,13 +1901,13 @@ internal fun MessageTurnItem(
             SelectionContainer {
                 Column(
                     modifier = Modifier
-                        .padding(top = 6.dp)
+                        .padding(top = Space.s6)
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.r8))
                         .background(p.sheetBg)
-                        .border(0.75.dp, p.border, RoundedCornerShape(8.dp))
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r8))
+                        .padding(Space.s10),
+                    verticalArrangement = Arrangement.spacedBy(Space.s6)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1954,7 +1951,7 @@ internal fun MessageTurnItem(
         }
 
         if (viewMode == ViewMode.MANUSCRIPT) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Space.s8))
             SepiaDivider()
         }
     }

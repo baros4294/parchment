@@ -64,7 +64,7 @@ internal fun WorkspaceSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         McpServersCard(appState.preferences, onUpdatePreferences)
         SkillInstallCard(effectiveWsPath, effectiveWsMode == io.parchment.ai.model.WorkspaceMode.READ_WRITE, onNotify)
@@ -73,7 +73,7 @@ internal fun WorkspaceSubpage(
         SepiaSectionCard(
             title = "Workspace and agent permissions"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s12)) {
                 AgentPermissionEditor(
                     defaults = permissionDefaults, overrides = permissionOverrides,
                     onChange = { value -> onUpdateSession { it.copy(permissionOverrides = value) } },
@@ -83,7 +83,7 @@ internal fun WorkspaceSubpage(
                     SepiaDivider()
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(Space.s10)
                     ) {
                         Column {
                             BasicText(

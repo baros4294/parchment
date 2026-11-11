@@ -113,9 +113,9 @@ private fun PopoverChip(label: String, hint: String, selected: Boolean, content:
         if (open) {
             Popup(popupPositionProvider = AboveAnchor, onDismissRequest = { open = false }, properties = PopupProperties(focusable = true)) {
                 Column(
-                    Modifier.width(290.dp).clip(RoundedCornerShape(12.dp)).background(p.cardBg)
-                        .border(0.75.dp, p.border, RoundedCornerShape(12.dp)).padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    Modifier.width(290.dp).clip(RoundedCornerShape(Radius.r12)).background(p.cardBg)
+                        .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.r12)).padding(Space.s12),
+                    verticalArrangement = Arrangement.spacedBy(Space.s10),
                     content = content
                 )
             }
@@ -206,7 +206,7 @@ private fun PopoverHeading(title: String, value: String) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChoiceRow(choices: List<Pair<String, String>>, current: String, onChoose: (String) -> Unit) {
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
         choices.forEach { (label, value) ->
             SepiaChip(label = label, selected = value.equals(current, ignoreCase = true), onClick = { onChoose(value) })
         }
@@ -238,9 +238,9 @@ private fun AspectTile(ratio: String, selected: Boolean, onClick: () -> Unit) {
     val p = LocalParchmentPalette.current
     val (w, h) = parseAspect(ratio) ?: (1f to 1f)
     Column(
-        Modifier.kissClickable(selected = selected, onClick = onClick).clip(RoundedCornerShape(8.dp))
+        Modifier.kissClickable(selected = selected, onClick = onClick).clip(RoundedCornerShape(Radius.r8))
             .background(if (selected) p.accent.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent)
-            .padding(horizontal = 6.dp, vertical = 5.dp),
+            .padding(horizontal = Space.s6, vertical = 5.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
@@ -264,7 +264,7 @@ private fun AspectTile(ratio: String, selected: Boolean, onClick: () -> Unit) {
 internal fun AspectControl(icon: String, value: String, presets: List<String>, onChange: (String) -> Unit) {
     PopoverChip("$icon $value", "The shape of the picture or video", true) {
         PopoverHeading("Shape", value)
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.s2), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
             presets.forEach { ratio -> AspectTile(ratio, ratio == value) { onChange(ratio) } }
         }
         CustomValueField(if (value in presets) "" else value, "Custom shape, like 5:4", value, onChange)

@@ -73,7 +73,7 @@ internal fun WorldBookAndCardsSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         BasicText(text = "World Book & character cards (.png / .json)", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
@@ -81,7 +81,7 @@ internal fun WorldBookAndCardsSubpage(
             title = "Import / export .PNG & .JSON cards"
         ) {
             @OptIn(ExperimentalLayoutApi::class)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                 SepiaButton(
                     text = "📥 Import .PNG or .JSON",
                     style = SepiaButtonStyle.PRIMARY,
@@ -141,7 +141,7 @@ internal fun WorldBookAndCardsSubpage(
         SepiaSectionCard(
             title = "Active session character / scenario card",
             headerAction = {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = "Apply to session",
                         compact = true,
@@ -169,7 +169,7 @@ internal fun WorldBookAndCardsSubpage(
                 }
             }
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                 SepiaTextField(value = cardName, onValueChange = { cardName = it }, label = "Name ({{char}})")
                 SepiaTextField(value = cardDesc, onValueChange = { cardDesc = it }, label = "Description / persona", singleLine = false, minHeight = 70.dp)
                 SepiaTextField(value = cardFirstMes, onValueChange = { cardFirstMes = it }, label = "Opening greeting (first_mes)", singleLine = false, minHeight = 60.dp)
@@ -181,19 +181,19 @@ internal fun WorldBookAndCardsSubpage(
             SepiaSectionCard(
                 title = "Saved Character & Scenario Cards Library (${appState.savedCards.size})"
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     appState.savedCards.forEach { savedCard ->
                         val isActive = activeSession.activeCard?.name == savedCard.name
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(if (isActive) p.accent.copy(alpha = 0.14f) else p.elevatedBg.copy(alpha = 0.45f))
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(horizontal = Space.s10, vertical = Space.s8),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Column(modifier = Modifier.weight(1f).padding(end = Space.s8)) {
                                 BasicText(
                                     text = savedCard.name.ifBlank { "Untitled Card" },
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = if (isActive) p.accent else p.primaryInk)
@@ -244,7 +244,7 @@ internal fun WorldBookAndCardsSubpage(
                     }
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     if (appState.systemPromptPresets.isEmpty()) {
                         BasicText(
                             text = "No saved presets yet. Import a .PNG/.JSON prompt preset or click '+ save current Prompt'.",
@@ -255,17 +255,17 @@ internal fun WorldBookAndCardsSubpage(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.r8))
                                 .background(p.elevatedBg.copy(alpha = 0.45f))
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(horizontal = Space.s10, vertical = Space.s8),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Column(modifier = Modifier.weight(1f).padding(end = Space.s8)) {
                                 BasicText(text = preset.name, style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
                                 BasicText(text = preset.systemPrompt, maxLines = 2, overflow = TextOverflow.Ellipsis, style = p.uiLabelStyle)
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                                 SepiaButton(
                                     text = "Apply",
                                     compact = true,
@@ -295,8 +295,8 @@ internal fun WorldBookAndCardsSubpage(
         SepiaSectionCard(
             title = "World Book entries (${displayedFragments.size} entries)"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaChip(
                         label = "This chat (${activeSession.fragments.size})",
                         selected = !editingGlobalWorldBook,
@@ -312,7 +312,7 @@ internal fun WorldBookAndCardsSubpage(
                     SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry title", modifier = Modifier.fillMaxWidth())
                     SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger keywords (comma-separated)", modifier = Modifier.fillMaxWidth())
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                         SepiaTextField(value = fragTitle, onValueChange = { fragTitle = it }, label = "Entry title", modifier = Modifier.weight(1f))
                         SepiaTextField(value = fragKeywords, onValueChange = { fragKeywords = it }, label = "Trigger keywords (comma-separated)", modifier = Modifier.weight(1f))
                     }
@@ -348,9 +348,9 @@ internal fun WorldBookAndCardsSubpage(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.r8))
                             .background(p.elevatedBg.copy(alpha = 0.45f))
-                            .padding(8.dp),
+                            .padding(Space.s8),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -358,7 +358,7 @@ internal fun WorldBookAndCardsSubpage(
                             BasicText(text = frag.title, style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
                             BasicText(text = frag.content, maxLines = 2, overflow = TextOverflow.Ellipsis, style = p.uiLabelStyle)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
                             SepiaChip(
                                 label = frag.mode.label.substringBefore(" "),
                                 selected = frag.mode != FragmentActivationMode.MUTED,

@@ -97,7 +97,7 @@ private fun FontChoiceRow(
     val scope = rememberCoroutineScope()
     val customName = customPath.substringAfterLast('/').substringAfterLast('\\')
     SepiaAdaptiveRow(label = label) {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
             fonts.forEach { f ->
                 SepiaChip(label = f, selected = customPath.isBlank() && canonicalFontName(family) == canonicalFontName(f), onClick = { onChoose(f) })
             }
@@ -146,7 +146,7 @@ internal fun PreferencesSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         BasicText(text = "Preferences", style = p.uiHeaderStyle.copy(fontSize = 19.sp))
 
@@ -156,7 +156,7 @@ internal fun PreferencesSubpage(
         // 1. Appearance & Fonts
         if (matchesSearch("color mode", "theme", "font", "sepia", "dark", "light", "opacity", "size")) {
             SepiaSectionCard(title = "Appearance & fonts") {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     ThemePresetChoices(theme, onUpdateTheme)
 
                     SepiaDivider()
@@ -182,9 +182,9 @@ internal fun PreferencesSubpage(
                     }
 
                     AnimatedVisibility(visible = showCustomColorHexDrawer) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                             if (win.isCompact) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.canvasBgHex,
                                         onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
@@ -200,7 +200,7 @@ internal fun PreferencesSubpage(
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.primaryInkHex,
                                         onValueChange = { onUpdateTheme(theme.copy(name = "Custom", primaryInkHex = it)) },
@@ -217,7 +217,7 @@ internal fun PreferencesSubpage(
                                     )
                                 }
                             } else {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
                                     SepiaTextField(
                                         value = theme.canvasBgHex,
                                         onValueChange = { onUpdateTheme(theme.copy(name = "Custom", canvasBgHex = it)) },
@@ -260,7 +260,7 @@ internal fun PreferencesSubpage(
                     var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                     var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                         SepiaTextField(
                             value = proseSizeText,
                             onValueChange = { v ->
@@ -303,8 +303,8 @@ internal fun PreferencesSubpage(
                     SepiaAdaptiveRow(label = "Message layout style") {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             SepiaChip(
                                 label = "Bubbles",
@@ -479,11 +479,11 @@ internal fun PreferencesSubpage(
                         val isUnrestricted = remember { PlatformBridge.isIgnoringBatteryOptimizations() }
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(vertical = Space.s8),
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy(Space.s8)
                         ) {
-                            Column(modifier = Modifier.weight(1f, fill = false).padding(end = 10.dp)) {
+                            Column(modifier = Modifier.weight(1f, fill = false).padding(end = Space.s10)) {
                                 BasicText(
                                     text = "Android unrestricted background mode",
                                     style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold, color = p.accent)
@@ -593,8 +593,8 @@ internal fun PreferencesSubpage(
                     SepiaAdaptiveRow(label = "Message navigation minimap") {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             MessageNavVisibility.entries.forEach { mode ->
                                 SepiaChip(
@@ -611,8 +611,8 @@ internal fun PreferencesSubpage(
                     SepiaAdaptiveRow(label = "Send shortcut (desktop)") {
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                            verticalArrangement = Arrangement.spacedBy(Space.s6)
                         ) {
                             SendShortcutMode.entries.forEach { mode ->
                                 SepiaChip(

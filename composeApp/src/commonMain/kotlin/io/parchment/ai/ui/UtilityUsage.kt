@@ -31,13 +31,13 @@ internal fun UtilityUsageSummary(records: List<ApiUsageRecord>) {
     val palette = LocalParchmentPalette.current
     val metrics = remember(records) { aggregateApiUsageRecords(records) }
     var expanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Space.s6)) {
         val cost = SessionSpendSummary(metrics, 0.0, 0).label
         BasicText("Background requests: ${metrics.reportedRequests} · $cost", style = palette.uiBodyStyle)
         SepiaButton(if (expanded) "Hide background usage" else "Show background usage", compact = true,
             style = SepiaButtonStyle.GHOST, onClick = { expanded = !expanded })
         if (expanded) Column(Modifier.heightIn(max = 200.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            verticalArrangement = Arrangement.spacedBy(Space.s6)) {
             records.groupBy { it.purpose }.forEach { (purpose, group) ->
                 val part = aggregateApiUsageRecords(group)
                 val label = when (purpose) {

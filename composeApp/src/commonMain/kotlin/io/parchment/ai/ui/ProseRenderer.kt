@@ -341,9 +341,9 @@ fun LiteraryProseRenderer(
                                     if (isHighlightedHeading) {
                                         Modifier
                                             .fillMaxWidth()
-                                            .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
-                                            .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(Radius.r6))
+                                            .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(Radius.r6))
+                                            .padding(horizontal = Space.s8, vertical = Space.s4)
                                     } else Modifier
                                 )
                                 .padding(
@@ -367,9 +367,9 @@ fun LiteraryProseRenderer(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 3.dp)
-                                .background(p.elevatedBg.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                                .border(0.85.dp, p.border.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .background(p.elevatedBg.copy(alpha = 0.5f), RoundedCornerShape(Radius.r6))
+                                .border(LineWidth.hairline, p.border.copy(alpha = 0.7f), RoundedCornerShape(Radius.r6))
+                                .padding(horizontal = Space.s12, vertical = Space.s8)
                         ) {
                             BasicText(
                                 text = styledQuote,
@@ -392,28 +392,28 @@ fun LiteraryProseRenderer(
                         var showSvgPreview by remember(index, isSvgArtifact) { mutableStateOf(isSvgArtifact) }
                         var copiedCode by remember(index) { mutableStateOf(false) }
                         var savedCode by remember(index) { mutableStateOf(false) }
-                        val shape = RoundedCornerShape(10.dp)
+                        val shape = RoundedCornerShape(Radius.r10)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp)
+                                .padding(vertical = Space.s4)
                                 .clip(shape)
                                 .background(p.elevatedBg)
-                                .border(0.65.dp, p.border.copy(alpha = 0.52f), shape)
+                                .border(LineWidth.hairline, p.border.copy(alpha = 0.52f), shape)
                         ) {
                             @OptIn(ExperimentalLayoutApi::class)
                             FlowRow(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(p.sheetBg.copy(alpha = 0.85f))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                    .padding(horizontal = Space.s10, vertical = Space.s4),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                verticalArrangement = Arrangement.spacedBy(Space.s4)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.padding(top = 4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(Space.s6),
+                                    modifier = Modifier.padding(top = Space.s4)
                                 ) {
                                     KissVectorIcon(
                                         icon = if (isSvgArtifact) KissIcon.IMAGE else KissIcon.CODE,
@@ -426,7 +426,7 @@ fun LiteraryProseRenderer(
                                         style = p.uiLabelStyle.copy(fontFamily = p.codeFontFamily)
                                     )
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s4), verticalAlignment = Alignment.CenterVertically) {
                                     if (isSvgArtifact) {
                                         SepiaButton(
                                             text = if (showSvgPreview) "‹/›" else "👁",
@@ -480,7 +480,7 @@ fun LiteraryProseRenderer(
                                     } else if (isDiffLang) {
                                         SepiaRawDiffLinesView(
                                             rawDiffText = block.code,
-                                            modifier = Modifier.padding(vertical = 4.dp)
+                                            modifier = Modifier.padding(vertical = Space.s4)
                                         )
                                     } else {
                                         Box(
@@ -516,7 +516,7 @@ fun LiteraryProseRenderer(
                             block.rows.maxOfOrNull { it.size } ?: 0
                         ).coerceAtLeast(1)
                         val needsHorizontalScroll = colCount >= 4 || win.isCompact
-                        val shape = RoundedCornerShape(8.dp)
+                        val shape = RoundedCornerShape(Radius.r8)
 
                         Column(
                             modifier = Modifier
@@ -524,13 +524,13 @@ fun LiteraryProseRenderer(
                                 .padding(vertical = 5.dp)
                                 .clip(shape)
                                 .background(p.cardBg)
-                                .border(0.85.dp, p.border, shape)
+                                .border(LineWidth.hairline, p.border, shape)
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(p.sheetBg.copy(alpha = 0.7f))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                    .padding(horizontal = Space.s10, vertical = Space.s4),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -541,7 +541,7 @@ fun LiteraryProseRenderer(
                                     KissVectorIcon(
                                         icon = KissIcon.LAYOUT_GRID,
                                         tint = p.accent,
-                                        size = 11.5.dp
+                                        size = IconSize.sm
                                     )
                                     BasicText(
                                         text = "Table ($colCount cols × ${block.rows.size} rows)",
@@ -579,8 +579,8 @@ fun LiteraryProseRenderer(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .background(p.sheetBg)
-                                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            .padding(horizontal = Space.s10, vertical = 7.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s10)
                                     ) {
                                         for (cIdx in 0 until colCount) {
                                             val h = block.headers.getOrElse(cIdx) { "" }
@@ -601,8 +601,8 @@ fun LiteraryProseRenderer(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .background(if (rIdx % 2 == 1) p.elevatedBg.copy(alpha = 0.35f) else p.cardBg)
-                                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            .padding(horizontal = Space.s10, vertical = Space.s6),
+                                        horizontalArrangement = Arrangement.spacedBy(Space.s10)
                                     ) {
                                         for (cIdx in 0 until colCount) {
                                             val cellText = rowCells.getOrElse(cIdx) { "" }
@@ -644,9 +644,9 @@ fun LiteraryProseRenderer(
                             modifier = if (isHighlightedPara) {
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
-                                    .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .background(p.accent.copy(alpha = 0.14f), RoundedCornerShape(Radius.r6))
+                                    .border(1.dp, p.accent.copy(alpha = 0.7f), RoundedCornerShape(Radius.r6))
+                                    .padding(horizontal = Space.s8, vertical = Space.s4)
                             } else Modifier
                         )
                     }

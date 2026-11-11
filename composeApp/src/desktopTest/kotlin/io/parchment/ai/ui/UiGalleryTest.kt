@@ -44,9 +44,12 @@ class UiGalleryTest {
         ".parchment-local/verification/gallery"
     ).apply { mkdirs() }
 
-    private data class Viewport(val name: String, val widthDp: Int, val heightDp: Int, val density: Float)
+    private data class Viewport(val name: String, val widthDp: Int, val heightDp: Int, val density: Float, val fontScale: Float = 1f)
     private val phone = Viewport("phone", 390, 844, 2f)
     private val desktop = Viewport("desktop", 1360, 860, 1f)
+    // 200% text, the largest size Android and Windows accessibility settings offer.
+    private val phoneLargeText = phone.copy(name = "phone-text200", fontScale = 2f)
+    private val desktopLargeText = desktop.copy(name = "desktop-text200", fontScale = 2f)
 
     private fun message(id: String, role: MessageRole, variant: MessageVariant) = MessageNode(id, role, listOf(variant))
 
@@ -128,7 +131,7 @@ class UiGalleryTest {
         seed(theme)
         val scene = ImageComposeScene(
             (viewport.widthDp * viewport.density).toInt(), (viewport.heightDp * viewport.density).toInt(),
-            density = Density(viewport.density), coroutineContext = renderThread
+            density = Density(viewport.density, viewport.fontScale), coroutineContext = renderThread
         )
         try {
             val process = parchmentProcessState
@@ -225,7 +228,7 @@ class UiGalleryTest {
 
     @Test fun renderGallery() {
         assumeGalleryRequested()
-        val night = ThemeConfig.PRESETS[1]
+        val night = ThemeConfig.PRESETS.first { it.name == "Lapis at Night" }
         try {
             for (viewport in listOf(phone, desktop)) {
                 val closeDrawer = if (viewport == phone) listOf("Close sidebar") else emptyList()
@@ -236,12 +239,19 @@ class UiGalleryTest {
                 capture(viewport, ThemeConfig(), "thought", closeDrawer + listOf("Thought"))
                 capture(viewport, ThemeConfig(), "models", closeDrawer + listOf("gemini-3-pro"))
                 capture(viewport, ThemeConfig(), "notes", closeDrawer + listOf("Chat notes"))
+                capture(viewport, night, "sidebar-dark")
+                capture(viewport, night, "settings-dark", listOf("Settings"))
+            }
+            for (viewport in listOf(phoneLargeText, desktopLargeText)) {
+                capture(viewport, ThemeConfig(), "chat", if (viewport.name.startsWith("phone")) listOf("Close sidebar") else emptyList())
+                capture(viewport, ThemeConfig(), "settings", listOf("Settings"))
             }
             for (page in listOf("Providers", "Assistant", "Workspace", "World Book & Cards", "Storage & Updates")) {
                 capture(desktop, ThemeConfig(), "page-${page.take(5).trim().lowercase()}", listOf("Settings", page))
             }
             for (viewport in listOf(phone, desktop)) {
-                capture(viewport, ThemeConfig(), "empty", listOf("New chat") + if (viewport == phone) listOf("Close sidebar") else emptyList())
+                // On a phone, New chat already closes the sidebar.
+                capture(viewport, ThemeConfig(), "empty", listOf("New chat"))
             }
         } finally {
             (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }

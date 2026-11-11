@@ -312,11 +312,11 @@ internal fun GlobalSettingsSearchResultsSubpage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(if (win.isCompact) 12.dp else 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Space.s16)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(Space.s8)
         ) {
             KissVectorIcon(icon = KissIcon.SEARCH, tint = p.accent, size = 17.dp)
             BasicText(
@@ -352,7 +352,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     if (hitColorMode) {
                         ThemePresetChoices(theme, onUpdateTheme)
                     }
@@ -369,7 +369,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                         var proseSizeText by remember(theme.proseFontSizeSp) { mutableStateOf(theme.proseFontSizeSp.toString()) }
                         var codeSizeText by remember(theme.codeFontSizeSp) { mutableStateOf(theme.codeFontSizeSp.toString()) }
                         var maxWidthText by remember(theme.maxReadingWidthDp) { mutableStateOf(theme.maxReadingWidthDp.toInt().toString()) }
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                             SepiaTextField(
                                 value = proseSizeText,
                                 onValueChange = { v ->
@@ -404,7 +404,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (hitLayoutStyle) {
                         SepiaAdaptiveRow(label = "Message layout style") {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 SepiaChip(
                                     label = "Bubbles",
                                     selected = prefs.defaultViewMode == ViewMode.EDITORIAL_TURNS,
@@ -693,7 +693,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     if (hitNavMinimap) {
                         SepiaAdaptiveRow(label = "Message navigation minimap") {
                             @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 MessageNavVisibility.entries.forEach { mode ->
                                     SepiaChip(
                                         label = mode.label,
@@ -707,7 +707,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     if (hitSendShortcut) {
                         SepiaAdaptiveRow(label = "Send shortcut (desktop)") {
                             @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                                 SendShortcutMode.entries.forEach { mode ->
                                     SepiaChip(
                                         label = mode.label,
@@ -742,7 +742,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                     if (hitApiKey) {
                         SepiaTextField(
                             value = activeProfile.apiKey,
@@ -792,7 +792,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     if (hitSampling) {
                         var tempStr by remember(activeProfile.temperature) { mutableStateOf(activeProfile.temperature?.toString().orEmpty()) }
                         var topPStr by remember(activeProfile.topP) { mutableStateOf(activeProfile.topP?.toString().orEmpty()) }
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                             SepiaTextField(
                                 value = tempStr,
                                 onValueChange = { v ->
@@ -819,7 +819,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     }
                     if (hitCapabilities) {
                         @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                             SepiaChip(
                                 label = "🌐 Web search",
                                 selected = activeProfile.enableWebSearch,
@@ -848,7 +848,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.r8))
                                     .background(if (isCurrent) p.accent.copy(alpha = 0.14f) else p.elevatedBg.copy(alpha = 0.45f))
                                     .kissClickable {
                                         onSelectProfile(prof.id)
@@ -856,7 +856,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                                         onUpdateSession { it.copy(profileId = prof.id, modelOverride = modelId) }
                                         onNotify("Switched active model to ${prof.name} • $modelId")
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    .padding(horizontal = Space.s10, vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -904,7 +904,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     BasicText("Approval, file access, web access and shell permissions are controlled per assistant and chat.", style = p.uiLabelStyle)
                 }
             }
@@ -923,7 +923,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     if (hitTitleModel || hitGlobalModel) {
                         SepiaToggleRow(
                             title = "Title generation: follow global choice",
@@ -962,7 +962,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s6)) {
                     matchingAssistants.forEach { asst ->
                         BasicText(
                             text = "• ${asst.name}: ${asst.systemPrompt.ifBlank { "(No system prompt)" }}",
@@ -1008,7 +1008,7 @@ internal fun GlobalSettingsSearchResultsSubpage(
                     )
                 }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SepiaToggleRow(
                         title = "Check for updates at launch",
                         checked = appState.autoCheckOtaOnStartup,

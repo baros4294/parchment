@@ -49,11 +49,11 @@ private fun PermissionOption(
     val action = if (choice) Modifier.selectable(checked, role = Role.RadioButton, onClick = { onChange(true) })
         else Modifier.toggleable(checked, role = Role.Switch, onValueChange = onChange)
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).then(action).padding(horizontal = 6.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).then(action).padding(horizontal = Space.s6, vertical = Space.s10),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s4)) {
             BasicText(title, style = p.uiBodyStyle)
             if (subtitle.isNotBlank()) BasicText(subtitle, style = p.uiLabelStyle)
         }
@@ -76,7 +76,7 @@ internal fun AgentPermissionEditor(
     val scope = rememberCoroutineScope()
     val policy = overrides.applyTo(defaults)
     val backgroundNotice by PlatformBridge.backgroundExecutionNotice.collectAsState()
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s10)) {
         BasicText("Agent permissions", style = palette.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         if (onReset != null) {
             BasicText(
@@ -169,7 +169,7 @@ internal fun AgentToolRegistry(
         val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
         tools.filter { tool -> words.all { it in "${tool.name} ${tool.description}".lowercase() } }
     }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s10)) {
         BasicText("${available.size} of ${tools.size} tools available", style = p.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         BasicText("Per-tool choices also require the access configured above.", style = p.uiLabelStyle)
         SepiaTextField(query, { query = it }, placeholder = "Search tool names and descriptions",
@@ -199,13 +199,13 @@ internal fun UserQuestionPanel(broker: ToolApprovalBroker?, chatTitle: String) {
     val palette = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     Column(
-        Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(Space.s12),
+        verticalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
         questions.forEach { question ->
             var typed by remember(question.requestId) { mutableStateOf("") }
             SepiaSectionCard(title = "Question for you", subtitle = chatTitle) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SelectionContainer { BasicText(question.question, style = palette.uiBodyStyle) }
                     val actionModifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                     question.options.forEach { option ->
@@ -227,12 +227,12 @@ internal fun ToolApprovalPanel(broker: ToolApprovalBroker?, chatTitle: String) {
     val palette = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     Column(
-        Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(Space.s12),
+        verticalArrangement = Arrangement.spacedBy(Space.s12)
     ) {
         requests.forEach { request ->
             SepiaSectionCard(title = "Approval · $chatTitle", subtitle = request.toolName) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.s8)) {
                     SelectionContainer {
                         BasicText(
                             request.argumentsJson,
