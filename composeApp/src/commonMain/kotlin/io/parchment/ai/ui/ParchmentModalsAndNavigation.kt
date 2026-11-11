@@ -761,6 +761,7 @@ internal fun ParchmentSidebar(
     onCreateNewAssistant: () -> Unit,
     onSelectSession: (String) -> Unit,
     onOpenPinnedReply: (PinnedReply) -> Unit,
+    onUnpinReply: (PinnedReply) -> Unit,
     onNewTopic: () -> Unit,
     onTogglePinSession: (String) -> Unit,
     onRegenerateSessionTitle: (String) -> Unit,
@@ -852,7 +853,7 @@ internal fun ParchmentSidebar(
         }
 
         if (selectedTab == SidebarTab.PINNED) {
-            PinnedRepliesPanel(appState.sessions, activeSession.id, searchQuery, onOpenPinnedReply)
+            PinnedRepliesPanel(appState.sessions, activeSession.id, searchQuery, onOpenPinnedReply, onUnpinReply)
         } else if (selectedTab == SidebarTab.ASSISTANTS) {
             val filteredAssistants = remember(appState.assistants, searchQuery) {
                 val q = searchQuery.trim()

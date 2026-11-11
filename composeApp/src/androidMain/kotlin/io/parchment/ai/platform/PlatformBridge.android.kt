@@ -49,6 +49,11 @@ actual object PlatformBridge {
     actual val backgroundExecutionNotice: kotlinx.coroutines.flow.StateFlow<String> = LongDecodeForegroundService.executionNotice
     actual val platformName: String = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
     actual val isAndroid: Boolean = true
+    actual val isLowMemoryDevice: Boolean by lazy {
+        val manager = appContext?.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        val info = android.app.ActivityManager.MemoryInfo().also { manager?.getMemoryInfo(it) }
+        manager?.isLowRamDevice == true || (info.totalMem in 1 until LOW_MEMORY_BYTES)
+    }
 
     val RICH_CONTENT_MIME_TYPES: Array<String> = arrayOf(
         "image/*",
@@ -176,6 +181,7 @@ actual object PlatformBridge {
     actual fun saveAppStateJson(json: String) = snapshotStorage.saveSettings(json)
     actual fun loadChatSessionJsonById(sessionId: String): String? = snapshotStorage.loadChat(sessionId)
     actual fun loadAllChatSessionJsons(): List<String> = snapshotStorage.loadAllChats()
+    actual fun chatSessionJsons(): Sequence<String> = snapshotStorage.chats()
     actual fun saveChatSessionJson(sessionId: String, json: String) = snapshotStorage.saveChat(sessionId, json)
     actual fun deleteChatSessionFile(sessionId: String) = snapshotStorage.deleteChat(sessionId)
 
@@ -450,13 +456,13 @@ actual object PlatformBridge {
                         Font(assetManager = assets, path = "fonts/Inter-Italic.ttf", weight = FontWeight.Bold, style = FontStyle.Italic)
                     )
                 }
-                "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> {
+                "jetbrains mono", "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> {
                     FontFamily(
-                        Font(assetManager = assets, path = "fonts/JetBrainsMonoNerdFont-Regular.ttf", weight = FontWeight.Normal, style = FontStyle.Normal),
-                        Font(assetManager = assets, path = "fonts/JetBrainsMonoNerdFont-Regular.ttf", weight = FontWeight.Medium, style = FontStyle.Normal),
-                        Font(assetManager = assets, path = "fonts/JetBrainsMonoNerdFont-SemiBold.ttf", weight = FontWeight.SemiBold, style = FontStyle.Normal),
-                        Font(assetManager = assets, path = "fonts/JetBrainsMonoNerdFont-Bold.ttf", weight = FontWeight.Bold, style = FontStyle.Normal),
-                        Font(assetManager = assets, path = "fonts/JetBrainsMonoNerdFont-Italic.ttf", weight = FontWeight.Normal, style = FontStyle.Italic)
+                        Font(assetManager = assets, path = "fonts/JetBrainsMono-Regular.ttf", weight = FontWeight.Normal, style = FontStyle.Normal),
+                        Font(assetManager = assets, path = "fonts/JetBrainsMono-Regular.ttf", weight = FontWeight.Medium, style = FontStyle.Normal),
+                        Font(assetManager = assets, path = "fonts/JetBrainsMono-SemiBold.ttf", weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                        Font(assetManager = assets, path = "fonts/JetBrainsMono-Bold.ttf", weight = FontWeight.Bold, style = FontStyle.Normal),
+                        Font(assetManager = assets, path = "fonts/JetBrainsMono-Italic.ttf", weight = FontWeight.Normal, style = FontStyle.Italic)
                     )
                 }
                 "latex", "katex", "math" -> {
@@ -797,7 +803,8 @@ actual object PlatformBridge {
 
     private fun rememberImage(key: String, bitmap: ImageBitmap) = synchronized(imageCache) {
         imageCache[key] = bitmap
-        while (imageCache.size > 16 || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > 96L * 1024L * 1024L) {
+        val (maxImages, maxBytes) = if (isLowMemoryDevice) 4 to 24L * 1024L * 1024L else 16 to 96L * 1024L * 1024L
+        while (imageCache.size > maxImages || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > maxBytes) {
             val eldest = imageCache.keys.firstOrNull()?.takeIf { it != key } ?: break
             imageCache.remove(eldest)
         }

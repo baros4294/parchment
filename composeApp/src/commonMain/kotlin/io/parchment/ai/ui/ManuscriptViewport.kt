@@ -164,7 +164,8 @@ internal fun ManuscriptViewport(
     onTranslateNode: (Int) -> Unit = {},
     onContinueAssistantNode: (Int) -> Unit,
     jumpToNodeId: String = "",
-    onJumpHandled: () -> Unit = {}
+    onJumpHandled: () -> Unit = {},
+    onTogglePinnedReply: (nodeId: String) -> Unit = {}
 ) {
     val p = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
@@ -577,7 +578,7 @@ internal fun ManuscriptViewport(
                         inputPricePerM = activeProfile.inputPricePerM,
                         outputPricePerM = activeProfile.outputPricePerM,
                         isActivelyThinkingThisNode = isStreaming && isCurrentlyThinkingPhase && streamingTargetNodeId == node.id,
-                        onTogglePin = { onUpdateSession { sess -> sess.togglePinned(node.id) } },
+                        onTogglePin = { onTogglePinnedReply(node.id) },
                         onSelectVariant = { newIdx ->
                             onUpdateSession { sess ->
                                 sess.copy(

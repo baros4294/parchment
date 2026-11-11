@@ -98,6 +98,10 @@ fun parseHexColor(hex: String, fallback: Color = Color(0xFFF4ECD8)): Color {
     }.getOrDefault(fallback)
 }
 
+/** Saved font names from older versions ("JetBrainsMono Nerd") and new ones ("JetBrains Mono") compare equal. */
+internal fun canonicalFontName(name: String): String =
+    name.trim().lowercase().removeSuffix(" nerd").replace(" ", "")
+
 fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     val canvasBg = parseHexColor(config.canvasBgHex, Color(0xFFF4ECD8))
     val sheetBg = parseHexColor(config.sheetBgHex, Color(0xFFEBE0C5))
@@ -119,15 +123,15 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     } else null
 
     val bundledInter = PlatformBridge.loadBundledFontFamily("Inter")
-    val bundledJbmNerd = PlatformBridge.loadBundledFontFamily("JetBrainsMono Nerd")
+    val bundledMono = PlatformBridge.loadBundledFontFamily("JetBrains Mono")
     val bundledLatex = PlatformBridge.loadBundledFontFamily("LaTeX")
 
-    val proseFont = customProseLoaded ?: when (config.proseFontFamily.lowercase()) {
+    val proseFont = customProseLoaded ?: when (canonicalFontName(config.proseFontFamily)) {
         "inter" -> bundledInter ?: FontFamily.SansSerif
-        "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> bundledJbmNerd ?: FontFamily.Monospace
+        "jetbrainsmono", "nerd" -> bundledMono ?: FontFamily.Monospace
         "latex", "katex", "math" -> bundledLatex ?: FontFamily.Serif
         "sans", "sans-serif" -> bundledInter ?: FontFamily.SansSerif
-        "mono", "monospace" -> bundledJbmNerd ?: FontFamily.Monospace
+        "mono", "monospace" -> bundledMono ?: FontFamily.Monospace
         else -> FontFamily.Serif
     }
 
@@ -135,12 +139,11 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
         PlatformBridge.loadCustomFontFamily(config.customCodeFontPath)
     } else null
 
-    val codeFont = customCodeLoaded ?: when (config.codeFontFamily.lowercase()) {
-        "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> bundledJbmNerd ?: FontFamily.Monospace
+    val codeFont = customCodeLoaded ?: when (canonicalFontName(config.codeFontFamily)) {
         "inter", "sans", "sans-serif" -> bundledInter ?: FontFamily.SansSerif
         "serif" -> FontFamily.Serif
         "latex", "katex" -> bundledLatex ?: FontFamily.Serif
-        else -> bundledJbmNerd ?: FontFamily.Monospace
+        else -> bundledMono ?: FontFamily.Monospace
     }
 
     val mathFont = bundledLatex ?: FontFamily.Serif

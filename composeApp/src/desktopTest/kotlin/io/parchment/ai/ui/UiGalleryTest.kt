@@ -169,7 +169,12 @@ class UiGalleryTest {
         }
     }
 
+    /** Rendering every screen to PNG is most of the test run's CPU, so it runs only when asked for. */
+    private fun assumeGalleryRequested() =
+        org.junit.Assume.assumeTrue("Render with: python scripts/verify.py test UiGalleryTest", System.getProperty("parchment.gallery") == "true")
+
     @Test fun renderIconSheet() {
+        assumeGalleryRequested()
         val icons = KissIcon.entries
         val columns = 12
         val rows = (icons.size + columns - 1) / columns
@@ -219,6 +224,7 @@ class UiGalleryTest {
     }
 
     @Test fun renderGallery() {
+        assumeGalleryRequested()
         val night = ThemeConfig.PRESETS[1]
         try {
             for (viewport in listOf(phone, desktop)) {

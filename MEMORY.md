@@ -4,22 +4,22 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 
 ## Standing decisions
 
-- Keep changes local until all TODO work and the final matrix pass, then one commit/push to origin/main. Never force-push, overwrite unrelated work or claim unverified completion.
-- No automatic local Git snapshots of verified batches (user decision, 2026-11-10); don't re-propose them.
-- Scripted phone taps must first confirm Parchment is in front.
+- Each TODO batch ends with one build and test run, then a commit and push to origin/main (user decision, 2026-11-11). Never force-push, overwrite unrelated work or claim unverified completion.
+- No automatic local Git snapshots between checkpoints (user, 2026-11-10); don't re-propose them.
+- Scripted phone taps first confirm Parchment is in front.
 - Never optimize by losing history or instructions, weakening permissions, altering opaque signatures or silently enabling server storage.
 
 ## Project and build
 
 - JDK C:/Users/Baros/.jdks/temurin-21 (the inherited JAVA_HOME is JDK 8); Android SDK %LOCALAPPDATA%/Android/Sdk as ANDROID_HOME and ANDROID_SDK_ROOT.
 - scripts/verify.py is the only entry point: it supplies JDK/SDK, version 2.0.64/264, two workers and the configuration cache (not final: signer task); logs and ledger in .parchment-local/verification/.
-- Keep org.gradle.daemon=false (it caused memory bloat); Gradle heap 2560 MB.
+- Keep org.gradle.daemon=false (memory bloat); Gradle heap 2560 MB.
 - PowerShell scripts stay ASCII.
-- Never copy builds into %LOCALAPPDATA%/Programs/Parchment; installs update through GitHub Release OTA. Dev runs keep data in an ignored parchment-portable-data folder.
-- Release uses DEX/lintVital with minification off: it is not R8 verification.
+- Never copy builds into %LOCALAPPDATA%/Programs/Parchment. Only CI builds (-PofficialRelease=true) check for or install OTA updates. Dev runs keep data in ignored parchment-portable-data.
+- Android release uses R8 and resource shrinking (composeApp/proguard-rules.pro); keep each release's mapping.txt.
 - Android: keep big suspend bodies split into local suspend functions (cancelling a 565-register coroutine aborted).
 - Android signing is private-env-only: dot-source scripts/load-private-signer.ps1; never regenerate the ignored key (fingerprint 95d9804cfd9c80313440ed97619100c9e9f741c27943f61700fa802d0dbe4574). The legacy key is rejected (docs/RELEASE_SIGNING.md); blank key passwords use the store password; keep the four CI signer secrets until that fix ships.
-- The packaged desktop app uses AppCDS: a jlink base archive and `$APPDIR/parchment.jsa`, rebuilt on the first launch after an update.
+- Packaged desktop uses AppCDS: jlink base archive + `$APPDIR/parchment.jsa`, rebuilt after updates.
 
 ## Protocols and harness
 
@@ -39,7 +39,7 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 - SSE closing without the finish signal or `[DONE]` is an interruption, not an answer. AcceptedJobException marks accepted work: poll it, never resubmit.
 - Utility requests mask inherited tool context, disable tools and goal loops, and propagate cancellation.
 - computer_use is off by default; every action needs approval, no run-wide grants. Screenshots stay out of chat state; only the newest is resent. Permits are claimed against permit.scope.
-- MCP tools are `mcp__<server>__<tool>` and need approval like file changes; imports drop local commands and disable the rest. Spec 2025-11-25 handshake, fallback 2026-07-28 (checked 2026-11-10).
+- MCP tools are `mcp__<server>__<tool>` and need approval like file changes; imports drop local commands and disable the rest. Spec 2025-11-25 handshake, fallback 2026-07-28.
 
 ## Runs and timing
 
@@ -72,7 +72,7 @@ Updated 2026-11-11. Stable contracts only; read the section you need. AGENTS.md 
 - Links from model output or imports open only through openWebLink (http/https). Desktop openOrPlayMedia refuses executables.
 - OTA streams to OtaStagedFile and installs only after size and SHA-256 match (Windows needs GitHub's `sha256:<hex>` digest; Android relies on the APK signature). Updates refuse to start, before and after download, while a chat runs or a prompt is queued.
 - Limits: attachments 50 MiB (refused on pick, drop or paste), inline text 8 MiB, card and settings picks 256 MiB, desktop images 100 MP/128 MiB (downscaled past 2560 px). Shell output keeps head and tail. workspaceRead caps lines at 4k chars, 10k lines and 250k chars: never rewrite a file from it.
-- Android clipboard images use content URIs through FileProvider/ClipData.newUri.
+- Android clipboard images use FileProvider content URIs (ClipData.newUri).
 
 ## UI and performance
 

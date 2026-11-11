@@ -5,10 +5,15 @@ import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.DefaultModelConfig
 import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.ThemeConfig
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.io.IOException
+
+/** Reads only a chat's id: the rest of the JSON is syntax-checked and skipped, not built into objects. */
+@Serializable
+private class ChatIdentity(val id: String = "")
 
 /** Shared Android/desktop snapshot validation, recovery and atomic persistence. */
 internal class SnapshotFileStorage(
@@ -143,7 +148,13 @@ internal class SnapshotFileStorage(
     }
 
     @Synchronized
-    fun loadAllChats(): List<String> {
+    fun loadAllChats(): List<String> = chats().toList()
+
+    /**
+     * Every stored chat, read one at a time so a caller that decodes and drops each one never holds them all.
+     * Finding a folder's real id decodes only the id; loadChat still validates the full chat.
+     */
+    fun chats(): Sequence<String> = sequence {
         val chats = File(directory(), "chats")
         val ids = chats.listFiles().orEmpty().mapNotNull { entry ->
             when {
@@ -153,16 +164,19 @@ internal class SnapshotFileStorage(
                 else -> null
             }
         }.distinct()
-        return ids.mapNotNull { id -> runCatching {
-            val folder = File(chats, id)
-            val candidates = listOf(File(folder, "chat.json"), File(folder, "chat.json.tmp"), File(folder, "chat.prev.json"),
-                File(chats, "$id.json"), File(chats, "$id.json.tmp"))
-            val actualId = candidates.firstNotNullOfOrNull { candidate ->
-                read(candidate)?.let { raw -> runCatching { json.decodeFromString<ChatSession>(raw).id }.getOrNull() }
-                    ?.takeIf { it.trim().replace(unsafeSessionCharacters, "_") == id }
-            } ?: return@runCatching null
-            loadChat(actualId)
-        }.getOrNull() }
+        for (id in ids) {
+            val loaded = runCatching {
+                val folder = File(chats, id)
+                val candidates = listOf(File(folder, "chat.json"), File(folder, "chat.json.tmp"), File(folder, "chat.prev.json"),
+                    File(chats, "$id.json"), File(chats, "$id.json.tmp"))
+                val actualId = candidates.firstNotNullOfOrNull { candidate ->
+                    read(candidate)?.let { raw -> runCatching { json.decodeFromString<ChatIdentity>(raw).id }.getOrNull() }
+                        ?.takeIf { it.isNotBlank() && it.trim().replace(unsafeSessionCharacters, "_") == id }
+                } ?: return@runCatching null
+                loadChat(actualId)
+            }.getOrNull()
+            if (loaded != null) yield(loaded)
+        }
     }
 
     @Synchronized

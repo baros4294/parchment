@@ -333,7 +333,7 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                                             streamBlocksByIndex[idx] = AnthropicStreamBlock.RedactedThinking(data)
                                         }
                                         "server_tool_use", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result" -> {
-                                            if (cb != null) streamBlocksByIndex[idx] = AnthropicStreamBlock.ServerBlock(cb)
+                                            streamBlocksByIndex[idx] = AnthropicStreamBlock.ServerBlock(cb)
                                         }
                                         "text" -> {
                                             val initTxt = cb["text"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -357,10 +357,8 @@ internal suspend fun AiProviderEngine.executeAnthropicMessagesLoop(
                                                 initialInputJson = initInput
                                             )
                                         }
-                                        "web_search_tool_result" -> {
-                                            extractCitationsFromAnthropicBlock(cb, onCitation)
-                                        }
                                     }
+                                    // Every block, web search results included, can carry citations.
                                     if (cb != null) {
                                         extractCitationsFromAnthropicBlock(cb, onCitation)
                                     }

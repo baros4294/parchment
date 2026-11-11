@@ -312,8 +312,14 @@ internal fun GenerationHost.beginGeneration(
             var lastThinkWordScanIdx = 0
             var lastThinkCharWasSpace = true
 
+            // Low-memory devices publish every other frame (about 30 a second): each publish redraws the chat.
+            val framesPerPublish = if (PlatformBridge.isLowMemoryDevice) 2 else 1
             while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
-                val frameNanos = processState.nextFrameNanos()
+                var frameNanos = processState.nextFrameNanos()
+                for (skipped in 1 until framesPerPublish) {
+                    if (frameNanos == null) break
+                    frameNanos = processState.nextFrameNanos() ?: frameNanos
+                }
 
                 val dtMs = if (frameNanos != null) {
                     val delta = if (lastFrameNanos > 0L) ((frameNanos - lastFrameNanos) / 1_000_000L).coerceIn(2L, 32L) else 8L

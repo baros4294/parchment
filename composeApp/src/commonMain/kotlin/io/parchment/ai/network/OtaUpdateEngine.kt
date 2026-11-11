@@ -76,6 +76,9 @@ internal fun updateBlockedReason(runningChats: Int, queuedPrompts: Int): String?
     else -> null
 }
 
+internal const val DEV_BUILD_UPDATE_MESSAGE =
+    "This is a development build, so it doesn't install updates. Update the installed Parchment instead."
+
 internal fun sha256FromAssetDigest(rawDigest: String?): String =
     rawDigest.orEmpty().trim().removePrefix("sha256:").lowercase().takeIf(SHA256_HEX::matches).orEmpty()
 
@@ -178,8 +181,14 @@ object OtaUpdateEngine {
     fun downloadAndInstall(
         release: OtaReleaseInfo,
         installBlockedReason: () -> String? = { null },
+        officialBuild: Boolean = ParchmentBuildConfig.OFFICIAL_RELEASE,
         stage: (assetName: String) -> OtaStagedDownload = PlatformBridge::createOtaStagedDownload
     ): Flow<OtaUpdateState> = flow {
+        // A dev run or local package would replace the real installed app (and act on its data).
+        if (!officialBuild) {
+            emit(OtaUpdateState.Error(DEV_BUILD_UPDATE_MESSAGE))
+            return@flow
+        }
         emit(OtaUpdateState.Downloading(release, 0L, release.assetSizeBytes))
 
         var staged: OtaStagedDownload? = null

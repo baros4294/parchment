@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -63,7 +64,8 @@ internal fun ColumnScope.PinnedRepliesPanel(
     sessions: List<ChatSession>,
     activeSessionId: String,
     searchQuery: String,
-    onOpen: (PinnedReply) -> Unit
+    onOpen: (PinnedReply) -> Unit,
+    onUnpin: (PinnedReply) -> Unit
 ) {
     val p = LocalParchmentPalette.current
     var allChats by remember { mutableStateOf(false) }
@@ -93,19 +95,33 @@ internal fun ColumnScope.PinnedRepliesPanel(
         items(pins, key = { "${it.sessionId}/${it.nodeId}" }) { pin ->
             val interaction = remember { MutableInteractionSource() }
             val hovered by interaction.collectIsHoveredAsState()
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .kissClickable(pressScale = 0.98f, interactionSource = interaction, onClick = { onOpen(pin) })
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (hovered) p.accent.copy(alpha = 0.06f) else Color.Transparent)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                    .background(if (hovered) p.accent.copy(alpha = 0.06f) else Color.Transparent),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (allChats) {
-                    BasicText(pin.sessionTitle, style = p.uiLabelStyle.copy(fontSize = 11.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .kissClickable(pressScale = 0.98f, interactionSource = interaction, onClick = { onOpen(pin) })
+                        .padding(start = 10.dp, top = 7.dp, bottom = 7.dp, end = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    if (allChats) {
+                        BasicText(pin.sessionTitle, style = p.uiLabelStyle.copy(fontSize = 11.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    BasicText(pin.preview, style = p.uiBodyStyle.copy(fontSize = 13.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                BasicText(pin.preview, style = p.uiBodyStyle.copy(fontSize = 13.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                SepiaButton(
+                    text = "📌",
+                    contentDescription = "Unpin reply",
+                    hint = "Remove from Pinned",
+                    compact = true,
+                    style = SepiaButtonStyle.GHOST,
+                    onClick = { onUnpin(pin) }
+                )
             }
         }
     }

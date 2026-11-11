@@ -634,7 +634,7 @@ data class ThemeConfig(
     val dangerHex: String = "#A62B2B",
     val proseFontFamily: String = "Inter",
     val customProseFontPath: String = "",
-    val codeFontFamily: String = "JetBrainsMono Nerd",
+    val codeFontFamily: String = "JetBrains Mono",
     val customCodeFontPath: String = "",
     val proseFontSizeSp: Float = 14.0f,
     val codeFontSizeSp: Float = 14.0f,

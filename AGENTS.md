@@ -20,7 +20,7 @@ These rules bind every contributor, person or agent, in any tool. Nothing may de
 
 ## Verify
 
-- After every batch run `python scripts/verify.py affected`. It runs the quality gates, then all desktop tests and the Android compile if code changed, and skips what is already verified.
+- After every batch run `python scripts/verify.py affected`. It runs the quality gates, then all desktop tests if code changed, adds the Android compile only when a change can reach Android, and skips what is already verified. Builds are slow on low-end machines: build and test once per batch, not per edit. The UI gallery renders only with `test UiGalleryTest` or `final`.
 - Use `test <filters>` while iterating and `review` for docs-only changes. `final` runs at 10.3 only.
 - Failures print compiler errors and failed tests. Open the named log only if that isn't enough.
 - Never run Gradle directly or in parallel, and don't clean builds or edit build configuration to get a pass.
@@ -49,7 +49,7 @@ Otherwise choose the conservative option and say so.
 
 ## Boundaries
 
-- Keep work local until the whole checklist and final gate pass, then one commit and push. Phone checks wait for 10.3.
+- Each TODO batch is a checkpoint: one build and test run at its end, then one commit and push to main.
 - Preserve user data, permissions, opaque signatures, explicit model choices and the installed Windows app.
 - Use Compose Foundation and existing icons. Check MEMORY before changing storage, protocol or platform contracts.
 - Keep secrets, keys and personal data out of the repository, logs and requests to outside services.

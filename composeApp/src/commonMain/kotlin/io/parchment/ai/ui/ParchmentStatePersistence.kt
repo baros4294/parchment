@@ -858,14 +858,15 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
     currentState: AppStateSnapshot,
     keepHydratedIds: Set<String> = emptySet()
 ): AppStateSnapshot {
-    val rawChatFiles = PlatformBridge.loadAllChatSessionJsons()
-    if (rawChatFiles.isEmpty()) return currentState
     val activeId = currentState.activeSessionId
     val mergedById = LinkedHashMap<String, ChatSession>()
     for (existing in currentState.sessions) {
         if (existing.id.isNotBlank()) mergedById[existing.id] = existing
     }
-    for (rawChat in rawChatFiles) {
+    var loadedAny = false
+    // One chat at a time: each file's text and full decode are dropped once its stub is kept.
+    for (rawChat in PlatformBridge.chatSessionJsons()) {
+        loadedAny = true
         val decoded = runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull() ?: continue
         if (decoded.id.isBlank()) continue
         val alreadyInState = mergedById[decoded.id]
@@ -880,6 +881,7 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
         }
         mergedById[decoded.id] = prepared
     }
+    if (!loadedAny) return currentState
     val combinedSessions = mergedById.values
         .sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
     val validSessionIdSet = combinedSessions.map { it.id }.toSet()

@@ -58,8 +58,8 @@ internal fun AccentSwatches(theme: ThemeConfig, onUpdateTheme: (ThemeConfig) -> 
     }
 }
 
-private val TEXT_FONTS = listOf("Inter", "Serif", "LaTeX", "JetBrainsMono Nerd")
-private val CODE_FONTS = listOf("JetBrainsMono Nerd", "Inter", "Serif")
+private val TEXT_FONTS = listOf("Inter", "Serif", "LaTeX", "JetBrains Mono")
+private val CODE_FONTS = listOf("JetBrains Mono", "Inter", "Serif")
 
 /** The text and code font pickers, shared by Preferences and settings search. */
 @Composable
@@ -100,7 +100,7 @@ private fun FontChoiceRow(
     SepiaAdaptiveRow(label = label) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             fonts.forEach { f ->
-                SepiaChip(label = f, selected = customPath.isBlank() && family.equals(f, ignoreCase = true), onClick = { onChoose(f) })
+                SepiaChip(label = f, selected = customPath.isBlank() && canonicalFontName(family) == canonicalFontName(f), onClick = { onChoose(f) })
             }
             if (customName.isNotBlank()) SepiaChip(label = customName, selected = true, onClick = {})
             SepiaButton(

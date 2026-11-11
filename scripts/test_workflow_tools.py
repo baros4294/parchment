@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import perf  # noqa: E402
 import quality  # noqa: E402
 import verify  # noqa: E402
 
@@ -119,6 +120,14 @@ class SecretRules(unittest.TestCase):
         self.assertEqual(["secrets", "secrets"], rules(quality.check_secrets(["keystore/app.jks", "local.properties", "src/a.kt"])))
 
 
+class PerfParsing(unittest.TestCase):
+    def test_android_start_and_memory_come_from_adb_output(self):
+        self.assertEqual(812, perf.parse_total_time("Status: ok\nLaunchState: COLD\nTotalTime: 812\nWaitTime: 830\n"))
+        self.assertEqual(-1, perf.parse_total_time("Error: Activity not started"))
+        self.assertEqual(150.0, perf.parse_total_pss_mb("App Summary\n           TOTAL PSS:   153600   TOTAL RSS: 200000\n"))
+        self.assertEqual(100.0, perf.parse_total_pss_mb("        TOTAL   102400    90000\n"))
+
+
 class GradleFlags(unittest.TestCase):
     def test_everyday_checks_use_the_configuration_cache_and_final_does_not(self):
         self.assertIn("--configuration-cache", verify.gradle_flags("1", "1"))
@@ -136,7 +145,14 @@ class BuildDecision(unittest.TestCase):
     def test_next_check_names_the_work(self):
         self.assertEqual("nothing to check", verify.next_check([]))
         self.assertEqual("quality gates only", verify.next_check(["README.md"]))
-        self.assertIn("Android", verify.next_check([MAIN]))
+        self.assertEqual("all desktop tests", verify.next_check([MAIN]))
+        self.assertIn("Android", verify.next_check(["composeApp/src/androidMain/kotlin/io/parchment/ai/MainActivity.kt"]))
+
+    def test_android_compiles_only_when_a_change_can_reach_it(self):
+        self.assertEqual([verify.DESKTOP_TEST], verify.code_check([MAIN, TEST]))
+        for path in ("composeApp/src/jvmShared/kotlin/a.kt", "composeApp/src/commonMain/kotlin/io/parchment/ai/platform/PlatformBridge.kt",
+                     "composeApp/build.gradle.kts", "gradle/libs.versions.toml", "gradle.properties"):
+            self.assertIn(verify.ANDROID_COMPILE, verify.code_check([path]), path)
 
     def test_changed_paths_cover_edits_additions_and_deletions(self):
         self.assertEqual(["added", "deleted", "edited"], verify.changed_paths(

@@ -17,16 +17,20 @@ val appVersionProp = (project.findProperty("appVersion") as? String)?.removePref
 val appVersionCodeProp = (project.findProperty("appVersionCode") as? String)?.toIntOrNull() ?: 200
 val githubRepoProp = (project.findProperty("githubRepo") as? String)?.trim()
     ?.takeIf { it.isNotEmpty() } ?: "baros4294/parchment"
+// Set only by .github/workflows/build-installers.yml. Dev runs and local packages must never install an update over the real app.
+val officialReleaseProp = (project.findProperty("officialRelease") as? String)?.trim().toBoolean()
 
 val generateBuildConfig by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/parchmentConfig")
     inputs.property("appVersion", appVersionProp)
     inputs.property("appVersionCode", appVersionCodeProp)
     inputs.property("githubRepo", githubRepoProp)
+    inputs.property("officialRelease", officialReleaseProp)
     outputs.dir(outputDir)
     val ver = appVersionProp
     val code = appVersionCodeProp
     val repo = githubRepoProp
+    val official = officialReleaseProp
     doLast {
         val file = outputDir.get().file("io/parchment/ai/ParchmentBuildConfig.kt").asFile
         file.parentFile.mkdirs()
@@ -38,6 +42,8 @@ val generateBuildConfig by tasks.registering {
                 const val APP_VERSION = "$ver"
                 const val APP_VERSION_CODE = $code
                 const val DEFAULT_GITHUB_REPO = "$repo"
+                /** True only for builds made by the release workflow; other builds never install updates. */
+                const val OFFICIAL_RELEASE = $official
             }
             """.trimIndent()
         )
@@ -137,6 +143,12 @@ kotlin {
     }
 }
 
+// The UI gallery renders every screen to PNG; verify.py passes -Pparchment.gallery=true only when it is wanted.
+val renderGallery = providers.gradleProperty("parchment.gallery").orElse("false")
+tasks.withType<Test>().configureEach {
+    systemProperty("parchment.gallery", renderGallery.get())
+}
+
 android {
     namespace = "io.parchment.ai"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -166,8 +178,10 @@ android {
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 removes unused code and resources: a smaller APK that starts faster on low-end phones.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("releaseSigning")
         }
     }

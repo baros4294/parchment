@@ -90,6 +90,7 @@ jobs:
             -PappVersion="$APP_VER" \
             -PappVersionCode="$((200 + GITHUB_RUN_NUMBER))" \
             -PgithubRepo="$GITHUB_REPOSITORY" \
+            -PofficialRelease=true \
             --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Rename APK for Clean Download
@@ -181,6 +182,7 @@ jobs:
             "-PappVersion=$appVer" `
             "-PappVersionCode=$appCode" `
             "-PgithubRepo=$env:GITHUB_REPOSITORY" `
+            '-PofficialRelease=true' `
             --no-daemon --max-workers=2 '-Pkotlin.compiler.execution.strategy=in-process'
           exit $LASTEXITCODE
 

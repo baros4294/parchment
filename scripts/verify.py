@@ -7,6 +7,7 @@
     python scripts/verify.py test <filters...>   chosen desktop tests while iterating
     python scripts/verify.py android             Android Kotlin compile
     python scripts/verify.py final               full desktop, Android and package gate
+    python scripts/verify.py perf                build the package, then measure start-up, memory and size
 
 Results are remembered between sessions, so finished work is never checked twice.
 Add --dry-run to any build command to see what would run.
@@ -29,6 +30,7 @@ from typing import Iterable, Iterator
 from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import perf  # noqa: E402
 import quality  # noqa: E402
 
 REPO = quality.REPO
@@ -42,7 +44,8 @@ APP_VERSION = "2.0.64"
 APP_VERSION_CODE = "264"
 DESKTOP_TEST = ":composeApp:desktopTest"
 ANDROID_COMPILE = ":composeApp:compileDebugKotlinAndroid"
-FINAL_TASKS = (DESKTOP_TEST, ANDROID_COMPILE, ":composeApp:assembleRelease", ":composeApp:createDistributable")
+# assembleRelease compiles all Android Kotlin for release, so a separate debug compile here would only repeat it.
+FINAL_TASKS = (DESKTOP_TEST, ":composeApp:assembleRelease", ":composeApp:createDistributable")
 SIGNER_VARIABLES = ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS")
 MAX_COMPILE_ERRORS = 25
 MAX_FAILED_TESTS = 20
@@ -51,8 +54,10 @@ MAX_LINE = 260
 PACKAGE = "io.parchment.ai"
 CODE_PATHS = ("composeApp/", "gradle/")
 CODE_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradle.properties", "gradlew", "gradlew.bat")
-# All 250 desktop tests and the Android compile take under three minutes, so every code change runs them all.
-CODE_CHECK = [DESKTOP_TEST, ANDROID_COMPILE]
+# Every code change runs all desktop tests. Compiling Android repeats the shared code's compile, so affected adds it
+# only when a change can reach Android: its sources, shared JVM code, the platform expect declarations or the build.
+ANDROID_PATHS = ("composeApp/src/androidMain/", "composeApp/src/jvmShared/", "composeApp/src/commonMain/kotlin/io/parchment/ai/platform/",
+                 "gradle/", "composeApp/build.gradle.kts", "composeApp/proguard-rules.pro")
 
 
 @dataclass
@@ -74,10 +79,21 @@ def needs_build(changed: Iterable[str]) -> bool:
     return any(path.startswith(CODE_PATHS) or path in CODE_FILES for path in changed)
 
 
+def needs_android(changed: Iterable[str]) -> bool:
+    """A shared UI or logic change compiles for desktop only; final and CI still compile Android every time."""
+    return any(path.startswith(ANDROID_PATHS) or path in CODE_FILES for path in changed)
+
+
+def code_check(changed: Iterable[str]) -> list[str]:
+    return [DESKTOP_TEST, ANDROID_COMPILE] if needs_android(changed) else [DESKTOP_TEST]
+
+
 def next_check(changed: list[str]) -> str:
     if not changed:
         return "nothing to check"
-    return "all desktop tests and the Android compile" if needs_build(changed) else "quality gates only"
+    if not needs_build(changed):
+        return "quality gates only"
+    return "all desktop tests and the Android compile" if needs_android(changed) else "all desktop tests"
 
 
 def changed_paths(current: dict[str, str], baseline: dict[str, str]) -> list[str]:
@@ -137,11 +153,13 @@ def gradle_environment() -> dict[str, str]:
     return environment
 
 
-def gradle_flags(version: str, code: str, configuration_cache: bool = True) -> list[str]:
+def gradle_flags(version: str, code: str, configuration_cache: bool = True, gallery: bool = False) -> list[str]:
     # The configuration cache halves each call's fixed cost (13.6 s to 7.0 s, measured 2026-11-11). final keeps it off:
     # validatePrivateReleaseSigner is not cache-compatible, and release signing is not worth risking for speed.
     cache = ["--configuration-cache"] if configuration_cache else []
-    return ["--no-daemon", "--max-workers=2", "-Pkotlin.compiler.execution.strategy=in-process", *cache,
+    # Rendering the UI gallery was 78 of 180 test seconds, so only final and `test UiGalleryTest` render it.
+    render = ["-Pparchment.gallery=true"] if gallery else []
+    return ["--no-daemon", "--max-workers=2", "-Pkotlin.compiler.execution.strategy=in-process", *cache, *render,
             f"-PappVersion={version}", f"-PappVersionCode={code}", "--console=plain", "--quiet"]
 
 
@@ -184,13 +202,13 @@ def read_test_results(folder: Path, since: float) -> tuple[int, list[str]]:
     return total, failed
 
 
-def run_gradle(name: str, tasks: list[str], version: str, code: str, configuration_cache: bool = True) -> Outcome:
+def run_gradle(name: str, tasks: list[str], version: str, code: str, configuration_cache: bool = True, gallery: bool = False) -> Outcome:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     wrapper = str(REPO / ("gradlew.bat" if os.name == "nt" else "gradlew"))
     log = STATE_DIR / f"{name}.log"
     started = time.time()
     with open(log, "w", encoding="utf-8", errors="replace") as output:
-        exit_code = subprocess.run([wrapper, *tasks, *gradle_flags(version, code, configuration_cache)], cwd=REPO, env=gradle_environment(),
+        exit_code = subprocess.run([wrapper, *tasks, *gradle_flags(version, code, configuration_cache, gallery)], cwd=REPO, env=gradle_environment(),
                                    stdout=output, stderr=subprocess.STDOUT, shell=False).returncode
     log_text = log.read_text(encoding="utf-8", errors="replace")
     total, failed = read_test_results(TEST_RESULTS, started - 1)
@@ -283,7 +301,7 @@ def command_affected(args: argparse.Namespace) -> int:
         print("PASS affected: no build needed")
         return 0
     with single_run():
-        outcome = run_gradle("affected", CODE_CHECK, args.app_version, args.app_version_code)
+        outcome = run_gradle("affected", code_check(changed), args.app_version, args.app_version_code)
     summary = report("affected", outcome)
     if outcome.passed:
         ledger["baseline"] = current
@@ -291,12 +309,12 @@ def command_affected(args: argparse.Namespace) -> int:
     return 0 if outcome.passed else 1
 
 
-def command_gradle(name: str, tasks: list[str], args: argparse.Namespace) -> int:
+def command_gradle(name: str, tasks: list[str], args: argparse.Namespace, gallery: bool = False) -> int:
     if args.dry_run:
         print("Gradle:", " ".join(tasks))
         return 0
     with single_run():
-        outcome = run_gradle(name, tasks, args.app_version, args.app_version_code)
+        outcome = run_gradle(name, tasks, args.app_version, args.app_version_code, gallery=gallery)
     summary = report(name, outcome)
     record(load_ledger(), name, summary, outcome.passed)
     return 0 if outcome.passed else 1
@@ -306,7 +324,7 @@ def command_test(args: argparse.Namespace) -> int:
     tasks = [DESKTOP_TEST]
     for name in args.filters:
         tasks += ["--tests", name]
-    return command_gradle("test", tasks, args)
+    return command_gradle("test", tasks, args, gallery=any("Gallery" in name for name in args.filters))
 
 
 def command_android(args: argparse.Namespace) -> int:
@@ -325,13 +343,31 @@ def command_final(args: argparse.Namespace) -> int:
         return 1
     current = fingerprint()
     with single_run():
-        outcome = run_gradle("final", list(FINAL_TASKS), args.app_version, args.app_version_code, configuration_cache=False)
+        outcome = run_gradle("final", list(FINAL_TASKS), args.app_version, args.app_version_code, configuration_cache=False, gallery=True)
     summary = report("final", outcome)
     ledger = load_ledger()
     if outcome.passed:
         ledger["baseline"] = current
     record(ledger, "final", summary, outcome.passed)
     return 0 if outcome.passed else 1
+
+
+def command_perf(args: argparse.Namespace) -> int:
+    """Budgets live in docs/PERFORMANCE.md; this prints and keeps the latest numbers."""
+    if args.dry_run:
+        print("Gradle: :composeApp:createDistributable, then scripts/perf.py")
+        return 0
+    with single_run():
+        outcome = run_gradle("perf", [":composeApp:createDistributable"], args.app_version, args.app_version_code)
+    if not outcome.passed:
+        report("perf", outcome)
+        return 1
+    results = perf.measure(REPO, android_install=args.android_install)
+    lines = [f"{key}={value}" for key, value in results.items()]
+    (STATE_DIR / "perf.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+    print("Saved: .parchment-local/verification/perf.txt")
+    return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -349,6 +385,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     test.set_defaults(run=command_test)
     commands.add_parser("android", parents=[build]).set_defaults(run=command_android)
     commands.add_parser("final", parents=[build]).set_defaults(run=command_final)
+    perf_parser = commands.add_parser("perf", parents=[build])
+    perf_parser.add_argument("--android-install", action="store_true", help="install the local release APK on the phone first")
+    perf_parser.set_defaults(run=command_perf)
     return parser.parse_args(argv)
 
 

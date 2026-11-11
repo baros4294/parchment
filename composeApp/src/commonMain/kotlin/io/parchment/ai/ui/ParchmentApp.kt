@@ -82,6 +82,7 @@ import io.parchment.ai.model.withLegacyWorkspaceChangeFrom
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
 import io.parchment.ai.network.OtaReleaseInfo
+import io.parchment.ai.ParchmentBuildConfig
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
 import io.parchment.ai.network.StreamUpdate
@@ -100,6 +101,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.io.encoding.ExperimentalEncodingApi
 
+
+private const val STARTUP_UPDATE_CHECK_DELAY_MS = 8_000L
 
 @OptIn(ExperimentalEncodingApi::class)
 @Composable
@@ -471,14 +474,16 @@ fun ParchmentApp(
         modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
 
-    fun updateSessionById(sessionId: String, immediate: Boolean = false, transform: (ChatSession) -> ChatSession) {
+    /** [touch] = false keeps the chat's place in the list: for bookkeeping such as pins, not new content. */
+    fun updateSession(sessionId: String, immediate: Boolean, touch: Boolean, transform: (ChatSession) -> ChatSession) {
         val currentSnap = appState
         val target = currentSnap.sessions.find { it.id == sessionId } ?: return
         val complete = completeSessionForAction(target) ?: return
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == sessionId) {
-                val mod = transform(complete).withLegacyWorkspaceChangeFrom(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val changed = transform(complete).withLegacyWorkspaceChangeFrom(complete)
+                val mod = if (touch) changed.copy(updatedAt = PlatformBridge.currentTimeMillis()) else changed
                 if (mod.permissionOverrides != complete.permissionOverrides) activeStreamsBySession[sessionId]?.toolApprovalBroker?.invalidate()
                 modifiedSession = mod
                 if (target.isCompactStub && sessionId != currentSnap.activeSessionId && sessionId !in activeStreamsBySession &&
@@ -493,6 +498,13 @@ fun ParchmentApp(
         }
         modifiedSession?.let { persistSingleSession(it, immediateFlush = immediate) }
     }
+
+    fun updateSessionById(sessionId: String, immediate: Boolean = false, transform: (ChatSession) -> ChatSession) =
+        updateSession(sessionId, immediate, touch = true, transform = transform)
+
+    // Pinning is bookkeeping, not new content, so the chat keeps its place in the list.
+    fun togglePinnedReply(sessionId: String, nodeId: String) =
+        updateSession(sessionId, immediate = true, touch = false) { it.togglePinned(nodeId) }
 
     fun updateActiveSessionInMemoryOnly(sessionId: String, transform: (ChatSession) -> ChatSession) {
         val currentState = appState
@@ -522,9 +534,11 @@ fun ParchmentApp(
         persist(appState.copy(profiles = newProfiles), immediateFlush = true)
     }
 
-    // Automatically check for OTA updates on startup if enabled
+    // Automatically check for OTA updates on startup if enabled; development builds never offer one.
+    // The wait keeps the network request and its parsing out of the first seconds of use.
     LaunchedEffect(appState.autoCheckOtaOnStartup, appState.otaGithubRepo) {
-        if (appState.autoCheckOtaOnStartup) {
+        if (appState.autoCheckOtaOnStartup && ParchmentBuildConfig.OFFICIAL_RELEASE) {
+            delay(STARTUP_UPDATE_CHECK_DELAY_MS)
             otaState = OtaUpdateState.Checking
             OtaUpdateEngine.checkForUpdates(appState.otaGithubRepo).fold(
                 onSuccess = { rel ->
@@ -2033,6 +2047,7 @@ fun ParchmentApp(
                                 isSettingsOpen = false
                                 if (isCompactScreen) showSidebar = false
                             },
+                            onUnpinReply = { pin -> togglePinnedReply(pin.sessionId, pin.nodeId) },
                             onNewTopic = {
                                 createNewTopicForAssistant(activeAssistant)
                                 isSettingsOpen = false
@@ -2548,7 +2563,8 @@ fun ParchmentApp(
                                     },
                                     onContinueAssistantNode = ::continueAssistantNodeAt,
                                     jumpToNodeId = pendingPinJump?.takeIf { it.sessionId == activeSession.id }?.nodeId.orEmpty(),
-                                    onJumpHandled = { pendingPinJump = null }
+                                    onJumpHandled = { pendingPinJump = null },
+                                    onTogglePinnedReply = { nodeId -> togglePinnedReply(activeSession.id, nodeId) }
                                 )
                                 }
                             }

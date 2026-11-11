@@ -42,8 +42,8 @@ class OtaUpdateEngineHttpTest {
         exchange.responseBody.write(body)
     }
 
-    private fun run(release: OtaReleaseInfo, requireDigest: Boolean = true): List<OtaUpdateState> = runBlocking {
-        OtaUpdateEngine.downloadAndInstall(release) {
+    private fun run(release: OtaReleaseInfo, requireDigest: Boolean = true, officialBuild: Boolean = true): List<OtaUpdateState> = runBlocking {
+        OtaUpdateEngine.downloadAndInstall(release, officialBuild = officialBuild) {
             OtaStagedFile(staged, requireDigest) { installs++; Result.success("installed") }
         }.toList()
     }
@@ -99,7 +99,7 @@ class OtaUpdateEngineHttpTest {
         }
     }) { url ->
         runBlocking {
-            OtaUpdateEngine.downloadAndInstall(release(url)) {
+            OtaUpdateEngine.downloadAndInstall(release(url), officialBuild = true) {
                 OtaStagedFile(staged, true) { installs++; Result.success("installed") }
             }.first { it is OtaUpdateState.Downloading && it.downloadedBytes > 0L }
         }
@@ -111,11 +111,18 @@ class OtaUpdateEngineHttpTest {
 
     @Test fun workStartedDuringDownloadStopsTheInstall() = serving({ sendAll(it) }) { url ->
         val states = runBlocking {
-            OtaUpdateEngine.downloadAndInstall(release(url), { "a chat is running" }) {
+            OtaUpdateEngine.downloadAndInstall(release(url), { "a chat is running" }, officialBuild = true) {
                 OtaStagedFile(staged, true) { installs++; Result.success("installed") }
             }.toList()
         }
         assertRejected(states, "a chat is running")
+    }
+
+    @Test fun aDevelopmentBuildNeverDownloadsOrInstalls() = serving({ sendAll(it) }) { url ->
+        val states = run(release(url), officialBuild = false)
+        assertEquals(listOf<OtaUpdateState>(OtaUpdateState.Error(DEV_BUILD_UPDATE_MESSAGE)), states)
+        assertEquals(0, installs)
+        assertFalse(staged.exists())
     }
 
     @Test fun updatesWaitForRunningChatsAndQueuedPrompts() {

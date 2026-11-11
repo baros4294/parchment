@@ -28,10 +28,12 @@ Thanks for helping. This page covers the principles, the setup and how to land a
 | Need | Command |
 |---|---|
 | What to do next and what is verified | `python scripts/verify.py status` |
-| After any change | `python scripts/verify.py affected` |
+| After a batch of changes | `python scripts/verify.py affected` |
 | Docs-only review, no build | `python scripts/verify.py review` |
 | Chosen tests while iterating | `python scripts/verify.py test '*SessionSpendTest'` |
+| Screenshots of every screen | `python scripts/verify.py test UiGalleryTest` |
 | Android Kotlin compile | `python scripts/verify.py android` |
+| Start-up, memory and size | `python scripts/verify.py perf` (budgets in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
 | Final desktop, Android and package gate | `. .\scripts\load-private-signer.ps1`, then `python scripts/verify.py final` |
 
 Add `--dry-run` to see what a build command would run. Failures print compiler errors and failed tests, and full logs are in `.parchment-local/verification/`.

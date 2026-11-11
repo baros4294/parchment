@@ -45,6 +45,7 @@ actual object PlatformBridge {
     actual val platformName: String =
         "${System.getProperty("os.name") ?: "Desktop"} (${System.getProperty("os.arch") ?: "universal"})"
     actual val isAndroid: Boolean = false
+    actual val isLowMemoryDevice: Boolean by lazy { WindowsMemory.totalPhysicalBytes() in 1 until LOW_MEMORY_BYTES }
 
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
     private val imageCache = LinkedHashMap<String, ImageBitmap>()
@@ -134,6 +135,7 @@ actual object PlatformBridge {
     actual fun saveAppStateJson(json: String) = snapshotStorage.saveSettings(json)
     actual fun loadChatSessionJsonById(sessionId: String): String? = snapshotStorage.loadChat(sessionId)
     actual fun loadAllChatSessionJsons(): List<String> = snapshotStorage.loadAllChats()
+    actual fun chatSessionJsons(): Sequence<String> = snapshotStorage.chats()
     actual fun saveChatSessionJson(sessionId: String, json: String) = snapshotStorage.saveChat(sessionId, json)
     actual fun deleteChatSessionFile(sessionId: String) = snapshotStorage.deleteChat(sessionId)
 
@@ -398,17 +400,17 @@ actual object PlatformBridge {
                         Font(identity = "Inter-BoldItalic", data = ital, weight = FontWeight.Bold, style = FontStyle.Italic)
                     )
                 }
-                "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> {
-                    val reg = readResBytes("fonts/JetBrainsMonoNerdFont-Regular.ttf") ?: return null
-                    val semi = readResBytes("fonts/JetBrainsMonoNerdFont-SemiBold.ttf") ?: reg
-                    val bold = readResBytes("fonts/JetBrainsMonoNerdFont-Bold.ttf") ?: reg
-                    val ital = readResBytes("fonts/JetBrainsMonoNerdFont-Italic.ttf") ?: reg
+                "jetbrains mono", "jetbrainsmono nerd", "jetbrainsmono", "nerd" -> {
+                    val reg = readResBytes("fonts/JetBrainsMono-Regular.ttf") ?: return null
+                    val semi = readResBytes("fonts/JetBrainsMono-SemiBold.ttf") ?: reg
+                    val bold = readResBytes("fonts/JetBrainsMono-Bold.ttf") ?: reg
+                    val ital = readResBytes("fonts/JetBrainsMono-Italic.ttf") ?: reg
                     FontFamily(
-                        Font(identity = "JBMNerd-Regular", data = reg, weight = FontWeight.Normal, style = FontStyle.Normal),
-                        Font(identity = "JBMNerd-Medium", data = reg, weight = FontWeight.Medium, style = FontStyle.Normal),
-                        Font(identity = "JBMNerd-SemiBold", data = semi, weight = FontWeight.SemiBold, style = FontStyle.Normal),
-                        Font(identity = "JBMNerd-Bold", data = bold, weight = FontWeight.Bold, style = FontStyle.Normal),
-                        Font(identity = "JBMNerd-Italic", data = ital, weight = FontWeight.Normal, style = FontStyle.Italic)
+                        Font(identity = "JBM-Regular", data = reg, weight = FontWeight.Normal, style = FontStyle.Normal),
+                        Font(identity = "JBM-Medium", data = reg, weight = FontWeight.Medium, style = FontStyle.Normal),
+                        Font(identity = "JBM-SemiBold", data = semi, weight = FontWeight.SemiBold, style = FontStyle.Normal),
+                        Font(identity = "JBM-Bold", data = bold, weight = FontWeight.Bold, style = FontStyle.Normal),
+                        Font(identity = "JBM-Italic", data = ital, weight = FontWeight.Normal, style = FontStyle.Italic)
                     )
                 }
                 "latex", "katex", "math" -> {
@@ -878,7 +880,8 @@ actual object PlatformBridge {
 
     private fun rememberImage(key: String, bitmap: ImageBitmap) = synchronized(imageCache) {
         imageCache[key] = bitmap
-        while (imageCache.size > 6 || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > 128L * 1024L * 1024L) {
+        val (maxImages, maxBytes) = if (isLowMemoryDevice) 3 to 48L * 1024L * 1024L else 6 to 128L * 1024L * 1024L
+        while (imageCache.size > maxImages || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > maxBytes) {
             val eldest = imageCache.keys.firstOrNull()?.takeIf { it != key } ?: break
             imageCache.remove(eldest)
         }
