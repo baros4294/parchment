@@ -16,8 +16,11 @@
 -keep interface * extends com.sun.jna.Library { *; }
 -keep class * extends com.sun.jna.Structure { *; }
 
-# ServiceLoader lookups: Ktor's engine (HttpClient {} names none) and the Swing main dispatcher.
+# ServiceLoader lookups: Ktor's engine (HttpClient {} names none), Ktor's JSON support for ContentNegotiation and the
+# Swing main dispatcher. ProGuard can't see classes named only in META-INF/services, so each needs a rule;
+# `verify.py final` fails if one is missing (v2.1.2 shipped without the JSON one and every request failed).
 -keep class * implements io.ktor.client.HttpClientEngineContainer { <init>(); }
+-keep class * implements io.ktor.serialization.kotlinx.KotlinxSerializationExtensionProvider { <init>(); }
 -keep class kotlinx.coroutines.swing.SwingDispatcherFactory { *; }
 -keep class kotlinx.coroutines.internal.MainDispatcherFactory { *; }
 

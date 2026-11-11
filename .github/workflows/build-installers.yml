@@ -119,7 +119,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         continue-on-error: true
         run: |
-          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom --no-daemon --no-configuration-cache -PappVersion=0.0.0
+          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom --no-daemon --no-configuration-cache -PappVersion=1.0.0
           SBOM=$(find build composeApp/build androidApp/build -path '*cyclonedx*' -name '*.json' 2>/dev/null | head -1)
           [[ -n "$SBOM" ]] && cp "$SBOM" dist/Parchment-SBOM.cdx.json
 

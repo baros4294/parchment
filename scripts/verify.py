@@ -347,6 +347,31 @@ def command_android(args: argparse.Namespace) -> int:
     return command_gradle("android", [ANDROID_COMPILE], args)
 
 
+RELEASE_APP_JARS = REPO / "composeApp" / "build" / "compose" / "binaries" / "main-release" / "app" / "Parchment" / "app"
+
+
+def missing_service_classes(app_dir: Path = RELEASE_APP_JARS) -> list[str]:
+    """Classes named in META-INF/services that the shrunk desktop jars no longer contain.
+
+    ServiceLoader finds these only by name, so ProGuard can't see they're used; a missing one fails at run time
+    (v2.1.2 lost Ktor's JSON provider this way and no request could be made).
+    """
+    import zipfile
+    classes: set[str] = set()
+    wanted: dict[str, str] = {}
+    for jar in sorted(app_dir.glob("*.jar")):
+        with zipfile.ZipFile(jar) as archive:
+            for name in archive.namelist():
+                if name.endswith(".class"):
+                    classes.add(name[:-len(".class")].replace("/", "."))
+                elif name.startswith("META-INF/services/") and not name.endswith("/"):
+                    for line in archive.read(name).decode("utf-8", "replace").splitlines():
+                        entry = line.split("#", 1)[0].strip()
+                        if entry:
+                            wanted[entry] = name.removeprefix("META-INF/services/")
+    return sorted(f"{cls} (a {service})" for cls, service in wanted.items() if cls not in classes)
+
+
 def command_final(args: argparse.Namespace) -> int:
     missing = [name for name in SIGNER_VARIABLES if not os.environ.get(name, "").strip()]
     if missing and not args.dry_run:
@@ -361,11 +386,17 @@ def command_final(args: argparse.Namespace) -> int:
     with single_run():
         outcome = run_gradle("final", list(FINAL_TASKS), args.app_version, args.app_version_code, configuration_cache=False, gallery=True)
     summary = report("final", outcome)
+    passed = outcome.passed
+    if passed:
+        missing = missing_service_classes()
+        for entry in missing:
+            print(f"FAIL release: ProGuard removed {entry}; add a -keep rule to composeApp/compose-desktop.pro")
+        passed = not missing
     ledger = load_ledger()
-    if outcome.passed:
+    if passed:
         ledger["baseline"] = current
-    record(ledger, "final", summary, outcome.passed)
-    return 0 if outcome.passed else 1
+    record(ledger, "final", summary, passed)
+    return 0 if passed else 1
 
 
 def command_perf(args: argparse.Namespace) -> int:
