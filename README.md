@@ -42,7 +42,7 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 - **Not yet checked on real hardware:** real provider round trips with API keys, an in-app update install, Android Shell descendant cleanup, compaction during a phone run, Doze, screen readers, system animation scale, denied notifications, and third-party MCP servers.
 - **Practical limits:** operating-system sleep and battery policy can suspend a run, and some Android phones cut the network soon after the app leaves the screen, so a run may pause until you return. Shell has the app's full OS permissions, is not sandboxed, and is outside the web-tool controls. Computer control needs Android's Accessibility permission and covers the main display on Windows.
 
-Open work is tracked in [PARCHMENT_TODO.md](PARCHMENT_TODO.md).
+Open work is tracked in [TODO.md](TODO.md).
 
 ## Build from source
 
@@ -68,7 +68,7 @@ Android releases are signed with a private key; there is no repository key. See 
 | [AGENTS.md](AGENTS.md) | The working rules for people and AI agents |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the code is laid out and where to change what |
 | [docs/DESIGN.md](docs/DESIGN.md) | The visual design, tokens, icons and wording |
-| [PARCHMENT_MEMORY.md](PARCHMENT_MEMORY.md) | Contracts that must not break |
+| [MEMORY.md](MEMORY.md) | Contracts that must not break |
 | [docs/FEATURE_COVERAGE.md](docs/FEATURE_COVERAGE.md) | What is implemented, partial or missing |
 
 ## Acknowledgements
