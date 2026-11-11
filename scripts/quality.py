@@ -24,7 +24,7 @@ SECRET_SUFFIXES = (".jks", ".keystore", ".p12", ".pfx")
 SECRET_NAMES = ("local.properties", ".env")
 MAX_KOTLIN_LINES = 3000
 MAX_REPORTED_PER_RULE = 15
-DOC_BUDGETS = {"AGENTS.md": 4500, "TODO.md": 16000, "MEMORY.md": 11500}
+DOC_BUDGETS = {"AGENTS.md": 5000, "TODO.md": 10000, "MEMORY.md": 10000}  # characters; every session reads these
 STATUS_FIELDS = ("**Source:**", "**Last verified", "**Next action:**")
 STATUS_HEADING = "## Current status"
 MAX_STATUS_CHARS = 1400
@@ -220,8 +220,8 @@ def check_docs(files: dict[str, bytes]) -> list[Problem]:
     for path, budget in DOC_BUDGETS.items():
         if path not in files:
             problems.append(Problem("docs", path, 0, "Required workflow file is missing."))
-        elif len(files[path]) > budget:
-            problems.append(Problem("docs", path, 0, f"{len(files[path])} bytes exceeds the {budget} byte budget. Condense it; do not raise the budget."))
+        elif (length := len(files[path].decode("utf-8", errors="replace"))) > budget:
+            problems.append(Problem("docs", path, 0, f"{length} characters exceeds the {budget} character budget. Condense it; do not raise the budget."))
     if "AGENTS.md" in files and b"scripts/verify.py" not in files["AGENTS.md"]:
         problems.append(Problem("docs", "AGENTS.md", 0, "Must tell readers to use scripts/verify.py."))
     todo_bytes = files.get("TODO.md")

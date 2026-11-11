@@ -97,6 +97,11 @@ class DocumentRules(unittest.TestCase):
         problems = quality.check_docs({**GOOD_DOCS, "AGENTS.md": b"scripts/verify.py" + b"x" * 9000})
         self.assertEqual(["docs"], rules(problems))
 
+    def test_budgets_count_characters_not_bytes(self):
+        dashes = "—".encode() * 10000  # 10,000 characters, 30,000 bytes
+        self.assertEqual([], rules(quality.check_docs({**GOOD_DOCS, "MEMORY.md": dashes})))
+        self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "MEMORY.md": dashes + b"x"})))
+
     def test_status_fields_are_required(self):
         todo = GOOD_TODO.replace("- **Next action:** c\n", "")
         self.assertEqual(["docs"], rules(quality.check_docs({**GOOD_DOCS, "TODO.md": todo.encode()})))
