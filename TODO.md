@@ -1,6 +1,6 @@
 # Parchment TODO
 
-Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and locally verified; 10.5 is the final Git lock.
+Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs stay stable. A checked box means implemented and locally verified.
 
 ## Current status
 
