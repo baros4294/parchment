@@ -127,9 +127,19 @@ class UiGalleryTest {
         Thread.sleep(12)
     }
 
-    /** Each capture builds a fresh scene, so the known Compose RectList failure gets one retry (see [retryOnceOnRectList]). */
-    private fun capture(viewport: Viewport, theme: ThemeConfig, name: String, steps: List<String> = emptyList()) =
-        retryOnceOnRectList { captureOnce(viewport, theme, name, steps) }
+    /**
+     * Compose 1.12 sometimes fails inside its own layout bookkeeping ("LayoutNode … not found in RectList"), at a
+     * different screen each time and in about half the runs (2026-11-11). Retry that one error once with a fresh
+     * scene; anything else, or a second failure, still fails the test. TODO.md tracks it for the real app.
+     */
+    private fun capture(viewport: Viewport, theme: ThemeConfig, name: String, steps: List<String> = emptyList()) {
+        try {
+            captureOnce(viewport, theme, name, steps)
+        } catch (e: IllegalArgumentException) {
+            if (e.message?.contains("RectList") != true) throw e
+            captureOnce(viewport, theme, name, steps)
+        }
+    }
 
     private fun captureOnce(viewport: Viewport, theme: ThemeConfig, name: String, steps: List<String>) {
         seed(theme)
