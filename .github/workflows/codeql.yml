@@ -1,7 +1,15 @@
 name: CodeQL
 
-# Static security analysis of the Kotlin code. Runs on GitHub's machines for pull requests and once a week.
+# Static security analysis of the Kotlin code, the Python scripts and the workflows themselves.
+# This is the repository's only CodeQL configuration: GitHub's "default setup" must stay off
+# (Settings > Code security > CodeQL analysis), because its automatic build uses JDK 17 and
+# cannot build this project, and while it is on GitHub rejects this workflow's results.
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
     branches: [main]
   schedule:
@@ -11,13 +19,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
-    name: Analyze Kotlin
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,21 +48,34 @@ jobs:
           persist-credentials: false
 
       - name: Set up JDK 25 (Temurin)
+        if: matrix.build-mode == 'manual'
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: "temurin"
           java-version: "25"
           cache: "gradle"
 
+      - name: Accept Android SDK Licenses
+        if: matrix.build-mode == 'manual'
+        run: |
+          SDKMGR=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses > /dev/null || true
+          fi
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
-          languages: java-kotlin
-          build-mode: manual
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
-      # CodeQL reads Kotlin while it compiles, so compile the desktop code (it includes the shared code).
+      # CodeQL reads Kotlin while it compiles, so compile every source set: desktop (with the shared code) and Android.
+      # The build cache stays off so nothing is skipped as up to date.
       - name: Compile
-        run: ./gradlew :composeApp:compileKotlinDesktop --no-daemon --no-build-cache --no-configuration-cache
+        if: matrix.build-mode == 'manual'
+        run: ./gradlew :composeApp:compileKotlinDesktop :composeApp:compileAndroidMain --no-daemon --no-build-cache --no-configuration-cache
 
       - name: Analyze
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:${{ matrix.language }}"
