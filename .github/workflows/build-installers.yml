@@ -119,9 +119,12 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         continue-on-error: true
         run: |
-          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom --no-daemon --no-configuration-cache -PappVersion=1.0.0
-          SBOM=$(find build composeApp/build androidApp/build -path '*cyclonedx*' -name '*.json' 2>/dev/null | head -1)
-          [[ -n "$SBOM" ]] && cp "$SBOM" dist/Parchment-SBOM.cdx.json
+          # No build cache: a cached SBOM outlives the dependency changes it should show.
+          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom \
+            --no-daemon --no-configuration-cache --no-build-cache -PappVersion=1.0.0
+          python3 .github/scripts/test_check_sbom.py
+          python3 .github/scripts/check_sbom.py build/reports/cyclonedx/bom.json
+          cp build/reports/cyclonedx/bom.json dist/Parchment-SBOM.cdx.json
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
