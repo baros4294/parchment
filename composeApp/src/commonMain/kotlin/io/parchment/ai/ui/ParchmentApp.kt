@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.getValue
@@ -47,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
@@ -88,7 +90,9 @@ private const val STARTUP_UPDATE_CHECK_DELAY_MS = 8_000L
 @Composable
 fun ParchmentApp(
     /** Desktop window hook; it receives what the window caption should name: the open chat or Settings. */
-    desktopWindowHeader: (@Composable (captionTitle: String) -> Unit)? = null
+    desktopWindowHeader: (@Composable (captionTitle: String) -> Unit)? = null,
+    /** Desktop window hook; the window sends it key events that nothing focused consumed, so shortcuts always work. */
+    shortcutDispatcher: AppShortcutDispatcher? = null
 ) {
     val uiScope = rememberCoroutineScope()
     val processState = parchmentProcessState
@@ -436,25 +440,33 @@ fun ParchmentApp(
                     var horizontalSwipeDelta by remember { mutableStateOf(0f) }
                     var startedNearLeftEdge by remember { mutableStateOf(false) }
 
+                    // The one shortcut list: the root runs it first while something is focused, and the desktop
+                    // window runs it for keys nothing focused consumed (at launch or after a click on empty space).
+                    val handleAppShortcut: (KeyEvent) -> Boolean = handle@{ event ->
+                        if (event.type != KeyEventType.KeyDown) return@handle false
+                        val ctrl = event.isCtrlPressed || event.isMetaPressed
+                        when {
+                            event.key == Key.Escape && showCommandPalette -> { showCommandPalette = false; true }
+                            event.key == Key.Escape -> PlatformBridge.handleSystemBackPressed()
+                            ctrl && event.key == Key.K -> { showCommandPalette = !showCommandPalette; true }
+                            ctrl && event.key == Key.N -> { openNewChat(); true }
+                            ctrl && event.key == Key.Comma -> { openSettings(null); true }
+                            ctrl && event.key == Key.B && !isCompactScreen -> { showSidebar = !showSidebar; true }
+                            else -> false
+                        }
+                    }
+                    if (shortcutDispatcher != null) {
+                        SideEffect { shortcutDispatcher.handler = handleAppShortcut }
+                        DisposableEffect(shortcutDispatcher) { onDispose { shortcutDispatcher.handler = { false } } }
+                    }
+
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .statusBarsPadding()
                             .navigationBarsPadding()
                             .imePadding()
-                            .onPreviewKeyEvent { event ->
-                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                                val ctrl = event.isCtrlPressed || event.isMetaPressed
-                                when {
-                                    event.key == Key.Escape && showCommandPalette -> { showCommandPalette = false; true }
-                                    event.key == Key.Escape -> PlatformBridge.handleSystemBackPressed()
-                                    ctrl && event.key == Key.K -> { showCommandPalette = !showCommandPalette; true }
-                                    ctrl && event.key == Key.N -> { openNewChat(); true }
-                                    ctrl && event.key == Key.Comma -> { openSettings(null); true }
-                                    ctrl && event.key == Key.B && !isCompactScreen -> { showSidebar = !showSidebar; true }
-                                    else -> false
-                                }
-                            }
+                            .onPreviewKeyEvent(handleAppShortcut)
                             .background(p.canvasBg)
                             .then(
                                 if (isCompactScreen && !isSettingsOpen) {
