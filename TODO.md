@@ -14,6 +14,10 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 - [ ] **13.6 Screen readers:** go through the app with NVDA on Windows and TalkBack on Android (chat, composer, sidebar, settings, Ctrl+K palette) and report anything unlabeled, read in the wrong order, or unreachable.
 
+### Paused
+
+- [ ] **RectList crash in UI tests (paused 2026-11-12):** `AgentPermissionUiTest.substantialSettingsFieldsStackAndTextFits` fails intermittently in CI ("Coverage and UI gallery") with `IllegalArgumentException: LayoutNode N not found in RectList`, thrown from `ImageComposeScene.close()` (`CompositionImpl.dispose` → `LayoutNode.detach` → `RectManager.remove`) after every assertion passed. Traces: runs 43145027121 (PR #8), 43147823103 (PR #9, both retry attempts), 43160848842 (full stack). Not suppressed while the cause is unknown; #9's retry can't help (each attempt ends in the same `close()`) and is reverted in #12. A rerun of 43147823103 (code equal to `main`) passed. Ruled out: `Dispatchers.Unconfined` moving scene work off the test thread (0 of 83,500 scene tasks off-thread; 0 hits in 480 local runs of the class under CPU load). Remaining leads: (1) CI test order: log it, and check whether failures follow `KeyboardShortcutTest` or other tests that render the whole `ParchmentApp` in the same JVM (local runs with and without it: 0 hits each, inconclusive); (2) a Compose Multiplatform release after 1.12.2 that fixes RectList (needs `verify.py final`).
+
 ## Known gaps
 
 Not planned; open a task first. Compose 1.12 can fail in its own layout bookkeeping ("not found in RectList"; about half of gallery runs; desktop UI tests retry it once): watch for it in the app and update Compose when fixed. No JDK AOT cache (16.6, dropped 2026-11): AppCDS already meets the start budget, and a cache built in CI may not match installed paths. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
