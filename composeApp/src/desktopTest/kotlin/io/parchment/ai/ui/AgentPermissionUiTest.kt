@@ -32,6 +32,21 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.test.*
 
+/**
+ * Compose 1.12 sometimes fails inside its own layout bookkeeping ("LayoutNode … not found in RectList"), from any
+ * render or from closing the scene, in about half of the gallery runs (2026-11-11). Runs [attempt] again once when
+ * that one error escapes; [attempt] must build its own scene and state. Anything else, or a second failure, still
+ * fails the test. TODO.md tracks it for the real app.
+ */
+internal fun retryOnceOnRectList(attempt: () -> Unit) {
+    try {
+        attempt()
+    } catch (e: IllegalArgumentException) {
+        if (e.message?.contains("RectList") != true) throw e
+        attempt()
+    }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 class AgentPermissionUiTest {
     private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
@@ -119,7 +134,7 @@ class AgentPermissionUiTest {
                 assertEquals(AgentPermissionOverrides(), overrides.value)
                 save(scene, name)
                 assertTextFits(scene, name)
-            } finally { scene.closeIgnoringRectList() }
+            } finally { scene.close() }
         } }
     }
 
@@ -151,7 +166,7 @@ class AgentPermissionUiTest {
             assertTrue(text(switches.single()).contains("web_fetch"))
             assertTrue(text(switches.single()).contains("Agent tools are off"))
             save(scene, "registry-disabled")
-        } finally { scene.closeIgnoringRectList() }
+        } finally { scene.close() }
     }
 
     @Test fun owningChatApprovalActionsWrapAtLargeFont() = runBlocking {
@@ -177,7 +192,7 @@ class AgentPermissionUiTest {
             waiting.join()
             assertTrue(waiting.isCancelled)
             assertTrue(broker.requests.value.isEmpty())
-        } finally { scene.closeIgnoringRectList(); waiting.cancelAndJoin(); broker.close() }
+        } finally { scene.close(); waiting.cancelAndJoin(); broker.close() }
     }
 
     @Test fun substantialSettingsFieldsStackAndTextFits() {
@@ -248,7 +263,7 @@ class AgentPermissionUiTest {
                         repeat(10) { if (selectedThemes().size != 1) settle(scene, frame + 16_000_000L * (it + 1)) }
                         assertEquals(listOf(presetLabels.last()), selectedThemes().map(::text))
                     }
-                } finally { scene.closeIgnoringRectList() }
+                } finally { scene.close() }
             } }
         }
     }
@@ -288,7 +303,7 @@ class AgentPermissionUiTest {
                 assertEquals(ProviderProtocol.OPENAI_RESPONSES.defaultBaseUrl, profile.value.baseUrl)
                 assertEquals(CUSTOM_DIALECTS.last(), profile.value.customDialect)
                 assertEquals(AuthHeaderMode.QUERY_PARAM, profile.value.authHeaderMode)
-            } finally { scene.closeIgnoringRectList() }
+            } finally { scene.close() }
         } }
     }
 
@@ -340,7 +355,7 @@ class AgentPermissionUiTest {
                 assertTextFits(scene, "Shared switches at $width / $scale")
                 settle(scene, 1_000_000_000L)
                 save(scene, "settings-switches-$width", frameTimeNanos = 2_000_000_000L)
-            } finally { scene.closeIgnoringRectList() }
+            } finally { scene.close() }
         } }
     }
 }

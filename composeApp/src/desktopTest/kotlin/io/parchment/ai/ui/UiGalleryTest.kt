@@ -155,7 +155,7 @@ class UiGalleryTest {
             )
             frame += 16_000_000L
             scene.render(frame).use { File(output, "${viewport.name}-$name.png").writeBytes(requireNotNull(it.encodeToData()).bytes) }
-        } finally { scene.closeIgnoringRectList() }
+        } finally { scene.close() }
     }
 
     @Test fun yourMessagesSitRightAndRepliesLeft() {
@@ -170,7 +170,7 @@ class UiGalleryTest {
             assertTrue(prompt.left > reply.left + 100f, "A short message of yours must sit on the right: $prompt against $reply")
             assertTrue(prompt.right >= reply.right, "Your message must reach the right side: $prompt against $reply")
         } finally {
-            scene.closeIgnoringRectList()
+            scene.close()
             (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }
             PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
@@ -202,7 +202,7 @@ class UiGalleryTest {
             settle(scene, 4)
             frame += 16_000_000L
             scene.render(frame).use { File(output, "icons.png").writeBytes(requireNotNull(it.encodeToData()).bytes) }
-        } finally { scene.closeIgnoringRectList() }
+        } finally { scene.close() }
     }
 
     @Test fun wheelScrollsTheChatFromThePageMargin() {
@@ -224,7 +224,7 @@ class UiGalleryTest {
             scene.sendPointerEvent(PointerEventType.Scroll, margin, scrollDelta = Offset(0f, -12f), type = PointerType.Mouse)
             assertNotEquals(before, image(), "The wheel must scroll the chat from the margin")
         } finally {
-            scene.closeIgnoringRectList()
+            scene.close()
             (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }
             PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
