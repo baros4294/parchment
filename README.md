@@ -4,7 +4,7 @@ A native AI chat and agent app for Windows and Android. Bring your own provider 
 
 Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView, no Material.
 
-[![Latest Release](installer/release-badge.svg)](https://github.com/baros4294/parchment/releases/latest)
+[![Latest Release](installer/release-badge.svg)](https://github.com/baros4294/parchment/releases/latest) [![Build](https://github.com/baros4294/parchment/actions/workflows/build-installers.yml/badge.svg?branch=main)](https://github.com/baros4294/parchment/actions/workflows/build-installers.yml) [![CodeQL](https://github.com/baros4294/parchment/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/baros4294/parchment/actions/workflows/codeql.yml)
 
 **Download:** [Windows installer (`.exe`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Windows-x64-Setup.exe) · [Android (`.apk`)](https://github.com/baros4294/parchment/releases/latest/download/Parchment-Android-Universal.apk)
 
