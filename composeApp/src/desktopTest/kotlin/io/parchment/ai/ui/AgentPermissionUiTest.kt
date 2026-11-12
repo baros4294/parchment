@@ -237,11 +237,16 @@ class AgentPermissionUiTest {
                         }
                         click(choices.single { text(it) == presetLabels.last() })
                         assertEquals(ThemeConfig.PRESETS.last(), selectedTheme.value)
-                        settle(scene, 1_100_000_000L)
-                        assertEquals(presetLabels.last(), text(nodes(scene).single {
+                        // The new selection can reach the semantics tree a frame before the old one clears,
+                        // so render frames until exactly one theme reads as selected (a few frames at most).
+                        fun selectedThemes() = nodes(scene).filter {
                             it.config.getOrNull(SemanticsProperties.Role) == Role.RadioButton && text(it).isNotEmpty() &&
                                 it.config.getOrNull(SemanticsProperties.Selected) == true
-                        }))
+                        }
+                        val frame = 1_100_000_000L
+                        settle(scene, frame)
+                        repeat(10) { if (selectedThemes().size != 1) settle(scene, frame + 16_000_000L * (it + 1)) }
+                        assertEquals(listOf(presetLabels.last()), selectedThemes().map(::text))
                     }
                 } finally { scene.close() }
             }
