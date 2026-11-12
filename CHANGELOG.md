@@ -2,6 +2,14 @@
 
 What changed in each release, newest first. From 2.1.7 on, release-please writes these entries from commit messages that follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` and `fix:` appear here and set the next version); edit wording in its release PR before merging it.
 
+## [2.1.7](https://github.com/baros4294/parchment/compare/v2.1.6...v2.1.7) (2026-11-12)
+
+
+### Fixes
+
+* run keyboard shortcuts when nothing has focus ([5051e0b](https://github.com/baros4294/parchment/commit/5051e0ba5bd770d9edf5db3dbb0af584e8ad3982))
+* run keyboard shortcuts when nothing has focus ([cf20a2f](https://github.com/baros4294/parchment/commit/cf20a2f72975f984081ccf3e792e05622e02dda3))
+
 ## 2.1.6
 
 - **Windows: chats, model lists and update checks work again.** Since 2.1.2 the Windows app's smaller build removed a part Ktor needs for JSON, so every request failed with "Could not initialize class io.ktor.serialization.kotlinx.ExtensionsJvmKt". **On Windows 2.1.2 or 2.1.3, install this version by hand once** (download the installer below and run it; chats and settings are kept): the broken versions can't update themselves. Android was not affected.
