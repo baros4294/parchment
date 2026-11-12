@@ -1,7 +1,8 @@
 name: Quality signals
 
-# For pull requests: test coverage (Kover) and the rendered UI gallery, uploaded so a reviewer can compare
-# the screens with the previous run's. Runs on GitHub's machines; nothing here gates a release.
+# For pull requests: test coverage (Kover), the rendered UI gallery (uploaded so a reviewer can compare the
+# screens with the previous run's) and a check that the release SBOM lists the app's libraries.
+# Runs on GitHub's machines; nothing here gates a release.
 on:
   pull_request:
     branches: [main]
@@ -37,6 +38,23 @@ jobs:
           ./gradlew --init-script .github/scripts/kover.init.gradle.kts \
             :composeApp:koverXmlReport :composeApp:koverHtmlReport :composeApp:koverLog \
             -Pparchment.gallery=true --no-daemon --no-configuration-cache --max-workers=2
+
+      # The release attaches this SBOM; checking it here catches a scan that lists no libraries before a release does.
+      - name: SBOM
+        if: ${{ always() }}
+        run: |
+          ./gradlew --init-script .github/scripts/sbom.init.gradle.kts cyclonedxBom \
+            --no-daemon --no-configuration-cache --no-build-cache -PappVersion=1.0.0
+          python3 .github/scripts/test_check_sbom.py
+          python3 .github/scripts/check_sbom.py build/reports/cyclonedx/bom.json
+
+      - name: Upload SBOM
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: build/reports/cyclonedx/bom.json
+          if-no-files-found: warn
 
       - name: Upload Coverage Report
         if: ${{ always() }}
