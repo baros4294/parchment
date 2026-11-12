@@ -26,6 +26,7 @@ Built with Kotlin Multiplatform and Compose Foundation: no Electron, no WebView,
 - Read aloud, dictation, and `/` commands such as `/goal`, `/compact` and `/continue`.
 - Composer controls for thinking effort and, for image and video models, aspect ratio, resolution and duration, with custom values.
 - Separate text and code fonts, including your own .ttf or .otf, and a native Windows 11 title bar.
+- Keyboard shortcuts: Ctrl+K command palette, Ctrl+N new chat, Ctrl+, settings, Ctrl+B sidebar.
 
 **Providers**
 - OpenAI Responses and Chat Completions, Anthropic Messages, and Gemini Interactions and generateContent, plus any compatible service through a custom provider.

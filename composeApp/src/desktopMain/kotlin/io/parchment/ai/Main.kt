@@ -15,14 +15,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toComposeImageBitmap
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isAltPressed
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -32,6 +24,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.platform.WindowsChrome
+import io.parchment.ai.ui.AppShortcutDispatcher
 import io.parchment.ai.ui.LocalParchmentPalette
 import io.parchment.ai.ui.ParchmentApp
 import kotlinx.coroutines.flow.collectLatest
@@ -188,6 +181,8 @@ fun main() {
             }
     }
 
+    val shortcuts = remember { AppShortcutDispatcher() }
+
     val appIconPainter = remember {
         runCatching {
             val stream = Thread.currentThread().contextClassLoader?.getResourceAsStream("icon/parchment-icon.png")
@@ -218,23 +213,7 @@ fun main() {
             state = windowState,
             title = windowTitle,
             icon = appIconPainter,
-            onKeyEvent = { keyEvent ->
-                val isPasteShortcut = keyEvent.type == KeyEventType.KeyDown &&
-                    !keyEvent.isAltPressed &&
-                    (((keyEvent.isCtrlPressed || keyEvent.isMetaPressed) && keyEvent.key == Key.V) ||
-                        (keyEvent.isShiftPressed && keyEvent.key == Key.Insert))
-                if (isPasteShortcut) {
-                    val pastedFiles = PlatformBridge.readClipboardFiles()
-                    if (pastedFiles.isNotEmpty()) {
-                        PlatformBridge.filesDroppedCallback?.invoke(pastedFiles)
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            }
+            onKeyEvent = { keyEvent -> handleUnconsumedWindowKey(keyEvent, shortcuts) }
         ) {
             LaunchedEffect(window) {
                 fun isSupportedDrop(dtde: DropTargetDragEvent): Boolean {
@@ -302,6 +281,7 @@ fun main() {
                 window.minimumSize = Dimension(640, 480)
             }
             ParchmentApp(
+                shortcutDispatcher = shortcuts,
                 desktopWindowHeader = { title ->
                     LaunchedEffect(title) { captionTitle = title }
                     val p = LocalParchmentPalette.current
