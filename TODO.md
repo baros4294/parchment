@@ -14,6 +14,10 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 - [ ] **13.6 Screen readers:** go through the app with NVDA on Windows and TalkBack on Android (chat, composer, sidebar, settings, Ctrl+K palette) and report anything unlabeled, read in the wrong order, or unreachable.
 
+### Paused
+
+- [ ] **RectList crash in UI tests (paused 2026-11-12):** `AgentPermissionUiTest.substantialSettingsFieldsStackAndTextFits` fails intermittently in CI ("Coverage and UI gallery") with `IllegalArgumentException: LayoutNode N not found in RectList`, thrown from `ImageComposeScene.close()` (`CompositionImpl.dispose` → `LayoutNode.detach` → `RectManager.remove`) after every assertion passed. Traces: runs 43145027121 (PR #8), 43147823103 (PR #9, both retry attempts), 43160848842 (scratch branch `claude/rectlist-diag`, full stack). Locally rare: 1 hit in ~540 scenes. Lead: every failure was in a run that included `KeyboardShortcutTest` (renders the whole `ParchmentApp` in the same test JVM); earlier PR runs without it passed, so check it for leftover global state or background work before blaming Compose. Mitigation: UI tests close scenes via `closeIgnoringRectList`; the retry from #9 can't help, since each attempt ends in the same `close()`.
+
 ## Known gaps
 
 Not planned; open a task first. Compose 1.12 can fail in its own layout bookkeeping ("not found in RectList"; about half of gallery runs; desktop UI tests retry it once): watch for it in the app and update Compose when fixed. No JDK AOT cache (16.6, dropped 2026-11): AppCDS already meets the start budget, and a cache built in CI may not match installed paths. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
