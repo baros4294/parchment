@@ -32,6 +32,21 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.test.*
 
+/**
+ * Compose 1.12 sometimes fails inside its own layout bookkeeping ("LayoutNode … not found in RectList"), from any
+ * render or from closing the scene, in about half of the gallery runs (2026-11-11). Runs [attempt] again once when
+ * that one error escapes; [attempt] must build its own scene and state. Anything else, or a second failure, still
+ * fails the test. TODO.md tracks it for the real app.
+ */
+internal fun retryOnceOnRectList(attempt: () -> Unit) {
+    try {
+        attempt()
+    } catch (e: IllegalArgumentException) {
+        if (e.message?.contains("RectList") != true) throw e
+        attempt()
+    }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 class AgentPermissionUiTest {
     private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
@@ -90,7 +105,7 @@ class AgentPermissionUiTest {
     @Test fun editorChoicesWrapAndRetainInheritanceAcrossNarrowAndLargeFonts() {
         val cases = listOf(Triple(380, 1f, "portrait"), Triple(740, 1f, "landscape"),
             Triple(320, 1.8f, "large-font"), Triple(380, 1f, "dark"))
-        cases.forEach { (width, scale, name) ->
+        cases.forEach { (width, scale, name) -> retryOnceOnRectList {
             val overrides = mutableStateOf(AgentPermissionOverrides())
             val defaults = AgentPermissionPolicy(workspacePath = "C:/Projects/a-long-workspace-name/another-long-folder", workspaceMode = WorkspaceMode.READ_ONLY)
             val palette = buildPaletteFromConfig(if (name == "dark") ThemeConfig(
@@ -120,10 +135,10 @@ class AgentPermissionUiTest {
                 save(scene, name)
                 assertTextFits(scene, name)
             } finally { scene.close() }
-        }
+        } }
     }
 
-    @Test fun registryTogglesSavedChoicesWithoutGrantingAccessAndSearchesDescriptions() {
+    @Test fun registryTogglesSavedChoicesWithoutGrantingAccessAndSearchesDescriptions() = retryOnceOnRectList {
         val overrides = mutableStateOf(AgentPermissionOverrides())
         val defaults = AgentPermissionPolicy(toolsEnabled = false)
         val scene = ImageComposeScene(360, 900, coroutineContext = Dispatchers.Unconfined)
@@ -190,7 +205,7 @@ class AgentPermissionUiTest {
             "History message limit (", "Prose font size (", "Code font size (", "Max reading width (")
         val presetLabels = ThemeConfig.PRESETS.map { it.name.substringBefore(" (") }
         listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
-            listOf("provider", "assistant", "fonts").forEach { page ->
+            listOf("provider", "assistant", "fonts").forEach { page -> retryOnceOnRectList {
                 val selectedTheme = mutableStateOf(ThemeConfig())
                 val scene = ImageComposeScene(width, 3_800, density = Density(1f, scale), coroutineContext = Dispatchers.Unconfined)
                 try {
@@ -249,14 +264,14 @@ class AgentPermissionUiTest {
                         assertEquals(listOf(presetLabels.last()), selectedThemes().map(::text))
                     }
                 } finally { scene.close() }
-            }
+            } }
         }
     }
 
     @Test fun providerChoicesWrapAndPreserveExplicitSettings() {
         val labels = ProviderProtocol.entries.map { it.displayName } + CUSTOM_DIALECTS.map(::customDialectLabel) +
             AuthHeaderMode.entries.map { it.label }
-        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
+        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) -> retryOnceOnRectList {
             val profile = mutableStateOf(ProviderProfile("fixture", "Fixture", ProviderProtocol.CUSTOM,
                 customDialect = CUSTOM_DIALECTS.first(), baseUrl = "https://example.invalid/exact-endpoint"))
             val scene = ImageComposeScene(width, 3_800, density = Density(1f, scale), coroutineContext = Dispatchers.Unconfined)
@@ -289,11 +304,11 @@ class AgentPermissionUiTest {
                 assertEquals(CUSTOM_DIALECTS.last(), profile.value.customDialect)
                 assertEquals(AuthHeaderMode.QUERY_PARAM, profile.value.authHeaderMode)
             } finally { scene.close() }
-        }
+        } }
     }
 
     @Test fun sharedSettingsSwitchesHaveOneLabelledTargetAndExposeState() {
-        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) ->
+        listOf(320 to 1.8f, 740 to 1f).forEach { (width, scale) -> retryOnceOnRectList {
             val rowState = mutableStateOf(false)
             val standaloneState = mutableStateOf(false)
             var rowChanges = 0
@@ -341,6 +356,6 @@ class AgentPermissionUiTest {
                 settle(scene, 1_000_000_000L)
                 save(scene, "settings-switches-$width", frameTimeNanos = 2_000_000_000L)
             } finally { scene.close() }
-        }
+        } }
     }
 }

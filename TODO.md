@@ -4,7 +4,7 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Current status
 
-- **Source:** every planned task is done and pushed (2026-11-11): design system and audit, interaction and accessibility passes, the Anthropic prompt-cache fix, CI and release hygiene, the strings table and the file splits. 2026-11-12: `codeql.yml` covers Kotlin (desktop + Android, JDK 25), Python and Actions on push, PR and weekly; GitHub's default setup must stay off (its JDK 17 autobuild fails). Issue template config and build/CodeQL README badges. Stabilized `AgentPermissionUiTest.substantialSettingsFieldsStackAndTextFits` (waits until exactly one theme reads selected). `dependency-submission.yml` submits only shipped runtime classpaths, so alerts cover what users run. Release SBOM is built uncached from the shipped runtime classpaths; `check_sbom.py` fails PRs and the release step under 50 libraries. Desktop shortcuts work with nothing focused: the window's `onKeyEvent` runs the one shortcut handler via `AppShortcutDispatcher` (`KeyboardShortcutTest`).
+- **Source:** every planned task is done and pushed (2026-11-11): design system and audit, interaction and accessibility passes, the Anthropic prompt-cache fix, CI and release hygiene, the strings table and the file splits. 2026-11-12: `codeql.yml` covers Kotlin (desktop + Android, JDK 25), Python and Actions on push, PR and weekly; GitHub's default setup must stay off (its JDK 17 autobuild fails). Issue template config and build/CodeQL README badges. `AgentPermissionUiTest` waits for one selected theme and, like the gallery, retries each scene once on the Compose RectList error. `dependency-submission.yml` submits only shipped runtime classpaths, so alerts cover what users run. Release SBOM is built uncached from the shipped runtime classpaths; `check_sbom.py` fails PRs and the release step under 50 libraries. Desktop shortcuts work with nothing focused: the window's `onKeyEvent` runs the one shortcut handler via `AppShortcutDispatcher` (`KeyboardShortcutTest`).
 - **Last verified:** 2026-11-11, `verify.py final` on JDK 25: 399 tests, signed APK 4.3 MB, ProGuard-shrunk desktop package; the packaged app launches and opens chats.
 - **Next action:** the user's screen-reader pass below. Open a new task for anything else.
 
@@ -16,7 +16,7 @@ Updated 2026-11-11. AGENTS.md owns workflow; MEMORY holds contracts. Task IDs st
 
 ## Known gaps
 
-Not planned; open a task first. Compose 1.12 can fail in its own layout bookkeeping ("not found in RectList"; about half of gallery runs, retried there): watch for it in the app and update Compose when fixed. No JDK AOT cache (16.6, dropped 2026-11): AppCDS already meets the start budget, and a cache built in CI may not match installed paths. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
+Not planned; open a task first. Compose 1.12 can fail in its own layout bookkeeping ("not found in RectList"; about half of gallery runs; desktop UI tests retry it once): watch for it in the app and update Compose when fixed. No JDK AOT cache (16.6, dropped 2026-11): AppCDS already meets the start budget, and a cache built in CI may not match installed paths. No CHARX archives; cards over 512 KB of data lose their original copy. No persona profiles. No full-duplex voice. Android MCP is HTTP-only. Shell is not sandboxed.
 
 ## Sources
 
