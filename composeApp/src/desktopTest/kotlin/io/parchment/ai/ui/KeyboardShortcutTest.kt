@@ -78,7 +78,7 @@ class KeyboardShortcutTest {
             pressInWindow(scene, shortcuts, Key.Escape, ctrl = false)
             assertFalse(paletteOpen(scene), "Escape must still close the palette")
         } finally {
-            scene.close()
+            scene.closeIgnoringRectList()
             PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
     }

@@ -15,7 +15,7 @@ import kotlin.test.*
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 class ComposerControlsTest {
-    private inline fun ImageComposeScene.use(block: (ImageComposeScene) -> Unit) { try { block(this) } finally { close() } }
+    private inline fun ImageComposeScene.use(block: (ImageComposeScene) -> Unit) { try { block(this) } finally { closeIgnoringRectList() } }
 
     private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
         fun flatten(node: SemanticsNode): List<SemanticsNode> = listOf(node) + node.children.flatMap(::flatten)

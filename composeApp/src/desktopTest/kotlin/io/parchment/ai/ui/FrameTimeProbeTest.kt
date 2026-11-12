@@ -53,7 +53,7 @@ class FrameTimeProbeTest {
                 val micros = (System.nanoTime() - started) / 1_000
                 if (frame++ >= WARMUP_FRAMES) frames += micros
             }
-        } finally { scene.close() }
+        } finally { scene.closeIgnoringRectList() }
 
         val sorted = frames.sorted()
         val line = "streaming_reply chars=${reply.length} frames=${frames.size} " +

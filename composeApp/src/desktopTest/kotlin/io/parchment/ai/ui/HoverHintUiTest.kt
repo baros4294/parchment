@@ -42,7 +42,7 @@ class HoverHintUiTest {
             }
             pump(scene, 50)
             check(scene)
-        } finally { scene.close() }
+        } finally { scene.closeIgnoringRectList() }
     }
 
     private fun hover(scene: ImageComposeScene, x: Float, y: Float) =

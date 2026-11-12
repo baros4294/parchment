@@ -54,7 +54,7 @@ class SharedActionSemanticsUiTest {
             }
             scene.render(0L).close()
             check(scene)
-        } finally { scene.close() }
+        } finally { scene.closeIgnoringRectList() }
     }
 
     /** Publishes state written outside composition before rendering, so one frame observes it. */
