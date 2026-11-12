@@ -1,0 +1,51 @@
+name: Dependency submission
+
+# Tells GitHub's dependency graph which libraries ship in the apps, so Dependabot alerts cover only those:
+# the desktop runtime classpath and the Android release runtime classpath. Build tooling (the Android Gradle
+# Plugin, Kotlin, their own libraries) never ships and is left out; Dependabot can't update it anyway.
+# Replaces GitHub's "Automatic dependency submission", which must stay off (Settings > Code security).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gradle/**"
+      - "**/*.gradle.kts"
+      - ".github/workflows/dependency-submission.yml"
+  schedule:
+    - cron: "11 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: "temurin"
+          java-version: "25"
+
+      - name: Accept Android SDK Licenses
+        run: |
+          SDKMGR=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses > /dev/null || true
+          fi
+
+      - name: Submit shipped dependencies
+        uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          dependency-graph-include-configurations: "^(desktopRuntimeClasspath|releaseRuntimeClasspath)$"
