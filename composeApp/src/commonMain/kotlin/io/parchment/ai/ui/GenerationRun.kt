@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import io.parchment.ai.harness.wasCutOff
+import io.parchment.ai.strings.Strings
 import io.parchment.ai.harness.withInterruptedOutcome
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.getValue

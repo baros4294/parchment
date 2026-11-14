@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import io.parchment.ai.model.AppStateSnapshot
+import io.parchment.ai.strings.Strings
 import io.parchment.ai.model.ChatSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope

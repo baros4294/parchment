@@ -1,5 +1,6 @@
 package io.parchment.ai.harness
 
+import io.parchment.ai.platform.OwnedShellProtocol
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit

@@ -32,19 +32,21 @@ import io.parchment.ai.network.detectMediaEndpointRedirectFromError
 import io.parchment.ai.network.extractCitationsFromToolCall
 import io.parchment.ai.network.extractCleanApiErrorSummary
 import io.parchment.ai.network.isContextLengthExceededError
-import io.parchment.ai.network.isGeminiServerSideToolSignature
 import io.parchment.ai.network.isTransientOrProxyTimeoutError
 import io.parchment.ai.network.parseModelsListJson
 import io.parchment.ai.network.resolveKnownOutputModalities
 import io.parchment.ai.network.resolveModelModalityProfile
 import io.parchment.ai.network.sanitizeContextNodes
-import io.parchment.ai.network.sanitizeGeminiThoughtSignature
 import io.parchment.ai.network.shouldFallbackToLegacyProtocol
 import io.parchment.ai.network.stripInlineErrorNotices
+import io.parchment.ai.platform.HtmlTextConverter
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.WorkspaceFuzzyEditEngine
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
 import io.parchment.ai.protocol.O200kTokenizer
+import io.parchment.ai.protocol.isGeminiServerSideToolSignature
+import io.parchment.ai.protocol.sanitizeGeminiThoughtSignature
 import io.parchment.ai.ui.BUILTIN_LAB_SVG_PATHS
 import io.parchment.ai.ui.DiffLineKind
 import io.parchment.ai.ui.computeUnifiedLineDiff
@@ -649,7 +651,7 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals("https://en.wikipedia.org/wiki/Kotlin_(programming_language)", wikiLink.substring(openParenIdx + 1, closeParenIdx))
 
         val htmlDoc = "<html><head><script>alert(1)</script></head><body><h1>Title</h1><p>Hello <a href=\"https://example.com\">World</a> &amp; Friends!</p></body></html>"
-        val cleanMd = WorkspaceHarness.convertHtmlToReadableText(htmlDoc, "text/html")
+        val cleanMd = HtmlTextConverter.convertHtmlToReadableText(htmlDoc, "text/html")
         assertTrue(cleanMd.contains("# Title"))
         assertTrue(cleanMd.contains("[World](https://example.com) & Friends!"))
         assertTrue(!cleanMd.contains("alert(1)"))
@@ -891,7 +893,7 @@ class ParchmentProtocolAndHarnessTest {
 
         // 23. Verify Free Multi-Engine `web_search` URL Unwrapping & Multi-Result Citation Extraction
         val ddgRedirect = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fkotlinlang.org%2Fdocs%2Freleases.html&rut=abc"
-        assertEquals("https://kotlinlang.org/docs/releases.html", WorkspaceHarness.unwrapDuckDuckGoRedirectUrl(ddgRedirect))
+        assertEquals("https://kotlinlang.org/docs/releases.html", HtmlTextConverter.unwrapDuckDuckGoRedirectUrl(ddgRedirect))
         val webSearchToolRecord = ToolCallRecord(
             id = "call_ws_1",
             name = "web_search",
@@ -1199,7 +1201,7 @@ class ParchmentProtocolAndHarnessTest {
           return "Hi, " + clean
         """.trimIndent()
 
-        val fuzzyRes = WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+        val fuzzyRes = WorkspaceFuzzyEditEngine.applySingleEditWithFuzzySelfHealing(
             existingLf = sampleFile,
             rawOldText = driftedOld,
             rawNewText = driftedNew,
@@ -1213,7 +1215,7 @@ class ParchmentProtocolAndHarnessTest {
         // 2. Accidental `123: ` line-number prefixes copied from `fs_read` output are stripped automatically
         val numberedOld = "2:     fun greet(name: String): String {\n3:         val trimmed = name.trim()"
         val numberedNew = "2:     fun greet(name: String): String {\n3:         val trimmed = name.trim().lowercase()"
-        val linePrefixRes = WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+        val linePrefixRes = WorkspaceFuzzyEditEngine.applySingleEditWithFuzzySelfHealing(
             existingLf = sampleFile,
             rawOldText = numberedOld,
             rawNewText = numberedNew,
@@ -1561,11 +1563,11 @@ class ParchmentProtocolAndHarnessTest {
         val serverSearchSigB64 = kotlin.io.encoding.Base64.encode(serverSearchProtobufBytes)
         val gluedCorruptedSig = serverSearchSigB64 + cleanFnSigB64 + serverSearchSigB64
 
-        assertTrue(AiProviderEngine.isGeminiServerSideToolSignature(serverSearchSigB64), "08 02 protobuf tag must be detected as server-side tool signature")
-        assertFalse(AiProviderEngine.isGeminiServerSideToolSignature(cleanFnSigB64), "Standard function_call signature must not be flagged as server-side tool")
+        assertTrue(isGeminiServerSideToolSignature(serverSearchSigB64), "08 02 protobuf tag must be detected as server-side tool signature")
+        assertFalse(isGeminiServerSideToolSignature(cleanFnSigB64), "Standard function_call signature must not be flagged as server-side tool")
         assertEquals(
             cleanFnSigB64,
-            AiProviderEngine.sanitizeGeminiThoughtSignature(gluedCorruptedSig, forFunctionCall = true),
+            sanitizeGeminiThoughtSignature(gluedCorruptedSig, forFunctionCall = true),
             "Sanitizer must split glued Base64 segments and pick the non-(08 02) function_call signature"
         )
 

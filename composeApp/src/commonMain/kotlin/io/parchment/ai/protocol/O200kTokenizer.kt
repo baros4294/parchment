@@ -11,7 +11,6 @@ import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.AgentPermissionResolver
-import io.parchment.ai.network.sanitizeGeminiThoughtSignature
 
 data class ContextCompactionPlan(
     val mutedNodeIds: Set<String>,
@@ -408,7 +407,7 @@ object O200kTokenizer {
 
     fun compactToolCallRecord(tc: ToolCallRecord, maxKeepChars: Int = 220): ToolCallRecord {
         val cleanSig = if (tc.thoughtSignature.length > 2048) {
-            io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(tc.thoughtSignature, forFunctionCall = true)
+            sanitizeGeminiThoughtSignature(tc.thoughtSignature, forFunctionCall = true)
         } else tc.thoughtSignature
         if (tc.isRunning || (tc.resultText.length <= maxKeepChars + 60 && cleanSig == tc.thoughtSignature) || isToolResultCompacted(tc)) {
             return if (cleanSig != tc.thoughtSignature) tc.copy(thoughtSignature = cleanSig) else tc
@@ -515,7 +514,7 @@ object O200kTokenizer {
                     "… [Earlier reasoning compacted into Continuity Memory]\n" + activeVar.thinkingSummary.takeLast(1800)
                 } else activeVar.thinkingSummary
                 val newSig = if (activeVar.thinkingSignature.length > 2048) {
-                    val sanitized = io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(
+                    val sanitized = sanitizeGeminiThoughtSignature(
                         activeVar.thinkingSignature,
                         forFunctionCall = false
                     )

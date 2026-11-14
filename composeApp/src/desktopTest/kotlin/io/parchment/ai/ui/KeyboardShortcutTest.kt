@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.runtime.snapshots.Snapshot
+import io.parchment.ai.strings.Strings
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.InternalComposeUiApi

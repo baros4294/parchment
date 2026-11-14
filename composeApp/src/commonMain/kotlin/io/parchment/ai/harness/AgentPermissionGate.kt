@@ -53,7 +53,7 @@ object AgentPermissionGate {
             (name == "todo_write" && scope.policy.hasWorkspace && scope.policy.workspaceMode == WorkspaceMode.READ_WRITE)
         val changesState = name in setOf("todo_write", "goal_complete")
         val usesWeb = name in setOf("web_search", "web_fetch")
-        val external = McpRegistry.isMcpTool(name) // What another app's tool does cannot be known from here.
+        val external = WorkspaceHarness.isMcpToolName(name) // What another app's tool does cannot be known from here.
         return ToolEffect(
             // Asking the person is itself the check, so it never needs its own approval.
             // Control of the whole device always asks, whatever the setting for other tools.

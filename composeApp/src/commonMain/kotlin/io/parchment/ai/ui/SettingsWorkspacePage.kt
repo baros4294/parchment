@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.runtime.getValue
+import io.parchment.ai.strings.Strings
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO

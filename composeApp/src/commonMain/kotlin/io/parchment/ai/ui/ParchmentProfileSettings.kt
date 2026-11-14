@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.foundation.Image
+import io.parchment.ai.strings.Strings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement

@@ -1,7 +1,6 @@
 package io.parchment.ai.platform
 
 import io.parchment.ai.ParchmentBuildConfig
-import io.parchment.ai.harness.WorkspaceHarness
 import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -139,7 +138,7 @@ internal object PublicWebTransport {
                 builder.toString()
             }
             check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(400)}" }
-            WorkspaceHarness.convertHtmlToReadableText(text, body.contentType()?.toString().orEmpty()).take(limit)
+            HtmlTextConverter.convertHtmlToReadableText(text, body.contentType()?.toString().orEmpty()).take(limit)
         }
     }
 

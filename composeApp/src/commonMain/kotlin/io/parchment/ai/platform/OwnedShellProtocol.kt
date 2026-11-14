@@ -1,4 +1,4 @@
-package io.parchment.ai.harness
+package io.parchment.ai.platform
 
 /** Private supervisor channel. Model output uses a different pipe and cannot be parsed as control. */
 internal class OwnedShellProtocol(val token: String) {

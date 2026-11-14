@@ -25,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import io.parchment.ai.harness.McpRegistry
 import io.parchment.ai.harness.ToolApprovalBroker
 import io.parchment.ai.harness.ToolApprovalDecision
 import io.parchment.ai.harness.AgentPermissionGate
@@ -33,6 +32,8 @@ import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.AgentPermissionOverrides
 import io.parchment.ai.model.AgentPermissionPolicy
+import io.parchment.ai.network.McpRegistry
+import io.parchment.ai.strings.Strings
 import io.parchment.ai.model.ShellAccess
 import io.parchment.ai.model.ToolApprovalMode
 import io.parchment.ai.model.WorkspaceMode

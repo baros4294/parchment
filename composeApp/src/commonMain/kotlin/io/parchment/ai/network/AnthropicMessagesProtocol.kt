@@ -1,6 +1,6 @@
 package io.parchment.ai.network
 
-import io.parchment.ai.ui.Strings
+import io.parchment.ai.strings.Strings
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header

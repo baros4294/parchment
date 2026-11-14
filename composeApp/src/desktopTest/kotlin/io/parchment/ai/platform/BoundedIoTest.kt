@@ -2,7 +2,6 @@ package io.parchment.ai.platform
 
 import com.sun.net.httpserver.HttpServer
 import io.parchment.ai.network.AiProviderEngine
-import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
 import io.parchment.ai.network.downloadMediaBytes
 import io.parchment.ai.network.oversizedAttachmentMessage
 import kotlinx.coroutines.runBlocking

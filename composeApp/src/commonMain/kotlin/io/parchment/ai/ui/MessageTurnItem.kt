@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.ui.layout.layout
+import io.parchment.ai.strings.Strings
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.hoverable

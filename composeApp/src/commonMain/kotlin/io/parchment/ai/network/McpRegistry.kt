@@ -1,11 +1,7 @@
-package io.parchment.ai.harness
+package io.parchment.ai.network
 
+import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.McpServerConfig
-import io.parchment.ai.network.HttpMcpTransport
-import io.parchment.ai.network.McpClient
-import io.parchment.ai.network.McpToolResult
-import io.parchment.ai.network.ProcessMcpTransport
-import io.parchment.ai.network.parseMcpArguments
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -22,7 +18,7 @@ data class McpServerStatus(val state: McpServerState, val toolCount: Int = 0, va
 
 /** Live connections to the enabled MCP servers and the tools they offer. */
 object McpRegistry {
-    private const val PREFIX = "mcp__"
+    private const val PREFIX = WorkspaceHarness.MCP_TOOL_PREFIX
     private const val MAX_NAME_CHARS = 64 // The tightest limit among the provider APIs.
     private const val CONNECT_TIMEOUT_MS = 30_000L
 
@@ -40,7 +36,11 @@ object McpRegistry {
     private val definitionsState = MutableStateFlow<List<WorkspaceHarness.ToolDefinition>>(emptyList())
     val definitions: StateFlow<List<WorkspaceHarness.ToolDefinition>> = definitionsState.asStateFlow()
 
-    fun isMcpTool(name: String): Boolean = name.startsWith(PREFIX)
+    init {
+        WorkspaceHarness.registerExternalToolsProvider { definitionsState.value }
+    }
+
+    fun isMcpTool(name: String): Boolean = WorkspaceHarness.isMcpToolName(name)
 
     private fun slug(raw: String) = raw.replace(Regex("[^a-zA-Z0-9_-]"), "_")
 

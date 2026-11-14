@@ -1,6 +1,6 @@
 package io.parchment.ai.network
 
-import io.parchment.ai.ui.Strings
+import io.parchment.ai.strings.Strings
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -14,6 +14,8 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.WorkspaceHarness
+import io.parchment.ai.protocol.isGeminiServerSideToolSignature
+import io.parchment.ai.protocol.sanitizeGeminiThoughtSignature
 import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.ChatSession

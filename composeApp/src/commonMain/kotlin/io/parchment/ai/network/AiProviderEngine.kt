@@ -1,6 +1,6 @@
 package io.parchment.ai.network
 
-import io.parchment.ai.ui.Strings
+import io.parchment.ai.strings.Strings
 
 import io.parchment.ai.runtime.AppForeground
 import kotlinx.coroutines.coroutineScope
@@ -39,6 +39,7 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WebSourceCitation
+import io.parchment.ai.platform.MAX_INLINE_ATTACHMENT_BYTES
 import io.parchment.ai.platform.PlatformBridge
 import io.parchment.ai.runtime.runActivityFlow
 import io.parchment.ai.protocol.O200kTokenizer
@@ -97,7 +98,6 @@ sealed class StreamUpdate {
     data class Error(val message: String, val rawDetails: String = "") : StreamUpdate()
 }
 
-internal const val MAX_INLINE_ATTACHMENT_BYTES = 50L * 1024L * 1024L
 internal const val MAX_DOWNLOADED_IMAGE_BYTES = 64 * 1024 * 1024
 internal const val MAX_DOWNLOADED_AUDIO_BYTES = 128 * 1024 * 1024
 internal const val MAX_DOWNLOADED_VIDEO_BYTES = 512 * 1024 * 1024

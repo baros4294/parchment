@@ -1,6 +1,5 @@
 package io.parchment.ai.platform
 
-import io.parchment.ai.harness.WorkspaceHarness
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -27,7 +26,7 @@ internal object WorkspaceFileEditor {
         val usesCrlf = existingRaw.contains("\r\n")
         val existingLf = existingRaw.replace("\r\n", "\n")
 
-        val editRes = WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+        val editRes = WorkspaceFuzzyEditEngine.applySingleEditWithFuzzySelfHealing(
             existingLf = existingLf,
             rawOldText = oldText,
             rawNewText = newText,
@@ -54,7 +53,7 @@ internal object WorkspaceFileEditor {
         edits.forEachIndexed { idx, (oldText, newText, replaceAll) ->
             require(oldText.isNotEmpty()) { "Edit #${idx + 1}: old_text must not be empty." }
             val stepRes = runCatching {
-                WorkspaceHarness.applySingleEditWithFuzzySelfHealing(
+                WorkspaceFuzzyEditEngine.applySingleEditWithFuzzySelfHealing(
                     existingLf = currentLf,
                     rawOldText = oldText,
                     rawNewText = newText,

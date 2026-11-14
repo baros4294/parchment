@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.ui.draw.alpha
+import io.parchment.ai.strings.Strings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.expandHorizontally

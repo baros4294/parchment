@@ -1,5 +1,6 @@
 package io.parchment.ai.harness
 
+import io.parchment.ai.platform.OwnedShellProtocol
 import kotlin.test.*
 
 class OwnedShellProtocolTest {

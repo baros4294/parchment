@@ -9,6 +9,7 @@ import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import io.parchment.ai.ParchmentBuildConfig
+import io.parchment.ai.platform.OtaStagedDownload
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -38,19 +39,6 @@ data class OtaReleaseInfo(
     val isNewerThanCurrent: Boolean,
     val assetSha256: String = ""
 )
-
-/** One downloaded installer, staged on disk until it is verified and handed to the platform. */
-interface OtaStagedDownload {
-    fun write(buffer: ByteArray, count: Int)
-
-    /** Throws unless the complete download matches the published size and checksum. */
-    fun finish(expectedBytes: Long, expectedSha256: String)
-
-    fun install(): Result<String>
-
-    /** Removes the staged file unless the platform installer now owns it. */
-    fun discard()
-}
 
 sealed class OtaUpdateState {
     data object Idle : OtaUpdateState()

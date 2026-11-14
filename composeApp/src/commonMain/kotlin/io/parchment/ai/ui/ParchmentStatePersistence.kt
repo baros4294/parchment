@@ -22,11 +22,12 @@ import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.mapProtocolToDialect
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
-import io.parchment.ai.network.isGeminiServerSideToolSignature
-import io.parchment.ai.network.sanitizeGeminiThoughtSignature
 import io.parchment.ai.platform.ChatBundleEntry
 import io.parchment.ai.platform.ChatImportOutcome
 import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.protocol.isGeminiServerSideToolSignature
+import io.parchment.ai.protocol.sanitizeGeminiThoughtSignature
+import io.parchment.ai.strings.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -449,7 +450,7 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
 
             val rawVarSig = v.thinkingSignature
             val cleanVarSig = if (rawVarSig.length > 32 && rawVarSig.indexOf('=') in 0 until rawVarSig.trimEnd('=').length) {
-                io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(rawVarSig, forFunctionCall = false)
+                sanitizeGeminiThoughtSignature(rawVarSig, forFunctionCall = false)
             } else rawVarSig
             var varToolsSigChanged = false
             val updatedTools = if (v.toolCalls.isNotEmpty()) {
@@ -457,9 +458,9 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
                     val rawTcSig = tc.thoughtSignature
                     val hasGluedTcSig = rawTcSig.length > 32 &&
                         (rawTcSig.indexOf('=') in 0 until rawTcSig.trimEnd('=').length ||
-                            io.parchment.ai.network.AiProviderEngine.isGeminiServerSideToolSignature(rawTcSig))
+                            isGeminiServerSideToolSignature(rawTcSig))
                     if (hasGluedTcSig) {
-                        val sanitizedTcSig = io.parchment.ai.network.AiProviderEngine.sanitizeGeminiThoughtSignature(rawTcSig, forFunctionCall = true)
+                        val sanitizedTcSig = sanitizeGeminiThoughtSignature(rawTcSig, forFunctionCall = true)
                         if (sanitizedTcSig != rawTcSig) {
                             varToolsSigChanged = true
                             tc.copy(thoughtSignature = sanitizedTcSig)

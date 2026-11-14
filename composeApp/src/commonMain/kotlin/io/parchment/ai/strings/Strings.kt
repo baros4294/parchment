@@ -1,4 +1,4 @@
-package io.parchment.ai.ui
+package io.parchment.ai.strings
 
 /**
  * Interface text in one table, so the app can be translated without touching every screen. Entries are

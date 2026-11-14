@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.runtime.key
+import io.parchment.ai.strings.Strings
 import androidx.compose.ui.input.key.key
 import io.parchment.ai.model.MessageRole
 import io.parchment.ai.network.cancelBackgroundInteraction

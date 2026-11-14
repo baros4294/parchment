@@ -17,10 +17,11 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.QueuedPromptItem
 import io.parchment.ai.harness.AgentToolRunContext
-import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
 import io.parchment.ai.network.cancelBackgroundInteraction
 import io.parchment.ai.network.stripInlineErrorNotices
+import io.parchment.ai.platform.MAX_INLINE_ATTACHMENT_BYTES
 import io.parchment.ai.platform.MAX_INLINE_TEXT_ATTACHMENT_BYTES
+import io.parchment.ai.strings.Strings
 import io.parchment.ai.platform.inlineAttachmentText
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.AgentPermissionOverrides

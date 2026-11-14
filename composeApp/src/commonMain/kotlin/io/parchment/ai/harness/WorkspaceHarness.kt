@@ -7,6 +7,7 @@ import io.parchment.ai.model.ToolApprovalMode
 import io.parchment.ai.model.TodoItem
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
+import io.parchment.ai.platform.HtmlTextConverter
 import io.parchment.ai.platform.PlatformBridge
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -525,7 +526,18 @@ object WorkspaceHarness {
         )
     )
 
-    fun allTools(): List<ToolDefinition> = ALL_TOOLS + McpRegistry.definitions.value
+    internal const val MCP_TOOL_PREFIX = "mcp__"
+
+    internal fun isMcpToolName(name: String): Boolean = name.startsWith(MCP_TOOL_PREFIX)
+
+    @kotlin.concurrent.Volatile
+    private var externalToolsProvider: () -> List<ToolDefinition> = { emptyList() }
+
+    internal fun registerExternalToolsProvider(provider: () -> List<ToolDefinition>) {
+        externalToolsProvider = provider
+    }
+
+    fun allTools(): List<ToolDefinition> = ALL_TOOLS + externalToolsProvider()
 
     private data class CachedWorkspaceContext(
         val timestampMs: Long,
@@ -658,7 +670,7 @@ object WorkspaceHarness {
         policy: AgentPermissionPolicy? = null
     ): List<ToolDefinition> {
         val hasMountedWorkspace = mode != WorkspaceMode.OFF && workspacePath.isNotBlank()
-        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool && McpRegistry.definitions.value.isEmpty() && policy?.computerAccess != true) return emptyList()
+        if (!hasMountedWorkspace && !goalModeActive && !enableWebTools && !includeLocalWebSearchTool && externalToolsProvider().isEmpty() && policy?.computerAccess != true) return emptyList()
         return allTools().filter { tool ->
             if (policy != null && !policy.allowsTool(tool.name)) return@filter false
             if (tool.name == ComputerUse.TOOL_NAME && policy?.computerAccess != true) return@filter false
@@ -668,7 +680,7 @@ object WorkspaceHarness {
             }
             if (!hasMountedWorkspace) {
                 if (!goalModeActive) {
-                    tool.name == "web_search" || tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll" || tool.name == "ask_user" || tool.name == "agent_delegate" || tool.name == ComputerUse.TOOL_NAME || McpRegistry.isMcpTool(tool.name)
+                    tool.name == "web_search" || tool.name == "web_fetch" || tool.name == "calc_eval" || tool.name == "dice_roll" || tool.name == "ask_user" || tool.name == "agent_delegate" || tool.name == ComputerUse.TOOL_NAME || isMcpToolName(tool.name)
                 } else {
                     !tool.requiresWorkspaceFolder
                 }
@@ -1087,7 +1099,6 @@ object WorkspaceHarness {
     private val ANSI_ESCAPE_REGEX = Regex("""\u001B\[[0-?]*[ -/]*[@-~]""")
     private val PS_CLIXML_BLOCK_REGEX = Regex("""(?s)#< CLIXML\s*<Objs\b.*?</Objs>""")
     private val EXCESS_BLANK_LINES_REGEX = Regex("""\n{4,}""")
-    private val LINE_NUMBER_PREFIX_REGEX = Regex("""^\s*(\d+):\s?(.*)$""")
 
     /**
      * Tidies tool output before it reaches the model:
@@ -1124,182 +1135,8 @@ object WorkspaceHarness {
         return "$headPart\n… [$omittedCount middle lines omitted by size valve — refine query or use fs_read with start_line/max_lines] …\n$tailPart"
     }
 
-    /**
-     * Strips accidental `123: ` line-number prefixes from `old_text` / `new_text` when a model copies
-     * lines directly from `fs_read` output (`File: ... \n 1: ... \n 2: ...`), unless the target file itself
-     * actually contains those literal `123: ` prefixes.
-     */
-    fun stripAccidentalReadLinePrefixes(
-        candidate: String,
-        existingFileLf: String,
-        requireStrippedInFile: Boolean = true
-    ): String {
-        val lines = candidate.lines()
-        if (lines.size < 2) return candidate
-        var matchedSeq = 0
-        var prevNum = -1
-        val strippedLines = mutableListOf<String>()
-        for (line in lines) {
-            if (line.isBlank()) {
-                strippedLines.add(line)
-                continue
-            }
-            val m = LINE_NUMBER_PREFIX_REGEX.matchEntire(line)
-            if (m != null) {
-                val num = m.groupValues[1].toIntOrNull() ?: -1
-                if (prevNum == -1 || num == prevNum + 1) {
-                    prevNum = num
-                    matchedSeq++
-                    strippedLines.add(m.groupValues[2])
-                } else {
-                    return candidate
-                }
-            } else {
-                return candidate
-            }
-        }
-        if (matchedSeq < 2) return candidate
-        val stripped = strippedLines.joinToString("\n")
-        if (existingFileLf.contains(candidate)) return candidate
-        return if (!requireStrippedInFile || existingFileLf.contains(stripped)) {
-            stripped
-        } else {
-            candidate
-        }
-    }
-
-    data class FuzzyEditResult(
-        val updatedLf: String,
-        val addedLines: Int,
-        val removedLines: Int,
-        val usedFuzzyWhitespace: Boolean
-    )
-
-    /**
-     * 2-Tier Exact + Whitespace/Indentation-Normalized Self-Healing Edit Engine:
-     * 1. Tier 1: Exact substring match (with automatic stripping of accidental `fs_read` line numbers).
-     * 2. Tier 2: Line-by-line trimmed/whitespace-normalized match when exact match fails due to minor
-     *    indentation or trailing-space drift, keeping the relative indentation of the replacement.
-     */
-    fun applySingleEditWithFuzzySelfHealing(
-        existingLf: String,
-        rawOldText: String,
-        rawNewText: String,
-        replaceAll: Boolean,
-        relativePath: String
-    ): FuzzyEditResult {
-        require(rawOldText.isNotEmpty()) { "old_text must not be empty." }
-        val normOldRaw = rawOldText.replace("\r\n", "\n")
-        val normNewRaw = rawNewText.replace("\r\n", "\n")
-        val normOld = stripAccidentalReadLinePrefixes(normOldRaw, existingLf, requireStrippedInFile = false)
-        val normNew = stripAccidentalReadLinePrefixes(normNewRaw, existingLf, requireStrippedInFile = false)
-
-        // Tier 1: Exact Match
-        if (existingLf.contains(normOld)) {
-            val updated = if (replaceAll) {
-                existingLf.replace(normOld, normNew)
-            } else {
-                val firstIdx = existingLf.indexOf(normOld)
-                val secondIdx = existingLf.indexOf(normOld, startIndex = firstIdx + normOld.length)
-                if (secondIdx != -1) {
-                    val matchLines = mutableListOf<Int>()
-                    var searchIdx = 0
-                    while (true) {
-                        val hit = existingLf.indexOf(normOld, startIndex = searchIdx)
-                        if (hit == -1) break
-                        val lineNum = existingLf.substring(0, hit).count { it == '\n' } + 1
-                        matchLines.add(lineNum)
-                        searchIdx = hit + normOld.length.coerceAtLeast(1)
-                    }
-                    error("old_text matched ${matchLines.size} locations in '$relativePath' (at lines ${matchLines.joinToString(", ")}). Include more surrounding context or set replace_all=true.")
-                }
-                existingLf.replaceFirst(normOld, normNew)
-            }
-            return FuzzyEditResult(
-                updatedLf = updated,
-                addedLines = normNew.lines().size,
-                removedLines = normOld.lines().size,
-                usedFuzzyWhitespace = false
-            )
-        }
-
-        // Tier 2: Line-by-line Whitespace / Indentation Fuzzy Match
-        val fileLines = existingLf.split('\n')
-        val oldLines = normOld.split('\n')
-        if (oldLines.isNotEmpty() && oldLines.size <= fileLines.size) {
-            val oldTrimmed = oldLines.map { it.trim() }
-            if (oldTrimmed.any { it.isNotEmpty() }) {
-                val matchStartIndices = mutableListOf<Int>()
-                val maxStart = fileLines.size - oldLines.size
-                for (startIdx in 0..maxStart) {
-                    var allMatch = true
-                    for (j in oldLines.indices) {
-                        if (fileLines[startIdx + j].trim() != oldTrimmed[j]) {
-                            allMatch = false
-                            break
-                        }
-                    }
-                    if (allMatch) {
-                        matchStartIndices.add(startIdx)
-                    }
-                }
-
-                if (matchStartIndices.size == 1 || (replaceAll && matchStartIndices.isNotEmpty())) {
-                    val newLinesRaw = normNew.split('\n')
-                    val firstNonBlankOldIdx = oldLines.indexOfFirst { it.isNotBlank() }
-                    val oldBaseIndent = if (firstNonBlankOldIdx >= 0) {
-                        oldLines[firstNonBlankOldIdx].takeWhile { it == ' ' || it == '\t' }.length
-                    } else 0
-
-                    val resultLines = mutableListOf<String>()
-                    var cursor = 0
-                    for (matchStart in matchStartIndices) {
-                        if (matchStart < cursor) continue
-                        resultLines.addAll(fileLines.subList(cursor, matchStart))
-                        val fileBaseIndentStr = if (firstNonBlankOldIdx >= 0) {
-                            fileLines[matchStart + firstNonBlankOldIdx].takeWhile { it == ' ' || it == '\t' }
-                        } else ""
-                        val adjustedNewLines = newLinesRaw.map { nl ->
-                            if (nl.isBlank()) ""
-                            else {
-                                val nlIndent = nl.takeWhile { it == ' ' || it == '\t' }.length
-                                val relIndent = (nlIndent - oldBaseIndent).coerceAtLeast(0)
-                                fileBaseIndentStr + " ".repeat(relIndent) + nl.trimStart()
-                            }
-                        }
-                        resultLines.addAll(adjustedNewLines)
-                        cursor = matchStart + oldLines.size
-                    }
-                    resultLines.addAll(fileLines.subList(cursor, fileLines.size))
-                    return FuzzyEditResult(
-                        updatedLf = resultLines.joinToString("\n"),
-                        addedLines = newLinesRaw.size,
-                        removedLines = oldLines.size,
-                        usedFuzzyWhitespace = true
-                    )
-                } else if (matchStartIndices.size > 1) {
-                    val lineNums = matchStartIndices.map { it + 1 }
-                    error("old_text fuzzy-matched ${lineNums.size} locations in '$relativePath' (at lines ${lineNums.joinToString(", ")}). Include more surrounding lines or set replace_all=true.")
-                }
-            }
-        }
-
-        error("old_text was not found in '$relativePath' (${fileLines.size} lines). Use fs_read to inspect the exact lines before editing.")
-    }
-
     private val DICE_EXPR_REGEX = Regex("""^(\d*)d(\d+)([+-]\d+)?$""")
-    private val HTML_STRIP_BLOCK_TAGS_REGEX = Regex("(?is)<(script|style|noscript|svg|head)\\b[^>]*>.*?</\\1>")
-    private val HTML_COMMENT_REGEX = Regex("(?is)<!--.*?-->")
-    private val HTML_H1_REGEX = Regex("(?is)<h1\\b[^>]*>(.*?)</h1>")
-    private val HTML_H2_REGEX = Regex("(?is)<h2\\b[^>]*>(.*?)</h2>")
-    private val HTML_H3_REGEX = Regex("(?is)<h3\\b[^>]*>(.*?)</h3>")
-    private val HTML_H4_6_REGEX = Regex("(?is)<h[4-6]\\b[^>]*>(.*?)</h[4-6]>")
-    private val HTML_LI_REGEX = Regex("(?is)<li\\b[^>]*>(.*?)</li>")
-    private val HTML_A_HREF_REGEX = Regex("(?is)<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")
-    private val HTML_BR_HR_REGEX = Regex("(?is)<(br|hr)\\s*/?>")
-    private val HTML_BLOCK_CLOSE_REGEX = Regex("(?is)</(p|div|section|article|tr|blockquote|pre|ul|ol|table)>")
     private val HTML_ANY_TAG_REGEX = Regex("(?is)<[^>]+>")
-    private val TRIPLE_NEWLINE_REGEX = Regex("\n{3,}")
     private val DDG_MD_LINK_REGEX = Regex("""\[([^\]]+)\]\((https?://[^\s)]+)\)""")
 
     private fun evaluateDiceExpression(expression: String, reason: String): String {
@@ -1318,48 +1155,6 @@ object WorkspaceHarness {
         }
         val label = if (reason.isNotBlank()) " ($reason)" else ""
         return "Rolled $expression$label: [${rolls.joinToString(", ")}]$modStr = $sum"
-    }
-
-    /**
-     * Converts raw HTML into clean readable Markdown/text while leaving JSON, Markdown, and plain text intact.
-     */
-    fun convertHtmlToReadableText(raw: String, contentType: String = ""): String {
-        val trimmed = raw.trim()
-        val looksLikeHtml = contentType.contains("html", ignoreCase = true) ||
-            trimmed.startsWith("<!DOCTYPE html", ignoreCase = true) ||
-            trimmed.startsWith("<html", ignoreCase = true) ||
-            (trimmed.contains("<body", ignoreCase = true) && trimmed.contains("</body>", ignoreCase = true))
-        if (!looksLikeHtml) return trimmed
-
-        return trimmed
-            .replace(HTML_STRIP_BLOCK_TAGS_REGEX, "")
-            .replace(HTML_COMMENT_REGEX, "")
-            .replace(HTML_H1_REGEX, "\n# $1\n")
-            .replace(HTML_H2_REGEX, "\n## $1\n")
-            .replace(HTML_H3_REGEX, "\n### $1\n")
-            .replace(HTML_H4_6_REGEX, "\n#### $1\n")
-            .replace(HTML_LI_REGEX, "\n- $1")
-            .replace(HTML_A_HREF_REGEX) { m ->
-                val rawHref = m.groupValues[1].trim()
-                val cleanHref = unwrapDuckDuckGoRedirectUrl(rawHref)
-                val label = m.groupValues[2].replace(HTML_ANY_TAG_REGEX, "").trim()
-                if (label.isNotEmpty() && cleanHref.startsWith("http")) "[$label]($cleanHref)" else label
-            }
-            .replace(HTML_BR_HR_REGEX, "\n")
-            .replace(HTML_BLOCK_CLOSE_REGEX, "\n")
-            .replace(HTML_ANY_TAG_REGEX, "")
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&#x27;", "'")
-            .lines()
-            .map { it.trim() }
-            .joinToString("\n")
-            .replace(TRIPLE_NEWLINE_REGEX, "\n\n")
-            .trim()
     }
 
     internal data class FreeSearchResultItem(
@@ -1386,44 +1181,6 @@ object WorkspaceHarness {
         return sb.toString()
     }
 
-    internal fun urlDecodeComponent(encoded: String): String {
-        val clean = encoded.replace('+', ' ')
-        val out = ByteArray(clean.length)
-        var outIdx = 0
-        var i = 0
-        while (i < clean.length) {
-            val ch = clean[i]
-            if (ch == '%' && i + 2 < clean.length) {
-                val hex = clean.substring(i + 1, i + 3).toIntOrNull(16)
-                if (hex != null) {
-                    out[outIdx++] = hex.toByte()
-                    i += 3
-                    continue
-                }
-            }
-            val bytes = ch.toString().encodeToByteArray()
-            for (b in bytes) {
-                if (outIdx < out.size) out[outIdx++] = b
-            }
-            i++
-        }
-        return out.decodeToString(0, outIdx)
-    }
-
-    internal fun unwrapDuckDuckGoRedirectUrl(rawUrl: String): String {
-        val trimmed = rawUrl.trim().let {
-            if (it.startsWith("//")) "https:$it" else it
-        }
-        if (trimmed.contains("uddg=")) {
-            val uddgParam = trimmed.substringAfter("uddg=").substringBefore("&")
-            val decoded = urlDecodeComponent(uddgParam).trim()
-            if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
-                return decoded
-            }
-        }
-        return trimmed
-    }
-
     internal fun parseDuckDuckGoMarkdownResults(markdownText: String, maxResults: Int): List<FreeSearchResultItem> {
         val results = mutableListOf<FreeSearchResultItem>()
         val seenUrls = HashSet<String>()
@@ -1434,7 +1191,7 @@ object WorkspaceHarness {
             for (match in linkRegex.findAll(line)) {
                 val title = match.groupValues[1].trim()
                 val rawUrl = match.groupValues[2].trim()
-                val url = unwrapDuckDuckGoRedirectUrl(rawUrl)
+                val url = HtmlTextConverter.unwrapDuckDuckGoRedirectUrl(rawUrl)
                 val lowerUrl = url.lowercase()
                 if (!url.startsWith("http") ||
                     lowerUrl.contains("duckduckgo.com") ||

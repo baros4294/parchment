@@ -1,6 +1,6 @@
 package io.parchment.ai.network
 
-import io.parchment.ai.ui.Strings
+import io.parchment.ai.strings.Strings
 
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -24,6 +24,7 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.network.AiProviderEngine.ResolvedBinaryAttachment
+import io.parchment.ai.platform.MAX_INLINE_ATTACHMENT_BYTES
 import io.parchment.ai.platform.PlatformBridge
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.Dispatchers

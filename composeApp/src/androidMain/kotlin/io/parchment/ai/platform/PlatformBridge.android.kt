@@ -32,8 +32,6 @@ import io.parchment.ai.LongDecodeForegroundService
 import io.parchment.ai.MainActivity
 import io.parchment.ai.OtaInstallReceiver
 import io.parchment.ai.ParchmentFileProvider
-import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
-import io.parchment.ai.network.OtaStagedDownload
 import java.io.File
 import java.io.FileInputStream
 import java.lang.ref.WeakReference

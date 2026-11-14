@@ -3,8 +3,6 @@ package io.parchment.ai.platform
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import io.parchment.ai.model.StoredAppFileItem
-import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
-import io.parchment.ai.network.OtaStagedDownload
 
 data class PickedBinaryFile(
     val fileName: String,
@@ -15,6 +13,7 @@ data class PickedBinaryFile(
 )
 
 private const val MAX_IMPORTED_DOCUMENT_BYTES = 256L * 1024L * 1024L
+internal const val MAX_INLINE_ATTACHMENT_BYTES = 50L * 1024L * 1024L
 internal const val MAX_INLINE_TEXT_ATTACHMENT_BYTES = 8L * 1024L * 1024L
 
 /** Attachments must fit in a request; card and settings files only need to fit in memory. */

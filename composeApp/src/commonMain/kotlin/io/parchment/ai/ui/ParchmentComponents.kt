@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.animation.animateColorAsState
+import io.parchment.ai.strings.Strings
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode

@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import io.parchment.ai.strings.Strings
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background

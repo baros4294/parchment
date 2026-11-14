@@ -1,6 +1,7 @@
 package io.parchment.ai.ui
 
 import androidx.compose.foundation.background
+import io.parchment.ai.strings.Strings
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement

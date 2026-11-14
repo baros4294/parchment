@@ -5,8 +5,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.platform.Font
-import io.parchment.ai.network.MAX_INLINE_ATTACHMENT_BYTES
-import io.parchment.ai.network.OtaStagedDownload
 import java.io.OutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

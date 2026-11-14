@@ -1,12 +1,11 @@
 package io.parchment.ai.network
 
-import io.parchment.ai.ui.Strings
+import io.parchment.ai.strings.Strings
 
 import io.ktor.client.request.get
 import io.parchment.ai.harness.AgentPermissionGate
 import io.parchment.ai.harness.AgentToolRunContext
 import io.parchment.ai.harness.ComputerUse
-import io.parchment.ai.harness.McpRegistry
 import io.parchment.ai.harness.ToolAccessScope
 import io.parchment.ai.harness.ToolApprovalBroker
 import io.parchment.ai.harness.ToolAuthorization
