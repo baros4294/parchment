@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -51,6 +52,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.AnnotatedString
 import io.parchment.ai.model.ProviderProfile
@@ -492,7 +494,7 @@ fun SepiaChip(
 private const val HOVER_HINT_DELAY_MS = 450L
 
 /** Centers a hint under its control, flipping above it and staying inside the window. */
-private object HoverHintPosition : PopupPositionProvider {
+internal object HoverHintPosition : PopupPositionProvider {
     private const val GAP = 6
     private const val MARGIN = 8
 
@@ -1159,9 +1161,14 @@ fun SepiaContextGaugeRing(
     val shape = RoundedCornerShape(Radius.r8)
     val gaugeInteraction = remember { MutableInteractionSource() }
     val gaugeHovered by gaugeInteraction.collectIsHoveredAsState()
+    val isCostUnavailable = sessionCostLabel == "cost unavailable"
     Row(
         modifier = modifier
-            .then(if (onClick != null) Modifier.kissClickable(interactionSource = gaugeInteraction, onClick = onClick) else Modifier)
+            .then(
+                if (onClick != null) Modifier.kissClickable(interactionSource = gaugeInteraction, onClick = onClick)
+                else Modifier.hoverable(gaugeInteraction)
+            )
+            .then(if (isCostUnavailable) Modifier.semantics { stateDescription = Strings.costUnavailable } else Modifier)
             .clip(shape)
             .background(p.elevatedBg.copy(alpha = 0.6f))
             .border(LineWidth.hairline, p.border.copy(alpha = 0.65f), shape)
@@ -1193,7 +1200,7 @@ fun SepiaContextGaugeRing(
         }
 
         val win = LocalParchmentWindowSize.current
-        val costTag = if (!win.isCompact) {
+        val costTag = if (!win.isCompact && !isCostUnavailable) {
             sessionCostLabel.takeIf { it.isNotBlank() }?.let { " • $it" }
                 ?: if (sessionCostUsd > 0.0) " • ~${formatUsdCost(sessionCostUsd)}" else ""
         } else ""
@@ -1211,7 +1218,11 @@ fun SepiaContextGaugeRing(
             overflow = TextOverflow.Ellipsis,
             style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk)
         )
-        HoverHint(Strings.howMuchOfThisModelS, gaugeHovered)
+        if (!win.isCompact && isCostUnavailable) {
+            KissVectorIcon(icon = KissIcon.WARNING, tint = p.accentSecondary, size = IconSize.sm)
+        }
+        val hintText = if (isCostUnavailable) "${Strings.howMuchOfThisModelS}\n${Strings.costUnavailable}" else Strings.howMuchOfThisModelS
+        HoverHint(hintText, gaugeHovered)
     }
 }
 

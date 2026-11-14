@@ -907,4 +907,8 @@ internal object Strings {
     val routingImageModelViaV1Chat = "Routing image model via /v1/chat/completions…"
     fun awaitingApproval(a: Any?): String = "Awaiting approval: ${a}"
     fun executingReadSearchToolsInParallel(a: Any?, b: Any?): String = "Executing ${a} read/search tools in parallel (${b})…"
+    val usagePartialSuffix = " • partial"
+    val usageReportedCostSuffix = " • reported cost"
+    val usageEstimateSuffix = " • estimate"
+    val estimatedCost = "Estimated cost"
 }

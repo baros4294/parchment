@@ -19,12 +19,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -52,12 +54,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import io.parchment.ai.model.turnTextLayout
 import io.parchment.ai.model.GeneratedMediaItem
 import io.parchment.ai.model.MediaKind
@@ -136,6 +142,7 @@ internal fun MessageTurnItem(
     var manualThinkingToggle by remember(node.id, node.activeVariantIndex) { mutableStateOf<Boolean?>(null) }
     var showRawWireDrawer by remember(node.id) { mutableStateOf(false) }
     var showMoreActions by remember(node.id) { mutableStateOf(false) }
+    var openUsageDetailsId by remember(node.id, node.activeVariantIndex) { mutableStateOf<String?>(null) }
     var showSourcesDrawer by remember(node.id, node.activeVariantIndex) { mutableStateOf(false) }
     var highlightedSourceLineText by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
     var copiedBadge by remember(node.id, node.activeVariantIndex) { mutableStateOf("") }
@@ -175,7 +182,7 @@ internal fun MessageTurnItem(
     val turnHoverSource = remember { MutableInteractionSource() }
     val turnHovered by turnHoverSource.collectIsHoveredAsState()
     var footerHasFocus by remember { mutableStateOf(false) }
-    val footerVisible = win.isCompact || turnHovered || footerHasFocus || showMoreActions || activeVar.isStreaming
+    val footerVisible = win.isCompact || turnHovered || footerHasFocus || showMoreActions || openUsageDetailsId != null || activeVar.isStreaming
     val footerAlpha by animateFloatAsState(if (footerVisible) 1f else 0f, motionTween(Motion.QUICK))
     val showBubbles = viewMode == ViewMode.EDITORIAL_TURNS
     val isSentBubble = showBubbles && !isAssistant
@@ -1538,12 +1545,52 @@ internal fun MessageTurnItem(
                     } else {
                         0.0
                     }
+                    val hasReportedRequests = m.reportedRequests > 0
+                    val costUnavailable = hasReportedRequests && !m.costIsAvailable && costVal == 0.0
+                    val costIsKnown = costVal > 0.0 || (hasReportedRequests && m.costIsAvailable)
+                    val isPartial = hasReportedRequests && (!m.usageIsComplete || !m.costIsAvailable || m.unpricedCostComponents.isNotEmpty())
+                    val isReportedExact = hasReportedRequests && m.reportedCostRequests == m.reportedRequests &&
+                        m.costIsAvailable && m.usageIsComplete && m.unpricedCostComponents.isEmpty()
+                    val hasWholeTurnCounts = m.inputTokens > 0L || m.outputTokens > 0L ||
+                        m.cachedInputTokens > 0L || m.cacheCreationInputTokens > 0L
+                    val showCostUnavailableBadge = costUnavailable && !activeVar.isStreaming
+                    val usageDetailLines = remember(
+                        costUnavailable, hasWholeTurnCounts, hasReportedRequests,
+                        m.inputTokens, m.outputTokens, m.cachedInputTokens, m.cacheCreationInputTokens,
+                        m.reportedRequests, m.usageIsComplete, m.costIsAvailable, m.reportedCostRequests,
+                        costVal, m.outputIncludesUnreportedReasoning, m.unpricedCostComponents
+                    ) {
+                        buildList {
+                            if (costUnavailable) add(Strings.costUnavailable)
+                            if (hasWholeTurnCounts || hasReportedRequests) {
+                                add(Strings.inputOutput(formatCompactTokens(m.inputTokens), formatCompactTokens(m.outputTokens)))
+                            }
+                            if (m.cachedInputTokens > 0L || m.cacheCreationInputTokens > 0L) {
+                                add(Strings.reusedSavedForReuse(formatCompactTokens(m.cachedInputTokens), formatCompactTokens(m.cacheCreationInputTokens)))
+                            }
+                            if (hasReportedRequests) {
+                                val status = when {
+                                    !m.usageIsComplete || !m.costIsAvailable -> Strings.usagePartialSuffix
+                                    m.reportedCostRequests == m.reportedRequests -> Strings.usageReportedCostSuffix
+                                    else -> Strings.usageEstimateSuffix
+                                }
+                                add(Strings.request(m.reportedRequests, if (m.reportedRequests == 1) "" else "s") + status)
+                            } else if (costVal > 0.0) {
+                                add(Strings.estimatedCost)
+                            }
+                            if (m.outputIncludesUnreportedReasoning) add(Strings.thinkingCountedInOutput)
+                            if (m.unpricedCostComponents.isNotEmpty()) {
+                                add(Strings.unpriced(m.unpricedCostComponents.sorted().joinToString(", ")))
+                            }
+                        }
+                    }
 
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth().padding(top = Space.s2),
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalArrangement = Arrangement.spacedBy(Space.s4)
+                        verticalArrangement = Arrangement.spacedBy(Space.s4),
+                        itemVerticalAlignment = Alignment.CenterVertically
                     ) {
                         // Pill 1: output tokens, with reasoning and tool payload tokens shown separately.
                         Box(
@@ -1628,49 +1675,73 @@ internal fun MessageTurnItem(
                             }
                         }
 
-                        // Pill 3: Cost Badge
-                        if (costVal > 0.0 || m.reportedRequests > 0) {
-                            Box(
-                                modifier = Modifier
-                            ) {
-                                BasicText(
-                                    text = if (m.reportedRequests > 0) SessionSpendSummary(m, 0.0, 0).label else "~" + formatUsdCost(costVal),
-                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.narrationInk, fontWeight = FontWeight.Medium)
-                                )
+                        // Pill 3: Cost / Unpriced Warning Badge (full breakdown on hover or tap)
+                        if (costIsKnown || showCostUnavailableBadge) {
+                            UsageDetailsPill(
+                                details = usageDetailLines,
+                                isOpen = openUsageDetailsId == "cost",
+                                onToggle = { openUsageDetailsId = if (openUsageDetailsId == "cost") null else "cost" },
+                                onDismiss = { if (openUsageDetailsId == "cost") openUsageDetailsId = null },
+                                accessibilitySummary = if (!costIsKnown) usageDetailLines.joinToString(", ") else null
+                            ) { highlighted ->
+                                if (costIsKnown) {
+                                    BasicText(
+                                        text = (if (isReportedExact) "" else "~") + formatUsdCost(costVal),
+                                        style = p.uiLabelStyle.copy(
+                                            fontSize = 11.sp,
+                                            fontFeatureSettings = "tnum",
+                                            color = if (highlighted) p.accent else p.narrationInk,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    )
+                                }
+                                if (showCostUnavailableBadge || (isPartial && !activeVar.isStreaming)) {
+                                    KissVectorIcon(
+                                        icon = KissIcon.WARNING,
+                                        tint = if (highlighted) p.accent else p.accentSecondary,
+                                        size = IconSize.sm
+                                    )
+                                }
                             }
                         }
 
-                        if ((showMoreActions || preferences.showTokensForEntireTurn) && (m.inputTokens > 0 || m.reportedRequests > 0)) {
-                            Box(
-                                modifier = Modifier
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        // Pill 4: Compact single-line input/output/cache summary when expanded
+                        if ((showMoreActions || preferences.showTokensForEntireTurn) && hasWholeTurnCounts) {
+                            UsageDetailsPill(
+                                details = usageDetailLines,
+                                isOpen = openUsageDetailsId == "turn",
+                                onToggle = { openUsageDetailsId = if (openUsageDetailsId == "turn") null else "turn" },
+                                onDismiss = { if (openUsageDetailsId == "turn") openUsageDetailsId = null }
+                            ) { highlighted ->
+                                val tint = if (highlighted) p.accent else p.mutedInk
+                                val textColor = if (highlighted) p.accent else p.mutedInk
+                                KissVectorIcon(icon = KissIcon.ARROW_UP, tint = tint, size = IconSize.xs)
+                                BasicText(
+                                    text = formatCompactTokens(m.inputTokens),
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = textColor)
+                                )
+                                BasicText(
+                                    text = "•",
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
+                                )
+                                KissVectorIcon(icon = KissIcon.ARROW_DOWN, tint = tint, size = IconSize.xs)
+                                BasicText(
+                                    text = formatCompactTokens(m.outputTokens),
+                                    style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = textColor)
+                                )
+                                if (m.cachedInputTokens > 0L) {
                                     BasicText(
-                                        text = Strings.inputOutput(formatCompactTokens(m.inputTokens), formatCompactTokens(m.outputTokens)),
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
+                                        text = "•",
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, color = p.mutedInk)
                                     )
-                                    if (m.cachedInputTokens > 0 || m.cacheCreationInputTokens > 0) {
-                                        BasicText(
-                                            text = Strings.reusedSavedForReuse(formatCompactTokens(m.cachedInputTokens), formatCompactTokens(m.cacheCreationInputTokens)),
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
-                                        )
-                                    }
-                                    if (m.reportedRequests > 0) {
-                                        BasicText(
-                                            text = Strings.request(m.reportedRequests, if (m.reportedRequests == 1) "" else "s") +
-                                                if (!m.usageIsComplete || !m.costIsAvailable) " • partial" else if (m.reportedCostRequests == m.reportedRequests) " • reported cost" else " • estimate",
-                                            style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
-                                        )
-                                    }
-                                    if (m.outputIncludesUnreportedReasoning) BasicText(
-                                        text = Strings.thinkingCountedInOutput, style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
+                                    KissVectorIcon(
+                                        icon = KissIcon.REFRESH,
+                                        tint = if (highlighted) p.accent else p.accentSecondary,
+                                        size = IconSize.xs
                                     )
-                                    if (m.reportedRequests > 0 && !m.costIsAvailable && costVal == 0.0) BasicText(
-                                        text = Strings.costUnavailable, style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
-                                    )
-                                    if (m.unpricedCostComponents.isNotEmpty()) BasicText(
-                                        text = Strings.unpriced(m.unpricedCostComponents.sorted().joinToString(", ")),
-                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = p.mutedInk)
+                                    BasicText(
+                                        text = formatCompactTokens(m.cachedInputTokens),
+                                        style = p.uiLabelStyle.copy(fontSize = 11.sp, fontFeatureSettings = "tnum", color = textColor)
                                     )
                                 }
                             }
@@ -1953,6 +2024,76 @@ internal fun MessageTurnItem(
         if (viewMode == ViewMode.MANUSCRIPT) {
             Spacer(Modifier.height(Space.s8))
             SepiaDivider()
+        }
+    }
+}
+
+@Composable
+private fun UsageDetailsPill(
+    details: List<String>,
+    isOpen: Boolean,
+    onToggle: () -> Unit,
+    onDismiss: () -> Unit,
+    accessibilitySummary: String? = null,
+    content: @Composable RowScope.(highlighted: Boolean) -> Unit
+) {
+    val p = LocalParchmentPalette.current
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val detailsText = remember(details) { details.joinToString("\n") }
+    val semanticSummary = remember(details) { details.joinToString(", ") }
+    val shape = RoundedCornerShape(Radius.r4)
+
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (hovered || isOpen) p.accent.copy(alpha = 0.08f) else Color.Transparent)
+            .kissClickable(interactionSource = interaction, onClick = onToggle)
+            .then(
+                if (accessibilitySummary != null) Modifier.accessibilityLabel(accessibilitySummary)
+                else Modifier.semantics { if (semanticSummary.isNotBlank()) stateDescription = semanticSummary }
+            )
+            .padding(horizontal = Space.s4, vertical = Space.s2),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.s4)
+        ) {
+            content(hovered || isOpen)
+        }
+        HoverHint(detailsText.takeIf { it.isNotBlank() }, hovered && !pressed && !isOpen)
+        if (isOpen && details.isNotEmpty()) {
+            Popup(
+                popupPositionProvider = HoverHintPosition,
+                onDismissRequest = onDismiss,
+                properties = PopupProperties(focusable = true)
+            ) {
+                val cardShape = RoundedCornerShape(Radius.r8)
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .overlayShadow(cardShape)
+                        .clip(cardShape)
+                        .background(p.cardBg)
+                        .border(LineWidth.hairline, p.border, cardShape)
+                        .padding(horizontal = Space.s10, vertical = Space.s8),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    details.forEachIndexed { index, line ->
+                        BasicText(
+                            text = line,
+                            style = p.uiLabelStyle.copy(
+                                fontSize = 11.sp,
+                                fontFeatureSettings = "tnum",
+                                color = if (index == 0) p.primaryInk else p.mutedInk,
+                                fontWeight = if (index == 0) FontWeight.Medium else FontWeight.Normal
+                            )
+                        )
+                    }
+                }
+            }
         }
     }
 }
