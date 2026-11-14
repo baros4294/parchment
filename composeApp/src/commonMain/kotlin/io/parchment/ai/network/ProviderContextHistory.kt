@@ -15,7 +15,7 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.ProviderProtocol
 import io.parchment.ai.model.ToolCallRecord
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 
 // The history and system prompt each provider request is built from.
 
@@ -164,7 +164,7 @@ internal fun AiProviderEngine.compactHistoryNodesOnOverflow(nodes: List<MessageN
     val digestText = "[Auto-Compacted Earlier Conversation Continuity Digest (${indicesToCompact.size} turns condensed):\n" +
         digestLines.take(24).joinToString("\n") + "]"
     val digestNode = MessageNode(
-        id = "node-auto-digest-${PlatformBridge.currentTimeMillis()}",
+        id = "node-auto-digest-${PlatformRuntime.currentTimeMillis()}",
         role = MessageRole.USER,
         variants = listOf(MessageVariant(id = "var-auto-digest", content = digestText))
     )

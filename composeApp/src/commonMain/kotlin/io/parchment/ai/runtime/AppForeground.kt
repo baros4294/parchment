@@ -1,6 +1,6 @@
 package io.parchment.ai.runtime
 
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,6 +16,6 @@ internal object AppForeground {
     @Volatile var leftAt: Long = 0L
         private set
 
-    fun markLeft() { leftAt = PlatformBridge.monotonicTimeMillis() }
-    fun markResumed() { resumedAtState.value = PlatformBridge.monotonicTimeMillis() }
+    fun markLeft() { leftAt = PlatformRuntime.monotonicTimeMillis() }
+    fun markResumed() { resumedAtState.value = PlatformRuntime.monotonicTimeMillis() }
 }

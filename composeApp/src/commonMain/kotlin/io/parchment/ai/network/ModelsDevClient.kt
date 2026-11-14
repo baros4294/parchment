@@ -8,7 +8,7 @@ import io.parchment.ai.model.TokenPricing
 import io.parchment.ai.model.ContextPricingTier
 import io.parchment.ai.model.ChargePricing
 import io.parchment.ai.model.legacyTokenPricing
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
@@ -284,7 +284,7 @@ object ModelsDevClient {
             val cleanTarget = modelId.trim().lowercase().removePrefix("models/")
             require(cleanTarget.isNotBlank()) { "Model ID is empty." }
 
-            val now = PlatformBridge.currentTimeMillis()
+            val now = PlatformRuntime.currentTimeMillis()
             val catalog = if (cachedCatalog.isNotEmpty() && (now - lastFetchEpochMs) < CACHE_TTL_MS) {
                 cachedCatalog
             } else {
@@ -299,7 +299,7 @@ object ModelsDevClient {
     }
 
     private suspend fun fetchEntireCatalog(): Map<String, ModelPricingSpec> = fetchMutex.withLock {
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         if (cachedCatalog.isNotEmpty() && (now - lastFetchEpochMs) < CACHE_TTL_MS) {
             return@withLock cachedCatalog
         }
@@ -381,7 +381,7 @@ object ModelsDevClient {
 
         if (catalog.isNotEmpty()) {
             cachedCatalog = catalog
-            lastFetchEpochMs = PlatformBridge.currentTimeMillis()
+            lastFetchEpochMs = PlatformRuntime.currentTimeMillis()
         }
         catalog
     }

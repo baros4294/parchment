@@ -17,7 +17,7 @@ import io.parchment.ai.model.GoalTrackerState
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.network.AiProviderEngine.ToolStepBatch
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import io.parchment.ai.runtime.RunActivityContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.Dispatchers
@@ -153,7 +153,7 @@ private suspend fun AiProviderEngine.executeWorkspaceToolWithLiveProgress(
     onToolCall(initialRunningRecord)
 
     val liveChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.CONFLATED)
-    val clock = activityContext?.activity?.let { activity -> { activity.elapsedMs } } ?: PlatformBridge::monotonicTimeMillis
+    val clock = activityContext?.activity?.let { activity -> { activity.elapsedMs } } ?: PlatformRuntime::monotonicTimeMillis
     val startMs = clock()
     if (toolName == "ask_user" || toolName == "agent_delegate" || toolName == ComputerUse.TOOL_NAME || McpRegistry.isMcpTool(toolName)) {
         val record = when {

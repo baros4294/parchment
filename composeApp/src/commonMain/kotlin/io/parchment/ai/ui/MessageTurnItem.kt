@@ -74,7 +74,9 @@ import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.ViewMode
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformVoice
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -1231,7 +1233,7 @@ internal fun MessageTurnItem(
                                                 text = Strings.openInOs,
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
-                                                onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                                onClick = { PlatformStorage.openOrPlayMedia(openTarget) }
                                             )
                                         }
                                         if (media.localFilePath.isNotBlank()) {
@@ -1240,9 +1242,9 @@ internal fun MessageTurnItem(
                                                 compact = true,
                                                 style = SepiaButtonStyle.OUTLINE,
                                                 onClick = {
-                                                    val bytes = PlatformBridge.readBinaryFileBytes(media.localFilePath)
+                                                    val bytes = PlatformStorage.readBinaryFileBytes(media.localFilePath)
                                                     if (bytes != null) {
-                                                        PlatformBridge.copyImageToClipboard(bytes)
+                                                        PlatformPickers.copyImageToClipboard(bytes)
                                                     }
                                                 }
                                             )
@@ -1279,7 +1281,7 @@ internal fun MessageTurnItem(
                                             text = Strings.playVideoMp4,
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
-                                            onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
+                                            onClick = { PlatformStorage.openOrPlayMedia(playTarget) }
                                         )
                                     }
                                 }
@@ -1313,7 +1315,7 @@ internal fun MessageTurnItem(
                                             text = Strings.playAudioMp3,
                                             compact = true,
                                             style = SepiaButtonStyle.PRIMARY,
-                                            onClick = { PlatformBridge.openOrPlayMedia(playTarget) }
+                                            onClick = { PlatformStorage.openOrPlayMedia(playTarget) }
                                         )
                                     }
                                 }
@@ -1362,11 +1364,11 @@ internal fun MessageTurnItem(
                             style = SepiaButtonStyle.GHOST,
                             onClick = {
                                 if (isSpeakingThisTurn) {
-                                    PlatformBridge.stopSpeakingAloud()
+                                    PlatformVoice.stopSpeakingAloud()
                                     isSpeakingThisTurn = false
                                 } else {
                                     isSpeakingThisTurn = true
-                                    PlatformBridge.speakTextAloud(
+                                    PlatformVoice.speakTextAloud(
                                         text = stripMarkdownToPlainText(activeVar.content),
                                         onFinished = { isSpeakingThisTurn = false }
                                     )

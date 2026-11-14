@@ -24,7 +24,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
 import io.parchment.ai.model.*
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.encodeToString
@@ -69,7 +70,7 @@ class UiGalleryTest {
             ),
             providerProtocol = protocol,
             modelUsed = "gemini-3-pro",
-            createdAt = PlatformBridge.currentTimeMillis() - 300_000L
+            createdAt = PlatformRuntime.currentTimeMillis() - 300_000L
         )),
         message("u2", MessageRole.USER, MessageVariant("vu2", "Great. Does that also cover the Android export?"))
     )
@@ -82,7 +83,7 @@ class UiGalleryTest {
             id = id, title = title, createdAt = updated, updatedAt = updated, profileId = profile.id,
             assistantId = assistant.id, messages = messages
         )
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         val chats = listOf(
             chat("gallery-1", "Fix chat export on long titles", now,
                 (0 until conversationCopies).flatMap { n -> sampleMessages(profile.protocol).map { it.copy(id = "${it.id}-$n") } }),
@@ -90,13 +91,13 @@ class UiGalleryTest {
             chat("gallery-3", "The lighthouse keeper, chapter four", now - 90_000_000L, sampleMessages(profile.protocol).take(1)),
             chat("gallery-4", "Compare two storage designs", now - 400_000_000L, sampleMessages(profile.protocol).take(1))
         )
-        chats.forEach { PlatformBridge.saveChatSessionJson(it.id, compactStateJson.encodeToString(it)) }
+        chats.forEach { PlatformStorage.saveChatSessionJson(it.id, compactStateJson.encodeToString(it)) }
         val state = base.copy(
             sessions = emptyList(), activeSessionId = "gallery-1", openTabSessionIds = listOf("gallery-1", "gallery-2"),
             profiles = base.profiles.map { it.copy(apiKey = "sample", defaultModel = "gemini-3-pro") }, theme = theme,
             autoCheckOtaOnStartup = false
         )
-        PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(state))
+        PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(state))
     }
 
     private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
@@ -181,8 +182,8 @@ class UiGalleryTest {
             assertTrue(prompt.right >= reply.right, "Your message must reach the right side: $prompt against $reply")
         } finally {
             scene.close()
-            (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }
-            PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
+            (1..4).forEach { PlatformStorage.deleteChatSessionFile("gallery-$it") }
+            PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
     }
 
@@ -235,8 +236,8 @@ class UiGalleryTest {
             assertNotEquals(before, image(), "The wheel must scroll the chat from the margin")
         } finally {
             scene.close()
-            (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }
-            PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
+            (1..4).forEach { PlatformStorage.deleteChatSessionFile("gallery-$it") }
+            PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
     }
 
@@ -268,8 +269,8 @@ class UiGalleryTest {
                 capture(viewport, ThemeConfig(), "empty", listOf("New chat"))
             }
         } finally {
-            (1..4).forEach { PlatformBridge.deleteChatSessionFile("gallery-$it") }
-            PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
+            (1..4).forEach { PlatformStorage.deleteChatSessionFile("gallery-$it") }
+            PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
         assertTrue(File(output, "phone-chat.png").isFile)
     }

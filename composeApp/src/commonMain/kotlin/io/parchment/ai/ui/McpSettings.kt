@@ -28,7 +28,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.parchment.ai.model.McpServerConfig
 import io.parchment.ai.model.PreferencesConfig
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformWorkspace
 import io.parchment.ai.network.McpRegistry
 import io.parchment.ai.network.McpServerState
 import io.parchment.ai.network.RegistryServer
@@ -113,7 +114,7 @@ private fun McpServerBrowser(prefs: PreferencesConfig, onUpdatePreferences: (Pre
                 shown.forEachIndexed { index, server ->
                     if (index > 0) SepiaDivider()
                     McpRegistryRow(server, added = prefs.mcpServers.any { it.url == server.url }) {
-                        val entry = McpServerConfig("mcp-${PlatformBridge.currentTimeMillis()}", server.title.ifBlank { server.name.substringAfterLast('/') }, url = server.url)
+                        val entry = McpServerConfig("mcp-${PlatformRuntime.currentTimeMillis()}", server.title.ifBlank { server.name.substringAfterLast('/') }, url = server.url)
                         onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + entry))
                     }
                 }
@@ -184,9 +185,9 @@ internal fun SkillInstallCard(workspacePath: String, canWrite: Boolean, onNotify
                 scope.launch {
                     val result = installSkillFromGitHub(
                         folder,
-                        exists = { path -> withContext(Dispatchers.IO) { PlatformBridge.workspaceRead(workspacePath, path, 1, 1).isSuccess } },
-                        write = { path, text -> withContext(Dispatchers.IO) { PlatformBridge.workspaceWrite(workspacePath, path, text) } },
-                        fetch = { url, limit -> withContext(Dispatchers.IO) { PlatformBridge.fetchPublicBytes(url, limit).getOrThrow() } }
+                        exists = { path -> withContext(Dispatchers.IO) { PlatformWorkspace.workspaceRead(workspacePath, path, 1, 1).isSuccess } },
+                        write = { path, text -> withContext(Dispatchers.IO) { PlatformWorkspace.workspaceWrite(workspacePath, path, text) } },
+                        fetch = { url, limit -> withContext(Dispatchers.IO) { PlatformWorkspace.fetchPublicBytes(url, limit).getOrThrow() } }
                     )
                     busy = false
                     result.fold({ onNotify(it); link = "" }, { onNotify(it.message ?: Strings.theSkillCouldNotBeInstalled) })
@@ -200,7 +201,7 @@ internal fun SkillInstallCard(workspacePath: String, canWrite: Boolean, onNotify
 internal fun McpServersCard(prefs: PreferencesConfig, onUpdatePreferences: (PreferencesConfig) -> Unit) {
     val p = LocalParchmentPalette.current
     val statuses by McpRegistry.statuses.collectAsState()
-    val localAllowed = remember { PlatformBridge.supportsLocalMcpServers }
+    val localAllowed = remember { PlatformWorkspace.supportsLocalMcpServers }
     fun update(server: McpServerConfig, change: (McpServerConfig) -> McpServerConfig) {
         onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers.map { if (it.id == server.id) change(it) else it }))
     }
@@ -231,7 +232,7 @@ internal fun McpServersCard(prefs: PreferencesConfig, onUpdatePreferences: (Pref
                 }
             }
             SepiaButton(Strings.addServer, compact = true, onClick = {
-                onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + McpServerConfig("mcp-${PlatformBridge.currentTimeMillis()}")))
+                onUpdatePreferences(prefs.copy(mcpServers = prefs.mcpServers + McpServerConfig("mcp-${PlatformRuntime.currentTimeMillis()}")))
             })
             SepiaDivider()
             McpServerBrowser(prefs, onUpdatePreferences)

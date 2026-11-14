@@ -59,7 +59,7 @@ import io.parchment.ai.model.keepsProviderState
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.ModelsDevClient
 import io.parchment.ai.network.fetchAvailableModels
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.launch
 
 // ============================================================================================
@@ -496,10 +496,10 @@ internal fun ProvidersSubpage(
                                 onClick = {
                                     isTestingOrFetching = true
                                     scope.launch {
-                                        val start = PlatformBridge.currentTimeMillis()
+                                        val start = PlatformRuntime.currentTimeMillis()
                                         AiProviderEngine.fetchAvailableModels(activeProfile).fold(
                                             onSuccess = { list ->
-                                                val ms = PlatformBridge.currentTimeMillis() - start
+                                                val ms = PlatformRuntime.currentTimeMillis() - start
                                                 val secStr = formatDurationFromMs(ms)
                                                 onNotify(Strings.connectionOkModelsReachable(secStr, list.size))
                                             },

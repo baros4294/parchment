@@ -164,13 +164,13 @@ class BoundedIoTest {
     }
 
     @Test fun localFileSizeReportsMissingFiles() {
-        assertEquals(-1L, PlatformBridge.localFileSizeBytes(File(root, "missing.bin").absolutePath))
+        assertEquals(-1L, PlatformStorage.localFileSizeBytes(File(root, "missing.bin").absolutePath))
         val present = File(root, "present.bin").apply { writeBytes(ByteArray(321)) }
-        assertEquals(321L, PlatformBridge.localFileSizeBytes(present.absolutePath))
+        assertEquals(321L, PlatformStorage.localFileSizeBytes(present.absolutePath))
     }
 
     @Test fun exportKeepsNamesContainingDotsButNotParentSegments() {
-        val archive = PlatformBridge.createZipArchive(
+        val archive = PlatformStorage.createZipArchive(
             entries = listOf("chat/media/a..b.png" to byteArrayOf(1), "../escape.json" to byteArrayOf(2), "chat/../x.json" to byteArrayOf(3))
         )
         val names = mutableListOf<String>()
@@ -234,7 +234,7 @@ class BoundedIoTest {
 
     @Test fun oversizedPickIsRefusedWithoutReadingIt() {
         val huge = sparseFile("movie.mp4", 3L * 1024L * 1024L * 1024L)
-        val picked = PlatformBridge.pickedFileFromDisk(huge, MAX_INLINE_ATTACHMENT_BYTES, 1L)
+        val picked = PlatformPickers.pickedFileFromDisk(huge, MAX_INLINE_ATTACHMENT_BYTES, 1L)
         assertTrue(picked.oversized)
         assertEquals("movie.mp4", picked.fileName)
         assertEquals(0, picked.bytes.size)
@@ -242,7 +242,7 @@ class BoundedIoTest {
 
     @Test fun ordinaryPickIsReadAndClassified() {
         val png = File(root, "shot").apply { writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)) }
-        val picked = PlatformBridge.pickedFileFromDisk(png, MAX_INLINE_ATTACHMENT_BYTES, 1L)
+        val picked = PlatformPickers.pickedFileFromDisk(png, MAX_INLINE_ATTACHMENT_BYTES, 1L)
         assertFalse(picked.oversized)
         assertEquals("image/png", picked.mimeType)
         assertEquals("shot.png", picked.fileName)
@@ -257,7 +257,7 @@ class BoundedIoTest {
             override fun isDataFlavorSupported(flavor: DataFlavor) = flavor == DataFlavor.javaFileListFlavor
             override fun getTransferData(flavor: DataFlavor): Any = listOf(small, huge)
         }
-        val picked = PlatformBridge.extractTransferableFiles(transferable)
+        val picked = PlatformPickers.extractTransferableFiles(transferable)
         assertEquals(listOf("notes.txt" to false, "huge.bin" to true), picked.map { it.fileName to it.oversized })
     }
 
@@ -290,7 +290,7 @@ class BoundedIoTest {
         } else {
             "i=0; while [ \$i -lt 30000 ]; do echo line number \$i padding padding padding; i=\$((i+1)); done; echo FINAL-ERROR"
         }
-        val result = PlatformBridge.workspaceShellExec(root.absolutePath, command, 120, null, null).getOrThrow()
+        val result = PlatformWorkspace.workspaceShellExec(root.absolutePath, command, 120, null, null).getOrThrow()
         assertTrue(result.startsWith("Exit Code: 0"), result.take(80))
         assertTrue(result.trimEnd().endsWith("FINAL-ERROR"), result.takeLast(80))
         assertTrue("characters omitted" in result)

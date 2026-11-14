@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.ThemeConfig
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
 
 @Immutable
 data class ParchmentPalette(
@@ -120,12 +120,12 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     val success = readableInk(Color(0xFF2E7D32), readableSurfaces)
 
     val customProseLoaded = if (config.customProseFontPath.isNotBlank()) {
-        PlatformBridge.loadCustomFontFamily(config.customProseFontPath)
+        PlatformPickers.loadCustomFontFamily(config.customProseFontPath)
     } else null
 
-    val bundledInter = PlatformBridge.loadBundledFontFamily("Inter")
-    val bundledMono = PlatformBridge.loadBundledFontFamily("JetBrains Mono")
-    val bundledLatex = PlatformBridge.loadBundledFontFamily("LaTeX")
+    val bundledInter = PlatformPickers.loadBundledFontFamily("Inter")
+    val bundledMono = PlatformPickers.loadBundledFontFamily("JetBrains Mono")
+    val bundledLatex = PlatformPickers.loadBundledFontFamily("LaTeX")
 
     val proseFont = customProseLoaded ?: when (canonicalFontName(config.proseFontFamily)) {
         "inter" -> bundledInter ?: FontFamily.SansSerif
@@ -137,7 +137,7 @@ fun buildPaletteFromConfig(config: ThemeConfig): ParchmentPalette {
     }
 
     val customCodeLoaded = if (config.customCodeFontPath.isNotBlank()) {
-        PlatformBridge.loadCustomFontFamily(config.customCodeFontPath)
+        PlatformPickers.loadCustomFontFamily(config.customCodeFontPath)
     } else null
 
     val codeFont = customCodeLoaded ?: when (canonicalFontName(config.codeFontFamily)) {

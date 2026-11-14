@@ -25,8 +25,10 @@ import androidx.compose.ui.platform.InterceptPlatformTextInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import androidx.lifecycle.lifecycleScope
+import io.parchment.ai.platform.AndroidPlatformHost
 import io.parchment.ai.platform.PickedBinaryFile
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
 import io.parchment.ai.ui.ParchmentApp
 import java.io.OutputStream
 import kotlinx.coroutines.CompletableDeferred
@@ -58,7 +60,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        PlatformBridge.initAndroid(applicationContext, this)
+        AndroidPlatformHost.initAndroid(applicationContext, this)
         handleIncomingShareIntent(intent)
 
         openDocumentLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -91,7 +93,7 @@ class MainActivity : ComponentActivity() {
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 contentResolver.takePersistableUriPermission(treeUri, flags)
             }
-            val resolvedPath = PlatformBridge.resolveTreeUriToFilePath(treeUri)
+            val resolvedPath = PlatformPickers.resolveTreeUriToFilePath(treeUri)
             deferred.complete(resolvedPath)
         }
 
@@ -145,7 +147,7 @@ class MainActivity : ComponentActivity() {
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (!PlatformBridge.handleSystemBackPressed()) {
+                    if (!PlatformRuntime.handleSystemBackPressed()) {
                         isEnabled = false
                         onBackPressedDispatcher.onBackPressed()
                         isEnabled = true
@@ -158,8 +160,8 @@ class MainActivity : ComponentActivity() {
             val view = LocalView.current
             DisposableEffect(view) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    view.setOnReceiveContentListener(PlatformBridge.RICH_CONTENT_MIME_TYPES) { _, payload ->
-                        PlatformBridge.handleReceiveContentPayload(payload)
+                    view.setOnReceiveContentListener(PlatformPickers.RICH_CONTENT_MIME_TYPES) { _, payload ->
+                        PlatformPickers.handleReceiveContentPayload(payload)
                     }
                 }
                 onDispose {
@@ -175,7 +177,7 @@ class MainActivity : ComponentActivity() {
                 interceptor = { request, nextHandler ->
                     val wrappedRequest = PlatformTextInputMethodRequest { outAttrs ->
                         val baseIc = request.createInputConnection(outAttrs)
-                        PlatformBridge.wrapInputConnection(baseIc, outAttrs)
+                        PlatformPickers.wrapInputConnection(baseIc, outAttrs)
                     }
                     nextHandler.startInputMethod(wrappedRequest)
                 }
@@ -219,18 +221,18 @@ class MainActivity : ComponentActivity() {
     private fun deliverSharedUris(uris: List<Uri>, mime: String) {
         if (uris.isEmpty()) return
         lifecycleScope.launch(Dispatchers.IO) {
-            PlatformBridge.deliverRichContentFiles(uris.mapNotNull { PlatformBridge.readUriAsPickedFile(it, mime) })
+            PlatformPickers.deliverRichContentFiles(uris.mapNotNull { PlatformPickers.readUriAsPickedFile(it, mime) })
         }
     }
 
     override fun onPause() {
-        PlatformBridge.flushPendingStateNow()
+        PlatformRuntime.flushPendingStateNow()
         super.onPause()
     }
 
     override fun onStop() {
         AppForeground.markLeft()
-        PlatformBridge.flushPendingStateNow()
+        PlatformRuntime.flushPendingStateNow()
         super.onStop()
     }
 
@@ -244,7 +246,7 @@ class MainActivity : ComponentActivity() {
             deferred.complete(null)
         }
         val uri = deferred.await() ?: return null
-        return withContext(Dispatchers.IO) { PlatformBridge.readUriAsPickedFile(uri, maxBytes = maxBytes) }
+        return withContext(Dispatchers.IO) { PlatformPickers.readUriAsPickedFile(uri, maxBytes = maxBytes) }
     }
 
     /** Returns the chosen documents without reading them, so callers can stream them off the main thread. */
@@ -290,7 +292,7 @@ class MainActivity : ComponentActivity() {
     suspend fun requestPickWorkspaceDirectory(currentPath: String): String? {
         val deferred = CompletableDeferred<String?>()
         pendingWorkspaceDirDeferred = deferred
-        val initialUri = PlatformBridge.buildInitialDocumentTreeUri(currentPath)
+        val initialUri = PlatformPickers.buildInitialDocumentTreeUri(currentPath)
         pendingWorkspaceInitialUri = initialUri
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
             val launchedSettings = runCatching {

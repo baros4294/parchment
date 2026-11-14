@@ -40,7 +40,7 @@ import io.parchment.ai.model.TokenMetrics
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WebSourceCitation
 import io.parchment.ai.platform.MAX_INLINE_ATTACHMENT_BYTES
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import io.parchment.ai.runtime.runActivityFlow
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Dispatchers
@@ -257,7 +257,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         }
         var lastInteractionId = ""
         val usageLedger = ProviderUsageLedger(profile, model, initialApiUsageRecords, initialTokenMetrics,
-            usageOwnerSessionId, usageOwnerRunId.ifBlank { currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformBridge.createRunId() }, usagePurpose)
+            usageOwnerSessionId, usageOwnerRunId.ifBlank { currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformRuntime.createRunId() }, usagePurpose)
         var latestUsageMetrics = usageLedger.metrics()
         val ledgerSpendAtStart = spendTowardLimit(usageLedger.snapshots())
         val toolPolicy = AgentPermissionResolver.resolve(session, profile = profile)
@@ -514,7 +514,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                             contentBuilder.append(delta)
                                             val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                                             val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            PlatformRuntime.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                             emit(StreamUpdate.ContentDelta(delta))
                                         },
                                         onMedia = { item ->
@@ -566,7 +566,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                             contentBuilder.append(delta)
                                             val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                                             val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            PlatformRuntime.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                             emit(StreamUpdate.ContentDelta(delta))
                                         },
                                         onMedia = { item ->
@@ -653,7 +653,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                             contentBuilder.append(delta)
                                             val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                                             val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                            PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                            PlatformRuntime.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                             emit(StreamUpdate.ContentDelta(delta))
                                         },
                                         onMedia = { item ->
@@ -798,7 +798,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                                 contentBuilder.append(delta)
                                                 val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                                                 val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                                PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                                PlatformRuntime.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                                 emit(StreamUpdate.ContentDelta(delta))
                                             },
                                             onMedia = { item ->
@@ -908,7 +908,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                                         contentBuilder.append(delta)
                                         val approxOut = (contentBuilder.length / 4).coerceAtLeast(latestUsageMetrics.outputTokens.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                                         val elapsedSec = ((activity.elapsedMs - startTime) / 1000L).toInt()
-                                        PlatformBridge.notifyLongDecodeProgress(model, approxOut, elapsedSec)
+                                        PlatformRuntime.notifyLongDecodeProgress(model, approxOut, elapsedSec)
                                         emit(StreamUpdate.ContentDelta(delta))
                                     },
                                     onOutputLimit = { reachedOutputLimit = true },
@@ -1431,7 +1431,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
         onSseEvent: suspend (eventType: String, data: String) -> Unit,
         onPlainJsonFallback: suspend (fullJson: String) -> Unit
     ) {
-        var lastLineAt = PlatformBridge.monotonicTimeMillis()
+        var lastLineAt = PlatformRuntime.monotonicTimeMillis()
         var sawAnyData = false
         coroutineScope {
             val stallWatch = launch {
@@ -1460,7 +1460,7 @@ internal const val MAX_REASONING_HANDOFF_CHARS = 2000
                     // - 300 seconds before the first SSE line arrives (allows deep pre-token reasoning on slow endpoints)
                     val perLineTimeoutMs = if (sawSseLine) 90_000L else 300_000L
                     val line = withTimeoutOrNull(perLineTimeoutMs) {
-                        channel.readLine().also { if (it != null) lastLineAt = PlatformBridge.monotonicTimeMillis() }
+                        channel.readLine().also { if (it != null) lastLineAt = PlatformRuntime.monotonicTimeMillis() }
                     } ?: if (channel.isClosedForRead) {
                         break
                     } else {

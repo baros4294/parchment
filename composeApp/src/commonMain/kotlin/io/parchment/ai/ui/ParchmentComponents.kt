@@ -104,7 +104,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.parchment.ai.model.isWebLink
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformStorage
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -253,7 +253,7 @@ private fun Modifier.sepiaFocusRing(focused: Boolean, color: Color): Modifier =
 
 /** Links from model output and imported chats may only open in a browser, never as local files. */
 internal fun openWebLink(target: String) {
-    if (isWebLink(target)) PlatformBridge.openOrPlayMedia(target.trim())
+    if (isWebLink(target)) PlatformStorage.openOrPlayMedia(target.trim())
 }
 
 /** Names a control that has no visible text. */

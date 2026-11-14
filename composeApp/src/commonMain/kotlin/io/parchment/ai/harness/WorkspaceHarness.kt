@@ -8,7 +8,8 @@ import io.parchment.ai.model.TodoItem
 import io.parchment.ai.model.ToolCallRecord
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.platform.HtmlTextConverter
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformWorkspace
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -562,7 +563,7 @@ object WorkspaceHarness {
     private fun getOrLoadWorkspaceContext(workspaceRoot: String): CachedWorkspaceContext {
         val cleanRoot = workspaceRoot.trim()
         if (cleanRoot.isEmpty()) return CachedWorkspaceContext(0L, emptyList(), "")
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         synchronized(workspaceContextCache) {
             val cached = workspaceContextCache[cleanRoot]
             if (cached != null && now - cached.timestampMs <= WORKSPACE_CONTEXT_TTL_MS) {
@@ -573,7 +574,7 @@ object WorkspaceHarness {
         val foundNames = mutableListOf<String>()
         val sb = StringBuilder()
         for (fileName in candidates) {
-            PlatformBridge.workspaceRead(cleanRoot, fileName, startLine = 1, maxLines = 10_000).onSuccess { content ->
+            PlatformWorkspace.workspaceRead(cleanRoot, fileName, startLine = 1, maxLines = 10_000).onSuccess { content ->
                 if (content.isNotBlank()) {
                     foundNames.add(fileName)
                     sb.appendLine("#### Auto-Loaded Workspace File: `$fileName`")
@@ -628,10 +629,10 @@ object WorkspaceHarness {
     private fun scanSkills(root: String): List<WorkspaceSkill> {
         val found = linkedMapOf<String, WorkspaceSkill>()
         for (folder in SKILL_FOLDERS) {
-            val entries = PlatformBridge.workspaceList(root, folder, recursive = false).getOrNull() ?: continue
+            val entries = PlatformWorkspace.workspaceList(root, folder, recursive = false).getOrNull() ?: continue
             for (entry in entries.lines().map { it.trim() }.filter { it.endsWith("/") }.sorted()) {
                 val path = "${entry}SKILL.md"
-                val numbered = PlatformBridge.workspaceRead(root, path, startLine = 1, maxLines = 40).getOrNull() ?: continue
+                val numbered = PlatformWorkspace.workspaceRead(root, path, startLine = 1, maxLines = 40).getOrNull() ?: continue
                 // The reader adds a header line and line numbers for the model.
                 val text = numbered.lines().drop(1).joinToString("\n") { it.substringAfter(": ", "") }
                 val (declared, description) = parseSkillHeader(text) ?: continue
@@ -860,7 +861,7 @@ object WorkspaceHarness {
         permit: ToolExecutionPermit? = null,
         isCancelled: () -> Boolean = { false }
     ): ToolCallRecord {
-        val toolStartMs = PlatformBridge.monotonicTimeMillis()
+        val toolStartMs = PlatformRuntime.monotonicTimeMillis()
         val scope = accessScope ?: ToolAccessScope(AgentPermissionPolicy(
             workspacePath = workspaceRoot, workspaceMode = mode,
             shellAccess = if (allowShell) ShellAccess.FULL_ACCESS else ShellAccess.DISABLED,
@@ -918,12 +919,12 @@ object WorkspaceHarness {
                     }
                 }.trim()
                 if (mode == WorkspaceMode.READ_WRITE && workspaceRoot.isNotBlank()) {
-                    PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_TODO.md", mdSummary).getOrThrow()
+                    PlatformWorkspace.workspaceWrite(workspaceRoot, "PARCHMENT_TODO.md", mdSummary).getOrThrow()
                 }
                 "Updated Todo Checklist ($done/${parsed.size} completed, $active in_progress, $pending pending).\n$mdSummary"
             }
             "skill_load" -> discoverSkills(workspaceRoot).find { it.name == strArg("name") }
-                ?.let { PlatformBridge.workspaceRead(workspaceRoot, it.path, startLine = 1, maxLines = SKILL_MAX_LINES) }
+                ?.let { PlatformWorkspace.workspaceRead(workspaceRoot, it.path, startLine = 1, maxLines = SKILL_MAX_LINES) }
                 ?: Result.failure(IllegalArgumentException("No skill named '${strArg("name")}' is available in this workspace."))
             ComputerUse.TOOL_NAME -> Result.failure(IllegalStateException("Computer control is not available in this run."))
             "agent_delegate" -> Result.failure(IllegalStateException("Helpers are not available in this run."))
@@ -936,23 +937,23 @@ object WorkspaceHarness {
             "fs_list" -> {
                 val rel = strArg("path", "")
                 val rec = args["recursive"]?.jsonPrimitive?.booleanOrNull ?: false
-                PlatformBridge.workspaceList(workspaceRoot, rel, rec)
+                PlatformWorkspace.workspaceList(workspaceRoot, rel, rec)
             }
             "fs_glob" -> {
                 val pat = strArg("pattern")
                 val maxRes = args["max_results"]?.jsonPrimitive?.intOrNull ?: 200
-                PlatformBridge.workspaceGlob(workspaceRoot, pat, maxRes)
+                PlatformWorkspace.workspaceGlob(workspaceRoot, pat, maxRes)
             }
             "fs_read" -> {
                 val rel = strArg("path")
                 val startLine = args["start_line"]?.jsonPrimitive?.intOrNull ?: 1
                 val maxLines = args["max_lines"]?.jsonPrimitive?.intOrNull ?: 250
-                PlatformBridge.workspaceRead(workspaceRoot, rel, startLine, maxLines)
+                PlatformWorkspace.workspaceRead(workspaceRoot, rel, startLine, maxLines)
             }
             "fs_search" -> {
                 val query = strArg("query")
                 val glob = strArg("file_glob", "")
-                PlatformBridge.workspaceSearch(workspaceRoot, query, glob)
+                PlatformWorkspace.workspaceSearch(workspaceRoot, query, glob)
             }
             "fs_write" -> {
                 if (mode != WorkspaceMode.READ_WRITE) {
@@ -960,7 +961,7 @@ object WorkspaceHarness {
                 } else {
                     val rel = strArg("path")
                     val content = strArg("content")
-                    PlatformBridge.workspaceWrite(workspaceRoot, rel, content)
+                    PlatformWorkspace.workspaceWrite(workspaceRoot, rel, content)
                 }
             }
             "fs_edit" -> {
@@ -971,7 +972,7 @@ object WorkspaceHarness {
                     val oldText = strArg("old_text")
                     val newText = strArg("new_text")
                     val replaceAll = args["replace_all"]?.jsonPrimitive?.booleanOrNull ?: false
-                    PlatformBridge.workspaceEdit(workspaceRoot, rel, oldText, newText, replaceAll)
+                    PlatformWorkspace.workspaceEdit(workspaceRoot, rel, oldText, newText, replaceAll)
                 }
             }
             "fs_multi_edit" -> {
@@ -987,7 +988,7 @@ object WorkspaceHarness {
                         val repAll = obj["replace_all"]?.jsonPrimitive?.booleanOrNull ?: false
                         Triple(oldTxt, newTxt, repAll)
                     }
-                    PlatformBridge.workspaceMultiEdit(workspaceRoot, rel, parsedEdits)
+                    PlatformWorkspace.workspaceMultiEdit(workspaceRoot, rel, parsedEdits)
                 }
             }
             "fs_move" -> {
@@ -996,7 +997,7 @@ object WorkspaceHarness {
                 } else {
                     val src = strArg("source_path")
                     val dst = strArg("dest_path")
-                    PlatformBridge.workspaceMove(workspaceRoot, src, dst)
+                    PlatformWorkspace.workspaceMove(workspaceRoot, src, dst)
                 }
             }
             "fs_delete" -> {
@@ -1004,7 +1005,7 @@ object WorkspaceHarness {
                     Result.failure(IllegalStateException("Workspace is in Read-Only mode. Switch to Agent R/W mode to allow deleting files."))
                 } else {
                     val rel = strArg("path")
-                    PlatformBridge.workspaceDelete(workspaceRoot, rel)
+                    PlatformWorkspace.workspaceDelete(workspaceRoot, rel)
                 }
             }
             "web_search" -> {
@@ -1015,7 +1016,7 @@ object WorkspaceHarness {
             "web_fetch" -> {
                 val url = strArg("url")
                 val maxChars = args["max_chars"]?.jsonPrimitive?.intOrNull ?: 24000
-                PlatformBridge.fetchUrlText(url, maxChars, isCancelled)
+                PlatformWorkspace.fetchUrlText(url, maxChars, isCancelled)
             }
             "calc_eval" -> {
                 val expr = strArg("expression")
@@ -1030,7 +1031,7 @@ object WorkspaceHarness {
                 val action = strArg("action", "read").lowercase()
                 val content = strArg("content", "")
                 when (action) {
-                    "read" -> PlatformBridge.workspaceRead(workspaceRoot, "PARCHMENT_MEMORY.md", 1, 500)
+                    "read" -> PlatformWorkspace.workspaceRead(workspaceRoot, "PARCHMENT_MEMORY.md", 1, 500)
                         .recover { "(PARCHMENT_MEMORY.md does not exist yet.)" }
                     "append" -> {
                         if (mode != WorkspaceMode.READ_WRITE) {
@@ -1039,14 +1040,14 @@ object WorkspaceHarness {
                             // Append without a read-modify-write cycle. Reading the file back would route
                             // through workspaceRead, which caps at 10k lines / 250k chars and truncates
                             // over-long lines, silently destroying any memory file past those limits.
-                            PlatformBridge.workspaceAppend(workspaceRoot, "PARCHMENT_MEMORY.md", "\n\n$content")
+                            PlatformWorkspace.workspaceAppend(workspaceRoot, "PARCHMENT_MEMORY.md", "\n\n$content")
                         }
                     }
                     "overwrite" -> {
                         if (mode != WorkspaceMode.READ_WRITE) {
                             Result.failure(IllegalStateException("Switch to Agent R/W mode to update PARCHMENT_MEMORY.md."))
                         } else {
-                            PlatformBridge.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", content)
+                            PlatformWorkspace.workspaceWrite(workspaceRoot, "PARCHMENT_MEMORY.md", content)
                         }
                     }
                     else -> Result.failure(IllegalArgumentException("Unknown agent_memory action '$action'."))
@@ -1060,7 +1061,7 @@ object WorkspaceHarness {
                 } else {
                     val cmd = strArg("command")
                     val timeout = args["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 30
-                    PlatformBridge.workspaceShellExec(workspaceRoot, cmd, timeout, onOutputDelta, isCancelled)
+                    PlatformWorkspace.workspaceShellExec(workspaceRoot, cmd, timeout, onOutputDelta, isCancelled)
                 }
             }
             else -> Result.failure(IllegalArgumentException("Unknown workspace tool '$toolName'."))
@@ -1070,7 +1071,7 @@ object WorkspaceHarness {
             invalidateWorkspaceCache(workspaceRoot)
         }
 
-        val elapsedToolMs = (PlatformBridge.monotonicTimeMillis() - toolStartMs).coerceAtLeast(1L)
+        val elapsedToolMs = (PlatformRuntime.monotonicTimeMillis() - toolStartMs).coerceAtLeast(1L)
         return result.fold(
             onSuccess = { output ->
                 val shapedOutput = compressToolOutputWithSizeValve(toolName, output)
@@ -1289,14 +1290,14 @@ object WorkspaceHarness {
 
         // 1. Primary: DuckDuckGo HTML search
         val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
-        PlatformBridge.fetchUrlText(ddgUrl, maxChars = 48_000, isCancelled = isCancelled).onSuccess { ddgMd ->
+        PlatformWorkspace.fetchUrlText(ddgUrl, maxChars = 48_000, isCancelled = isCancelled).onSuccess { ddgMd ->
             addUnique(parseDuckDuckGoMarkdownResults(ddgMd, maxResults))
         }
 
         // 2. Fallback / Supplement: Wikipedia Search API
         if (collected.size < maxResults) {
             val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=1&format=json&srlimit=${maxResults.coerceAtMost(5)}"
-            PlatformBridge.fetchUrlText(wikiUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { wikiJson ->
+            PlatformWorkspace.fetchUrlText(wikiUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { wikiJson ->
                 addUnique(parseWikipediaSearchJson(wikiJson, maxResults - collected.size))
             }
         }
@@ -1304,7 +1305,7 @@ object WorkspaceHarness {
         // 3. Fallback / Supplement: HackerNews Algolia Search API
         if (collected.size < maxResults) {
             val hnUrl = "https://hn.algolia.com/api/v1/search?query=$encoded&tags=story&hitsPerPage=${maxResults.coerceAtMost(5)}"
-            PlatformBridge.fetchUrlText(hnUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { hnJson ->
+            PlatformWorkspace.fetchUrlText(hnUrl, maxChars = 32_000, isCancelled = isCancelled).onSuccess { hnJson ->
                 addUnique(parseHackerNewsAlgoliaJson(hnJson, maxResults - collected.size))
             }
         }

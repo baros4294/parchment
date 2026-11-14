@@ -39,7 +39,7 @@ import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.AgentPermissionPolicy
 import io.parchment.ai.model.asOverrides
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 
 // ============================================================================================
 // Settings page 3: Assistants (the list and the editor).
@@ -326,7 +326,7 @@ internal fun AssistantsSubpage(
                     compact = true,
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
-                        val now = PlatformBridge.currentTimeMillis()
+                        val now = PlatformRuntime.currentTimeMillis()
                         val newAsst = AssistantAgent(
                             id = "asst-$now",
                             name = "New Assistant",
@@ -392,7 +392,7 @@ internal fun AssistantsSubpage(
                         compact = true,
                         style = SepiaButtonStyle.GHOST,
                         onClick = {
-                            val now = PlatformBridge.currentTimeMillis()
+                            val now = PlatformRuntime.currentTimeMillis()
                             val copy = asst.copy(id = "asst-$now", name = "${asst.name} Copy")
                             onUpdateAssistants(appState.assistants + copy, appState.activeAssistantId)
                             onNotify(Strings.duplicated(asst.name))

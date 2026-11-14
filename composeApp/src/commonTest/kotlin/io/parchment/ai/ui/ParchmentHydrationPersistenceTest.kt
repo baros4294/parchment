@@ -7,7 +7,8 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PromptAttachment
 import io.parchment.ai.model.WorkspaceMode
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -39,36 +40,36 @@ class ParchmentHydrationPersistenceTest {
 
     @Test
     fun queuedFullSnapshotWritesDespiteCurrentSessionDehydration() {
-        val id = "test-full-after-stub-" + PlatformBridge.currentTimeMillis()
+        val id = "test-full-after-stub-" + PlatformRuntime.currentTimeMillis()
         val original = full(id)
         try {
             val stub = dehydrateChatSessionToCompactStub(original)
             assertTrue(stub.isCompactStub)
             saveSingleChatSessionToDisk(original)
-            val loaded = compactStateJson.decodeFromString<ChatSession>(PlatformBridge.loadChatSessionJsonById(id)!!)
+            val loaded = compactStateJson.decodeFromString<ChatSession>(PlatformStorage.loadChatSessionJsonById(id)!!)
             assertEquals(original.messages, loaded.messages)
             assertEquals(original.storySummary, loaded.storySummary)
             assertEquals(original.authorsNote, loaded.authorsNote)
         } finally {
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
     }
 
     @Test
     fun capturedStubCannotOverwriteHistoryAfterAnotherSnapshotHydrates() {
-        val id = "test-stale-stub-" + PlatformBridge.currentTimeMillis()
+        val id = "test-stale-stub-" + PlatformRuntime.currentTimeMillis()
         val original = full(id)
         try {
             saveSingleChatSessionToDisk(original)
             val stub = dehydrateChatSessionToCompactStub(original).copy(title = "renamed")
             assertFalse(hydrateSessionFromDiskIfNeeded(stub).isCompactStub)
             saveSingleChatSessionToDisk(stub)
-            val loaded = compactStateJson.decodeFromString<ChatSession>(PlatformBridge.loadChatSessionJsonById(id)!!)
+            val loaded = compactStateJson.decodeFromString<ChatSession>(PlatformStorage.loadChatSessionJsonById(id)!!)
             assertEquals("renamed", loaded.title)
             assertEquals(original.messages, loaded.messages)
             assertEquals(original.storySummary, loaded.storySummary)
         } finally {
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
     }
 
@@ -122,7 +123,7 @@ class ParchmentHydrationPersistenceTest {
 
     @Test
     fun hydrationUsesTheUnsavedFullSnapshotBeforeDisk() {
-        val id = "test-pending-hydrate-" + PlatformBridge.currentTimeMillis()
+        val id = "test-pending-hydrate-" + PlatformRuntime.currentTimeMillis()
         val original = full(id)
         try {
             appDiskWriter.enqueue(sessions = listOf(original), notify = false)
@@ -134,13 +135,13 @@ class ParchmentHydrationPersistenceTest {
         } finally {
             appDiskWriter.enqueue(deletedIds = setOf(id), urgent = true)
             appDiskWriter.flushBlocking()
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
     }
 
     @Test
     fun failedHydrationDoesNotPretendThePreviewIsComplete() {
-        val id = "test-missing-hydrate-" + PlatformBridge.currentTimeMillis()
+        val id = "test-missing-hydrate-" + PlatformRuntime.currentTimeMillis()
         val stub = dehydrateChatSessionToCompactStub(full(id))
         val result = hydrateSessionFromDiskIfNeeded(stub)
         assertTrue(result.isCompactStub)
@@ -151,7 +152,7 @@ class ParchmentHydrationPersistenceTest {
 
     @Test
     fun hydrationPreservesClearedMetadataAndDrafts() {
-        val id = "test-cleared-metadata-" + PlatformBridge.currentTimeMillis()
+        val id = "test-cleared-metadata-" + PlatformRuntime.currentTimeMillis()
         val original = full(id).copy(workspacePath = "previous-root", workspaceMode = WorkspaceMode.READ_WRITE,
             modelOverride = "previous-model", systemPrompt = "previous instructions")
         try {
@@ -167,7 +168,7 @@ class ParchmentHydrationPersistenceTest {
             assertEquals(original.messages, hydrated.messages)
             assertEquals(original.authorsNote, hydrated.authorsNote)
         } finally {
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
     }
 
@@ -208,7 +209,7 @@ class ParchmentHydrationPersistenceTest {
         val original = full("missing-inline").let { session ->
             session.copy(messages = session.messages.map { node -> node.copy(variants = node.variants.map { variant ->
                 variant.copy(attachments = listOf(PromptAttachment(id = "inline", fileName = "missing.png", mimeType = "image/png",
-                    localFilePath = "missing-file-${PlatformBridge.currentTimeMillis()}.png", base64Data = "AAAA")))
+                    localFilePath = "missing-file-${PlatformRuntime.currentTimeMillis()}.png", base64Data = "AAAA")))
             }) })
         }
         assertEquals("AAAA", stripRedundantAttachmentBase64(original).messages.single().activeVariant.attachments.single().base64Data)
@@ -216,7 +217,7 @@ class ParchmentHydrationPersistenceTest {
 
     @Test
     fun exportHydratesFullHistoryAndPreservesPartialUsageForRecovery() {
-        val id = "test-usage-export-" + PlatformBridge.currentTimeMillis()
+        val id = "test-usage-export-" + PlatformRuntime.currentTimeMillis()
         val record = io.parchment.ai.model.ApiUsageRecord("request", "response", "openai_responses", "fixture", "fixture-model",
             usage = io.parchment.ai.model.ProviderTokenUsage(inputTokens = 0L, cachedInputTokens = 0L,
                 cacheCreationInputTokens = 0L, outputTokens = null, outputIncludesReasoning = true))
@@ -242,7 +243,7 @@ class ParchmentHydrationPersistenceTest {
             assertEquals(100L, ledger.metrics().inputTokens)
             assertEquals(5L, ledger.metrics().outputTokens)
         } finally {
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
     }
 }

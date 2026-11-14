@@ -28,7 +28,7 @@ import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.model.AgentPermissionResolver
 import io.parchment.ai.model.AgentPermissionOverrides
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformWorkspace
 
 // ============================================================================================
 // Settings page 5: Workspace and agent tools (the folder, permissions, skills and MCP servers).
@@ -107,7 +107,7 @@ internal fun WorkspaceSubpage(
                                 enabled = effectiveWsMode == WorkspaceMode.READ_WRITE,
                                 style = SepiaButtonStyle.OUTLINE,
                                 onClick = {
-                                    PlatformBridge.workspaceWrite(
+                                    PlatformWorkspace.workspaceWrite(
                                         effectiveWsPath,
                                         "PARCHMENT_MEMORY.md",
                                         "# Project & Story Memory\n\n- Record key architectural rules, character notes, and decisions here.\n"

@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import io.parchment.ai.model.ChatSession
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -28,7 +28,7 @@ internal fun storedChatJsonContains(rawJson: String, chatId: String, query: Stri
 
 private fun storedChatContains(chatId: String, query: String): Boolean {
     appDiskWriter.pendingFullSession(chatId)?.let { return chatMessagesContain(it, query) }
-    val raw = runCatching { PlatformBridge.loadChatSessionJsonById(chatId) }.getOrNull() ?: return false
+    val raw = runCatching { PlatformStorage.loadChatSessionJsonById(chatId) }.getOrNull() ?: return false
     return storedChatJsonContains(raw, chatId, query)
 }
 

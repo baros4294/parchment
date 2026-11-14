@@ -1,8 +1,6 @@
 package io.parchment.ai.platform
 
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
-import io.parchment.ai.model.StoredAppFileItem
 
 data class PickedBinaryFile(
     val fileName: String,
@@ -26,17 +24,17 @@ internal fun inlineAttachmentText(bytes: ByteArray): String? {
     return runCatching { bytes.decodeToString() }.getOrNull()?.takeUnless { '\u0000' in it }
 }
 
-/**
- * Inspects binary magic headers, explicit MIME type hints, and file extensions to accurately
- * classify images (PNG, GIF, WebP, JPEG, BMP), videos (MP4, WebM, MOV), audio, and PDFs—even
- * when Android Gboard Emoji Kitchen, GIF pickers, or clipboard providers supply extensionless URIs.
- */
 /** One file chosen for chat import, with what decoding it produced. */
 class ChatImportOutcome<T>(val fileName: String, val result: Result<T>)
 
 /** One chat in an export bundle: its JSON entry and the local media files to include with it. */
 class ChatBundleEntry(val jsonPath: String, val json: ByteArray, val mediaFiles: List<Pair<String, String>>)
 
+/**
+ * Inspects binary magic headers, explicit MIME type hints, and file extensions to accurately
+ * classify images (PNG, GIF, WebP, JPEG, BMP), videos (MP4, WebM, MOV), audio, and PDFs—even
+ * when Android Gboard Emoji Kitchen, GIF pickers, or clipboard providers supply extensionless URIs.
+ */
 fun normalizePickedBinaryFile(
     rawFileName: String,
     bytes: ByteArray,
@@ -168,58 +166,7 @@ fun normalizePickedBinaryFile(
     )
 }
 
-data class ComputerAction(val action: String, val x: Int?, val y: Int?, val text: String, val keys: String, val amount: Int)
-data class ComputerScreenshot(val jpegBase64: String, val width: Int, val height: Int)
-
-/** Blocking calls; [act] takes coordinates from the most recent screenshot. */
-interface ComputerControl {
-    val isAvailable: Boolean
-    fun screenshot(): Result<ComputerScreenshot>
-    fun act(action: ComputerAction): Result<String>
-}
-
-interface McpProcess {
-    fun writeLine(line: String)
-    /** Blocks for the next line; null means the process has ended. */
-    fun readLine(): String?
-    fun close()
-}
-
-/** Devices with less physical memory than this count as low-memory (a nominal 4 GB device reports a little less). */
-internal const val LOW_MEMORY_BYTES = 4L * 1024L * 1024L * 1024L
-
-expect object PlatformBridge {
-    val platformName: String
-    val isAndroid: Boolean
-    /** Under 4 GB of RAM (or Android's low-RAM flag): caches shrink so the app stays responsive. */
-    val isLowMemoryDevice: Boolean
-    val backgroundExecutionNotice: kotlinx.coroutines.flow.StateFlow<String>
-
-    fun currentTimeMillis(): Long
-    fun monotonicTimeMillis(): Long
-    fun createRunId(): String
-
-    // Local persistent storage (split into parchment-settings.json + per-chat files in chats/)
-    fun getAppStorageDirectoryPath(): String
-    fun getChatsStorageDirectoryPath(): String
-    fun loadAppStateJson(): String?
-    fun saveAppStateJson(json: String)
-    fun loadChatSessionJsonById(sessionId: String): String?
-    fun loadAllChatSessionJsons(): List<String>
-    /** The same chats one at a time, so start-up never holds every chat's text at once. */
-    fun chatSessionJsons(): Sequence<String>
-    fun saveChatSessionJson(sessionId: String, json: String)
-    fun deleteChatSessionFile(sessionId: String)
-    fun registerStateFlushCallback(callback: () -> Unit)
-    fun flushPendingStateNow()
-    fun registerBackHandler(handler: (() -> Boolean)?)
-    fun handleSystemBackPressed(): Boolean
-    fun isIgnoringBatteryOptimizations(): Boolean
-    fun requestUnrestrictedBackgroundBattery()
-    fun wipeAllLocalData(): Boolean
-    fun listAppStorageFiles(): List<StoredAppFileItem>
-    fun deleteAppStorageFile(fullPath: String): Boolean
-
+expect object PlatformPickers {
     // System file pickers: card and system prompt import and export, and custom fonts.
     suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile?
     /** Lets the user choose chat exports and imports each one, streaming archives instead of loading them into memory. */
@@ -237,67 +184,10 @@ expect object PlatformBridge {
     /** Copies raw image bytes (PNG/JPEG/WebP) to the system clipboard as an image. */
     fun copyImageToClipboard(bytes: ByteArray): Boolean
 
-    // Built-in Local File System Agent Harness (Sandboxed to workspaceRoot)
-    fun workspaceList(workspaceRoot: String, relativePath: String = "", recursive: Boolean = false): Result<String>
-    fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int = 200): Result<String>
-    fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int = 1, maxLines: Int = 250): Result<String>
-    fun workspaceWrite(workspaceRoot: String, relativePath: String, content: String): Result<String>
-    /** Appends [content] to a file without reading it back, so arbitrarily large files are never truncated. */
-    fun workspaceAppend(workspaceRoot: String, relativePath: String, content: String): Result<String>
-    fun workspaceEdit(workspaceRoot: String, relativePath: String, oldText: String, newText: String, replaceAll: Boolean = false): Result<String>
-    fun workspaceMultiEdit(workspaceRoot: String, relativePath: String, edits: List<Triple<String, String, Boolean>>): Result<String>
-    fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String>
-    fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String>
-    fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String = ""): Result<String>
-    fun workspaceShellExec(
-        workspaceRoot: String,
-        command: String,
-        timeoutSeconds: Int = 30,
-        onOutputDelta: ((String) -> Unit)? = null,
-        isCancelled: (() -> Boolean)? = null
-    ): Result<String>
-    fun fetchUrlText(url: String, maxChars: Int = 24000, isCancelled: (() -> Boolean)? = null): Result<String>
-    /** Downloads from public internet addresses only, checking every redirect. */
-    fun fetchPublicBytes(url: String, maxBytes: Int, isCancelled: (() -> Boolean)? = null): Result<ByteArray>
-    val computerControl: ComputerControl
-    val supportsLocalMcpServers: Boolean
-    /** Starts a local MCP server, or returns null on platforms that cannot run one. */
-    fun startMcpProcess(command: String): McpProcess?
-    // Process-owned run snapshots include preparation, tools, compaction and approval waits.
-    fun synchronizeBackgroundExecution(owners: Int, runnable: Int, status: String)
-    fun notifyLongDecodeProgress(modelName: String, outputTokens: Int, elapsedSeconds: Int)
-
-    // In-app update download and install.
-    fun createOtaStagedDownload(assetName: String): OtaStagedDownload
-
-    // Generated Image & Video Media Storage, Per-Chat Media Bundling, and Native Playback
-    fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String = ""): String
-    fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String
-    fun createZipArchive(
-        entries: List<Pair<String, ByteArray>>,
-        fileEntries: List<Pair<String, String>> = emptyList()
-    ): ByteArray
-    /** Validates a chat bundle and commits its media only if [decode] accepts its chats; failures change nothing. */
-    fun <T> extractZipArchiveToChatStorage(zipBytes: ByteArray, decode: (chatJsons: List<String>) -> T): T
-    fun readBinaryFileBytes(filePath: String): ByteArray?
-    /** Size of a resolvable local media file, or -1 when it does not exist. */
-    fun localFileSizeBytes(filePath: String): Long
-    fun isReadableLocalFile(filePath: String): Boolean
-    fun loadImageBitmapFromFile(filePath: String): ImageBitmap?
-    /** An already decoded image, without touching the disk. */
-    fun cachedImageBitmap(filePath: String): ImageBitmap?
-    fun openOrPlayMedia(localFilePathOrUrl: String)
-
     // Clipboard Image/Video/File Paste & Native Drag-and-Drop Support
     fun readClipboardFiles(): List<PickedBinaryFile>
     fun registerFileDropCallbacks(
         onDragHover: (Boolean) -> Unit,
         onFilesDropped: (List<PickedBinaryFile>) -> Unit
     )
-
-    // Native Text-to-Speech (TTS) & Live Voice Input (STT)
-    fun speakTextAloud(text: String, onFinished: () -> Unit = {})
-    fun stopSpeakingAloud()
-    fun startVoiceInput(onRecognizedText: (String) -> Unit, onError: (String) -> Unit = {})
-    fun stopVoiceInput()
 }

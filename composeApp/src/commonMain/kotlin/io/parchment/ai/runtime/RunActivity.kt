@@ -1,6 +1,6 @@
 package io.parchment.ai.runtime
 
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -22,7 +22,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 
 /** Process-local durations only; wall-clock timestamps remain a separate persistence contract. */
 internal class RunActivity(
-    private val nowMs: () -> Long = PlatformBridge::monotonicTimeMillis,
+    private val nowMs: () -> Long = PlatformRuntime::monotonicTimeMillis,
     private val onRunnable: (Boolean) -> Unit = {},
     private val maxUnobservedGapMs: Long = 5_000L
 ) {
@@ -108,7 +108,7 @@ internal class RunActivityContext(val activity: RunActivity, val branch: Long = 
 /** Absolute snapshots reconcile platform holds; closing an old lease cannot remove a new owner. */
 internal class RunLeaseRegistry(
     private val synchronize: (owners: Int, runnable: Int, status: String) -> Unit = { _, _, _ -> },
-    private val clock: () -> Long = PlatformBridge::monotonicTimeMillis
+    private val clock: () -> Long = PlatformRuntime::monotonicTimeMillis
 ) {
     private data class Owner(val model: String, val runnable: Boolean = true)
     private val lock = Any()
@@ -167,7 +167,7 @@ internal class RunLeaseRegistry(
     }
 }
 
-internal val appRunLeases = RunLeaseRegistry(PlatformBridge::synchronizeBackgroundExecution)
+internal val appRunLeases = RunLeaseRegistry(PlatformRuntime::synchronizeBackgroundExecution)
 
 /** Streams called inside a run inherit its owner; standalone/utility streams get an owner too. */
 internal fun <T> runActivityFlow(model: String, block: suspend FlowCollector<T>.(RunActivity) -> Unit): Flow<T> = flow {

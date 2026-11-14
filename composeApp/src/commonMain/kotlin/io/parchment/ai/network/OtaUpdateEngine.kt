@@ -10,7 +10,7 @@ import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import io.parchment.ai.ParchmentBuildConfig
 import io.parchment.ai.platform.OtaStagedDownload
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -134,7 +134,7 @@ object OtaUpdateEngine {
         val publishedAt = releaseObj["published_at"]?.jsonPrimitive?.contentOrNull ?: ""
 
         val assets = releaseObj["assets"]?.jsonArray ?: JsonArray(emptyList())
-        val expectedSuffix = if (PlatformBridge.isAndroid) ".apk" else ".exe"
+        val expectedSuffix = if (PlatformRuntime.isAndroid) ".apk" else ".exe"
 
         val matchingAsset = assets.mapNotNull { it as? JsonObject }.firstOrNull { assetObj ->
             val name = assetObj["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -170,7 +170,7 @@ object OtaUpdateEngine {
         release: OtaReleaseInfo,
         installBlockedReason: () -> String? = { null },
         officialBuild: Boolean = ParchmentBuildConfig.OFFICIAL_RELEASE,
-        stage: (assetName: String) -> OtaStagedDownload = PlatformBridge::createOtaStagedDownload
+        stage: (assetName: String) -> OtaStagedDownload = PlatformRuntime::createOtaStagedDownload
     ): Flow<OtaUpdateState> = flow {
         // A dev run or local package would replace the real installed app (and act on its data).
         if (!officialBuild) {
@@ -205,7 +205,7 @@ object OtaUpdateEngine {
                     totalRead += read
                     check(totalRead <= expectedBytes) { "The download is larger than the published update." }
                     download.write(buffer, read)
-                    val now = PlatformBridge.currentTimeMillis()
+                    val now = PlatformRuntime.currentTimeMillis()
                     val pct = ((totalRead * 100L) / expectedBytes).toInt().coerceIn(0, 100)
                     if (pct != lastEmittedPercent || now - lastEmitTimeMs >= 80L || totalRead >= expectedBytes) {
                         lastEmittedPercent = pct

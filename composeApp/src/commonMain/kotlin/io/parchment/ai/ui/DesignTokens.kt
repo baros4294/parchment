@@ -13,7 +13,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Shape
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -110,7 +110,7 @@ private const val MAX_TEXT_GROWTH = 1.6f
  * things to draw); the overlay's border still separates it from the page.
  */
 fun Modifier.overlayShadow(shape: Shape): Modifier =
-    if (PlatformBridge.isLowMemoryDevice) this else shadow(Elevation.overlay, shape)
+    if (PlatformRuntime.isLowMemoryDevice) this else shadow(Elevation.overlay, shape)
 
 /** Scrolls the list to [index], jumping instead of gliding when Reduce motion is on. */
 suspend fun LazyListState.scrollToItemWithMotion(index: Int, reduceMotion: Boolean) {

@@ -34,7 +34,8 @@ import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.SendShortcutMode
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.model.ViewMode
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.launch
 
 // ============================================================================================
@@ -108,7 +109,7 @@ private fun FontChoiceRow(
                 style = SepiaButtonStyle.OUTLINE,
                 onClick = {
                     scope.launch {
-                        val picked = PlatformBridge.pickFontFile(Strings.chooseATtfOrOtf(label.lowercase()))
+                        val picked = PlatformPickers.pickFontFile(Strings.chooseATtfOrOtf(label.lowercase()))
                         if (!picked.isNullOrBlank()) {
                             onCustom(picked)
                             onNotify(Strings.setTo(label, picked.substringAfterLast('/').substringAfterLast('\\')))
@@ -475,8 +476,8 @@ internal fun PreferencesSubpage(
         if (matchesSearch("behavior", "startup", "thinking", "regenerate", "delete", "navigation", "minimap", "shortcut", "paste", "battery", "background", "scroll")) {
             SepiaSectionCard(title = Strings.behaviorStartup) {
                 Column {
-                    if (PlatformBridge.isAndroid) {
-                        val isUnrestricted = remember { PlatformBridge.isIgnoringBatteryOptimizations() }
+                    if (PlatformRuntime.isAndroid) {
+                        val isUnrestricted = remember { PlatformRuntime.isIgnoringBatteryOptimizations() }
                         @OptIn(ExperimentalLayoutApi::class)
                         FlowRow(
                             modifier = Modifier.fillMaxWidth().padding(vertical = Space.s8),
@@ -493,7 +494,7 @@ internal fun PreferencesSubpage(
                                 text = if (isUnrestricted) Strings.unrestricted else Strings.allowNow,
                                 compact = true,
                                 style = if (isUnrestricted) SepiaButtonStyle.OUTLINE else SepiaButtonStyle.PRIMARY,
-                                onClick = { PlatformBridge.requestUnrestrictedBackgroundBattery() }
+                                onClick = { PlatformRuntime.requestUnrestrictedBackgroundBattery() }
                             )
                         }
                         SepiaDivider()

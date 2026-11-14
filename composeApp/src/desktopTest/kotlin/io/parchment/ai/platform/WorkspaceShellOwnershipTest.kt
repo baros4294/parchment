@@ -19,11 +19,11 @@ class WorkspaceShellOwnershipTest {
         val secondCommand = if (windows) "Write-Output SECOND_STARTED; Start-Sleep -Seconds 2; Write-Output SECOND_FINISHED" else "echo SECOND_STARTED; sleep 2; echo SECOND_FINISHED"
         try {
             val first = executor.submit<Result<String>> {
-                PlatformBridge.workspaceShellExec(root.toString(), firstCommand, 30, { if ("FIRST_STARTED" in it) firstStarted.countDown() }, { cancelled.get() })
+                PlatformWorkspace.workspaceShellExec(root.toString(), firstCommand, 30, { if ("FIRST_STARTED" in it) firstStarted.countDown() }, { cancelled.get() })
             }
             assertTrue(firstStarted.await(8, TimeUnit.SECONDS), "First command did not start")
             val second = executor.submit<Result<String>> {
-                PlatformBridge.workspaceShellExec(root.toString(), secondCommand, 10, { if ("SECOND_STARTED" in it) secondStarted.countDown() })
+                PlatformWorkspace.workspaceShellExec(root.toString(), secondCommand, 10, { if ("SECOND_STARTED" in it) secondStarted.countDown() })
             }
             assertTrue(secondStarted.await(8, TimeUnit.SECONDS), "Second command did not start")
             cancelled.set(true)

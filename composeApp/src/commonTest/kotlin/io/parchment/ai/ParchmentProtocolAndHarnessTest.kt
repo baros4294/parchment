@@ -40,7 +40,9 @@ import io.parchment.ai.network.sanitizeContextNodes
 import io.parchment.ai.network.shouldFallbackToLegacyProtocol
 import io.parchment.ai.network.stripInlineErrorNotices
 import io.parchment.ai.platform.HtmlTextConverter
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformWorkspace
 import io.parchment.ai.platform.WorkspaceFuzzyEditEngine
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import io.parchment.ai.protocol.CardAndPromptCodec
@@ -149,7 +151,7 @@ class ParchmentProtocolAndHarnessTest {
 
     @Test
     fun testBuiltInWorkspaceAgentHarnessTools() {
-        val tempRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-workspace-${PlatformBridge.currentTimeMillis()}"
+        val tempRoot = "${PlatformStorage.getAppStorageDirectoryPath()}/test-workspace-${PlatformRuntime.currentTimeMillis()}"
         try {
             // Write a file in READ_WRITE mode
             val writeCall = WorkspaceHarness.executeToolCall(
@@ -661,7 +663,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(!mathRec.isError, "calc_eval failed: ${mathRec.resultText}")
         assertTrue(mathRec.resultText.endsWith("= 518"), "Expected 518, got: ${mathRec.resultText}")
 
-        val tempWs = "${PlatformBridge.getAppStorageDirectoryPath()}/test-2026-tools-${PlatformBridge.currentTimeMillis()}"
+        val tempWs = "${PlatformStorage.getAppStorageDirectoryPath()}/test-2026-tools-${PlatformRuntime.currentTimeMillis()}"
         WorkspaceHarness.executeToolCall(tempWs, WorkspaceMode.READ_WRITE, "c_w1", "fs_write", """{"path":"src/App.kt","content":"val a = 1\nval b = 2\nval c = 3"}""")
         val multiEditRec = WorkspaceHarness.executeToolCall(
             tempWs,
@@ -923,7 +925,7 @@ class ParchmentProtocolAndHarnessTest {
         val chatB = vaultSession.copy(id = "sess-split-b", title = "Mobile Migration Test", updatedAt = 2000L)
         saveSingleChatSessionToDisk(chatA)
         saveSingleChatSessionToDisk(chatB)
-        val loadedChatsFromDisk = PlatformBridge.loadAllChatSessionJsons().flatMap { decodeChatSessionsFromRawJson(it) }
+        val loadedChatsFromDisk = PlatformStorage.loadAllChatSessionJsons().flatMap { decodeChatSessionsFromRawJson(it) }
         assertTrue(loadedChatsFromDisk.any { it.id == "sess-split-a" && it.title == "Architecture Notes" })
         assertTrue(loadedChatsFromDisk.any { it.id == "sess-split-b" && it.title == "Mobile Migration Test" })
         val exportedSingleJson = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), chatB)
@@ -931,11 +933,11 @@ class ParchmentProtocolAndHarnessTest {
         assertEquals(1, decodedImported.size)
         assertEquals("Mobile Migration Test", decodedImported.first().title)
         assertTrue(buildExportFileNameForChat(chatB).endsWith(".chat.json"))
-        PlatformBridge.deleteChatSessionFile("sess-split-a")
-        PlatformBridge.deleteChatSessionFile("sess-split-b")
+        PlatformStorage.deleteChatSessionFile("sess-split-a")
+        PlatformStorage.deleteChatSessionFile("sess-split-b")
 
         // 26. Verify Deep Package Tree Traversal (depth >= 10) for workspaceList, workspaceGlob, and workspaceSearch
-        val deepRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-deep-ws-${PlatformBridge.currentTimeMillis()}"
+        val deepRoot = "${PlatformStorage.getAppStorageDirectoryPath()}/test-deep-ws-${PlatformRuntime.currentTimeMillis()}"
         val deepPath = "composeApp/src/commonMain/kotlin/io/parchment/ai/harness/DeepModule.kt"
         val deepWrite = WorkspaceHarness.executeToolCall(
             workspaceRoot = deepRoot,
@@ -945,17 +947,17 @@ class ParchmentProtocolAndHarnessTest {
             argumentsJson = """{"path":"$deepPath","content":"object DeepHarnessMarker { val version = 36 }"}"""
         )
         assertFalse(deepWrite.isError, "Deep fs_write should succeed")
-        val deepSearch = PlatformBridge.workspaceSearch(deepRoot, "DeepHarnessMarker", ".kt").getOrThrow()
+        val deepSearch = PlatformWorkspace.workspaceSearch(deepRoot, "DeepHarnessMarker", ".kt").getOrThrow()
         assertTrue(deepSearch.contains("DeepModule.kt"), "workspaceSearch must find files at depth 9+: $deepSearch")
-        val deepGlob = PlatformBridge.workspaceGlob(deepRoot, "**/*.kt", 50).getOrThrow()
+        val deepGlob = PlatformWorkspace.workspaceGlob(deepRoot, "**/*.kt", 50).getOrThrow()
         assertTrue(deepGlob.contains("DeepModule.kt"), "workspaceGlob must find files at depth 9+: $deepGlob")
-        val deepList = PlatformBridge.workspaceList(deepRoot, "", recursive = true).getOrThrow()
+        val deepList = PlatformWorkspace.workspaceList(deepRoot, "", recursive = true).getOrThrow()
         assertTrue(deepList.contains("DeepModule.kt"), "workspaceList(recursive=true) must find files at depth 9+: $deepList")
-        PlatformBridge.workspaceDelete(deepRoot, "composeApp")
+        PlatformWorkspace.workspaceDelete(deepRoot, "composeApp")
     }
     @Test
     fun testShellExecLargeOutputAndStdinEofNoDeadlock() {
-        val tempRoot = "${PlatformBridge.getAppStorageDirectoryPath()}/test-shell-${PlatformBridge.currentTimeMillis()}"
+        val tempRoot = "${PlatformStorage.getAppStorageDirectoryPath()}/test-shell-${PlatformRuntime.currentTimeMillis()}"
         // Ensure workspace directory exists
         WorkspaceHarness.executeToolCall(
             workspaceRoot = tempRoot,
@@ -966,14 +968,14 @@ class ParchmentProtocolAndHarnessTest {
         )
         try {
             // Emit >80 KB of stdout lines (>20x the 4 KB Windows pipe buffer) to prove concurrent pipe draining never deadlocks
-            val isWin = !PlatformBridge.isAndroid && PlatformBridge.platformName.lowercase().contains("win")
+            val isWin = !PlatformRuntime.isAndroid && PlatformRuntime.platformName.lowercase().contains("win")
             val cmd = if (isWin) {
                 "1..2200 | ForEach-Object { \"Line_\" + ${'$'}_ + \"_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\" }"
             } else {
                 "seq 1 2200 | while read i; do echo \"Line_${'$'}{i}_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\"; done"
             }
             // The limit only catches a deadlock; a cold CI runner can spend 10+ seconds just starting PowerShell.
-            val res = PlatformBridge.workspaceShellExec(tempRoot, cmd, timeoutSeconds = 60)
+            val res = PlatformWorkspace.workspaceShellExec(tempRoot, cmd, timeoutSeconds = 60)
             assertTrue(res.isSuccess, "workspaceShellExec must not deadlock on >64 KB stdout: ${res.exceptionOrNull()?.message}")
             val out = res.getOrThrow()
             assertTrue(out.startsWith("Exit Code: 0"), "Expected Exit Code: 0, got: ${out.take(120)}")
@@ -1258,7 +1260,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(defaultPrefs.autoScrollToBottomOnOpen)
 
         // 3. Storage listing returns valid StoredAppFileItem list
-        val files = io.parchment.ai.platform.PlatformBridge.listAppStorageFiles()
+        val files = PlatformStorage.listAppStorageFiles()
         assertNotNull(files)
     }
 
@@ -1324,8 +1326,8 @@ class ParchmentProtocolAndHarnessTest {
         )
 
         // 3. Verify lazy session dehydration & on-demand disk hydration preserves message count, media paths, and full disk fidelity
-        val testSessId = "sess-dehydrate-test-${PlatformBridge.currentTimeMillis()}"
-        val persistedAttachmentPath = PlatformBridge.saveGeneratedMediaFile("att-photo.png", ByteArray(1500), testSessId)
+        val testSessId = "sess-dehydrate-test-${PlatformRuntime.currentTimeMillis()}"
+        val persistedAttachmentPath = PlatformStorage.saveGeneratedMediaFile("att-photo.png", ByteArray(1500), testSessId)
         val fullSession = ChatSession(
             id = testSessId,
             title = "Heavy Session",
@@ -1393,7 +1395,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(rehydrated.messages[1].activeVariant.thinkingSummary.contains("Long chain of thought"))
         assertEquals(1, rehydrated.messages[1].activeVariant.toolCalls.size)
 
-        PlatformBridge.deleteChatSessionFile(testSessId)
+        PlatformStorage.deleteChatSessionFile(testSessId)
 
         // 4. Verify uncapped existingStorySummary preservation (> 2400 chars) in prepareCompactionPlan
         val longExistingSummary = (1..80).joinToString("\n") { "• Milestone #$it: Completed detailed architectural verification and preserved full context without truncation." }
@@ -1484,9 +1486,9 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(styledMath.text.contains("𝒪(N log N)"), "\\mathcal{O} must render as Unicode script 𝒪")
 
         // 3. Verify Per-Chat Folder Hierarchy (chats/<sessionId>/chat.json + chats/<sessionId>/media/) & .chat.zip Bundle Export/Import
-        val chatId = "sess-zip-bundle-${PlatformBridge.currentTimeMillis()}"
+        val chatId = "sess-zip-bundle-${PlatformRuntime.currentTimeMillis()}"
         val samplePngBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03, 0x04)
-        val savedMediaPath = PlatformBridge.saveGeneratedMediaFile("att-diagram.png", samplePngBytes, sessionId = chatId)
+        val savedMediaPath = PlatformStorage.saveGeneratedMediaFile("att-diagram.png", samplePngBytes, sessionId = chatId)
         assertTrue(
             savedMediaPath.replace('\\', '/').contains("chats/$chatId/media/att-diagram.png"),
             "Media file must be saved inside chats/<sessionId>/media/"
@@ -1526,8 +1528,8 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(zipBytes.size > 64, "Exported .chat.zip bundle must be non-empty")
 
         // Delete original chat folder (including its media/) and re-import from the .chat.zip bundle!
-        PlatformBridge.deleteChatSessionFile(chatId)
-        assertEquals(null, PlatformBridge.loadChatSessionJsonById(chatId))
+        PlatformStorage.deleteChatSessionFile(chatId)
+        assertEquals(null, PlatformStorage.loadChatSessionJsonById(chatId))
 
         val reimported = io.parchment.ai.ui.decodeChatSessionsFromPickedFile(
             fileName = io.parchment.ai.ui.buildExportZipFileNameForChat(sessionWithMedia),
@@ -1537,11 +1539,11 @@ class ParchmentProtocolAndHarnessTest {
         val restoredChat = reimported.first()
         assertEquals("Per-Chat Folder Test", restoredChat.title)
         val restoredMediaPath = restoredChat.messages.first().activeVariant.attachments.first().localFilePath
-        val restoredBytes = PlatformBridge.readBinaryFileBytes(restoredMediaPath)
+        val restoredBytes = PlatformStorage.readBinaryFileBytes(restoredMediaPath)
         assertNotNull(restoredBytes, "Media file extracted from .chat.zip into chats/<sessionId>/media/ must be readable")
         assertEquals(samplePngBytes.toList(), restoredBytes.toList())
 
-        PlatformBridge.deleteChatSessionFile(chatId)
+        PlatformStorage.deleteChatSessionFile(chatId)
 
         // 4. Verify Gemini ThoughtSignature Sanitizer (splits glued Base64 protobufs & strips 08 02 server-side search signatures),
         //    Parallel + Sequential Tool Step Batching across all 5 protocols, Cross-Provider Signature Isolation,

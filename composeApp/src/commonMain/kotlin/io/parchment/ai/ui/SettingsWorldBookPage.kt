@@ -36,7 +36,8 @@ import io.parchment.ai.model.ContextFragment
 import io.parchment.ai.model.FragmentActivationMode
 import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
 
@@ -88,7 +89,7 @@ internal fun WorldBookAndCardsSubpage(
                     style = SepiaButtonStyle.PRIMARY,
                     onClick = {
                         scope.launch {
-                            val picked = PlatformBridge.pickFileForImport(listOf("png", "json")) ?: return@launch
+                            val picked = PlatformPickers.pickFileForImport(listOf("png", "json")) ?: return@launch
                             if (picked.oversized) {
                                 onNotify(Strings.isTooLargeToImport(picked.fileName))
                                 return@launch
@@ -131,7 +132,7 @@ internal fun WorldBookAndCardsSubpage(
                                 systemPrompt = cardSysPrompt.trim()
                             )
                             val bytes = CardAndPromptCodec.exportCardToPngBytes(card)
-                            val saved = PlatformBridge.saveFileForExport("${card.name}.card.png", bytes)
+                            val saved = PlatformPickers.saveFileForExport("${card.name}.card.png", bytes)
                             if (saved != null) onNotify(Strings.exportedPngCardTo(saved))
                         }
                     }
@@ -232,7 +233,7 @@ internal fun WorldBookAndCardsSubpage(
                             compact = true,
                             style = SepiaButtonStyle.OUTLINE,
                             onClick = {
-                                val now = PlatformBridge.currentTimeMillis()
+                                val now = PlatformRuntime.currentTimeMillis()
                                 val preset = SystemPromptPreset(
                                     id = "preset-$now",
                                     name = activeSession.title.takeIf { it != "New Chat" } ?: "Preset #${appState.systemPromptPresets.size + 1}",
@@ -327,7 +328,7 @@ internal fun WorldBookAndCardsSubpage(
                         if (fragTitle.isNotBlank() && fragContent.isNotBlank()) {
                             val keys = fragKeywords.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                             val frag = ContextFragment(
-                                id = "frag-${PlatformBridge.currentTimeMillis()}",
+                                id = "frag-${PlatformRuntime.currentTimeMillis()}",
                                 title = fragTitle.trim(),
                                 content = fragContent.trim(),
                                 keywords = keys,

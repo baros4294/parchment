@@ -13,7 +13,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
 import io.parchment.ai.handleUnconsumedWindowKey
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformStorage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.serialization.encodeToString
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -63,7 +63,7 @@ class KeyboardShortcutTest {
     }
 
     @Test fun ctrlKOpensThePaletteWithNothingFocused() {
-        PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState().copy(autoCheckOtaOnStartup = false)))
+        PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState().copy(autoCheckOtaOnStartup = false)))
         parchmentProcessState.snapshot.value = loadFastInitialAppState().first
         val shortcuts = AppShortcutDispatcher()
         val scene = ImageComposeScene(1360, 860, density = Density(1f), coroutineContext = renderThread)
@@ -80,7 +80,7 @@ class KeyboardShortcutTest {
             assertFalse(paletteOpen(scene), "Escape must still close the palette")
         } finally {
             scene.close()
-            PlatformBridge.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
+            PlatformStorage.saveAppStateJson(compactStateJson.encodeToString(createDefaultAppState()))
         }
     }
 }

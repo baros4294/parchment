@@ -24,7 +24,9 @@ import io.parchment.ai.model.asOverrides
 import io.parchment.ai.model.unclaimedStepText
 import io.parchment.ai.network.AiProviderEngine
 import io.parchment.ai.network.StreamUpdate
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformVoice
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -110,7 +112,7 @@ internal fun GenerationHost.beginGeneration(
     val initialWebSources = existingTargetVariant?.webSources.orEmpty()
     val initialDurationMs = existingTargetVariant?.thinkingDurationMs ?: 0L
     val identity = AgentRunIdentity(
-        PlatformBridge.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
+        PlatformRuntime.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
         effectiveProfileForApi.id, modelName,
         if (effectiveProfileForApi.protocol == ProviderProtocol.CUSTOM) effectiveProfileForApi.customDialect
         else io.parchment.ai.model.mapProtocolToDialect(effectiveProfileForApi.protocol.name)
@@ -312,7 +314,7 @@ internal fun GenerationHost.beginGeneration(
             var lastThinkCharWasSpace = true
 
             // Low-memory devices publish every other frame (about 30 a second): each publish redraws the chat.
-            val framesPerPublish = if (PlatformBridge.isLowMemoryDevice) 2 else 1
+            val framesPerPublish = if (PlatformRuntime.isLowMemoryDevice) 2 else 1
             while (!networkDone || displayedContentLen < networkContentTarget.length || displayedThinkingLen < networkThinkingTarget.length) {
                 var frameNanos = processState.nextFrameNanos()
                 for (skipped in 1 until framesPerPublish) {
@@ -777,7 +779,7 @@ internal fun GenerationHost.beginGeneration(
                             }
                             is StreamUpdate.MediaGenerated -> {
                                 val relocatedItem = if (update.item.localFilePath.isNotBlank()) {
-                                    update.item.copy(localFilePath = PlatformBridge.relocateLegacyMediaToChatFolder(update.item.localFilePath, sessionId))
+                                    update.item.copy(localFilePath = PlatformStorage.relocateLegacyMediaToChatFolder(update.item.localFilePath, sessionId))
                                 } else update.item
                                 accumulatedMedia.add(relocatedItem)
                                 val mediaSnap = accumulatedMedia.toList()
@@ -848,7 +850,7 @@ internal fun GenerationHost.beginGeneration(
                                     )
                                 }
                                 if (isLiveVoiceMode && sessionId == appState.activeSessionId && update.fullContent.isNotBlank()) {
-                                    PlatformBridge.speakTextAloud(stripMarkdownToPlainText(update.fullContent))
+                                    PlatformVoice.speakTextAloud(stripMarkdownToPlainText(update.fullContent))
                                 }
                             }
                             is StreamUpdate.Error -> {

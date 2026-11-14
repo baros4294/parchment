@@ -24,7 +24,9 @@ import io.parchment.ai.model.SystemPromptPreset
 import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.platform.ChatBundleEntry
 import io.parchment.ai.platform.ChatImportOutcome
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import io.parchment.ai.protocol.isGeminiServerSideToolSignature
 import io.parchment.ai.protocol.sanitizeGeminiThoughtSignature
 import io.parchment.ai.strings.Strings
@@ -50,7 +52,7 @@ internal val appDiskWriter by lazy {
         appProcessScope,
         saveSettings = ::saveSettingsOnlyToDisk,
         saveSession = ::saveSingleChatSessionToDisk,
-        deleteSession = PlatformBridge::deleteChatSessionFile
+        deleteSession = PlatformStorage::deleteChatSessionFile
     )
 }
 
@@ -241,7 +243,7 @@ internal fun formatDurationFromMs(ms: Long): String {
 
 internal fun formatCompactTimestamp(epochMs: Long): String {
     if (epochMs <= 0L) return ""
-    val now = PlatformBridge.currentTimeMillis()
+    val now = PlatformRuntime.currentTimeMillis()
     val diffSec = ((now - epochMs) / 1000L).coerceAtLeast(0L)
     return when {
         diffSec < 60L -> Strings.justNow
@@ -358,7 +360,7 @@ internal fun buildFreshSessionForAssistant(
     activeProfile: ProviderProfile,
     assistant: AssistantAgent,
     userName: String = Strings.user,
-    now: Long = PlatformBridge.currentTimeMillis()
+    now: Long = PlatformRuntime.currentTimeMillis()
 ): ChatSession {
     val profId = assistant.defaultProfileId.ifBlank {
         appState.defaultModels.globalProfileId.ifBlank { activeProfile.id }
@@ -421,10 +423,10 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
             val updatedAtts = if (v.attachments.isNotEmpty()) {
                 v.attachments.map { att ->
                     val relocatedPath = if (att.localFilePath.isNotBlank() && sessId.isNotBlank()) {
-                        PlatformBridge.relocateLegacyMediaToChatFolder(att.localFilePath, sessId)
+                        PlatformStorage.relocateLegacyMediaToChatFolder(att.localFilePath, sessId)
                     } else att.localFilePath
                     val shouldStripB64 = relocatedPath.isNotBlank() && att.base64Data.isNotBlank() &&
-                        PlatformBridge.isReadableLocalFile(relocatedPath)
+                        PlatformStorage.isReadableLocalFile(relocatedPath)
                     if (relocatedPath != att.localFilePath || shouldStripB64) {
                         varAttChanged = true
                         att.copy(
@@ -439,7 +441,7 @@ internal fun stripRedundantAttachmentBase64(session: ChatSession): ChatSession {
             val updatedMedia = if (v.mediaItems.isNotEmpty() && sessId.isNotBlank()) {
                 v.mediaItems.map { m ->
                     val relocatedPath = if (m.localFilePath.isNotBlank()) {
-                        PlatformBridge.relocateLegacyMediaToChatFolder(m.localFilePath, sessId)
+                        PlatformStorage.relocateLegacyMediaToChatFolder(m.localFilePath, sessId)
                     } else m.localFilePath
                     if (relocatedPath != m.localFilePath) {
                         varMediaChanged = true
@@ -590,7 +592,7 @@ internal fun hydrateSessionFromDiskIfNeeded(session: ChatSession): ChatSession {
     if (pendingFull != null) {
         return stripRedundantAttachmentBase64(mergeSessionMetadata(pendingFull, session))
     }
-    val raw = runCatching { PlatformBridge.loadChatSessionJsonById(session.id) }.getOrNull()
+    val raw = runCatching { PlatformStorage.loadChatSessionJsonById(session.id) }.getOrNull()
     if (!raw.isNullOrBlank()) {
         val decoded = runCatching { compactStateJson.decodeFromString<ChatSession>(raw) }.getOrNull()
         if (decoded != null && decoded.id == session.id) {
@@ -635,7 +637,7 @@ internal fun ensureActiveSessionHydratedAndDehydrateOthers(
 internal fun saveSettingsOnlyToDisk(snapshot: AppStateSnapshot) {
     val settingsSnapshot = snapshot.copy(sessions = emptyList())
     val encoded = compactStateJson.encodeToString(AppStateSnapshot.serializer(), settingsSnapshot)
-    PlatformBridge.saveAppStateJson(encoded)
+    PlatformStorage.saveAppStateJson(encoded)
 }
 
 /** Applies background I/O results without replacing concurrent edits or resurrecting deleted chats. */
@@ -662,14 +664,14 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
     if (session.isCompactStub) {
         // Never overwrite a populated chat file on disk with a dehydrated stub; if metadata changed, merge onto disk copy
         val pendingFull = appDiskWriter.pendingFullSession(session.id)
-        val raw = if (pendingFull == null) PlatformBridge.loadChatSessionJsonById(session.id) else null
+        val raw = if (pendingFull == null) PlatformStorage.loadChatSessionJsonById(session.id) else null
         val fullDiskSession = pendingFull ?: raw?.let {
             runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull()
         }?.takeIf { it.id == session.id }
         check(fullDiskSession != null) { "This chat's full data isn't available, so it wasn't saved." }
         val merged = mergeSessionMetadata(fullDiskSession, session)
         val encoded = compactStateJson.encodeToString(ChatSession.serializer(), merged)
-        PlatformBridge.saveChatSessionJson(merged.id, encoded)
+        PlatformStorage.saveChatSessionJson(merged.id, encoded)
         return
     }
     val cleanSession = stripRedundantAttachmentBase64(session).let { stripped ->
@@ -682,7 +684,7 @@ internal fun saveSingleChatSessionToDisk(session: ChatSession) {
         )
     }
     val encoded = compactStateJson.encodeToString(ChatSession.serializer(), cleanSession)
-    PlatformBridge.saveChatSessionJson(cleanSession.id, encoded)
+    PlatformStorage.saveChatSessionJson(cleanSession.id, encoded)
 }
 
 internal fun decodeChatSessionsFromRawJson(rawJsonText: String): List<ChatSession> {
@@ -740,7 +742,7 @@ internal fun encodeChatSessionJsonForExport(session: ChatSession): ByteArray {
  */
 internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): ByteArray {
     val chats = sessions.map(::chatBundleEntry)
-    return PlatformBridge.createZipArchive(
+    return PlatformStorage.createZipArchive(
         entries = chats.map { it.jsonPath to it.json },
         fileEntries = chats.flatMap { it.mediaFiles }
     )
@@ -748,7 +750,7 @@ internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): By
 
 /** Streams [sessions] to a chosen file, hydrating one chat at a time. Null means the user cancelled. */
 internal suspend fun exportChatSessionsBundle(fileName: String, sessions: List<ChatSession>): String? =
-    PlatformBridge.exportChatBundle(fileName, sessions.asSequence().map(::chatBundleEntry))
+    PlatformPickers.exportChatBundle(fileName, sessions.asSequence().map(::chatBundleEntry))
 
 private fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
     val mediaFileEntries = mutableListOf<Pair<String, String>>()
@@ -801,7 +803,7 @@ private fun decodeImportedChats(rawJsons: List<String>): List<ChatSession> =
 
 /** Lets the user choose chat exports and decodes each one, reporting per-file success or failure. */
 internal suspend fun pickAndDecodeChatImports(): List<ChatImportOutcome<List<ChatSession>>> =
-    PlatformBridge.pickAndImportChatFiles(::decodeImportedChats).map { outcome ->
+    PlatformPickers.pickAndImportChatFiles(::decodeImportedChats).map { outcome ->
         ChatImportOutcome(outcome.fileName, outcome.result.mapCatching { chats -> chats.map(::stripRedundantAttachmentBase64) })
     }
 
@@ -817,7 +819,7 @@ internal fun decodeChatSessionsFromPickedFile(
     val isZip = fileName.endsWith(".zip", ignoreCase = true) ||
         (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())
     val sessions = if (isZip) {
-        PlatformBridge.extractZipArchiveToChatStorage(bytes, ::decodeImportedChats)
+        PlatformStorage.extractZipArchiveToChatStorage(bytes, ::decodeImportedChats)
     } else {
         runCatching { bytes.decodeToString() }.getOrNull()?.let(::decodeChatSessionsFromRawJson).orEmpty()
     }
@@ -830,7 +832,7 @@ internal fun decodeChatSessionsFromPickedFile(
  * Remaining historical chats are hydrated as lightweight stubs in the background on `Dispatchers.Default`.
  */
 internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
-    val rawSettings = PlatformBridge.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
+    val rawSettings = PlatformStorage.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
     if (!rawSettings.isNullOrBlank()) {
         val baseLoaded: AppStateSnapshot? = runCatching {
             compactStateJson.decodeFromString<AppStateSnapshot>(rawSettings)
@@ -838,7 +840,7 @@ internal fun loadFastInitialAppState(): Pair<AppStateSnapshot, Boolean> {
             runCatching { recoverAppStateFromPartialJson(rawSettings) }.getOrNull()
         }
         if (baseLoaded != null && baseLoaded.sessions.isEmpty()) {
-            val activeRaw = PlatformBridge.loadChatSessionJsonById(baseLoaded.activeSessionId)
+            val activeRaw = PlatformStorage.loadChatSessionJsonById(baseLoaded.activeSessionId)
             val activeSession = activeRaw?.let {
                 runCatching { compactStateJson.decodeFromString<ChatSession>(it) }.getOrNull()
             }?.let { stripRedundantAttachmentBase64(it) }
@@ -866,7 +868,7 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
     }
     var loadedAny = false
     // One chat at a time: each file's text and full decode are dropped once its stub is kept.
-    for (rawChat in PlatformBridge.chatSessionJsons()) {
+    for (rawChat in PlatformStorage.chatSessionJsons()) {
         loadedAny = true
         val decoded = runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull() ?: continue
         if (decoded.id.isBlank()) continue
@@ -894,8 +896,8 @@ internal fun loadRemainingHistoricalSessionsDehydrated(
 }
 
 internal fun loadOrCreateDefaultAppState(): AppStateSnapshot {
-    val rawSettings = PlatformBridge.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
-    val rawChatFiles = PlatformBridge.loadAllChatSessionJsons()
+    val rawSettings = PlatformStorage.loadAppStateJson()?.let { migrateLegacyProviderJson(it) }
+    val rawChatFiles = PlatformStorage.loadAllChatSessionJsons()
     val diskSessions = rawChatFiles.mapNotNull { rawChat ->
         runCatching { compactStateJson.decodeFromString<ChatSession>(rawChat) }.getOrNull()
     }
@@ -996,7 +998,7 @@ internal fun sanitizeLoadedSnapshot(saved: AppStateSnapshot): AppStateSnapshot {
             )
         }
     } else {
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         listOf(
             ChatSession(
                 id = "sess-$now",
@@ -1092,7 +1094,7 @@ internal fun recoverAppStateFromPartialJson(raw: String): AppStateSnapshot {
 }
 
 internal fun createDefaultAppState(): AppStateSnapshot {
-    val now = PlatformBridge.currentTimeMillis()
+    val now = PlatformRuntime.currentTimeMillis()
     val geminiProfile = ProviderProfile(
         id = "prof-gemini-interactions",
         name = "Google Gemini",

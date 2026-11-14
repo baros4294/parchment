@@ -75,7 +75,11 @@ import io.parchment.ai.network.ModelsDevClient
 import io.parchment.ai.ParchmentBuildConfig
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformVoice
+import io.parchment.ai.platform.PlatformWorkspace
 import io.parchment.ai.protocol.O200kTokenizer
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.Dispatchers
@@ -180,7 +184,7 @@ fun ParchmentApp(
         assistantPrefillInputState = remember(activeSession.id) { mutableStateOf(activeSession.draftPrefill) }
         pendingAttachments = pendingAttachmentsBySession[activeSession.id].orEmpty()
         LaunchedEffect(Unit) {
-            PlatformBridge.registerFileDropCallbacks(
+            PlatformPickers.registerFileDropCallbacks(
                 onDragHover = { hovering -> isDraggingFilesOverWindow = hovering },
                 onFilesDropped = { dropped ->
                     uiScope.launch {
@@ -195,7 +199,7 @@ fun ParchmentApp(
 
         // One process-wide writer retains all dirty sessions across debounce and UI lifecycle changes.
         LaunchedEffect(Unit) {
-            PlatformBridge.registerStateFlushCallback { appDiskWriter.flushBlocking() }
+            PlatformRuntime.registerStateFlushCallback { appDiskWriter.flushBlocking() }
         }
         LaunchedEffect(Unit) {
             var previousSaveNotice = ""
@@ -387,7 +391,7 @@ fun ParchmentApp(
                     isSettingsOpen,
                     isCompactScreen
                 ) {
-                    PlatformBridge.registerBackHandler {
+                    PlatformRuntime.registerBackHandler {
                         when {
                             activeViewerItem != null -> {
                                 activeViewerItem = null
@@ -448,7 +452,7 @@ fun ParchmentApp(
                         val ctrl = event.isCtrlPressed || event.isMetaPressed
                         when {
                             event.key == Key.Escape && showCommandPalette -> { showCommandPalette = false; true }
-                            event.key == Key.Escape -> PlatformBridge.handleSystemBackPressed()
+                            event.key == Key.Escape -> PlatformRuntime.handleSystemBackPressed()
                             ctrl && event.key == Key.K -> { showCommandPalette = !showCommandPalette; true }
                             ctrl && event.key == Key.N -> { openNewChat(); true }
                             ctrl && event.key == Key.Comma -> { openSettings(null); true }
@@ -799,7 +803,7 @@ fun ParchmentApp(
                                     if (isCompactScreen) showSidebar = false
                                 },
                                 onCreateNewAssistant = stableAction {
-                                    val now = PlatformBridge.currentTimeMillis()
+                                    val now = PlatformRuntime.currentTimeMillis()
                                     val newAsst = AssistantAgent(id = "asst-$now", name = "New Assistant", iconEmoji = "🤖")
                                     persist(
                                         appState.copy(
@@ -899,7 +903,7 @@ fun ParchmentApp(
                                         onUpdateProfile = ::updateActiveProfile,
                                         onUpdateProfileById = ::updateProfileById,
                                         onAddProfile = { protocol ->
-                                            val now = PlatformBridge.currentTimeMillis()
+                                            val now = PlatformRuntime.currentTimeMillis()
                                             val newProf = ProviderProfile(
                                                 id = "prof-$now",
                                                 name = Strings.provider(protocol.displayName.substringBefore(" ")),
@@ -992,7 +996,7 @@ fun ParchmentApp(
                                             var firstImportedId = ""
                                             for (incomingChat in importedList) {
                                                 val rawChat = incomingChat.withImportedPermissions()
-                                                val safeId = rawChat.id.ifBlank { "sess-imp-${PlatformBridge.currentTimeMillis()}-$addedOrUpdated" }
+                                                val safeId = rawChat.id.ifBlank { "sess-imp-${PlatformRuntime.currentTimeMillis()}-$addedOrUpdated" }
                                                 val validProfId = appState.profiles.find { it.id == rawChat.profileId }?.id ?: defaultProfId
                                                 val validAsstId = appState.assistants.find { it.id == rawChat.assistantId }?.id ?: defaultAsstId
                                                 val normalized = rawChat.copy(
@@ -1021,16 +1025,16 @@ fun ParchmentApp(
                                                 ),
                                                 immediateFlush = true
                                             )
-                                            bannerNotification = Strings.importedInto(plural(addedOrUpdated, "chat"), PlatformBridge.getChatsStorageDirectoryPath())
+                                            bannerNotification = Strings.importedInto(plural(addedOrUpdated, "chat"), PlatformStorage.getChatsStorageDirectoryPath())
                                         },
                                         onWipeAllData = {
                                             activeStreamsBySession.values.forEach { it.job?.cancel() }
                                             activeStreamsBySession = emptyMap()
                                             queuedPromptsBySession = emptyMap()
                                             pendingAttachmentsBySession = emptyMap()
-                                            PlatformBridge.stopSpeakingAloud()
-                                            PlatformBridge.stopVoiceInput()
-                                            PlatformBridge.wipeAllLocalData()
+                                            PlatformVoice.stopSpeakingAloud()
+                                            PlatformVoice.stopVoiceInput()
+                                            PlatformStorage.wipeAllLocalData()
                                             appState = createDefaultAppState()
                                             bannerNotification = Strings.allLocalDataWipedCleanly
                                         },
@@ -1096,28 +1100,28 @@ fun ParchmentApp(
                                         onToggleLiveVoiceMode = {
                                             isLiveVoiceMode = !isLiveVoiceMode
                                             if (!isLiveVoiceMode) {
-                                                PlatformBridge.stopSpeakingAloud()
+                                                PlatformVoice.stopSpeakingAloud()
                                             }
                                         },
                                         onTriggerVoiceInput = ::triggerVoiceInput,
                                         pendingAttachments = pendingAttachments,
                                         onAddAttachment = {
                                             uiScope.launch {
-                                                val picked = PlatformBridge.pickFileForImport(emptyList()) ?: return@launch
+                                                val picked = PlatformPickers.pickFileForImport(emptyList()) ?: return@launch
                                                 attachPickedFiles(listOf(picked))
                                             }
                                         },
                                         onAttachWorkspaceFile = { relPath ->
                                             val wsRoot = AgentPermissionResolver.resolve(activeSession, activeAssistant, activeProfile).workspacePath
                                             if (wsRoot.isNotBlank()) {
-                                                PlatformBridge.workspaceRead(wsRoot, relPath, 1, 1500).onSuccess { rawRead ->
+                                                PlatformWorkspace.workspaceRead(wsRoot, relPath, 1, 1500).onSuccess { rawRead ->
                                                     val cleanLines = rawRead.lines().drop(1).joinToString("\n") {
                                                         it.replaceFirst(Regex("^\\d+:\\s?"), "")
                                                     }
                                                     val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
                                                     if (curList.none { it.fileName == relPath }) {
                                                         val att = PromptAttachment(
-                                                            id = "att-ws-${PlatformBridge.currentTimeMillis()}",
+                                                            id = "att-ws-${PlatformRuntime.currentTimeMillis()}",
                                                             fileName = relPath,
                                                             mimeType = "text/plain",
                                                             textContent = cleanLines
@@ -1132,11 +1136,11 @@ fun ParchmentApp(
                                             val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
                                             if (curList.none { it.fileName == existingAtt.fileName }) {
                                                 pendingAttachmentsBySession = pendingAttachmentsBySession +
-                                                    (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
+                                                    (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformRuntime.currentTimeMillis()}")))
                                             }
                                         },
                                         onPasteClipboardMedia = {
-                                            val pasted = PlatformBridge.readClipboardFiles()
+                                            val pasted = PlatformPickers.readClipboardFiles()
                                             if (pasted.isNotEmpty()) {
                                                 attachPickedFiles(pasted)
                                                 if (pasted.none { it.oversized }) {
@@ -1220,7 +1224,7 @@ fun ParchmentApp(
                                                     }
                                                 }
                                                 val safeTitle = activeSession.title.replace(Regex("[^a-zA-Z0-9-_]"), "_").ifBlank { "chat" }
-                                                val saved = PlatformBridge.saveFileForExport("$safeTitle.md", md.encodeToByteArray())
+                                                val saved = PlatformPickers.saveFileForExport("$safeTitle.md", md.encodeToByteArray())
                                                 if (saved != null) bannerNotification = Strings.exportedMarkdownTo(saved)
                                             }
                                         },
@@ -1242,7 +1246,7 @@ fun ParchmentApp(
                                                 } else {
                                                     val fileName = buildExportFileNameForChat(activeSession)
                                                     val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), activeSession).encodeToByteArray()
-                                                    val saved = PlatformBridge.saveFileForExport(fileName, bytes)
+                                                    val saved = PlatformPickers.saveFileForExport(fileName, bytes)
                                                     if (saved != null) bannerNotification = Strings.exportedTheChatTo(saved)
                                                 }
                                             }
@@ -1283,7 +1287,7 @@ fun ParchmentApp(
                                             }
                                         },
                                         onForkSessionFromNode = { nodeIndex ->
-                                            val now = PlatformBridge.currentTimeMillis()
+                                            val now = PlatformRuntime.currentTimeMillis()
                                             val keepVersions = appState.preferences.keepMessageVersionsWhenForking
                                             val sourceSession = activeSession.withSpendProvenance()
                                             val slicedMessages = sourceSession.messages
@@ -1371,7 +1375,7 @@ fun ParchmentApp(
                                             val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
                                             if (curList.none { it.fileName == existingAtt.fileName }) {
                                                 pendingAttachmentsBySession = pendingAttachmentsBySession +
-                                                    (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
+                                                    (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformRuntime.currentTimeMillis()}")))
                                                 bannerNotification = Strings.reAttachedToPrompt(existingAtt.fileName)
                                             }
                                         },
@@ -1467,7 +1471,7 @@ fun ParchmentApp(
                                                     val curList = pendingAttachmentsBySession[activeSession.id].orEmpty()
                                                     if (curList.none { it.fileName == existingAtt.fileName }) {
                                                         pendingAttachmentsBySession = pendingAttachmentsBySession +
-                                                            (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformBridge.currentTimeMillis()}")))
+                                                            (activeSession.id to (curList + existingAtt.copy(id = "att-re-${PlatformRuntime.currentTimeMillis()}")))
                                                         bannerNotification = Strings.reAttachedToPrompt(existingAtt.fileName)
                                                     }
                                                 },

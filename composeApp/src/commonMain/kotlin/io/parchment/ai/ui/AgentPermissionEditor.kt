@@ -37,7 +37,8 @@ import io.parchment.ai.strings.Strings
 import io.parchment.ai.model.ShellAccess
 import io.parchment.ai.model.ToolApprovalMode
 import io.parchment.ai.model.WorkspaceMode
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.coroutines.launch
 
 /** A single focus/touch/reader target; policy choices have radio semantics and no motion. */
@@ -76,7 +77,7 @@ internal fun AgentPermissionEditor(
     val palette = LocalParchmentPalette.current
     val scope = rememberCoroutineScope()
     val policy = overrides.applyTo(defaults)
-    val backgroundNotice by PlatformBridge.backgroundExecutionNotice.collectAsState()
+    val backgroundNotice by PlatformRuntime.backgroundExecutionNotice.collectAsState()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.s10)) {
         BasicText(Strings.agentPermissions, style = palette.uiBodyStyle.copy(fontWeight = FontWeight.SemiBold))
         if (onReset != null) {
@@ -117,7 +118,7 @@ internal fun AgentPermissionEditor(
             style = SepiaButtonStyle.OUTLINE,
             onClick = {
                 scope.launch {
-                    val path = PlatformBridge.pickWorkspaceDirectory(policy.workspacePath)
+                    val path = PlatformPickers.pickWorkspaceDirectory(policy.workspacePath)
                     if (!path.isNullOrBlank()) onChange(overrides.copy(
                         workspacePath = path,
                         workspaceMode = if (policy.workspaceMode == WorkspaceMode.OFF) WorkspaceMode.READ_ONLY else policy.workspaceMode

@@ -9,7 +9,7 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
 import io.parchment.ai.ui.AppShortcutDispatcher
 
 /**
@@ -22,9 +22,9 @@ internal fun handleUnconsumedWindowKey(event: KeyEvent, shortcuts: AppShortcutDi
         (((event.isCtrlPressed || event.isMetaPressed) && event.key == Key.V) ||
             (event.isShiftPressed && event.key == Key.Insert))
     if (isPasteShortcut) {
-        val pastedFiles = PlatformBridge.readClipboardFiles()
+        val pastedFiles = PlatformPickers.readClipboardFiles()
         if (pastedFiles.isNotEmpty()) {
-            PlatformBridge.filesDroppedCallback?.invoke(pastedFiles)
+            PlatformPickers.filesDroppedCallback?.invoke(pastedFiles)
             return true
         }
         return false

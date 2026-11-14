@@ -34,7 +34,9 @@ import io.parchment.ai.network.StreamUpdate
 import io.parchment.ai.network.updateBlockedReason
 import io.parchment.ai.model.ApiUsageRecord
 import io.parchment.ai.platform.PickedBinaryFile
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformVoice
 import io.parchment.ai.platform.normalizePickedBinaryFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -93,7 +95,7 @@ internal class ParchmentAppController(
 
     var startMobileSettingsAtRoot by mutableStateOf(true)
 
-    var showSidebar by mutableStateOf(!PlatformBridge.isAndroid && appState.preferences.sidebarOpen)
+    var showSidebar by mutableStateOf(!PlatformRuntime.isAndroid && appState.preferences.sidebarOpen)
 
     var sidebarTab by mutableStateOf(SidebarTab.TOPICS)
 
@@ -158,7 +160,7 @@ internal class ParchmentAppController(
         when {
             isPdf || isVideoOrAudio -> {
                 if (att.localFilePath.isNotBlank()) {
-                    PlatformBridge.openOrPlayMedia(att.localFilePath)
+                    PlatformStorage.openOrPlayMedia(att.localFilePath)
                 } else {
                     bannerNotification = Strings.filePathIsUnavailableFor(att.fileName)
                 }
@@ -172,11 +174,11 @@ internal class ParchmentAppController(
             }
             isSvg || att.textContent.isNotBlank() || mime.startsWith("text/") || mime == "application/json" -> {
                 val content = att.textContent.ifBlank {
-                    if (PlatformBridge.localFileSizeBytes(att.localFilePath) > MAX_TEXT_PREVIEW_BYTES) {
+                    if (PlatformStorage.localFileSizeBytes(att.localFilePath) > MAX_TEXT_PREVIEW_BYTES) {
                         bannerNotification = Strings.isTooLargeToPreviewHere(att.fileName)
                         return
                     }
-                    PlatformBridge.readBinaryFileBytes(att.localFilePath)?.let {
+                    PlatformStorage.readBinaryFileBytes(att.localFilePath)?.let {
                         runCatching { it.decodeToString() }.getOrNull()
                     }.orEmpty()
                 }
@@ -188,7 +190,7 @@ internal class ParchmentAppController(
                 )
             }
             att.localFilePath.isNotBlank() -> {
-                PlatformBridge.openOrPlayMedia(att.localFilePath)
+                PlatformStorage.openOrPlayMedia(att.localFilePath)
             }
         }
     }
@@ -201,7 +203,7 @@ internal class ParchmentAppController(
         }
         if (accepted.isEmpty()) return
         val newAtts = accepted.mapIndexed { idx, rawPicked ->
-            val now = PlatformBridge.currentTimeMillis() + idx
+            val now = PlatformRuntime.currentTimeMillis() + idx
             val picked = normalizePickedBinaryFile(
                 rawFileName = rawPicked.fileName,
                 bytes = rawPicked.bytes,
@@ -231,7 +233,7 @@ internal class ParchmentAppController(
                         lower.endsWith(".bmp") -> "image/bmp"
                         else -> "image/png"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
+                    val savedPath = PlatformStorage.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -248,7 +250,7 @@ internal class ParchmentAppController(
                         lower.endsWith(".mkv") -> "video/x-matroska"
                         else -> "video/mp4"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
+                    val savedPath = PlatformStorage.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -266,7 +268,7 @@ internal class ParchmentAppController(
                         lower.endsWith(".flac") -> "audio/flac"
                         else -> "audio/mp3"
                     }
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
+                    val savedPath = PlatformStorage.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     PromptAttachment(
                         id = "att-$now",
                         fileName = picked.fileName,
@@ -277,7 +279,7 @@ internal class ParchmentAppController(
                 }
                 else -> {
                     val inlineText = inlineAttachmentText(picked.bytes)
-                    val savedPath = PlatformBridge.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
+                    val savedPath = PlatformStorage.saveGeneratedMediaFile("att-$now-${picked.fileName}", picked.bytes, sessionId = activeSession.id)
                     if (inlineText != null) {
                         PromptAttachment(
                             id = "att-$now",
@@ -353,7 +355,7 @@ internal class ParchmentAppController(
         var modifiedSession: ChatSession? = null
         val newSessions = currentSnap.sessions.map {
             if (it.id == targetId) {
-                val mod = transform(complete).withLegacyWorkspaceChangeFrom(complete).copy(updatedAt = PlatformBridge.currentTimeMillis())
+                val mod = transform(complete).withLegacyWorkspaceChangeFrom(complete).copy(updatedAt = PlatformRuntime.currentTimeMillis())
                 if (mod.permissionOverrides != complete.permissionOverrides) activeStreamsBySession[targetId]?.toolApprovalBroker?.invalidate()
                 modifiedSession = mod
                 mod
@@ -375,7 +377,7 @@ internal class ParchmentAppController(
         val newSessions = currentSnap.sessions.map {
             if (it.id == sessionId) {
                 val changed = transform(complete).withLegacyWorkspaceChangeFrom(complete)
-                val mod = if (touch) changed.copy(updatedAt = PlatformBridge.currentTimeMillis()) else changed
+                val mod = if (touch) changed.copy(updatedAt = PlatformRuntime.currentTimeMillis()) else changed
                 if (mod.permissionOverrides != complete.permissionOverrides) activeStreamsBySession[sessionId]?.toolApprovalBroker?.invalidate()
                 modifiedSession = mod
                 if (target.isCompactStub && sessionId != currentSnap.activeSessionId && sessionId !in activeStreamsBySession &&
@@ -458,7 +460,7 @@ internal class ParchmentAppController(
             return
         }
         isSettingsOpen = false
-        PlatformBridge.flushPendingStateNow()
+        PlatformRuntime.flushPendingStateNow()
         appProcessScope.launch {
             OtaUpdateEngine.downloadAndInstall(release, ::currentUpdateBlock).collect { st ->
                 otaState = st
@@ -478,7 +480,7 @@ internal class ParchmentAppController(
 
     suspend fun generateTrackedUtility(sessionId: String, purpose: String, profile: ProviderProfile,
         model: String, prompt: String, maxOutputTokens: Int? = null): Result<String> {
-        val runId = kotlinx.coroutines.currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformBridge.createRunId()
+        val runId = kotlinx.coroutines.currentCoroutineContext()[AgentToolRunContext]?.broker?.runId ?: PlatformRuntime.createRunId()
         return AiProviderEngine.generateUtilityText(profile, model, prompt, maxOutputTokens,
             ownerSessionId = sessionId, ownerRunId = runId, purpose = purpose,
             onUsage = { record, _ -> withContext(Dispatchers.Main.immediate) { recordUtilityUsage(sessionId, record) } })
@@ -579,7 +581,7 @@ internal class ParchmentAppController(
         }
         val profile = appState.profiles.find { it.id == requestedSession.profileId } ?: activeProfile
         val model = requestedSession.modelOverride.ifBlank { profile.defaultModel }
-        val identity = AgentRunIdentity(PlatformBridge.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
+        val identity = AgentRunIdentity(PlatformRuntime.createRunId(), sessionId, targetAssistantNodeId, targetVariantId,
             profile.id, model, if (profile.protocol == ProviderProtocol.CUSTOM) profile.customDialect
             else io.parchment.ai.model.mapProtocolToDialect(profile.protocol.name))
         val persistedIds = requestedSession.messages.map { it.id }.toSet()
@@ -611,7 +613,7 @@ internal class ParchmentAppController(
         isBtwSideQuestion: Boolean = false
     ) {
         val targetSess = appState.sessions.find { it.id == sessionId }?.let(::completeSessionForAction) ?: return
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         val updatedMessages = targetSess.messages.toMutableList()
         val userNodeId = "node-$now-u"
 
@@ -745,7 +747,7 @@ internal class ParchmentAppController(
 
         // Custom Protocol with no wire dialect chosen must never guess a payload shape.
         if (AiProviderEngine.isCustomDialectUnresolved(activeProfile)) {
-            val noticeId = "sys-${PlatformBridge.currentTimeMillis()}"
+            val noticeId = "sys-${PlatformRuntime.currentTimeMillis()}"
             updateActiveSession { sess ->
                 sess.copy(
                     messages = sess.messages + MessageNode(
@@ -756,7 +758,7 @@ internal class ParchmentAppController(
                                 id = "$noticeId-v",
                                 content = Strings.chooseAnApiFormatInProvider,
                                 modelUsed = "system",
-                                createdAt = PlatformBridge.currentTimeMillis()
+                                createdAt = PlatformRuntime.currentTimeMillis()
                             )
                         ),
                         activeVariantIndex = 0
@@ -833,7 +835,7 @@ internal class ParchmentAppController(
         // Support "Paste long text as file" threshold
         val prefs = appState.preferences
         val finalText = if (prefs.pasteLongTextAsFile && cleanedInput.length >= prefs.pasteConversionThresholdChars) {
-            val now = PlatformBridge.currentTimeMillis()
+            val now = PlatformRuntime.currentTimeMillis()
             currentAtts = currentAtts + PromptAttachment(
                 id = "att-paste-$now",
                 fileName = "pasted-text-${cleanedInput.length}chars.txt",
@@ -930,7 +932,7 @@ internal class ParchmentAppController(
         if (qText.isEmpty() && prefill.isEmpty() && atts.isEmpty()) return
 
         val item = QueuedPromptItem(
-            id = "q-${PlatformBridge.currentTimeMillis()}",
+            id = "q-${PlatformRuntime.currentTimeMillis()}",
             text = qText,
             prefill = prefill,
             attachments = atts
@@ -947,11 +949,11 @@ internal class ParchmentAppController(
         val complete = completeSessionForAction(activeSession) ?: return
         val targetSessId = activeSession.id
         if (activeStreamsBySession.containsKey(targetSessId)) return
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         val draftProfile = (appState.profiles.find { it.id == complete.profileId } ?: activeProfile).copy(
             enableWebSearch = false, enableUrlContext = false, enableCodeExecution = false,
             enableImageGeneration = false, enableVideoGeneration = false, useBackgroundLongDecode = false)
-        val draftRunId = PlatformBridge.createRunId()
+        val draftRunId = PlatformRuntime.createRunId()
         val seedHint = userPromptInput.trim()
         val instruction = if (seedHint.isNotEmpty()) {
             "[Write the next turn from ${activeSession.userName}'s perspective incorporating this idea: \"$seedHint\". Write only ${activeSession.userName}'s dialogue and actions.]"
@@ -1023,7 +1025,7 @@ internal class ParchmentAppController(
         // Cancel any active stream on this session before mutating the message list
         activeStreamsBySession[sess.id]?.job?.cancel()
         updateSessionStreamState(sess.id) { null }
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         val curProf = curSnap.profiles.find { it.id == sess.profileId } ?: curSnap.profiles.first()
         val modelUsed = sess.modelOverride.ifBlank { curProf.defaultModel }
 
@@ -1137,7 +1139,7 @@ internal class ParchmentAppController(
             generateTrackedUtility(sess.id, "translation", transProf, transModel, prompt).fold(
                 onSuccess = { translated ->
                     if (translated.isNotBlank()) {
-                        val now = PlatformBridge.currentTimeMillis()
+                        val now = PlatformRuntime.currentTimeMillis()
                         updateSessionById(sess.id, immediate = true) { s ->
                             s.copy(
                                 messages = s.messages.mapIndexed { idx, n ->
@@ -1170,14 +1172,14 @@ internal class ParchmentAppController(
 
     fun triggerVoiceInput() {
         if (isVoiceListening) {
-            PlatformBridge.stopVoiceInput()
+            PlatformVoice.stopVoiceInput()
             isVoiceListening = false
             return
         }
-        PlatformBridge.stopSpeakingAloud()
+        PlatformVoice.stopSpeakingAloud()
         isVoiceListening = true
         bannerNotification = Strings.listeningSpeakNow
-        PlatformBridge.startVoiceInput(
+        PlatformVoice.startVoiceInput(
             onRecognizedText = { recognized ->
                 uiScope.launch {
                     isVoiceListening = false
@@ -1294,7 +1296,7 @@ internal class ParchmentAppController(
         val tabsToKeep = openTabIds.filterNot { it in emptyTabIds }.ifEmpty { listOf(emptyTabIds.first()) }
         val keptSet = tabsToKeep.toSet()
         val emptyDropSet = emptyTabIds.filterNot { it in keptSet }.toSet()
-        emptyDropSet.forEach { PlatformBridge.deleteChatSessionFile(it) }
+        emptyDropSet.forEach { PlatformStorage.deleteChatSessionFile(it) }
         val nextSessions = appState.sessions.filterNot { it.id in emptyDropSet }
         val nextActiveId = if (activeSession.id in tabsToKeep) activeSession.id else tabsToKeep.first()
         val nextSess = nextSessions.find { it.id == nextActiveId }
@@ -1316,7 +1318,7 @@ internal class ParchmentAppController(
     fun rememberForUndo(removed: List<ChatSession>, message: String) {
         pendingUndo = DeletedChats(
             chats = removed.map { s ->
-                s to (if (s.isCompactStub) PlatformBridge.loadChatSessionJsonById(s.id) else compactStateJson.encodeToString(ChatSession.serializer(), s))
+                s to (if (s.isCompactStub) PlatformStorage.loadChatSessionJsonById(s.id) else compactStateJson.encodeToString(ChatSession.serializer(), s))
             },
             activeSessionId = appState.activeSessionId,
             openTabIds = openTabIds
@@ -1327,7 +1329,7 @@ internal class ParchmentAppController(
     fun undoDelete() {
         val undo = pendingUndo ?: return
         pendingUndo = null
-        undo.chats.forEach { (session, json) -> if (json != null) PlatformBridge.saveChatSessionJson(session.id, json) }
+        undo.chats.forEach { (session, json) -> if (json != null) PlatformStorage.saveChatSessionJson(session.id, json) }
         val restoredIds = undo.chats.map { it.first.id }.toSet()
         val sessions = undo.chats.map { it.first } + appState.sessions.filterNot { it.id in restoredIds }
         val existing = sessions.map { it.id }.toSet()
@@ -1348,7 +1350,7 @@ internal class ParchmentAppController(
         updateSessionStreamState(targetId) { null }
         queuedPromptsBySession = queuedPromptsBySession - targetId
         pendingAttachmentsBySession = pendingAttachmentsBySession - targetId
-        PlatformBridge.deleteChatSessionFile(targetId)
+        PlatformStorage.deleteChatSessionFile(targetId)
         val remaining = appState.sessions.filterNot { it.id == targetId }
         val remainingTabs = openTabIds.filterNot { it == targetId }
         val remainingForAssistant = remaining.filter {
@@ -1394,7 +1396,7 @@ internal class ParchmentAppController(
         rememberForUndo(removedSessions, Strings.deletedFor(plural(removedSessions.size, "chat"), activeAssistant.name))
         removedIds.forEach { id ->
             activeStreamsBySession[id]?.job?.cancel()
-            PlatformBridge.deleteChatSessionFile(id)
+            PlatformStorage.deleteChatSessionFile(id)
         }
         activeStreamsBySession = activeStreamsBySession - removedIds
         queuedPromptsBySession = queuedPromptsBySession - removedIds

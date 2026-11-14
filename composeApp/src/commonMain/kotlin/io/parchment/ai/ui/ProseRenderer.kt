@@ -43,7 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
 import kotlinx.coroutines.launch
 
 internal sealed class ProseBlock {
@@ -452,7 +452,7 @@ fun LiteraryProseRenderer(
                                         onClick = {
                                             scope.launch {
                                                 val ext = inferCodeFenceExtension(block.language, isSvgArtifact)
-                                                val saved = PlatformBridge.saveFileForExport(
+                                                val saved = PlatformPickers.saveFileForExport(
                                                     "artifact-${index + 1}.$ext",
                                                     block.code.encodeToByteArray()
                                                 )

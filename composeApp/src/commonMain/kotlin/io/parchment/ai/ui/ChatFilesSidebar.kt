@@ -42,7 +42,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformWorkspace
 
 // ============================================================================================
 // Right sidebar: the chat's files, generated media and sources (`ParchmentRightFilesSidebar`).
@@ -395,7 +396,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .clickable(role = Role.Button) {
                                             val wsRoot = activeSession.workspacePath
                                             val liveText = if (wsRoot.isNotBlank()) {
-                                                PlatformBridge.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
+                                                PlatformWorkspace.workspaceRead(wsRoot, item.filePath, 1, 2000).getOrNull()?.let { raw ->
                                                     raw.lines().drop(1).joinToString("\n") { it.replaceFirst(VAULT_LINE_NUMBER_STRIP_REGEX, "") }
                                                 }
                                             } else null
@@ -482,7 +483,7 @@ internal fun ParchmentRightFilesSidebar(
                                         .clickable(role = Role.Button) {
                                             if (isVideo) {
                                                 val target = media.localFilePath.ifBlank { media.remoteUrl }
-                                                if (target.isNotBlank()) PlatformBridge.openOrPlayMedia(target)
+                                                if (target.isNotBlank()) PlatformStorage.openOrPlayMedia(target)
                                             } else {
                                                 onInspectGeneratedImage(media)
                                             }

@@ -89,7 +89,10 @@ import io.parchment.ai.model.AgentPermissionOverrides
 import io.parchment.ai.model.ViewMode
 import io.parchment.ai.model.WorkspaceMode
 import io.parchment.ai.network.AiProviderEngine
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformVoice
+import io.parchment.ai.platform.PlatformWorkspace
 import io.parchment.ai.protocol.O200kTokenizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -231,7 +234,7 @@ internal fun ManuscriptViewport(
     } ?: 0
 
     LaunchedEffect(lastMsgContentLen, isStreaming) {
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         if (isStreaming &&
             preferences.autoFollowBottom &&
             activeSession.messages.isNotEmpty() &&
@@ -372,12 +375,12 @@ internal fun ManuscriptViewport(
                                     if (dy < 0f) {
                                         // Scrolling up with the wheel or trackpad pauses following for 5 seconds.
                                         userDisengagedAutoFollow = true
-                                        userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
+                                        userScrollPausedUntilMs = PlatformRuntime.currentTimeMillis() + 5000L
                                     }
                                 } else if (ev.type == PointerEventType.Press) {
                                     // Touch or scrollbar press while streaming — pause auto-follow so user can read
                                     if (isStreaming) {
-                                        userScrollPausedUntilMs = PlatformBridge.currentTimeMillis() + 5000L
+                                        userScrollPausedUntilMs = PlatformRuntime.currentTimeMillis() + 5000L
                                     }
                                 }
                             }
@@ -430,7 +433,7 @@ internal fun ManuscriptViewport(
                             }
                         },
                         onSaveEditedText = { newText, asNewBranch, alsoRegenerate ->
-                            val now = PlatformBridge.currentTimeMillis()
+                            val now = PlatformRuntime.currentTimeMillis()
                             onUpdateSession { sess ->
                                 sess.copy(
                                     messages = sess.messages.mapIndexed { i, n ->
@@ -609,7 +612,7 @@ internal fun ManuscriptViewport(
                                         .background(p.sheetBg)
                                         .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
                                         .kissClickable {
-                                            PlatformBridge.speakTextAloud(latestAssistantText)
+                                            PlatformVoice.speakTextAloud(latestAssistantText)
                                         }
                                         .padding(horizontal = Space.s8, vertical = 3.dp)
                                 ) {
@@ -632,7 +635,7 @@ internal fun ManuscriptViewport(
                                     .background(p.sheetBg)
                                     .border(LineWidth.hairline, p.border, RoundedCornerShape(Radius.pill))
                                     .kissClickable {
-                                        PlatformBridge.stopSpeakingAloud()
+                                        PlatformVoice.stopSpeakingAloud()
                                         if (isStreaming) onStopStream()
                                     }
                                     .padding(horizontal = Space.s8, vertical = 3.dp)
@@ -655,7 +658,7 @@ internal fun ManuscriptViewport(
                                     .background(if (isLiveVoiceMode) p.accent.copy(alpha = 0.16f) else p.sheetBg)
                                     .border(LineWidth.hairline, if (isLiveVoiceMode) p.accent else p.border, RoundedCornerShape(Radius.pill))
                                     .kissClickable {
-                                        if (isLiveVoiceMode) PlatformBridge.stopSpeakingAloud()
+                                        if (isLiveVoiceMode) PlatformVoice.stopSpeakingAloud()
                                         onToggleLiveVoiceMode()
                                     }
                                     .padding(horizontal = 7.dp, vertical = 3.dp)
@@ -1510,7 +1513,7 @@ internal fun ManuscriptViewport(
                 LaunchedEffect(effectiveWorkspacePath, activeAtQuery != null) {
                     if (activeAtQuery != null && effectiveWorkspacePath.isNotBlank() && workspaceFiles.isEmpty()) {
                         workspaceFiles = withContext(Dispatchers.Default) {
-                            PlatformBridge.workspaceGlob(effectiveWorkspacePath, "*", maxResults = 160)
+                            PlatformWorkspace.workspaceGlob(effectiveWorkspacePath, "*", maxResults = 160)
                                 .getOrDefault("")
                                 .lines()
                                 .map { it.trim() }
@@ -1560,7 +1563,7 @@ internal fun ManuscriptViewport(
                                 {
                                     replaceTrailingAt("")
                                     scope.launch {
-                                        val picked = PlatformBridge.pickWorkspaceDirectory(effectiveWorkspacePath)
+                                        val picked = PlatformPickers.pickWorkspaceDirectory(effectiveWorkspacePath)
                                         if (!picked.isNullOrBlank()) {
                                             onUpdateSession {
                                                 it.copy(
@@ -1758,7 +1761,7 @@ internal fun ManuscriptViewport(
                     minHeight = 40.dp,
                     maxHeight = 148.dp,
                     modifier = Modifier.fillMaxWidth(),
-                    onEnterKeySend = if (!PlatformBridge.isAndroid) {
+                    onEnterKeySend = if (!PlatformRuntime.isAndroid) {
                         { isCtrlOrMeta, isShift ->
                             val shouldTrigger = when (preferences.sendShortcut) {
                                 SendShortcutMode.ENTER -> !isShift && !isCtrlOrMeta

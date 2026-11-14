@@ -215,7 +215,7 @@ class ChatArchiveImportTest {
         assertEquals("", variant.attachments.single().localFilePath)
         assertEquals("", variant.mediaItems.single().localFilePath)
         assertEquals("", variant.mediaItems.single().remoteUrl)
-        assertFalse(File(PlatformBridge.getChatsStorageDirectoryPath(), "crafted-chat/media/secret-notes.txt").exists())
+        assertFalse(File(PlatformStorage.getChatsStorageDirectoryPath(), "crafted-chat/media/secret-notes.txt").exists())
         assertEquals("private", secret.readText())
     }
 

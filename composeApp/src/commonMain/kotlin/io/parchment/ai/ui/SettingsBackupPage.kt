@@ -40,7 +40,9 @@ import io.parchment.ai.model.ChatSession
 import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import io.parchment.ai.protocol.CardAndPromptCodec
 import kotlinx.coroutines.launch
 
@@ -70,7 +72,7 @@ internal fun BackupAndOtaSubpage(
     var storageSearchQuery by remember { mutableStateOf("") }
 
     val allStoredFiles = remember(storageRefreshTick, appState.sessions.size) {
-        PlatformBridge.listAppStorageFiles()
+        PlatformStorage.listAppStorageFiles()
     }
     val sessionsByFileStem = remember(appState.sessions) {
         appState.sessions.associateBy { sess ->
@@ -79,7 +81,7 @@ internal fun BackupAndOtaSubpage(
     }
     val referencedMediaPaths = remember(appState.sessions) {
         val set = HashSet<String>()
-        val rootNorm = PlatformBridge.getAppStorageDirectoryPath().replace('\\', '/').trimEnd('/').lowercase()
+        val rootNorm = PlatformStorage.getAppStorageDirectoryPath().replace('\\', '/').trimEnd('/').lowercase()
         if (appState.preferences.profilePicturePath.isNotBlank()) set.add(appState.preferences.profilePicturePath.replace('\\', '/').lowercase())
         for (sess in appState.sessions) {
             for (node in sess.messages) {
@@ -176,14 +178,14 @@ internal fun BackupAndOtaSubpage(
         // Card 1: storage: inspect and delete chats, uploads, generated media, backups and temporary files.
         SepiaSectionCard(
             title = Strings.storageFileManagerFiles(allStoredFiles.size, formatBytesCompact(totalBytes)),
-            subtitle = PlatformBridge.getAppStorageDirectoryPath(),
+            subtitle = PlatformStorage.getAppStorageDirectoryPath(),
             headerAction = {
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
                     SepiaButton(
                         text = Strings.openFolder,
                         compact = true,
                         style = SepiaButtonStyle.OUTLINE,
-                        onClick = { PlatformBridge.openOrPlayMedia(PlatformBridge.getAppStorageDirectoryPath()) }
+                        onClick = { PlatformStorage.openOrPlayMedia(PlatformStorage.getAppStorageDirectoryPath()) }
                     )
                     SepiaButton(
                         text = "↻",
@@ -276,7 +278,7 @@ internal fun BackupAndOtaSubpage(
                                 var deletedCount = 0
                                 var freedBytes = 0L
                                 orphanAndTempFiles.forEach { item ->
-                                    if (PlatformBridge.deleteAppStorageFile(item.fullPath)) {
+                                    if (PlatformStorage.deleteAppStorageFile(item.fullPath)) {
                                         deletedCount++
                                         freedBytes += item.sizeBytes
                                     }
@@ -423,7 +425,7 @@ internal fun BackupAndOtaSubpage(
                                     contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.GHOST,
-                                    onClick = { PlatformBridge.openOrPlayMedia(item.fullPath) }
+                                    onClick = { PlatformStorage.openOrPlayMedia(item.fullPath) }
                                 )
                                 if (!isPrimarySettingsFile) {
                                     SepiaButton(
@@ -436,7 +438,7 @@ internal fun BackupAndOtaSubpage(
                                                 onDeleteChatSessionById(matchedSession.id)
                                                 storageRefreshTick++
                                                 onNotify(Strings.deletedChatFreed(matchedSession.title, formatBytesCompact(item.sizeBytes)))
-                                            } else if (PlatformBridge.deleteAppStorageFile(item.fullPath)) {
+                                            } else if (PlatformStorage.deleteAppStorageFile(item.fullPath)) {
                                                 storageRefreshTick++
                                                 onNotify(Strings.deletedFreed(item.fileName, formatBytesCompact(item.sizeBytes)))
                                             }
@@ -452,7 +454,7 @@ internal fun BackupAndOtaSubpage(
 
         SepiaSectionCard(
             title = Strings.appUpdates,
-            subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformBridge.platformName}"
+            subtitle = "v${OtaUpdateEngine.currentAppVersion} • ${PlatformRuntime.platformName}"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 SepiaTextField(
@@ -537,7 +539,7 @@ internal fun BackupAndOtaSubpage(
         // Card 3: Self-Contained Per-Chat Folder Export & Import (chats/<sessionId>/chat.json + media/)
         SepiaSectionCard(
             title = Strings.portableChatsMediaExportImport,
-            subtitle = PlatformBridge.getChatsStorageDirectoryPath()
+            subtitle = PlatformStorage.getChatsStorageDirectoryPath()
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
@@ -587,7 +589,7 @@ internal fun BackupAndOtaSubpage(
                                     onNotify(Strings.chatExportFailed(error.message))
                                     return@launch
                                 }
-                                val saved = PlatformBridge.saveFileForExport(fileName, bytes)
+                                val saved = PlatformPickers.saveFileForExport(fileName, bytes)
                                 if (saved != null) onNotify(Strings.exportedTheChatTo(saved))
                             }
                         }
@@ -620,7 +622,7 @@ internal fun BackupAndOtaSubpage(
         // Card 4: back up settings, providers, assistants and system prompts, separately from chats.
         SepiaSectionCard(
             title = Strings.settingsProvidersAssistantsBackupJson,
-            subtitle = Strings.parchmentSettingsJson(PlatformBridge.getAppStorageDirectoryPath())
+            subtitle = Strings.parchmentSettingsJson(PlatformStorage.getAppStorageDirectoryPath())
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(Space.s10)) {
                 @OptIn(ExperimentalLayoutApi::class)
@@ -632,7 +634,7 @@ internal fun BackupAndOtaSubpage(
                             scope.launch {
                                 val settingsOnly = appState.copy(sessions = emptyList())
                                 val bytes = CardAndPromptCodec.prettyJson.encodeToString(AppStateSnapshot.serializer(), settingsOnly).encodeToByteArray()
-                                val saved = PlatformBridge.saveFileForExport("parchment-settings.json", bytes)
+                                val saved = PlatformPickers.saveFileForExport("parchment-settings.json", bytes)
                                 if (saved != null) onNotify(Strings.exportedSettingsAssistantsTo(saved))
                             }
                         }
@@ -642,7 +644,7 @@ internal fun BackupAndOtaSubpage(
                         style = SepiaButtonStyle.SECONDARY,
                         onClick = {
                             scope.launch {
-                                val picked = PlatformBridge.pickFileForImport(listOf("json")) ?: return@launch
+                                val picked = PlatformPickers.pickFileForImport(listOf("json")) ?: return@launch
                                 if (picked.oversized) {
                                     onNotify(Strings.isTooLargeToImport(picked.fileName))
                                     return@launch

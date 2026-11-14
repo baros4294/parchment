@@ -8,7 +8,7 @@ import io.parchment.ai.model.TokenPricing
 import io.parchment.ai.model.ContextPricingTier
 import io.parchment.ai.model.legacyTokenPricing
 import io.parchment.ai.model.saturatingTokenSum
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -172,7 +172,7 @@ internal class ProviderUsageLedger(
         initialRecords.filter { it.requestId.isNotBlank() }.forEach { put(it.requestId, it) }
     }
     private val legacy = initialMetrics.takeIf { records.isEmpty() && it.totalTokens > 0L } ?: TokenMetrics()
-    private val prefix = "usage-${PlatformBridge.currentTimeMillis()}-${Random.nextLong().toULong().toString(16)}"
+    private val prefix = "usage-${PlatformRuntime.currentTimeMillis()}-${Random.nextLong().toULong().toString(16)}"
     private var sequence = 0L
 
     fun begin(dialect: UsageDialect, observedComponents: Set<String> = emptySet()): ApiUsageRecord {

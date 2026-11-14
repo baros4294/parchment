@@ -59,7 +59,8 @@ import io.parchment.ai.model.AssistantAgent
 import io.parchment.ai.model.ChatSession
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.protocol.ContextWindowBreakdown
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformStorage
 import kotlinx.coroutines.launch
 
 // Chat tabs: a tab strip on desktop and a tab grid on phones.
@@ -836,7 +837,7 @@ internal fun ParchmentAttachmentViewerModal(
                                     contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { PlatformBridge.openOrPlayMedia(openTarget) }
+                                    onClick = { PlatformStorage.openOrPlayMedia(openTarget) }
                                 )
                             }
                             if (item.localFilePath.isNotBlank()) {
@@ -847,7 +848,7 @@ internal fun ParchmentAttachmentViewerModal(
                                     style = SepiaButtonStyle.SECONDARY,
                                     onClick = {
                                         scope.launch {
-                                            val saved = runCatching { PlatformBridge.exportLocalFile(item.title, item.localFilePath) }.getOrElse { error ->
+                                            val saved = runCatching { PlatformPickers.exportLocalFile(item.title, item.localFilePath) }.getOrElse { error ->
                                                 onNotify(Strings.saveFailed(error.message))
                                                 return@launch
                                             }
@@ -1028,7 +1029,7 @@ internal fun ParchmentAttachmentViewerModal(
                                 onClick = {
                                     scope.launch {
                                         val fileName = item.title.substringAfterLast('/').substringAfterLast('\\').ifBlank { "file.txt" }
-                                        val saved = PlatformBridge.saveFileForExport(fileName, item.textContent.encodeToByteArray())
+                                        val saved = PlatformPickers.saveFileForExport(fileName, item.textContent.encodeToByteArray())
                                         if (saved != null) onNotify(Strings.savedFileTo(saved))
                                     }
                                 }
@@ -1039,7 +1040,7 @@ internal fun ParchmentAttachmentViewerModal(
                                     contentDescription = Strings.openFile,
                                     compact = true,
                                     style = SepiaButtonStyle.OUTLINE,
-                                    onClick = { PlatformBridge.openOrPlayMedia(item.localFilePath) }
+                                    onClick = { PlatformStorage.openOrPlayMedia(item.localFilePath) }
                                 )
                             }
                             SepiaButton(

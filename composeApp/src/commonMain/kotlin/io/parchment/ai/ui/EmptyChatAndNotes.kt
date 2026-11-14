@@ -37,7 +37,7 @@ import io.parchment.ai.model.MessageRole
 import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.PreferencesConfig
 import io.parchment.ai.model.ProviderProfile
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 
 /** Chat notes and memory: extra instructions, a style reminder and the remembered summary, opened from Notes in the top bar. */
 @Composable
@@ -226,7 +226,7 @@ internal fun EmptyChatIntro(
                 compact = true,
                 style = SepiaButtonStyle.PRIMARY,
                 onClick = {
-                    val now = PlatformBridge.currentTimeMillis()
+                    val now = PlatformRuntime.currentTimeMillis()
                     val allGreetings = (listOf(card.firstMessage) + card.alternateGreetings).filter { it.isNotBlank() }
                     if (allGreetings.isNotEmpty()) {
                         val greetingNode = MessageNode(

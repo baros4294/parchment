@@ -1,7 +1,7 @@
 package io.parchment.ai.network
 
 import io.parchment.ai.harness.WorkspaceHarness
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformWorkspace
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -44,7 +44,7 @@ internal suspend fun searchMcpRegistry(query: String, cursor: String = ""): Resu
         if (query.isNotBlank()) append("&search=").append(query.trim().encodeURLParameter())
         if (cursor.isNotBlank()) append("&cursor=").append(cursor.encodeURLParameter())
     }
-    parseRegistryPage(withContext(Dispatchers.IO) { PlatformBridge.fetchPublicBytes(url, MAX_RESPONSE_BYTES).getOrThrow() }.decodeToString())
+    parseRegistryPage(withContext(Dispatchers.IO) { PlatformWorkspace.fetchPublicBytes(url, MAX_RESPONSE_BYTES).getOrThrow() }.decodeToString())
 }
 
 internal data class GitHubFolder(val owner: String, val repo: String, val ref: String, val path: String)

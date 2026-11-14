@@ -22,7 +22,9 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformPickers
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import io.parchment.ai.platform.WindowsChrome
 import io.parchment.ai.ui.AppShortcutDispatcher
 import io.parchment.ai.ui.LocalParchmentPalette
@@ -54,7 +56,7 @@ private data class SavedWindowGeometry(
 )
 
 private fun windowBoundsFile(): File =
-    File(PlatformBridge.getAppStorageDirectoryPath(), "window-bounds.properties")
+    File(PlatformStorage.getAppStorageDirectoryPath(), "window-bounds.properties")
 
 private fun loadSavedWindowGeometry(): SavedWindowGeometry {
     return runCatching {
@@ -125,7 +127,7 @@ fun main() {
         // Idle, the caption names the open chat; during a run it shows the run's progress instead.
         var runStatus by remember { mutableStateOf("Parchment") }
         var captionTitle by remember { mutableStateOf("") }
-        PlatformBridge.windowStatusCallback = { newTitle -> runStatus = newTitle }
+        PlatformRuntime.windowStatusCallback = { newTitle -> runStatus = newTitle }
         val windowTitle = windowCaption(runStatus, captionTitle)
 
     val initialGeom = remember { loadSavedWindowGeometry() }
@@ -204,7 +206,7 @@ fun main() {
                     yDp = lastFloatingY
                 )
             )
-            PlatformBridge.flushPendingStateNow()
+            PlatformRuntime.flushPendingStateNow()
             exitApplication()
         }
 
@@ -229,14 +231,14 @@ fun main() {
                             override fun dragEnter(dtde: DropTargetDragEvent) {
                                 if (isSupportedDrop(dtde)) {
                                     dtde.acceptDrag(DnDConstants.ACTION_COPY)
-                                    PlatformBridge.dragHoverCallback?.invoke(true)
+                                    PlatformPickers.dragHoverCallback?.invoke(true)
                                 }
                             }
 
                             override fun dragOver(dtde: DropTargetDragEvent) {
                                 if (isSupportedDrop(dtde)) {
                                     dtde.acceptDrag(DnDConstants.ACTION_COPY)
-                                    PlatformBridge.dragHoverCallback?.invoke(true)
+                                    PlatformPickers.dragHoverCallback?.invoke(true)
                                 }
                             }
 
@@ -248,20 +250,20 @@ fun main() {
                                     mousePt != null && winBounds.contains(mousePt)
                                 }.getOrDefault(false)
                                 if (!stillInside) {
-                                    PlatformBridge.dragHoverCallback?.invoke(false)
+                                    PlatformPickers.dragHoverCallback?.invoke(false)
                                 }
                             }
 
                             override fun drop(dtde: DropTargetDropEvent) {
-                                PlatformBridge.dragHoverCallback?.invoke(false)
+                                PlatformPickers.dragHoverCallback?.invoke(false)
                                 runCatching {
                                     if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor) ||
                                         dtde.isDataFlavorSupported(DataFlavor.imageFlavor)
                                     ) {
                                         dtde.acceptDrop(DnDConstants.ACTION_COPY)
-                                        val pickedFiles = PlatformBridge.extractTransferableFiles(dtde.transferable)
+                                        val pickedFiles = PlatformPickers.extractTransferableFiles(dtde.transferable)
                                         if (pickedFiles.isNotEmpty()) {
-                                            PlatformBridge.filesDroppedCallback?.invoke(pickedFiles)
+                                            PlatformPickers.filesDroppedCallback?.invoke(pickedFiles)
                                             dtde.dropComplete(true)
                                         } else {
                                             dtde.dropComplete(false)

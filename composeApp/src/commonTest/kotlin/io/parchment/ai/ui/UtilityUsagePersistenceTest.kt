@@ -3,7 +3,8 @@ package io.parchment.ai.ui
 import io.parchment.ai.model.*
 import io.parchment.ai.network.aggregateApiUsageRecords
 import kotlinx.serialization.json.Json
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
 import kotlin.test.*
 
 class UtilityUsagePersistenceTest {
@@ -37,7 +38,7 @@ class UtilityUsagePersistenceTest {
     }
 
     @Test fun diskHydrationAndMetadataEditsPreserveUtilityRequests() {
-        val id = "test-utility-hydration-${PlatformBridge.currentTimeMillis()}"
+        val id = "test-utility-hydration-${PlatformRuntime.currentTimeMillis()}"
         val owned = record.copy(ownerSessionId = id)
         val full = chat.copy(id = id, utilityUsageRecords = listOf(owned), messages = listOf(
             MessageNode("message", MessageRole.ASSISTANT, variants = listOf(MessageVariant("variant", "Full history ".repeat(40))))))
@@ -48,6 +49,6 @@ class UtilityUsagePersistenceTest {
             assertEquals(listOf(owned), hydrated.utilityUsageRecords)
             assertEquals(full.messages, hydrated.messages)
             assertEquals("Renamed", hydrated.title)
-        } finally { PlatformBridge.deleteChatSessionFile(id) }
+        } finally { PlatformStorage.deleteChatSessionFile(id) }
     }
 }

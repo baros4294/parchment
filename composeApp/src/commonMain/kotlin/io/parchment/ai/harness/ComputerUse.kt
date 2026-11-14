@@ -3,7 +3,7 @@ package io.parchment.ai.harness
 import io.parchment.ai.platform.ComputerAction
 import io.parchment.ai.platform.ComputerControl
 import io.parchment.ai.platform.ComputerScreenshot
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformWorkspace
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,7 +23,7 @@ internal object ComputerUse {
     private val parser = Json { ignoreUnknownKeys = true }
 
     /** Replaced in tests, so they never move the real pointer. */
-    var control: ComputerControl = PlatformBridge.computerControl
+    var control: ComputerControl = PlatformWorkspace.computerControl
 
     internal fun parseAction(argumentsJson: String): Result<ComputerAction> = runCatching {
         val args = parser.parseToJsonElement(argumentsJson.ifBlank { "{}" }) as? JsonObject ?: error("Tool arguments must be a JSON object.")

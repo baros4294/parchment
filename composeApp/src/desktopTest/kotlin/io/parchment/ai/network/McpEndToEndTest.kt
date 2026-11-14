@@ -3,7 +3,7 @@ package io.parchment.ai.network
 import com.sun.net.httpserver.HttpServer
 import io.parchment.ai.harness.*
 import io.parchment.ai.model.*
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformWorkspace
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
@@ -285,6 +285,6 @@ for line in sys.stdin:
             val unknown = WorkspaceHarness.executeToolCall(root.toString(), WorkspaceMode.READ_ONLY, "c", "skill_load", """{"name":"../../etc"}""")
             assertTrue(unknown.isError, unknown.resultText)
         } finally { root.toFile().deleteRecursively() }
-        assertNotNull(PlatformBridge.startMcpProcess("exit 0")?.also { it.close() })
+        assertNotNull(PlatformWorkspace.startMcpProcess("exit 0")?.also { it.close() })
     }
 }

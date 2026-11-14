@@ -2,7 +2,7 @@ package io.parchment.ai.network
 
 import io.parchment.ai.harness.WorkspaceHarness
 import io.parchment.ai.model.McpServerConfig
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformWorkspace
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,7 +56,7 @@ object McpRegistry {
 
     private suspend fun open(config: McpServerConfig): McpClient {
         val transport = if (config.command.isNotBlank()) {
-            ProcessMcpTransport(PlatformBridge.startMcpProcess(config.command) ?: error("Local MCP servers need the desktop app."))
+            ProcessMcpTransport(PlatformWorkspace.startMcpProcess(config.command) ?: error("Local MCP servers need the desktop app."))
         } else {
             HttpMcpTransport(config.url.trim(), config.bearerToken.trim())
         }

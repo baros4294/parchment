@@ -25,7 +25,9 @@ import io.parchment.ai.model.MessageVariant
 import io.parchment.ai.model.ProviderProfile
 import io.parchment.ai.network.AiProviderEngine.ResolvedBinaryAttachment
 import io.parchment.ai.platform.MAX_INLINE_ATTACHMENT_BYTES
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
+import io.parchment.ai.platform.PlatformStorage
+import io.parchment.ai.platform.PlatformWorkspace
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -110,9 +112,9 @@ internal suspend fun AiProviderEngine.executeOpenAiAudioSpeechEndpoint(
         if (resp.status.isSuccess() && (contentTypeHeader.contains("audio") || contentTypeHeader.contains("octet-stream"))) {
             onFirstToken()
             val audioBytes = resp.readRawBytes()
-            val ts = PlatformBridge.currentTimeMillis()
+            val ts = PlatformRuntime.currentTimeMillis()
             val localPath = if (audioBytes.isNotEmpty()) {
-                PlatformBridge.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
+                PlatformStorage.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
             } else ""
             onRawWire(reqStr, "Received ${audioBytes.size} bytes ($contentTypeHeader)")
             onMedia(
@@ -144,9 +146,9 @@ internal suspend fun AiProviderEngine.executeOpenAiAudioSpeechEndpoint(
                 !audioUrl.isNullOrBlank() -> runCatching { downloadMediaBytes(audioUrl, MAX_DOWNLOADED_AUDIO_BYTES) }.getOrElse { ByteArray(0) }
                 else -> ByteArray(0)
             }
-            val ts = PlatformBridge.currentTimeMillis()
+            val ts = PlatformRuntime.currentTimeMillis()
             val localPath = if (audioBytes.isNotEmpty()) {
-                PlatformBridge.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
+                PlatformStorage.saveGeneratedMediaFile("speech-$ts.mp3", audioBytes, sessionId = session.id)
             } else ""
             onMedia(
                 GeneratedMediaItem(
@@ -415,7 +417,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
             ?: createObj["generation_id"]?.jsonPrimitive?.contentOrNull
             ?: (createObj["data"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
             ?: (createObj["data"] as? JsonObject)?.get("task_id")?.jsonPrimitive?.contentOrNull
-            ?: immediateVideoUrl?.let { "sync-${PlatformBridge.currentTimeMillis()}" }
+            ?: immediateVideoUrl?.let { "sync-${PlatformRuntime.currentTimeMillis()}" }
             ?: error("Video generation response did not contain a task 'id' or 'url': $createBody")
 
         val taskRef = "video-task:${candidateTaskUrls.indexOf(activeTaskUrl)}:$taskId"
@@ -486,7 +488,7 @@ internal suspend fun AiProviderEngine.executeByteDanceArkGeneration(
         }.getOrElse { ByteArray(0) }
 
         val localPath = if (videoBytes.isNotEmpty()) {
-            PlatformBridge.saveGeneratedMediaFile("video-$taskId.mp4", videoBytes, sessionId = session.id)
+            PlatformStorage.saveGeneratedMediaFile("video-$taskId.mp4", videoBytes, sessionId = session.id)
         } else ""
 
         val mediaItem = GeneratedMediaItem(
@@ -702,7 +704,7 @@ private suspend fun AiProviderEngine.downloadModelTextMedia(url: String, maxByte
     if (fromProvider) return downloadMediaBytes(url, maxBytes)
     val job = currentCoroutineContext()[Job]
     return withContext(Dispatchers.IO) {
-        PlatformBridge.fetchPublicBytes(url, maxBytes) { job?.isActive == false }.getOrThrow()
+        PlatformWorkspace.fetchPublicBytes(url, maxBytes) { job?.isActive == false }.getOrThrow()
     }
 }
 
@@ -728,9 +730,9 @@ internal fun AiProviderEngine.resolveBinaryAttachments(nodeVar: MessageVariant?)
         val b64 = if (att.base64Data.isNotBlank()) {
             att.base64Data
         } else if (att.localFilePath.isNotBlank()) {
-            val fileBytes = PlatformBridge.localFileSizeBytes(att.localFilePath)
+            val fileBytes = PlatformStorage.localFileSizeBytes(att.localFilePath)
             check(fileBytes <= MAX_INLINE_ATTACHMENT_BYTES) { oversizedAttachmentMessage(att.fileName, fileBytes) }
-            PlatformBridge.readBinaryFileBytes(att.localFilePath)?.let { Base64.encode(it) } ?: ""
+            PlatformStorage.readBinaryFileBytes(att.localFilePath)?.let { Base64.encode(it) } ?: ""
         } else ""
         if (b64.isNotBlank()) {
             ResolvedBinaryAttachment(
@@ -752,10 +754,10 @@ private suspend fun AiProviderEngine.extractMarkdownVideosFromText(
     val urlRegex = Regex("""https?://[^\s)"'>]+\.mp4(?:\?[^\s)"'>]*)?""", RegexOption.IGNORE_CASE)
     for (match in urlRegex.findAll(text)) {
         val videoUrl = match.value.trim()
-        val now = PlatformBridge.currentTimeMillis()
+        val now = PlatformRuntime.currentTimeMillis()
         val videoBytes = runCatching { downloadModelTextMedia(videoUrl, MAX_DOWNLOADED_VIDEO_BYTES, providerBaseUrl) }.getOrElse { ByteArray(0) }
         val localPath = if (videoBytes.isNotEmpty()) {
-            PlatformBridge.saveGeneratedMediaFile("video-$now.mp4", videoBytes, sessionId = sessionId)
+            PlatformStorage.saveGeneratedMediaFile("video-$now.mp4", videoBytes, sessionId = sessionId)
         } else ""
         onMedia(
             GeneratedMediaItem(
@@ -780,7 +782,7 @@ internal suspend fun AiProviderEngine.saveAndEmitImage(
     sessionId: String = "",
     download: (suspend (String, Int) -> ByteArray)? = null
 ) {
-    val now = PlatformBridge.currentTimeMillis()
+    val now = PlatformRuntime.currentTimeMillis()
     val ext = when {
         mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
         mimeType.contains("webp") -> "webp"
@@ -801,7 +803,7 @@ internal suspend fun AiProviderEngine.saveAndEmitImage(
     if (imageBytes.isEmpty() && remoteUrl.isBlank()) return
 
     val localPath = if (imageBytes.isNotEmpty()) {
-        PlatformBridge.saveGeneratedMediaFile("img-$now-${kotlin.random.Random.nextInt(100, 999)}.$ext", imageBytes, sessionId = sessionId)
+        PlatformStorage.saveGeneratedMediaFile("img-$now-${kotlin.random.Random.nextInt(100, 999)}.$ext", imageBytes, sessionId = sessionId)
     } else ""
 
     onMedia(

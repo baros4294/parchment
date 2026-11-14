@@ -55,7 +55,7 @@ import io.parchment.ai.model.ThemeConfig
 import io.parchment.ai.network.OtaReleaseInfo
 import io.parchment.ai.network.OtaUpdateEngine
 import io.parchment.ai.network.OtaUpdateState
-import io.parchment.ai.platform.PlatformBridge
+import io.parchment.ai.platform.PlatformRuntime
 
 enum class SettingsCategory(val icon: String, val label: String) {
     PREFERENCES("🖥", Strings.preferences),
@@ -303,7 +303,7 @@ fun ParchmentSettingsScreen(
             var dragX by remember { mutableStateOf(0f) }
 
             LaunchedEffect(mobileOpenedCategory, settingsSearchQuery) {
-                PlatformBridge.registerBackHandler {
+                PlatformRuntime.registerBackHandler {
                     when {
                         settingsSearchQuery.isNotEmpty() -> {
                             settingsSearchQuery = ""
