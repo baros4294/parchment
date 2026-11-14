@@ -2,6 +2,13 @@
 
 What changed in each release, newest first. From 2.1.7 on, release-please writes these entries from commit messages that follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` and `fix:` appear here and set the next version); edit wording in its release PR before merging it.
 
+## [2.1.8](https://github.com/baros4294/parchment/compare/v2.1.7...v2.1.8) (2026-11-14)
+
+
+### Fixes
+
+* replace inline unavailable cost text with icons and usage popup ([3e536ee](https://github.com/baros4294/parchment/commit/3e536ee0e80dfe2e82dfb27e00a2f0493129eaa9))
+
 ## [2.1.7](https://github.com/baros4294/parchment/compare/v2.1.6...v2.1.7) (2026-11-12)
 
 
