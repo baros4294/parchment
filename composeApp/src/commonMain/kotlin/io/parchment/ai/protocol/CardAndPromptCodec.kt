@@ -308,26 +308,6 @@ object CardAndPromptCodec {
         )
     }
 
-    /**
-     * Exports a SystemPromptPreset either to JSON or embedded inside a PNG (`parchment_prompt` chunk).
-     */
-    fun exportSystemPromptToJson(preset: SystemPromptPreset): String =
-        prettyJson.encodeToString(SystemPromptPreset.serializer(), preset)
-
-    fun exportSystemPromptToPngBytes(preset: SystemPromptPreset, basePngBytes: ByteArray? = null): ByteArray {
-        val json = exportSystemPromptToJson(preset)
-        val base64Payload = Base64.encode(json.encodeToByteArray())
-        val targetPng = if (basePngBytes != null && isPng(basePngBytes)) {
-            basePngBytes
-        } else {
-            generateMinimalSepiaPng(width = 64, height = 64)
-        }
-        return injectTextChunksIntoPng(
-            pngBytes = targetPng,
-            chunks = mapOf("parchment_prompt" to base64Payload)
-        )
-    }
-
     fun isPng(bytes: ByteArray): Boolean {
         if (bytes.size < 8) return false
         for (i in 0 until 8) {

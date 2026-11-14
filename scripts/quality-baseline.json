@@ -1,8 +1,4 @@
 {
   "longFiles": {},
-  "testOnly": [
-    "exportSystemPromptToPngBytes",
-    "encodeChatSessionsToZipBundleBytes",
-    "decodeChatSessionsFromPickedFile"
-  ]
+  "testOnly": []
 }

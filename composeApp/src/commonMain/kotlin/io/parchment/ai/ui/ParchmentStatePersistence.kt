@@ -736,23 +736,11 @@ internal fun encodeChatSessionJsonForExport(session: ChatSession): ByteArray {
         .encodeToString(ChatSession.serializer(), full).encodeToByteArray()
 }
 
-/**
- * Bundles one or more `ChatSession`s into a self-contained `.zip` archive where each chat has its own
- * subfolder (`<sessionId>/chat.json` + `<sessionId>/media/<fileName>`) and portable relative media paths.
- */
-internal fun encodeChatSessionsToZipBundleBytes(sessions: List<ChatSession>): ByteArray {
-    val chats = sessions.map(::chatBundleEntry)
-    return PlatformStorage.createZipArchive(
-        entries = chats.map { it.jsonPath to it.json },
-        fileEntries = chats.flatMap { it.mediaFiles }
-    )
-}
-
 /** Streams [sessions] to a chosen file, hydrating one chat at a time. Null means the user cancelled. */
 internal suspend fun exportChatSessionsBundle(fileName: String, sessions: List<ChatSession>): String? =
     PlatformPickers.exportChatBundle(fileName, sessions.asSequence().map(::chatBundleEntry))
 
-private fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
+internal fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
     val mediaFileEntries = mutableListOf<Pair<String, String>>()
     val prettyJson = io.parchment.ai.protocol.CardAndPromptCodec.prettyJson
     val fullSession = stripRedundantAttachmentBase64(hydrateSessionFromDiskIfNeeded(rawSession))
@@ -796,7 +784,7 @@ private fun chatBundleEntry(rawSession: ChatSession): ChatBundleEntry {
     return ChatBundleEntry("$safeSessId/chat.json", chatJsonBytes, mediaFileEntries)
 }
 
-private fun decodeImportedChats(rawJsons: List<String>): List<ChatSession> =
+internal fun decodeImportedChats(rawJsons: List<String>): List<ChatSession> =
     rawJsons.flatMap(::decodeChatSessionsFromRawJson).also {
         check(it.isNotEmpty()) { "No valid chats were found." }
     }
@@ -806,25 +794,6 @@ internal suspend fun pickAndDecodeChatImports(): List<ChatImportOutcome<List<Cha
     PlatformPickers.pickAndImportChatFiles(::decodeImportedChats).map { outcome ->
         ChatImportOutcome(outcome.fileName, outcome.result.mapCatching { chats -> chats.map(::stripRedundantAttachmentBase64) })
     }
-
-/**
- * Decodes one or more `ChatSession`s from either a `.zip` chat bundle (streaming its `media/` files directly
- * into `chats/<sessionId>/media/` on disk, all-or-nothing) or a `.json` chat file.
- */
-internal fun decodeChatSessionsFromPickedFile(
-    fileName: String,
-    bytes: ByteArray
-): List<ChatSession> {
-    if (bytes.isEmpty()) return emptyList()
-    val isZip = fileName.endsWith(".zip", ignoreCase = true) ||
-        (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())
-    val sessions = if (isZip) {
-        PlatformStorage.extractZipArchiveToChatStorage(bytes, ::decodeImportedChats)
-    } else {
-        runCatching { bytes.decodeToString() }.getOrNull()?.let(::decodeChatSessionsFromRawJson).orEmpty()
-    }
-    return sessions.map { stripRedundantAttachmentBase64(it) }
-}
 
 /**
  * Start-up loader for the first frame: reads only `parchment-settings.json` and the single active

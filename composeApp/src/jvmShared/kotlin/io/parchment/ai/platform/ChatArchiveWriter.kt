@@ -63,19 +63,6 @@ internal class ChatArchiveWriter(output: OutputStream, private val resolveMedia:
     }
 
     companion object {
-        fun toByteArray(
-            entries: List<Pair<String, ByteArray>>,
-            fileEntries: List<Pair<String, String>>,
-            resolveMedia: (String) -> File?
-        ): ByteArray {
-            val bytes = ByteArrayOutputStream(maxOf(4096, entries.sumOf { it.second.size }))
-            val writer = ChatArchiveWriter(bytes, resolveMedia)
-            entries.forEach { (path, data) -> writer.addBytes(path, data) }
-            fileEntries.forEach { (path, localPath) -> writer.addFile(path, localPath) }
-            writer.finish()
-            return bytes.toByteArray()
-        }
-
         /** Consumes [chats] one at a time, so a large export never holds every chat at once. */
         fun writeBundle(output: OutputStream, chats: Sequence<ChatBundleEntry>, resolveMedia: (String) -> File?) {
             val writer = ChatArchiveWriter(output, resolveMedia)

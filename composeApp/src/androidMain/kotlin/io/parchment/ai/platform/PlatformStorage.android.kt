@@ -61,14 +61,6 @@ actual object PlatformStorage {
     actual fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String =
         mediaStore.relocateToChatFolder(filePath, sessionId)
 
-    actual fun createZipArchive(
-        entries: List<Pair<String, ByteArray>>,
-        fileEntries: List<Pair<String, String>>
-    ): ByteArray = ChatArchiveWriter.toByteArray(entries, fileEntries, ::resolveLocalMediaFile)
-
-    actual fun <T> extractZipArchiveToChatStorage(zipBytes: ByteArray, decode: (chatJsons: List<String>) -> T): T =
-        ChatArchiveExtractor.extract(zipBytes, AndroidPlatformHost.resolveStorageDir(), decode = decode)
-
     actual fun localFileSizeBytes(filePath: String): Long = mediaStore.sizeOf(filePath)
 
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)

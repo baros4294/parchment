@@ -124,13 +124,17 @@ class ParchmentProtocolAndHarnessTest {
             authorsNoteDefault = "Keep scenes unhurried."
         )
 
-        val pngBytes = CardAndPromptCodec.exportSystemPromptToPngBytes(preset)
+        val jsonText = CardAndPromptCodec.prettyJson.encodeToString(SystemPromptPreset.serializer(), preset)
+        val pngBytes = CardAndPromptCodec.injectTextChunksIntoPng(
+            pngBytes = CardAndPromptCodec.generateMinimalSepiaPng(width = 64, height = 64),
+            chunks = mapOf("parchment_prompt" to kotlin.io.encoding.Base64.encode(jsonText.encodeToByteArray()))
+        )
         val fromPng = CardAndPromptCodec.importFromBytes("prompt.png", pngBytes).getOrThrow()
         assertTrue(fromPng is CardAndPromptCodec.ImportResult.SystemPromptImported)
         assertEquals(preset.name, fromPng.preset.name)
         assertEquals(preset.systemPrompt, fromPng.preset.systemPrompt)
 
-        val jsonBytes = CardAndPromptCodec.exportSystemPromptToJson(preset).encodeToByteArray()
+        val jsonBytes = jsonText.encodeToByteArray()
         val fromJson = CardAndPromptCodec.importFromBytes("prompt.json", jsonBytes).getOrThrow()
         assertTrue(fromJson is CardAndPromptCodec.ImportResult.SystemPromptImported)
         assertEquals(preset.systemPrompt, fromJson.preset.systemPrompt)
@@ -1485,7 +1489,7 @@ class ParchmentProtocolAndHarnessTest {
         assertTrue(styledMath.text.contains("$50 to $100"), "Currency range must remain literal")
         assertTrue(styledMath.text.contains("𝒪(N log N)"), "\\mathcal{O} must render as Unicode script 𝒪")
 
-        // 3. Verify Per-Chat Folder Hierarchy (chats/<sessionId>/chat.json + chats/<sessionId>/media/) & .chat.zip Bundle Export/Import
+        // 3. Verify Per-Chat Folder Hierarchy (chats/<sessionId>/chat.json + chats/<sessionId>/media/)
         val chatId = "sess-zip-bundle-${PlatformRuntime.currentTimeMillis()}"
         val samplePngBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03, 0x04)
         val savedMediaPath = PlatformStorage.saveGeneratedMediaFile("att-diagram.png", samplePngBytes, sessionId = chatId)
@@ -1524,26 +1528,9 @@ class ParchmentProtocolAndHarnessTest {
         io.parchment.ai.ui.saveSingleChatSessionToDisk(sessionWithMedia)
         assertEquals(1, io.parchment.ai.ui.countSessionVaultItemsFast(sessionWithMedia))
 
-        val zipBytes = io.parchment.ai.ui.encodeChatSessionsToZipBundleBytes(listOf(sessionWithMedia))
-        assertTrue(zipBytes.size > 64, "Exported .chat.zip bundle must be non-empty")
-
-        // Delete original chat folder (including its media/) and re-import from the .chat.zip bundle!
+        // Deleting the chat removes both its session JSON and per-chat folder.
         PlatformStorage.deleteChatSessionFile(chatId)
         assertEquals(null, PlatformStorage.loadChatSessionJsonById(chatId))
-
-        val reimported = io.parchment.ai.ui.decodeChatSessionsFromPickedFile(
-            fileName = io.parchment.ai.ui.buildExportZipFileNameForChat(sessionWithMedia),
-            bytes = zipBytes
-        )
-        assertEquals(1, reimported.size)
-        val restoredChat = reimported.first()
-        assertEquals("Per-Chat Folder Test", restoredChat.title)
-        val restoredMediaPath = restoredChat.messages.first().activeVariant.attachments.first().localFilePath
-        val restoredBytes = PlatformStorage.readBinaryFileBytes(restoredMediaPath)
-        assertNotNull(restoredBytes, "Media file extracted from .chat.zip into chats/<sessionId>/media/ must be readable")
-        assertEquals(samplePngBytes.toList(), restoredBytes.toList())
-
-        PlatformStorage.deleteChatSessionFile(chatId)
 
         // 4. Verify Gemini ThoughtSignature Sanitizer (splits glued Base64 protobufs & strips 08 02 server-side search signatures),
         //    Parallel + Sequential Tool Step Batching across all 5 protocols, Cross-Provider Signature Isolation,

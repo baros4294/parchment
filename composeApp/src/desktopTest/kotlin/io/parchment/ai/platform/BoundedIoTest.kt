@@ -170,9 +170,16 @@ class BoundedIoTest {
     }
 
     @Test fun exportKeepsNamesContainingDotsButNotParentSegments() {
-        val archive = PlatformStorage.createZipArchive(
-            entries = listOf("chat/media/a..b.png" to byteArrayOf(1), "../escape.json" to byteArrayOf(2), "chat/../x.json" to byteArrayOf(3))
-        )
+        val archive = ByteArrayOutputStream().also { out ->
+            ChatArchiveWriter.writeBundle(
+                out,
+                sequenceOf(
+                    ChatBundleEntry("chat/media/a..b.png", byteArrayOf(1), emptyList()),
+                    ChatBundleEntry("../escape.json", byteArrayOf(2), emptyList()),
+                    ChatBundleEntry("chat/../x.json", byteArrayOf(3), emptyList())
+                )
+            ) { null }
+        }.toByteArray()
         val names = mutableListOf<String>()
         ZipInputStream(ByteArrayInputStream(archive)).use { zip -> generateSequence { zip.nextEntry }.forEach { names += it.name } }
         assertEquals(listOf("chat/media/a..b.png"), names)

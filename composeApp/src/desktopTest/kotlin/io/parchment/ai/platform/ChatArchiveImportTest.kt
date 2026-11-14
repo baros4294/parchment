@@ -13,7 +13,11 @@ import io.parchment.ai.model.isWebLink
 import io.parchment.ai.model.portableImportedMediaPath
 import io.parchment.ai.model.withImportedPermissions
 import io.parchment.ai.protocol.CardAndPromptCodec
-import io.parchment.ai.ui.decodeChatSessionsFromPickedFile
+import io.parchment.ai.ui.buildExportZipFileNameForChat
+import io.parchment.ai.ui.chatBundleEntry
+import io.parchment.ai.ui.decodeImportedChats
+import io.parchment.ai.ui.stripRedundantAttachmentBase64
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -211,7 +215,14 @@ class ChatArchiveImportTest {
             ))
         ))
         val bytes = CardAndPromptCodec.prettyJson.encodeToString(ChatSession.serializer(), crafted).encodeToByteArray()
-        val variant = decodeChatSessionsFromPickedFile("crafted.chat.json", bytes).single().messages.single().variants.single()
+        val imported = ChatArchiveExtractor.importChatFile(
+            fileName = "crafted.chat.json",
+            source = ByteArrayInputStream(bytes),
+            storageRoot = root,
+            limits = permissive,
+            decode = ::decodeImportedChats
+        ).map(::stripRedundantAttachmentBase64)
+        val variant = imported.single().messages.single().variants.single()
         assertEquals("", variant.attachments.single().localFilePath)
         assertEquals("", variant.mediaItems.single().localFilePath)
         assertEquals("", variant.mediaItems.single().remoteUrl)
@@ -239,5 +250,65 @@ class ChatArchiveImportTest {
     @Test fun oversizedPngChunkLengthEndsParsingCleanly() {
         val png = ByteArray(8) + byteArrayOf(0x7F, -1, -1, -16) + "tEXt".encodeToByteArray() + ByteArray(8)
         assertEquals(emptyMap(), CardAndPromptCodec.extractPngTextChunks(png))
+    }
+
+    @Test fun exportedChatBundleRoundTripsMediaIntoPerChatFolder() {
+        val chatId = "sess-zip-bundle-${PlatformRuntime.currentTimeMillis()}"
+        val samplePngBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03, 0x04)
+        try {
+            val savedMediaPath = PlatformStorage.saveGeneratedMediaFile("att-diagram.png", samplePngBytes, sessionId = chatId)
+            val sessionWithMedia = ChatSession(
+                id = chatId,
+                title = "Per-Chat Folder Test",
+                createdAt = 1000L,
+                updatedAt = 2000L,
+                profileId = "prof-gemini-interactions",
+                messages = listOf(
+                    MessageNode(
+                        id = "m1",
+                        role = MessageRole.USER,
+                        variants = listOf(
+                            MessageVariant(
+                                id = "v1",
+                                content = "Attached diagram",
+                                attachments = listOf(
+                                    PromptAttachment(
+                                        id = "a1",
+                                        fileName = "att-diagram.png",
+                                        mimeType = "image/png",
+                                        localFilePath = savedMediaPath
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+            val entry = chatBundleEntry(sessionWithMedia)
+            val zipOut = ByteArrayOutputStream()
+            ChatArchiveWriter.writeBundle(zipOut, sequenceOf(entry), PlatformStorage::resolveLocalMediaFile)
+            val zipBytes = zipOut.toByteArray()
+            assertTrue(zipBytes.size > 64, "Exported .chat.zip bundle must be non-empty")
+
+            PlatformStorage.deleteChatSessionFile(chatId)
+            assertEquals(null, PlatformStorage.loadChatSessionJsonById(chatId))
+
+            val reimported = ChatArchiveExtractor.importChatFile(
+                fileName = buildExportZipFileNameForChat(sessionWithMedia),
+                source = ByteArrayInputStream(zipBytes),
+                storageRoot = DesktopPlatformHost.resolveStorageDir(),
+                limits = permissive,
+                decode = ::decodeImportedChats
+            ).map(::stripRedundantAttachmentBase64)
+            assertEquals(1, reimported.size)
+            val restoredChat = reimported.first()
+            assertEquals("Per-Chat Folder Test", restoredChat.title)
+            val restoredMediaPath = restoredChat.messages.first().activeVariant.attachments.first().localFilePath
+            val restoredBytes = PlatformStorage.readBinaryFileBytes(restoredMediaPath)
+            assertNotNull(restoredBytes, "Media file extracted from .chat.zip into chats/<sessionId>/media/ must be readable")
+            assertEquals(samplePngBytes.toList(), restoredBytes.toList())
+        } finally {
+            PlatformStorage.deleteChatSessionFile(chatId)
+        }
     }
 }

@@ -22,12 +22,6 @@ expect object PlatformStorage {
     // Generated Image & Video Media Storage, Per-Chat Media Bundling, and Native Playback
     fun saveGeneratedMediaFile(fileName: String, bytes: ByteArray, sessionId: String = ""): String
     fun relocateLegacyMediaToChatFolder(filePath: String, sessionId: String): String
-    fun createZipArchive(
-        entries: List<Pair<String, ByteArray>>,
-        fileEntries: List<Pair<String, String>> = emptyList()
-    ): ByteArray
-    /** Validates a chat bundle and commits its media only if [decode] accepts its chats; failures change nothing. */
-    fun <T> extractZipArchiveToChatStorage(zipBytes: ByteArray, decode: (chatJsons: List<String>) -> T): T
     fun readBinaryFileBytes(filePath: String): ByteArray?
     /** Size of a resolvable local media file, or -1 when it does not exist. */
     fun localFileSizeBytes(filePath: String): Long

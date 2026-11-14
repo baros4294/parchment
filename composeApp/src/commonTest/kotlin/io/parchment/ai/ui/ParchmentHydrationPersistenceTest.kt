@@ -146,7 +146,7 @@ class ParchmentHydrationPersistenceTest {
         val result = hydrateSessionFromDiskIfNeeded(stub)
         assertTrue(result.isCompactStub)
         assertFailsWith<IllegalStateException> { saveSingleChatSessionToDisk(stub) }
-        assertFailsWith<IllegalStateException> { encodeChatSessionsToZipBundleBytes(listOf(stub)) }
+        assertFailsWith<IllegalStateException> { chatBundleEntry(stub) }
         assertFailsWith<IllegalStateException> { encodeChatSessionJsonForExport(stub) }
     }
 
