@@ -23,7 +23,6 @@ import java.io.FileInputStream
 import java.io.FilenameFilter
 import java.io.InputStream
 import java.net.URI
-import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
 import javax.swing.ImageIcon
@@ -48,7 +47,25 @@ actual object PlatformBridge {
     actual val isLowMemoryDevice: Boolean by lazy { WindowsMemory.totalPhysicalBytes() in 1 until LOW_MEMORY_BYTES }
 
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
-    private val imageCache = LinkedHashMap<String, ImageBitmap>()
+    private val imageCache = BoundedImageCache {
+        if (isLowMemoryDevice) 3 to 48L * 1024L * 1024L else 6 to 128L * 1024L * 1024L
+    }
+    private val workspaceScanner = WorkspaceTreeScanner(
+        WorkspaceScanConfig(
+            missingDirMessage = { "Directory does not exist: $it" },
+            notDirMessage = { "Path is not a directory: $it" },
+            emptyDirectoryMessage = "(Empty directory)",
+            useTreeCache = true,
+            canonicalizeRelativize = false,
+            allowEmptyPlainGlobFallback = false,
+            requirePositiveSearchFileBytes = true,
+            maxSearchFileBytes = 2_000_000L,
+            maxSearchHits = 150,
+            maxSearchLineChars = 200,
+            parallelSearch = true,
+            filterSearchByRelPath = true
+        )
+    )
 
     @Volatile
     var windowStatusCallback: ((String) -> Unit)? = null
@@ -159,82 +176,21 @@ actual object PlatformBridge {
 
     actual fun requestUnrestrictedBackgroundBattery() {}
 
-    actual fun wipeAllLocalData(): Boolean = runCatching {
-        val dir = resolveStorageDir()
-        if (dir.exists()) {
-            dir.deleteRecursively()
-        }
-        true
-    }.getOrDefault(false)
+    private fun otaTempDir(): File = File(System.getProperty("java.io.tmpdir"), "parchment-ota")
 
-    actual fun listAppStorageFiles(): List< io.parchment.ai.model.StoredAppFileItem> = runCatching {
-        val rootDir = resolveStorageDir().canonicalFile
-        val rootPath = rootDir.toPath().normalize()
-        val otaTempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota")
-        val items = mutableListOf<io.parchment.ai.model.StoredAppFileItem>()
+    actual fun wipeAllLocalData(): Boolean =
+        AppStorageInventory.wipeDirectory(resolveStorageDir(), preserveRoot = false)
 
-        if (rootDir.exists() && rootDir.isDirectory) {
-            rootDir.walkTopDown()
-                .maxDepth(6)
-                .filter { it.isFile }
-                .forEach { f ->
-                    val rel = runCatching { rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/') }
-                        .getOrDefault(f.name)
-                    val lowerRel = rel.lowercase()
-                    val lowerName = f.name.lowercase()
-                    val cat = when {
-                        lowerName.endsWith(".tmp") -> io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP
-                        lowerRel.startsWith("chats/") && lowerName.endsWith(".json") -> io.parchment.ai.model.StorageFileCategory.CHAT_SESSION
-                        (lowerRel.startsWith("media/") || lowerRel.contains("/media/")) && lowerName.startsWith("att-") ->
-                            io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
-                        lowerRel.startsWith("media/") || lowerRel.contains("/media/") ->
-                            io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
-                        else -> io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS
-                    }
-                    items.add(
-                        io.parchment.ai.model.StoredAppFileItem(
-                            fullPath = f.absolutePath,
-                            relativePath = rel,
-                            fileName = f.name,
-                            category = cat,
-                            sizeBytes = f.length(),
-                            lastModifiedMs = f.lastModified()
-                        )
-                    )
-                }
-        }
-        if (otaTempDir.exists() && otaTempDir.isDirectory) {
-            otaTempDir.listFiles()?.filter { it.isFile }?.forEach { f ->
-                items.add(
-                    io.parchment.ai.model.StoredAppFileItem(
-                        fullPath = f.absolutePath,
-                        relativePath = "temp/parchment-ota/${f.name}",
-                        fileName = f.name,
-                        category = io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP,
-                        sizeBytes = f.length(),
-                        lastModifiedMs = f.lastModified()
-                    )
-                )
-            }
-        }
-        items.sortedWith(
-            compareBy<io.parchment.ai.model.StoredAppFileItem> { it.category.ordinal }
-                .thenByDescending { it.lastModifiedMs }
+    actual fun listAppStorageFiles(): List<io.parchment.ai.model.StoredAppFileItem> =
+        AppStorageInventory.listFiles(resolveStorageDir(), extraOtaDir = otaTempDir())
+
+    actual fun deleteAppStorageFile(fullPath: String): Boolean =
+        AppStorageInventory.deleteFile(
+            fullPath = fullPath,
+            storageRoot = resolveStorageDir(),
+            extraAllowedDir = otaTempDir(),
+            beforeDelete = imageCache::remove
         )
-    }.getOrDefault(emptyList())
-
-    actual fun deleteAppStorageFile(fullPath: String): Boolean = runCatching {
-        if (fullPath.isBlank()) return false
-        val target = File(fullPath).canonicalFile
-        val storageRoot = resolveStorageDir().canonicalFile
-        val otaTempDir = File(System.getProperty("java.io.tmpdir"), "parchment-ota").canonicalFile
-        val insideStorage = target.toPath().normalize().startsWith(storageRoot.toPath().normalize())
-        val insideOta = target.toPath().normalize().startsWith(otaTempDir.toPath().normalize())
-        if (!insideStorage && !insideOta) return false
-        if (!target.exists() || !target.isFile) return false
-        synchronized(imageCache) { imageCache.remove(target.absolutePath) }
-        target.delete()
-    }.getOrDefault(false)
 
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? =
         withContext(Dispatchers.IO) {
@@ -342,15 +298,9 @@ actual object PlatformBridge {
             }.getOrNull()
         }
 
-    actual fun loadCustomFontFamily(fontPath: String): FontFamily? {
-        val cleaned = fontPath.trim().removeSurrounding("\"")
-        if (cleaned.isEmpty()) return null
-        fontCache[cleaned]?.let { return it }
-
-        return runCatching {
-            val file = File(cleaned)
-            if (!file.exists() || !file.isFile) return null
-            val family = FontFamily(
+    actual fun loadCustomFontFamily(fontPath: String): FontFamily? =
+        AppStorageInventory.loadCachedFontFamily(fontCache, fontPath) { file ->
+            FontFamily(
                 Font(file = file, weight = FontWeight.Normal, style = FontStyle.Normal),
                 Font(file = file, weight = FontWeight.Medium, style = FontStyle.Normal),
                 Font(file = file, weight = FontWeight.SemiBold, style = FontStyle.Normal),
@@ -358,10 +308,7 @@ actual object PlatformBridge {
                 Font(file = file, weight = FontWeight.Normal, style = FontStyle.Italic),
                 Font(file = file, weight = FontWeight.Bold, style = FontStyle.Italic)
             )
-            fontCache[cleaned] = family
-            family
-        }.getOrNull()
-    }
+        }
 
     actual fun copyImageToClipboard(bytes: ByteArray): Boolean = runCatching {
         val image = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(bytes)) ?: return false
@@ -436,142 +383,11 @@ actual object PlatformBridge {
     // ========================================================================================
     // Sandboxed Local File System Agent Harness Operations
     // ========================================================================================
-    private data class CachedTreeEntry(
-        val relPath: String,
-        val name: String,
-        val file: File,
-        val isDirectory: Boolean,
-        val length: Long
-    )
+    actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> =
+        workspaceScanner.list(workspaceRoot, relativePath, recursive)
 
-    private data class CachedWorkspaceTree(
-        val rootCanonicalPath: String,
-        val timestampMs: Long,
-        val entries: List<CachedTreeEntry>
-    )
-
-    @Volatile
-    private var cachedWorkspaceTree: CachedWorkspaceTree? = null
-    private const val WORKSPACE_TREE_CACHE_TTL_MS = 10_000L
-
-    private fun invalidateWorkspaceTreeCache() {
-        cachedWorkspaceTree = null
-    }
-
-    private fun getOrBuildWorkspaceTree(rootFile: File): List<CachedTreeEntry> {
-        val canonPath = rootFile.canonicalPath
-        val now = System.currentTimeMillis()
-        val existing = cachedWorkspaceTree
-        if (existing != null && existing.rootCanonicalPath == canonPath && now - existing.timestampMs <= WORKSPACE_TREE_CACHE_TTL_MS) {
-            return existing.entries
-        }
-        val rootPath = rootFile.toPath().normalize()
-        val built = rootFile.walkTopDown()
-            .onEnter { d -> (d == rootFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
-            .maxDepth(24)
-            .filter { it != rootFile && !WorkspacePathGuard.isIgnoredDirectory(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
-            .map { f ->
-                val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
-                val isDir = f.isDirectory
-                CachedTreeEntry(
-                    relPath = rel,
-                    name = f.name,
-                    file = f,
-                    isDirectory = isDir,
-                    length = if (isDir) 0L else f.length()
-                )
-            }
-            .toList()
-        cachedWorkspaceTree = CachedWorkspaceTree(canonPath, now, built)
-        return built
-    }
-
-    actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
-        val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath)
-        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
-        val rootPath = rootFile.toPath().normalize()
-        val dirFile = target.toFile()
-        require(dirFile.exists()) { "Directory does not exist: $relativePath" }
-        require(dirFile.isDirectory) { "Path is not a directory: $relativePath" }
-
-        val entries = if (recursive && relativePath.trim().isEmpty()) {
-            getOrBuildWorkspaceTree(rootFile)
-                .take(400)
-                .map { e ->
-                    if (e.isDirectory) "${e.relPath}/" else "${e.relPath} (${e.length} bytes)"
-                }
-        } else if (recursive) {
-            dirFile.walkTopDown()
-                .onEnter { d -> (d == dirFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
-                .maxDepth(24)
-                .filter { it != dirFile && !WorkspacePathGuard.isIgnoredDirectory(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
-                .take(400)
-                .map { f ->
-                    val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-                }
-                .toList()
-        } else {
-            (dirFile.listFiles()?.toList() ?: emptyList()).filter { WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
-                .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
-                .take(300)
-                .map { f ->
-                    val rel = rootPath.relativize(f.toPath()).toString().replace('\\', '/')
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-                }
-        }
-
-        if (entries.isEmpty()) "(Empty directory)" else entries.joinToString("\n")
-    }
-
-    actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> = runCatching {
-        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
-        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
-        val cleanPat = pattern.trim().replace('\\', '/').removePrefix("./")
-        require(cleanPat.isNotEmpty()) { "Glob pattern must not be empty." }
-        val regexStr = buildString {
-            append("^")
-            var i = 0
-            while (i < cleanPat.length) {
-                val c = cleanPat[i]
-                if (c == '*' && i + 1 < cleanPat.length && cleanPat[i + 1] == '*') {
-                    if (i + 2 < cleanPat.length && cleanPat[i + 2] == '/') {
-                        append("(?:.*/)?")
-                        i += 3
-                        continue
-                    } else {
-                        append(".*")
-                        i += 2
-                        continue
-                    }
-                } else if (c == '*') {
-                    append("[^/]*")
-                } else if (c == '?') {
-                    append("[^/]")
-                } else if (".+()[]{}|^$\\".contains(c)) {
-                    append('\\').append(c)
-                } else {
-                    append(c)
-                }
-                i++
-            }
-            append("$")
-        }
-        val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
-        val hasSlash = cleanPat.contains('/')
-        val plainSub = cleanPat.replace("*", "")
-        val matches = getOrBuildWorkspaceTree(rootFile)
-            .asSequence()
-            .mapNotNull { e ->
-                val matchTarget = if (!hasSlash) e.name else e.relPath
-                if (globRegex.matches(matchTarget) || (plainSub.isNotEmpty() && e.relPath.contains(plainSub, ignoreCase = true))) {
-                    if (e.isDirectory) "${e.relPath}/" else "${e.relPath} (${e.length} bytes)"
-                } else null
-            }
-            .take(maxResults.coerceIn(1, 500))
-            .toList()
-        if (matches.isEmpty()) "No files matched glob '$pattern'." else matches.joinToString("\n")
-    }
+    actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> =
+        workspaceScanner.glob(workspaceRoot, pattern, maxResults)
 
     actual fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int, maxLines: Int): Result<String> = runCatching {
         val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath).toFile()
@@ -580,11 +396,11 @@ actual object PlatformBridge {
     }
 
     actual fun workspaceWrite(workspaceRoot: String, relativePath: String, content: String): Result<String> = runCatching {
-        WorkspaceFileEditor.write(workspaceRoot, relativePath, content).also { invalidateWorkspaceTreeCache() }
+        WorkspaceFileEditor.write(workspaceRoot, relativePath, content).also { workspaceScanner.invalidate() }
     }
 
     actual fun workspaceAppend(workspaceRoot: String, relativePath: String, content: String): Result<String> = runCatching {
-        WorkspaceFileEditor.append(workspaceRoot, relativePath, content).also { invalidateWorkspaceTreeCache() }
+        WorkspaceFileEditor.append(workspaceRoot, relativePath, content).also { workspaceScanner.invalidate() }
     }
 
     actual fun workspaceEdit(
@@ -606,147 +422,27 @@ actual object PlatformBridge {
     }
 
     actual fun workspaceMove(workspaceRoot: String, sourceRelativePath: String, destRelativePath: String): Result<String> = runCatching {
-        WorkspaceFileEditor.move(workspaceRoot, sourceRelativePath, destRelativePath).also { invalidateWorkspaceTreeCache() }
+        WorkspaceFileEditor.move(workspaceRoot, sourceRelativePath, destRelativePath).also { workspaceScanner.invalidate() }
     }
 
     actual fun workspaceDelete(workspaceRoot: String, relativePath: String): Result<String> = runCatching {
-        WorkspaceFileEditor.delete(workspaceRoot, relativePath).also { invalidateWorkspaceTreeCache() }
+        WorkspaceFileEditor.delete(workspaceRoot, relativePath).also { workspaceScanner.invalidate() }
     }
+
     actual fun workspaceShellExec(
         workspaceRoot: String,
         command: String,
         timeoutSeconds: Int,
         onOutputDelta: ((String) -> Unit)?,
         isCancelled: (() -> Boolean)?
-    ): Result<String> = runCatching {
-        val rootDir = WorkspacePathGuard.root(workspaceRoot).toFile()
-        require(rootDir.exists() && rootDir.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
-        val isWin = System.getProperty("os.name")?.lowercase()?.contains("win") == true
-        val pb = if (isWin) {
-            val psCommandWithNoProgress = "\$ProgressPreference = 'SilentlyContinue'; $command"
-            val utf16LeBytes = psCommandWithNoProgress.toByteArray(Charsets.UTF_16LE)
-            val encodedCommand = java.util.Base64.getEncoder().encodeToString(utf16LeBytes)
-            ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
-        } else {
-            ProcessBuilder("sh", "-c", command)
-        }
-        pb.directory(rootDir)
-        pb.redirectErrorStream(true)
-        require(isCancelled?.invoke() != true) { "The owning run was cancelled before shell startup." }
-        val proc = pb.start()
-        // Close stdin immediately so child CLI processes checking piped stdin never hang waiting for EOF
-        runCatching { proc.outputStream.close() }
-
-        val capture = BoundedTextCapture()
-        var lastEmitMs = 0L
-        val readerThread = Thread {
-            runCatching {
-                proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    val chunk = CharArray(1024)
-                    while (true) {
-                        val readCount = reader.read(chunk)
-                        if (readCount < 0) break
-                        capture.append(chunk, readCount)
-                        val now = System.currentTimeMillis()
-                        if (onOutputDelta != null && now - lastEmitMs >= 100L) {
-                            lastEmitMs = now
-                            runCatching { onOutputDelta.invoke(capture.snapshot()) }
-                        }
-                    }
-                }
-            }
-        }.apply {
-            isDaemon = true
-            name = "parchment-shell-exec-reader"
-            start()
-        }
-
-        try {
-            val maxWaitMs = timeoutSeconds.coerceIn(1, 300) * 1000L
-            val startMs = System.currentTimeMillis()
-            var finished = false
-            while (System.currentTimeMillis() - startMs < maxWaitMs) {
-                if (isCancelled?.invoke() == true) {
-                    // Killed by user pressing Stop
-                    runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
-                    proc.destroyForcibly()
-                    error("Shell command terminated because its owning run stopped or permission was revoked.")
-                }
-                if (proc.waitFor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
-                    finished = true
-                    break
-                }
-            }
-            if (!finished) {
-                runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
-                proc.destroyForcibly()
-                runCatching { proc.inputStream.close() }
-                runCatching { readerThread.join(1500L) }
-                val partial = capture.snapshot(4000).trim()
-                val partialSuffix = if (partial.isNotEmpty()) "\nPartial output before timeout:\n$partial" else ""
-                error("Command timed out after $timeoutSeconds seconds.$partialSuffix")
-            }
-            runCatching { readerThread.join(2000L) }
-            val output = capture.snapshot().trim()
-            if (onOutputDelta != null && output.isNotEmpty()) {
-                runCatching { onOutputDelta.invoke(output) }
-            }
-            "Exit Code: ${proc.exitValue()}\n${capture.snapshot(8000).trim()}"
-        } finally {
-            if (proc.isAlive) {
-                runCatching { proc.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
-                runCatching { proc.destroyForcibly() }
-            }
-            runCatching { proc.inputStream.close() }
-            runCatching { proc.errorStream.close() }
-            runCatching { readerThread.join(1500L) }
-            invalidateWorkspaceTreeCache()
-        }
+    ): Result<String> = try {
+        DesktopOwnedShell.execute(workspaceRoot, command, timeoutSeconds, onOutputDelta, isCancelled)
+    } finally {
+        workspaceScanner.invalidate()
     }
 
-    actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
-        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
-        val rootPath = rootFile.toPath()
-        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
-        require(query.isNotBlank()) { "Search query must not be blank." }
-
-        val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
-        val cleanFilter = fileGlob.removePrefix("*").trim()
-        val candidateEntries = getOrBuildWorkspaceTree(rootFile).filter { e ->
-            !e.isDirectory &&
-                e.length in 1L..2_000_000L &&
-                (cleanFilter.isEmpty() || e.name.contains(cleanFilter, ignoreCase = true) || e.relPath.contains(cleanFilter, ignoreCase = true))
-        }
-
-        val hitCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val perFileMatches = candidateEntries.parallelStream()
-            .map { entry ->
-                if (hitCount.get() >= 150) return@map null
-                val fileHits = mutableListOf<String>()
-                runCatching {
-                    require(WorkspacePathGuard.canTraverse(rootPath, entry.file.toPath())) { "Workspace path changed during search." }
-                    entry.file.useLines(Charsets.UTF_8) { seq ->
-                        seq.forEachIndexed { idx, line ->
-                            if (hitCount.get() < 150) {
-                                val hit = regex?.containsMatchIn(line) ?: line.contains(query, ignoreCase = true)
-                                if (hit) {
-                                    val countNow = hitCount.incrementAndGet()
-                                    if (countNow <= 150) {
-                                        fileHits.add("${entry.relPath}:${idx + 1}: ${line.trim().take(200)}")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (fileHits.isEmpty()) null else fileHits
-            }
-            .filter { it != null }
-            .collect(java.util.stream.Collectors.toList())
-
-        val matches = perFileMatches.filterNotNull().flatten()
-        if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
-    }
+    actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> =
+        workspaceScanner.search(workspaceRoot, query, fileGlob)
 
     actual fun fetchUrlText(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> =
         PublicWebTransport.fetch(url, maxChars, isCancelled)
@@ -841,7 +537,7 @@ actual object PlatformBridge {
     }
 
     private val mediaStore by lazy {
-        LocalMediaStore(::resolveStorageDir, ::chatSessionFolder) { key -> synchronized(imageCache) { imageCache.remove(key) } }
+        LocalMediaStore(::resolveStorageDir, ::chatSessionFolder, imageCache::remove)
     }
 
     private fun resolveLocalMediaFile(filePath: String): File? = mediaStore.resolve(filePath)
@@ -864,28 +560,10 @@ actual object PlatformBridge {
 
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)
 
-    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = synchronized(imageCache) { imageCache[filePath] }
+    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = imageCache.get(filePath)
 
-    actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
-        if (filePath.isBlank()) return null
-        synchronized(imageCache) { imageCache[filePath]?.let { return it } }
-        return runCatching {
-            val f = resolveLocalMediaFile(filePath) ?: return null
-            synchronized(imageCache) { imageCache[f.absolutePath]?.let { return it } }
-            val bmp = DesktopImageDecoder.decode(f) ?: return null
-            rememberImage(filePath, bmp)
-            bmp
-        }.getOrNull()
-    }
-
-    private fun rememberImage(key: String, bitmap: ImageBitmap) = synchronized(imageCache) {
-        imageCache[key] = bitmap
-        val (maxImages, maxBytes) = if (isLowMemoryDevice) 3 to 48L * 1024L * 1024L else 6 to 128L * 1024L * 1024L
-        while (imageCache.size > maxImages || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > maxBytes) {
-            val eldest = imageCache.keys.firstOrNull()?.takeIf { it != key } ?: break
-            imageCache.remove(eldest)
-        }
-    }
+    actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? =
+        imageCache.getOrLoad(filePath, ::resolveLocalMediaFile, DesktopImageDecoder::decode)
 
     actual fun openOrPlayMedia(localFilePathOrUrl: String) {
         runCatching {

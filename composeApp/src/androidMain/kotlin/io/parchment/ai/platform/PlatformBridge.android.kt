@@ -79,7 +79,25 @@ actual object PlatformBridge {
     @Volatile
     private var pendingUtteranceToSpeak: String? = null
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
-    private val imageCache = LinkedHashMap<String, ImageBitmap>()
+    private val imageCache = BoundedImageCache {
+        if (isLowMemoryDevice) 4 to 24L * 1024L * 1024L else 16 to 96L * 1024L * 1024L
+    }
+    private val workspaceScanner = WorkspaceTreeScanner(
+        WorkspaceScanConfig(
+            missingDirMessage = { "Directory not found: $it" },
+            notDirMessage = { "Directory not found: $it" },
+            emptyDirectoryMessage = "(Empty workspace directory)",
+            useTreeCache = false,
+            canonicalizeRelativize = true,
+            allowEmptyPlainGlobFallback = true,
+            requirePositiveSearchFileBytes = false,
+            maxSearchFileBytes = 1_499_999L,
+            maxSearchHits = 100,
+            maxSearchLineChars = 180,
+            parallelSearch = false,
+            filterSearchByRelPath = false
+        )
+    )
     private val pendingSharedOrPastedFiles = mutableListOf<PickedBinaryFile>()
     @Volatile
     private var stateFlushCallback: (() -> Unit)? = null
@@ -222,61 +240,14 @@ actual object PlatformBridge {
         }
     }
 
-    actual fun wipeAllLocalData(): Boolean = runCatching {
-        val dir = resolveStorageDir()
-        dir.listFiles()?.forEach { it.deleteRecursively() }
-        true
-    }.getOrDefault(false)
+    actual fun wipeAllLocalData(): Boolean =
+        AppStorageInventory.wipeDirectory(resolveStorageDir(), preserveRoot = true)
 
-    actual fun listAppStorageFiles(): List<io.parchment.ai.model.StoredAppFileItem> = runCatching {
-        val rootDir = resolveStorageDir().canonicalFile
-        val rootPath = rootDir.toPath().normalize()
-        val items = mutableListOf<io.parchment.ai.model.StoredAppFileItem>()
-        if (rootDir.exists() && rootDir.isDirectory) {
-            rootDir.walkTopDown()
-                .maxDepth(6)
-                .filter { it.isFile }
-                .forEach { f ->
-                    val rel = runCatching { rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/') }
-                        .getOrDefault(f.name)
-                    val lowerRel = rel.lowercase()
-                    val lowerName = f.name.lowercase()
-                    val cat = when {
-                        lowerName.endsWith(".tmp") || lowerName.endsWith(".apk") -> io.parchment.ai.model.StorageFileCategory.OTA_AND_TEMP
-                        lowerRel.startsWith("chats/") && lowerName.endsWith(".json") -> io.parchment.ai.model.StorageFileCategory.CHAT_SESSION
-                        (lowerRel.startsWith("media/") || lowerRel.contains("/media/")) && lowerName.startsWith("att-") ->
-                            io.parchment.ai.model.StorageFileCategory.UPLOADED_MEDIA
-                        lowerRel.startsWith("media/") || lowerRel.contains("/media/") ->
-                            io.parchment.ai.model.StorageFileCategory.GENERATED_MEDIA
-                        else -> io.parchment.ai.model.StorageFileCategory.SETTINGS_AND_BACKUPS
-                    }
-                    items.add(
-                        io.parchment.ai.model.StoredAppFileItem(
-                            fullPath = f.absolutePath,
-                            relativePath = rel,
-                            fileName = f.name,
-                            category = cat,
-                            sizeBytes = f.length(),
-                            lastModifiedMs = f.lastModified()
-                        )
-                    )
-                }
-        }
-        items.sortedWith(
-            compareBy<io.parchment.ai.model.StoredAppFileItem> { it.category.ordinal }
-                .thenByDescending { it.lastModifiedMs }
-        )
-    }.getOrDefault(emptyList())
+    actual fun listAppStorageFiles(): List<io.parchment.ai.model.StoredAppFileItem> =
+        AppStorageInventory.listFiles(resolveStorageDir(), otaTempExtensions = setOf(".tmp", ".apk"))
 
-    actual fun deleteAppStorageFile(fullPath: String): Boolean = runCatching {
-        if (fullPath.isBlank()) return false
-        val target = File(fullPath).canonicalFile
-        val storageRoot = resolveStorageDir().canonicalFile
-        val insideStorage = target.toPath().normalize().startsWith(storageRoot.toPath().normalize())
-        if (!insideStorage || !target.exists() || !target.isFile) return false
-        synchronized(imageCache) { imageCache.remove(target.absolutePath) }
-        target.delete()
-    }.getOrDefault(false)
+    actual fun deleteAppStorageFile(fullPath: String): Boolean =
+        AppStorageInventory.deleteFile(fullPath, resolveStorageDir()) { imageCache.remove(it) }
 
     actual suspend fun pickFileForImport(allowedExtensions: List<String>): PickedBinaryFile? {
         val act = mainActivityRef?.get() ?: return null
@@ -403,15 +374,9 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
-    actual fun loadCustomFontFamily(fontPath: String): FontFamily? {
-        val cleaned = fontPath.trim().removeSurrounding("\"")
-        if (cleaned.isEmpty()) return null
-        fontCache[cleaned]?.let { return it }
-
-        return runCatching {
-            val file = File(cleaned)
-            if (!file.exists() || !file.isFile) return null
-            val family = FontFamily(
+    actual fun loadCustomFontFamily(fontPath: String): FontFamily? =
+        AppStorageInventory.loadCachedFontFamily(fontCache, fontPath) { file ->
+            FontFamily(
                 Font(file = file, weight = FontWeight.Normal, style = FontStyle.Normal),
                 Font(file = file, weight = FontWeight.Medium, style = FontStyle.Normal),
                 Font(file = file, weight = FontWeight.SemiBold, style = FontStyle.Normal),
@@ -419,10 +384,7 @@ actual object PlatformBridge {
                 Font(file = file, weight = FontWeight.Normal, style = FontStyle.Italic),
                 Font(file = file, weight = FontWeight.Bold, style = FontStyle.Italic)
             )
-            fontCache[cleaned] = family
-            family
-        }.getOrNull()
-    }
+        }
 
     actual fun copyImageToClipboard(bytes: ByteArray): Boolean = runCatching {
         val ctx = appContext ?: return false
@@ -481,83 +443,11 @@ actual object PlatformBridge {
         }.getOrNull()
     }
 
-    actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> = runCatching {
-        val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath).toFile()
-        val rootPath = WorkspacePathGuard.root(workspaceRoot).toFile().toPath().normalize()
-        require(target.exists() && target.isDirectory) { "Directory not found: $relativePath" }
-        val entries = if (recursive) {
-            target.walkTopDown()
-                .onEnter { d -> (d == target || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
-                .maxDepth(24)
-                .filter { it != target && !WorkspacePathGuard.isIgnoredDirectory(it.name) && WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
-                .take(400)
-                .map { f ->
-                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-                }
-                .toList()
-        } else {
-            (target.listFiles()?.toList() ?: emptyList()).filter { WorkspacePathGuard.canTraverse(rootPath, it.toPath()) }
-                .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
-                .take(300)
-                .map { f ->
-                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-                }
-        }
-        if (entries.isEmpty()) "(Empty workspace directory)" else entries.joinToString("\n")
-    }
+    actual fun workspaceList(workspaceRoot: String, relativePath: String, recursive: Boolean): Result<String> =
+        workspaceScanner.list(workspaceRoot, relativePath, recursive)
 
-    actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> = runCatching {
-        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
-        val rootPath = rootFile.toPath().normalize()
-        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
-        val cleanPat = pattern.trim().replace('\\', '/').removePrefix("./")
-        require(cleanPat.isNotEmpty()) { "Glob pattern must not be empty." }
-        val regexStr = buildString {
-            append("^")
-            var i = 0
-            while (i < cleanPat.length) {
-                val c = cleanPat[i]
-                if (c == '*' && i + 1 < cleanPat.length && cleanPat[i + 1] == '*') {
-                    if (i + 2 < cleanPat.length && cleanPat[i + 2] == '/') {
-                        append("(?:.*/)?")
-                        i += 3
-                        continue
-                    } else {
-                        append(".*")
-                        i += 2
-                        continue
-                    }
-                } else if (c == '*') {
-                    append("[^/]*")
-                } else if (c == '?') {
-                    append("[^/]")
-                } else if (".+()[]{}|^$\\".contains(c)) {
-                    append('\\').append(c)
-                } else {
-                    append(c)
-                }
-                i++
-            }
-            append("$")
-        }
-        val globRegex = Regex(regexStr, RegexOption.IGNORE_CASE)
-        val matches = rootFile.walkTopDown()
-            .onEnter { d -> (d == rootFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
-            .maxDepth(24)
-            .filter { f -> f != rootFile && !WorkspacePathGuard.isIgnoredDirectory(f.name) && WorkspacePathGuard.canTraverse(rootPath, f.toPath()) }
-            .mapNotNull { f ->
-                val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
-                val matchTarget = if (!cleanPat.contains('/')) f.name else rel
-                if (globRegex.matches(matchTarget) || rel.contains(cleanPat.replace("*", ""), ignoreCase = true)) {
-                    if (f.isDirectory) "$rel/" else "$rel (${f.length()} bytes)"
-                } else null
-            }
-            .take(maxResults.coerceIn(1, 500))
-            .toList()
-        if (matches.isEmpty()) "No files matched glob '$pattern'." else matches.joinToString("\n")
-    }
+    actual fun workspaceGlob(workspaceRoot: String, pattern: String, maxResults: Int): Result<String> =
+        workspaceScanner.glob(workspaceRoot, pattern, maxResults)
 
     actual fun workspaceRead(workspaceRoot: String, relativePath: String, startLine: Int, maxLines: Int): Result<String> = runCatching {
         val target = WorkspacePathGuard.resolve(workspaceRoot, relativePath).toFile()
@@ -610,40 +500,8 @@ actual object PlatformBridge {
         return AndroidOwnedShell.execute(root, command, timeoutSeconds, onOutputDelta, isCancelled)
     }
 
-    actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> = runCatching {
-        val rootFile = WorkspacePathGuard.root(workspaceRoot).toFile()
-        val rootPath = rootFile.toPath().normalize()
-        require(rootFile.exists() && rootFile.isDirectory) { "Workspace root does not exist: $workspaceRoot" }
-        require(query.isNotBlank()) { "Search query must not be blank." }
-        val regex = runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
-        val matches = mutableListOf<String>()
-        rootFile.walkTopDown()
-            .onEnter { d -> (d == rootFile || !WorkspacePathGuard.isIgnoredDirectory(d.name)) && WorkspacePathGuard.canTraverse(rootPath, d.toPath()) }
-            .maxDepth(24)
-            .filter { f ->
-                f.isFile && WorkspacePathGuard.canTraverse(rootPath, f.toPath()) &&
-                    !WorkspacePathGuard.isIgnoredDirectory(f.name) &&
-                    f.length() < 1_500_000L &&
-                    (fileGlob.isBlank() || f.name.contains(fileGlob.removePrefix("*"), ignoreCase = true))
-            }
-            .forEach { f ->
-                if (matches.size >= 100) return@forEach
-                runCatching {
-                    val rel = rootPath.relativize(f.canonicalFile.toPath()).toString().replace('\\', '/')
-                    f.useLines(Charsets.UTF_8) { seq ->
-                        seq.forEachIndexed { idx, line ->
-                            if (matches.size < 100) {
-                                val hit = regex?.containsMatchIn(line) ?: line.contains(query, ignoreCase = true)
-                                if (hit) {
-                                    matches.add("$rel:${idx + 1}: ${line.trim().take(180)}")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        if (matches.isEmpty()) "No matches found for '$query'." else matches.joinToString("\n")
-    }
+    actual fun workspaceSearch(workspaceRoot: String, query: String, fileGlob: String): Result<String> =
+        workspaceScanner.search(workspaceRoot, query, fileGlob)
 
     actual fun fetchUrlText(url: String, maxChars: Int, isCancelled: (() -> Boolean)?): Result<String> =
         PublicWebTransport.fetch(url, maxChars, isCancelled)
@@ -755,7 +613,7 @@ actual object PlatformBridge {
     }
 
     private val mediaStore by lazy {
-        LocalMediaStore(::resolveStorageDir, ::chatSessionFolder) { key -> synchronized(imageCache) { imageCache.remove(key) } }
+        LocalMediaStore(::resolveStorageDir, ::chatSessionFolder, imageCache::remove)
     }
 
     private fun resolveLocalMediaFile(filePath: String): File? = mediaStore.resolve(filePath)
@@ -778,36 +636,22 @@ actual object PlatformBridge {
 
     actual fun readBinaryFileBytes(filePath: String): ByteArray? = mediaStore.read(filePath)
 
-    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = synchronized(imageCache) { imageCache[filePath] }
+    actual fun cachedImageBitmap(filePath: String): ImageBitmap? = imageCache.get(filePath)
 
-    actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? {
-        if (filePath.isBlank()) return null
-        synchronized(imageCache) { imageCache[filePath]?.let { return it } }
-        return runCatching {
-            val f = resolveLocalMediaFile(filePath) ?: return null
-            synchronized(imageCache) { imageCache[f.absolutePath]?.let { return it } }
-            // Decode bounds first and downsample large 2K/4K images for UI display to minimize RAM
-            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(f.absolutePath, boundsOpts)
-            val maxDim = 1600
-            var sampleSize = 1
-            while ((boundsOpts.outWidth / sampleSize) > maxDim || (boundsOpts.outHeight / sampleSize) > maxDim) {
-                sampleSize *= 2
-            }
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            val bmp = BitmapFactory.decodeFile(f.absolutePath, decodeOpts)?.asImageBitmap() ?: return null
-            rememberImage(filePath, bmp)
-            bmp
-        }.getOrNull()
-    }
+    actual fun loadImageBitmapFromFile(filePath: String): ImageBitmap? =
+        imageCache.getOrLoad(filePath, ::resolveLocalMediaFile, ::decodeSampledBitmap)
 
-    private fun rememberImage(key: String, bitmap: ImageBitmap) = synchronized(imageCache) {
-        imageCache[key] = bitmap
-        val (maxImages, maxBytes) = if (isLowMemoryDevice) 4 to 24L * 1024L * 1024L else 16 to 96L * 1024L * 1024L
-        while (imageCache.size > maxImages || imageCache.values.sumOf { it.width.toLong() * it.height * 4L } > maxBytes) {
-            val eldest = imageCache.keys.firstOrNull()?.takeIf { it != key } ?: break
-            imageCache.remove(eldest)
+    private fun decodeSampledBitmap(file: File): ImageBitmap? {
+        // Decode bounds first and downsample large 2K/4K images for UI display to minimize RAM.
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, boundsOpts)
+        val maxDim = 1600
+        var sampleSize = 1
+        while ((boundsOpts.outWidth / sampleSize) > maxDim || (boundsOpts.outHeight / sampleSize) > maxDim) {
+            sampleSize *= 2
         }
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        return BitmapFactory.decodeFile(file.absolutePath, decodeOpts)?.asImageBitmap()
     }
 
     actual fun openOrPlayMedia(localFilePathOrUrl: String) {
